@@ -1,0 +1,51 @@
+[package]
+name = "congrove"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+description = "congrove — 汇流:团队知识库(空间+小组+会议录屏+论文库),IAH 平台子系统"
+license = "MIT"
+
+# 版本选型经 2026-08-01 联网对抗核查(DESIGN.md §7.1):
+# sqlx 0.9(0.8 线停更一年、仓库迁 transact-rs)、jsonwebtoken 11(9 是上上代)、
+# axum 0.8 现行主线(0.8.2 被 yank,范围依赖自动避开)。别回抄 citeroot 的旧版本号。
+[dependencies]
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+# web
+axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["limit", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "fs"] }
+# 数据库(0.9:query*() 收 impl SqlSafeStr,字面量 SQL 无感;动态拼 SQL 才要 AssertSqlSafe)
+sqlx = { version = "0.9", features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "postgres",
+  "macros",
+  "migrate",
+  "chrono",
+] }
+# 对象存储(Garage,S3 兼容)。凭证走标准 provider chain(AWS_ACCESS_KEY_ID/SECRET),
+# 别自造 key 名(citeroot 2026-07-24 的 crash-loop 教训)。
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+# http 客户端(OIDC 换码 + JWKS 拉取;rustls,内网 CA 由 auth.rs 追加)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# OIDC:验 Keycloak RS256 JWT + 签自己的 HS256 会话 cookie
+jsonwebtoken = "11"
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 配置 / env
+dotenvy = "0.15"
+# 日志(平台约定:stdout,线上 JSON 结构化)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# 错误
+anyhow = "1"
+thiserror = "2"
+# 哈希(会话签名密钥派生 + S3 内容寻址)
+sha2 = "0.10"
+hex = "0.4"
+# 时间
+chrono = { version = "0.4", features = ["serde"] }

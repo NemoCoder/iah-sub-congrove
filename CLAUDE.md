@@ -1,0 +1,69 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 现状：P0 骨架已落地(2026-08-01),先读 DESIGN.md
+
+本仓库是「汇流 Congrove」——对标 Confluence 的团队知识库(空间 + 小组 + viewer/editor/admin 三档授权),
+外加 GB 级会议录屏与论文库。需求、平台契约、数据模型、权限模型、录屏方案(§7.4b 预签名工程六条)、
+架构设计、分阶段计划**全部在 `DESIGN.md`**,动手前必须通读,本文只列操作要点。
+栈:**Rust(axum 0.8 + sqlx 0.9 + aws-sdk-s3 1.x + jsonwebtoken 11)+ React 19/AntD 6/Vite 8**,
+端口 :8030,镜像基座 trixie。主范本 `../citeroot/`——⚠ 抄它的**结构**别抄它的**版本号**
+(sqlx 0.8/jwt 9/bookworm 已过时;2026-08-01 联网对抗核查修订,依据见 DESIGN.md §7.1)。
+
+**P0 已有**:服务端 OIDC 登录(auth.rs,自 citeroot 移植)+ HS256 会话 + 超管白名单(`CONGROVE_SUPER_USERS`)、
+perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)、storage.rs 双 S3 client
+(内部端点自用 + 外部端点专签预签名,checksum WhenRequired 闸)、0001 迁移(§4 全表)、
+/healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
+**P1 待做**:空间/组/成员/授权 CRUD + 内容树 + 上传下载;P2 录屏预签名(先跑 §8-1 PoC 四象限)。
+
+## 命令
+
+```bash
+cp .env.example .env      # 必须,缺 DATABASE_URL / S3_* 硬失败(config.rs)
+cargo run                 # :8030,启动自动跑迁移;不配 OIDC_ISSUER = 鉴权关闭 + WARN(dev 超管假身份)
+cargo test                # perm.rs 纯函数单测;改完照常 cargo check
+cd web && pnpm install && pnpm dev   # vite :5180,/api /auth 代理到 :8030
+cd web && pnpm build                 # 产物 dist/,线上由后端 ServeDir 同源托管
+cd web && pnpm typecheck             # ⚠ 平台构建管道零类型检查,改完 TS 必须手跑
+```
+
+**正式部署走声明式**(DESIGN.md §2.2b):配置在根 `iah.yaml`,
+`POST registry.ruciah.com/api/subsystems/congrove/deploy` 首次部署 + `autobuild:true` 挂 webhook,
+之后 push 到通道分支即自动构建。构建失败唯一入口 `GET .../build-log?channel=dev`(不进 Loki);
+dev 库改 schema 可走 `POST .../db/sql`(dev-only,prod 403)。API 都带个人令牌(门户「日志」页生成)。
+**迁移纪律:只增不改**(sqlx::migrate! 校验和,改已应用的文件 = 全部实例启动失败),变更开新文件写 ALTER。
+sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字段后手动核对 FromRow/类型。
+
+## 架构决策(详证据见 DESIGN.md §3,别重新论证)
+
+三条已定案、有平台源码实证的决策,推翻任何一条都要先找到新证据:
+
+1. **身份自建 OIDC 客户端**,消费平台注入的 `OIDC_*` env;`preferred_username` 作用户主键。平台**不注入身份头**。
+2. **组/权限必须落自己的 PG 表**(`groups`/`group_members`/`spaces`/`space_grants`),不能靠 Keycloak——
+   网关不透传 groups、realm 里根本没配 groups mapper。有效权限 = 直接授权与所有所属组授权取最大值
+   (实现在 `src/perm.rs`,超管短路)。真判权在后端,前端隐藏按钮不是安全边界。
+3. **PG 存元数据、Garage S3 存二进制**;录屏走浏览器预签名直传/直取(`s3api.ruciah.com`)。
+   ⚠ **预签名 PoC 是命门,必须最先验证**(DESIGN.md §8-1 检查单,含桶 CORS 由平台 provisioner 配的前置
+   依赖——pod 的 key 无 owner 位自己配不了);不通则回退 pod 流式代理(范本 `../citeroot/src/pdf.rs`)。
+
+## 平台硬约束(违反即事故)
+
+- **一个镜像、监听一个端口**(静态 + REST 同端口);不写任何 K8s 清单,域名/TLS/PG/S3/OIDC 全由平台注入 env。
+- **集群无 PVC,永远不会有**:sqlite/本地文件每次 rebuild/restart/promote 清零,正式数据只能落
+  PG(`iah-pg-rw.data.svc:5432`)+ Garage S3(`garage.data.svc:3900`)。「重启后数据还在」才算测试通过。
+- S3 必须 **path-style** + **AWS 标准 env 名**(`AWS_ACCESS_KEY_ID` 等,别自造 key 名)+ region 必须是
+  字符串 `garage`(否则 HeadBucket 400)。注入的确切 env 键名清单在 DESIGN.md §2.2。
+- dev/prod 是同一仓库的两个 channel,各有独立 PG 库和 S3 桶;promote 复用 dev 镜像不重建,但落**空库**,
+  数据手工 `pg_dump dev | psql prod` 迁。
+- Dockerfile 基础镜像走 `docker.m.daocloud.io`,npm/cargo 走国内镜像源(集群在 GFW 后,不走必挂)。
+- **保留 IAH 品牌页眉**(◆IAH 在上、子系统名在下、点击回 `hub.ruciah.com`),实现在 `web/src/iah-header.tsx`。
+
+## 风格与 Git
+
+- 代码/注释/提交信息用**中文**,匹配全树风格(极密一行流 + 长中文注释,注释是文档,别精简)。
+- 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z,开发版带 .dev)。
+- 双远端 Gitea(内网,主)+ Gitee(外部备份),`setup-remotes.sh` 一次配好;**push 由仓库所有者做,Claude 只 commit**。
+  密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。
+- 参考子系统:`../citeroot/`(**主范本**:Rust 栈、auth/storage/Dockerfile/流式代理全在这)、
+  `../textleaf/`(UI 与「组织+角色」权限模型参考)。

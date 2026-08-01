@@ -1,0 +1,17 @@
+# congrove(汇流)部署声明 —— 平台 CLI 首次部署 / 更新读此文件(DESIGN.md §2.2b)。
+# 用法:POST /api/subsystems/congrove/deploy(带个人令牌,幂等;autobuild:true 顺手挂 push webhook)。
+
+port: 8030                    # 单镜像单端口,与 Dockerfile 的 BIND_ADDR / EXPOSE 一致
+display_name: 汇流 Congrove
+description: 团队知识库:空间 + 小组分权共享,会议记录 / 会议录屏 / 论文资料
+
+want_db: true                 # 共享 iah-pg(PG18)→ 平台注入 DATABASE_URL
+want_oss: true                # Garage S3 → 平台注入 AWS_* / S3_ENDPOINT / S3_BUCKET
+
+# OIDC:机密客户端 sub-congrove(id+secret)+ OIDC_ISSUER 平台自动注入,无需声明。
+env:
+  # 超管 bootstrap 白名单(§5):登录命中即 is_super=true(只置不清,种子)。
+  CONGROVE_SUPER_USERS: liaoruili
+  # 预签名专用外部端点(§7.4b-2):未配则录屏走后端流式代理回退。
+  # ⚠ 配它之前必须先让平台给桶配 CORS(ExposeHeaders:ETag,pod 的 key 无 owner 位自己配不了,§7.4b-1)。
+  S3_PUBLIC_ENDPOINT: https://s3api.ruciah.com
