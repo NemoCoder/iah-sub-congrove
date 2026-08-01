@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# 给当前子系统仓库配 Gitea(内网) + Gitee(外部) 双远端。
-# 之后 `git push origin main` 会一次推到两端。
-# 用法: ./setup-remotes.sh <标识>
-# 前提: 已 git init；并在 Gitea / Gitee 各建好私有仓库 iah-sub-<标识>（token 找管理员要）。
+# 给本仓库配三推远端:Gitea(内网,主)+ Gitee + GitHub(全局约定,见 ~/.claude/CLAUDE.md)。
+# 之后 `git push origin dev` 一条命令推三处。本仓库 2026-08-01 已配好,此脚本供重建时用。
+# ⚠ 仓库含内网 IP/拓扑(DESIGN.md 里的 172.10.0.x / *.svc),Gitee/GitHub 是外部仓,必须保持私有。
 set -euo pipefail
-SLUG="${1:?用法: ./setup-remotes.sh <标识>}"
-GITEA="https://git.ruciah.com/liaoruili/iah-sub-${SLUG}.git"   # 内网 Gitea（git.iahdev.com 已弃），按需改 owner
-GITEE="https://gitee.com/ampeeg/iah-sub-${SLUG}.git"           # 外部备份，按需改 owner
+SLUG="${1:-congrove}"
+GITEA="https://git.ruciah.com/liaoruili/iah-sub-${SLUG}.git"
+GITEE="https://gitee.com/ampeeg/iah-sub-${SLUG}.git"
+GITHUB="https://github.com/NemoCoder/iah-sub-${SLUG}.git"
 
 git remote remove origin 2>/dev/null || true
 git remote add origin "$GITEA"
-# 关键：给 origin 配两个 push URL → 一条 push 命令推两端
+# 关键:给 origin 挂三个 push URL → 一条 push 推三端
 git remote set-url --add --push origin "$GITEA"
 git remote set-url --add --push origin "$GITEE"
+git remote set-url --add --push origin "$GITHUB"
 
-echo "已配双远端 origin:"
-git remote -v | sed 's/^/  /'
-echo "提交后执行: git push -u origin main   (一次推 Gitea + Gitee)"
+echo "已配三推 origin:"
+git remote get-url --all --push origin | sed 's/^/  /'
+echo "提交后执行: git push -u origin dev   (一次推 Gitea + Gitee + GitHub)"

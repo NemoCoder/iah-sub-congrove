@@ -45,5 +45,5 @@ curl -H "Authorization: Bearer <令牌>" "https://registry.ruciah.com/api/subsys
 
 ## 仓库
 
-双远端 Gitea(内网,主)+ Gitee(外部备份):`./setup-remotes.sh congrove` 配好后 `git push origin main` 一次推两端。
+三推 Gitea(内网,主)+ Gitee + GitHub(均已配好,2026-08-01):`git push origin dev` 一次推三端(外部两仓保持**私有**,DESIGN.md 含内网拓扑)。
 **push 由仓库所有者做**;密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。

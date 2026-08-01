@@ -63,7 +63,7 @@ sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字
 
 - 代码/注释/提交信息用**中文**,匹配全树风格(极密一行流 + 长中文注释,注释是文档,别精简)。
 - 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z,开发版带 .dev)。
-- 双远端 Gitea(内网,主)+ Gitee(外部备份),`setup-remotes.sh` 一次配好;**push 由仓库所有者做,Claude 只 commit**。
+- 三推 Gitea(内网,主)+ Gitee + GitHub(origin 挂三 push URL,已配好);**push 由仓库所有者做,Claude 只 commit**。
   密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。
 - 参考子系统:`../citeroot/`(**主范本**:Rust 栈、auth/storage/Dockerfile/流式代理全在这)、
   `../textleaf/`(UI 与「组织+角色」权限模型参考)。
