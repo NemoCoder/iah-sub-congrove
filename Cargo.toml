@@ -1,6 +1,6 @@
 [package]
 name = "congrove"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.86"
 description = "congrove — 汇流:团队知识库(空间+小组+会议录屏+论文库),IAH 平台子系统"
@@ -31,13 +31,13 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
 # http 客户端(OIDC 换码 + JWKS 拉取;rustls,内网 CA 由 auth.rs 追加)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# OIDC:验 Keycloak RS256 JWT + 签自己的 HS256 会话 cookie
-jsonwebtoken = "11"
-# ★ 直接依赖 rustls 只为装进程级默认 CryptoProvider(lib.rs run() 顶部)★:
-# sqlx(ring)+ reqwest/aws-sdk(aws-lc-rs)同时链入两个 provider,jsonwebtoken 11 验 JWT
-# 时确定不了默认 → /auth/login 一调就 panic → Traefik 502(2026-08-01 部署即踩)。
-# 选 ring:sqlx 已 tls-rustls-ring 明确用它,必然在。
-rustls = { version = "0.23", features = ["ring"] }
+# OIDC:验 Keycloak RS256 JWT + 签自己的 HS256 会话 cookie。
+# ★ rust_crypto feature 必须显式开(2026-08-02 502 事故)★:jsonwebtoken 11 有**自己的**
+# CryptoProvider 机制(非 rustls 的),默认 feature 只有 use_pem、一个后端都不带——
+# 不开后端则首次 encode/decode 就 panic(只死 worker 线程,pod 照样 Running,网关 502)。
+# 要求「恰好一个」后端 feature,开了就自动选定,无需代码安装;装 rustls 进程默认是无效药(试过)。
+# 选 rust_crypto(纯 Rust):aws_lc_rs 后端要 cmake,slim 构建镜像里没有。
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -636,3 +636,32 @@ fn clear_cookie(name: &str) -> String {
 fn now() -> usize {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as usize).unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归护栏(2026-08-02 502 事故):jsonwebtoken 11 不开恰好一个后端 feature 时,
+    /// 首次 encode/decode 直接 panic(worker 线程死、pod 照样 Running、网关 502)。
+    /// 这条 HS256 往返就是当初 /auth/login 第一步炸掉的路径——它跑不过 = feature 又配丢了。
+    #[test]
+    fn hs256_roundtrip_exercises_crypto_provider() {
+        let key = b"congrove-test-key";
+        let enc = EncodingKey::from_secret(key);
+        let dec = DecodingKey::from_secret(key);
+        let mut v = Validation::new(Algorithm::HS256);
+        v.validate_aud = false;
+        let s = Session {
+            username: "tester".into(),
+            sub: Some("sub-1".into()),
+            name: None,
+            email: None,
+            is_super: true,
+            exp: now() + 60,
+        };
+        let tok = encode(&Header::new(Algorithm::HS256), &s, &enc).expect("encode 不该炸");
+        let back = decode::<Session>(&tok, &dec, &v).expect("decode 不该炸");
+        assert_eq!(back.claims.username, "tester");
+        assert!(back.claims.is_super);
+    }
+}
