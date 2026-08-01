@@ -22,6 +22,16 @@ use crate::config::Config;
 use crate::state::AppState;
 
 pub async fn run() -> anyhow::Result<()> {
+    // ★ 必须最先显式装 rustls 进程级 CryptoProvider(任何 DB/JWT/TLS 之前)★:
+    // sqlx(ring)+ reqwest/aws-sdk-s3(aws-lc-rs)同时链入两个 provider,没人指定默认时
+    // jsonwebtoken 11 验 RS256 JWT 直接 panic → 连接被丢 → 网关 502;panic 只死 worker 线程,
+    // pod 照样 1/1 Running,症状是「活着但一登录就挂」(2026-08-01 首次部署即踩)。
+    // 选 ring:sqlx 的 tls-rustls-ring 已明确用它;sqlx/reqwest 各自用显式配置的 provider
+    // 做 TLS 不受此默认影响,只有 jsonwebtoken 靠它。
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("安装 rustls ring CryptoProvider 失败");
+
     let _ = dotenvy::dotenv(); // 本地读 .env;线上是平台注入,no-op
 
     let cfg = Config::from_env()?;
