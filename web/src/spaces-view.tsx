@@ -158,7 +158,14 @@ export function SpacesView() {
       try {
         let done = false
         if (f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')) {
-          done = await directUpload(cur.id, f, targetParent, report)
+          try {
+            done = await directUpload(cur.id, f, targetParent, report)
+          } catch (de) {
+            // 直传失败(典型:该设备不信 s3api 的证书,AI_Talks 0102)→ 自动回退服务器中转,
+            // 功能不挡死,只是大文件多过 pod 一跳。directUpload 内部已 abort 半截上传。
+            message.warning(`${f.name}:直传不可用(${(de as Error).message}),已回退服务器中转`)
+            report(0)
+          }
         }
         if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${targetParent != null ? `?parent_id=${targetParent}` : ''}`, f, report)
         message.success(`${f.name} 上传完成`)
