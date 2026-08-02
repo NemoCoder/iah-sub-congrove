@@ -375,12 +375,30 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
 
   const add = async () => {
     if (!gid.trim()) return message.warning('填用户名或选组')
-    await api(`/api/spaces/${space.id}/grants`, {
-      method: 'PUT',
-      body: JSON.stringify({ grantee_type: gtype, grantee_id: gid.trim(), role }),
-    })
-    setGid('')
-    await load()
+    try {
+      await api(`/api/spaces/${space.id}/grants`, {
+        method: 'PUT',
+        body: JSON.stringify({ grantee_type: gtype, grantee_id: gid.trim(), role }),
+      })
+      message.success('已授权')
+      setGid('')
+      await load()
+    } catch (e) {
+      message.error((e as Error).message) // 假名/降级最后一个 admin 都要让用户看见
+    }
+  }
+  const changeRole = async (g: Grant, r: Role) => {
+    try {
+      await api(`/api/spaces/${space.id}/grants`, {
+        method: 'PUT',
+        body: JSON.stringify({ grantee_type: g.grantee_type, grantee_id: g.grantee_id, role: r }),
+      })
+      message.success('角色已更新')
+      await load()
+    } catch (e) {
+      message.error((e as Error).message)
+      await load()
+    }
   }
 
   return (
@@ -409,7 +427,14 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
         columns={[
           { title: '类型', dataIndex: 'grantee_type', render: (t) => (t === 'group' ? <Tag color="cyan">组</Tag> : <Tag>用户</Tag>) },
           { title: '对象', render: (_, g) => g.grantee_name || g.grantee_id },
-          { title: '角色', dataIndex: 'role', render: (r: Role) => ROLE_TAG[r] },
+          {
+            title: '角色', dataIndex: 'role',
+            // 就地改角色(后端 upsert;最后一个 admin 降级会被 400 挡回)。
+            render: (r: Role, g) => (
+              <Select size="small" value={r} style={{ width: 120 }} onChange={(v) => changeRole(g, v as Role)}
+                options={[{ value: 'viewer', label: 'viewer 读' }, { value: 'editor', label: 'editor 读写' }, { value: 'admin', label: 'admin 管理' }]} />
+            ),
+          },
           {
             title: '', render: (_, g) => (
               <Popconfirm title="撤销此授权?" onConfirm={async () => {

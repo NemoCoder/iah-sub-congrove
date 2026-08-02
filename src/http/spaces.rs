@@ -282,6 +282,27 @@ pub async fn grant_put(
         // 平台注册用户校验(users/exists,AI_Talks 0094);registry 不可达降级本地 app_user。
         ensure_platform_user(&state, &g.grantee_id).await?;
     }
+    // 防锁死(0.3.3):把「最后一个 admin 授权」降级,和撤销同款闸——空间从此没人能管。
+    if g.role != Role::Admin {
+        let cur: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM space_grants WHERE space_id = $1 AND grantee_type = $2 AND grantee_id = $3",
+        )
+        .bind(sid)
+        .bind(&g.grantee_type)
+        .bind(&g.grantee_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        if cur.as_deref() == Some("admin") {
+            let admins: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM space_grants WHERE space_id = $1 AND role = 'admin'")
+                    .bind(sid)
+                    .fetch_one(&state.pool)
+                    .await?;
+            if admins <= 1 {
+                return Err(AppError::BadRequest("不能把最后一个 admin 授权降级".into()));
+            }
+        }
+    }
     let actor = id.require_username()?;
     sqlx::query(
         "INSERT INTO space_grants (space_id, grantee_type, grantee_id, role, granted_by) VALUES ($1,$2,$3,$4,$5)

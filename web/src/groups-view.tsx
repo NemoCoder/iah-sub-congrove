@@ -43,10 +43,25 @@ export function GroupsView() {
   }
   const addMember = async () => {
     if (!addName.trim()) return message.warning('填用户名')
-    await api(`/api/groups/${cur!.id}/members`, { method: 'POST', body: JSON.stringify({ username: addName.trim(), role: addRole }) })
-    setAddName('')
-    await loadMembers(cur!.id)
-    await load()
+    try {
+      await api(`/api/groups/${cur!.id}/members`, { method: 'POST', body: JSON.stringify({ username: addName.trim(), role: addRole }) })
+      message.success(`已拉入 ${addName.trim()}`)
+      setAddName('')
+      await loadMembers(cur!.id)
+      await load()
+    } catch (e) {
+      message.error((e as Error).message) // 假名会被 users/exists / 本地校验 400,必须给用户看见
+    }
+  }
+  const changeRole = async (username: string, role: string) => {
+    try {
+      await api(`/api/groups/${cur!.id}/members`, { method: 'POST', body: JSON.stringify({ username, role }) })
+      message.success('角色已更新')
+      await loadMembers(cur!.id)
+    } catch (e) {
+      message.error((e as Error).message)
+      await loadMembers(cur!.id) // 回滚显示(如「最后一个 manager 不能降级」)
+    }
   }
 
   return (
@@ -103,7 +118,14 @@ export function GroupsView() {
             size="small" rowKey="username" dataSource={members} pagination={false}
             columns={[
               { title: '用户', render: (_, m) => `${m.username}${m.name ? `(${m.name})` : '(未登录过)'}` },
-              { title: '角色', dataIndex: 'role', render: (r) => (r === 'manager' ? <Tag color="cyan">manager</Tag> : <Tag>member</Tag>) },
+              {
+                title: '角色', dataIndex: 'role',
+                // manager 可就地改角色(后端 upsert;最后一个 manager 降级会被 400 挡回)。
+                render: (r, m) => isMgr ? (
+                  <Select size="small" value={r} style={{ width: 110 }} onChange={(v) => changeRole(m.username, v)}
+                    options={[{ value: 'member', label: 'member' }, { value: 'manager', label: 'manager' }]} />
+                ) : r === 'manager' ? <Tag color="cyan">manager</Tag> : <Tag>member</Tag>,
+              },
               {
                 title: '', render: (_, m) => isMgr && (
                   <Popconfirm title={`移出 ${m.username}?`} onConfirm={async () => {

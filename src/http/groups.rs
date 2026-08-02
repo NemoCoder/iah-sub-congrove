@@ -169,6 +169,25 @@ pub async fn member_put(
     // 平台注册用户校验(users/exists,AI_Talks 0094):真相源 Keycloak,可拉还没登录过汇流的人。
     // registry 不可达(本地 dev / 平台抖动)降级到本地 app_user(fail-closed,只是范围收窄)。
     crate::http::spaces::ensure_platform_user(&state, uname).await?;
+    // 防锁死(0.3.3):把「最后一个 manager」降成 member 等于组没人能管——移出同款闸,改角色也要挡。
+    if m.role == "member" {
+        let cur: Option<String> =
+            sqlx::query_scalar("SELECT role FROM group_members WHERE group_id = $1 AND username = $2")
+                .bind(gid)
+                .bind(uname)
+                .fetch_optional(&state.pool)
+                .await?;
+        if cur.as_deref() == Some("manager") {
+            let mgrs: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM group_members WHERE group_id = $1 AND role = 'manager'")
+                    .bind(gid)
+                    .fetch_one(&state.pool)
+                    .await?;
+            if mgrs <= 1 {
+                return Err(AppError::BadRequest("不能把最后一个 manager 降为 member".into()));
+            }
+        }
+    }
     if m.role != "member" && m.role != "manager" {
         return Err(AppError::BadRequest("role 必须是 member 或 manager".into()));
     }
