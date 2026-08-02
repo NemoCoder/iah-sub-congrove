@@ -71,8 +71,9 @@ function xhrUpload(url: string, file: File, onProgress: (percent: number) => voi
       if (xhr.status === 401) { window.location.href = `/auth/login?return=${encodeURIComponent(window.location.pathname)}`; return }
       if (xhr.status >= 200 && xhr.status < 300) resolve()
       else {
+        // 后端 JSON 错误取 error 字段;axum 框架层的纯文本错误(如 query 解析失败)取原文,别只剩裸状态码。
         let msg = `${xhr.status}`
-        try { msg = JSON.parse(xhr.responseText).error || msg } catch { /* 非 JSON */ }
+        try { msg = JSON.parse(xhr.responseText).error || msg } catch { if (xhr.responseText) msg = `${xhr.status}:${xhr.responseText.slice(0, 120)}` }
         reject(new Error(msg))
       }
     }
