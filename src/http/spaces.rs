@@ -19,25 +19,46 @@ pub struct SpaceRow {
     pub description: String,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub quota_bytes: i64,
     /// 我的有效角色(列表接口顺带回,前端显隐编辑入口用;真判权仍在每个写接口)。
     #[sqlx(skip)]
     pub my_role: Option<Role>,
+    /// 已用字节(单独聚合查询回填,见 usage_map)。
+    #[sqlx(skip)]
+    pub used_bytes: i64,
+}
+
+/// 全部空间的已用量一把查(items ∪ item_versions 按 (s3_key,size) 去重)。
+async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i64, i64>> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT sid, COALESCE(sum(sz),0)::bigint FROM (
+           SELECT DISTINCT i.space_id sid, i.s3_key k, i.size sz FROM items i WHERE i.s3_key IS NOT NULL
+           UNION SELECT DISTINCT i.space_id, v.s3_key, v.size FROM item_versions v JOIN items i ON i.id = v.item_id
+         ) t GROUP BY sid",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// GET /api/spaces —— 我可见的空间(有效角色非空);超管见全部。
 pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identity>) -> AppResult<Json<Vec<SpaceRow>>> {
+    let usage = usage_map(&state.pool).await?;
     if id.is_super {
         let mut rows: Vec<SpaceRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at FROM spaces ORDER BY id")
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes FROM spaces ORDER BY id")
                 .fetch_all(&state.pool)
                 .await?;
-        rows.iter_mut().for_each(|r| r.my_role = Some(Role::Admin));
+        rows.iter_mut().for_each(|r| {
+            r.my_role = Some(Role::Admin);
+            r.used_bytes = usage.get(&r.id).copied().unwrap_or(0);
+        });
         return Ok(Json(rows));
     }
     let username = id.require_username()?;
     // 拉「我的全部授权 × 空间」一把出,内存里按空间合并取 max(空间量级小,不值得进 SQL 排序)。
-    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, String)> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, g.role
+    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, String)> = sqlx::query_as(
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, g.role
            FROM spaces s JOIN space_grants g ON g.space_id = s.id
           WHERE (g.grantee_type = 'user' AND g.grantee_id = $1)
              OR (g.grantee_type = 'group' AND g.grantee_id IN
@@ -48,11 +69,14 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     .fetch_all(&state.pool)
     .await?;
     let mut out: Vec<SpaceRow> = Vec::new();
-    for (sid, name, description, created_by, created_at, role) in rows {
+    for (sid, name, description, created_by, created_at, quota_bytes, role) in rows {
         let r = Role::parse(&role);
         match out.last_mut() {
             Some(last) if last.id == sid => last.my_role = perm::merge([last.my_role, r]),
-            _ => out.push(SpaceRow { id: sid, name, description, created_by, created_at, my_role: r }),
+            _ => out.push(SpaceRow {
+                id: sid, name, description, created_by, created_at, quota_bytes,
+                my_role: r, used_bytes: usage.get(&sid).copied().unwrap_or(0),
+            }),
         }
     }
     Ok(Json(out))
@@ -221,6 +245,16 @@ pub async fn grant_put(
             .await?;
         if exists.is_none() {
             return Err(AppError::BadRequest("组不存在".into()));
+        }
+    } else {
+        // 用户授权收紧到「登录过汇流的人」(2026-08-02 用户定:必须平台注册用户;congrove 看不到
+        // 平台名录,先 fail-closed 到本地 app_user,平台用户校验 API 到位后放开——AI_Talks 0091)。
+        let known: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
+            .bind(&g.grantee_id)
+            .fetch_optional(&state.pool)
+            .await?;
+        if known.is_none() {
+            return Err(AppError::BadRequest("该用户还没登录过汇流(平台用户校验 API 上线后可直接授权平台账号)".into()));
         }
     }
     let actor = id.require_username()?;

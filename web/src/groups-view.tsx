@@ -1,7 +1,7 @@
 // 小组视图:我的组列表 + 建组 + 成员管理(manager 可拉人/改角色/移出)。
 import { App as AntdApp, Button, Card, Empty, Input, List, Popconfirm, Select, Space as AntSpace, Table, Tag } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Group, type Member } from './api'
+import { api, type Group, type Member, type UserOpt } from './api'
 
 export function GroupsView() {
   const { message, modal } = AntdApp.useApp()
@@ -10,11 +10,13 @@ export function GroupsView() {
   const [members, setMembers] = useState<Member[]>([])
   const [addName, setAddName] = useState('')
   const [addRole, setAddRole] = useState('member')
+  const [users, setUsers] = useState<UserOpt[]>([])
 
   const load = useCallback(async () => {
     const g = await api<Group[]>('/api/groups')
     setGroups(g)
     setCur((c) => (c ? g.find((x) => x.id === c.id) || null : null))
+    setUsers(await api<UserOpt[]>('/api/users'))
   }, [])
   const loadMembers = useCallback(async (gid: number) => {
     setMembers(await api<Member[]>(`/api/groups/${gid}/members`))
@@ -86,7 +88,11 @@ export function GroupsView() {
         >
           {isMgr && (
             <AntSpace style={{ marginBottom: 12 }}>
-              <Input placeholder="用户名(平台账号,可先于其登录拉入)" value={addName} onChange={(e) => setAddName(e.target.value)} style={{ width: 260 }} onPressEnter={addMember} />
+              {/* 只能选「登录过汇流的人」(后端同款校验 fail-closed)——平台用户校验 API 上线后放开(AI_Talks 0091)。 */}
+              <Select
+                showSearch placeholder="选用户(须登录过汇流)" value={addName || undefined} onChange={setAddName} style={{ width: 260 }}
+                options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+              />
               <Select value={addRole} onChange={setAddRole} style={{ width: 120 }}
                 options={[{ value: 'member', label: 'member' }, { value: 'manager', label: 'manager' }]} />
               <Button type="primary" onClick={addMember}>拉入</Button>

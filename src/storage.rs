@@ -27,10 +27,12 @@ impl Storage {
             .load()
             .await;
 
-        // 连接 5s 快失败(端点/凭证坏了别拖到首个请求才发现),操作 300s 放宽(大对象)。
+        // 连接 5s 快失败(端点/凭证坏了别拖到首个请求才发现);操作 1h——单文件不限大小后
+        // (2026-08-02),大对象的 GetObject 流式读体可能被算进 operation 周期,300s 会掐断
+        // 几百 MB 的下载;multipart 的每个 part 是独立 operation,不受大文件总时长影响。
         let timeouts = aws_sdk_s3::config::timeout::TimeoutConfig::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
-            .operation_timeout(std::time::Duration::from_secs(300))
+            .operation_timeout(std::time::Duration::from_secs(3600))
             .build();
 
         let mk = |endpoint: &str| {
@@ -88,5 +90,62 @@ impl Storage {
     pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
         self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
         Ok(())
+    }
+
+    // ── S3 multipart(流式上传用,items.rs::upload 驱动)────────────────────────
+    // 单文件不限大小(2026-08-02)后 pod 不能整读进内存(资源档 512Mi),浏览器 → pod 边收边按
+    // 8MiB part 转推 S3。P2 预签名直传上线后 GB 级录屏改走浏览器直传,这条 pod 通道仍保留
+    // (预签名 PoC 不通时的回退,DESIGN.md §6)。
+
+    pub async fn multipart_begin(&self, key: &str, mime: &str) -> anyhow::Result<String> {
+        let out = self.s3.create_multipart_upload().bucket(&self.bucket).key(key).content_type(mime).send().await?;
+        out.upload_id().map(str::to_string).ok_or_else(|| anyhow::anyhow!("S3 未返回 upload_id"))
+    }
+
+    pub async fn multipart_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        part_number: i32,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<aws_sdk_s3::types::CompletedPart> {
+        let out = self
+            .s3
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(aws_sdk_s3::primitives::ByteStream::from(bytes))
+            .send()
+            .await?;
+        Ok(aws_sdk_s3::types::CompletedPart::builder()
+            .part_number(part_number)
+            .set_e_tag(out.e_tag)
+            .build())
+    }
+
+    pub async fn multipart_complete(
+        &self,
+        key: &str,
+        upload_id: &str,
+        parts: Vec<aws_sdk_s3::types::CompletedPart>,
+    ) -> anyhow::Result<()> {
+        self.s3
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .multipart_upload(aws_sdk_s3::types::CompletedMultipartUpload::builder().set_parts(Some(parts)).build())
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// 失败清理:abort 掉半截 multipart,别让它永久占存储(S3 的半截上传不 abort 不消失)。
+    pub async fn multipart_abort(&self, key: &str, upload_id: &str) {
+        if let Err(e) = self.s3.abort_multipart_upload().bucket(&self.bucket).key(key).upload_id(upload_id).send().await {
+            tracing::warn!(error = %e, key, "abort multipart failed — 半截上传可能残留,待清理任务兜底");
+        }
     }
 }

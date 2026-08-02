@@ -26,7 +26,11 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
 
 export type Me = { username: string | null; name: string | null; email: string | null; is_super: boolean }
 export type Role = 'viewer' | 'editor' | 'admin'
-export type Space = { id: number; name: string; description: string; created_by: string; my_role: Role | null }
+export type Space = {
+  id: number; name: string; description: string; created_by: string; my_role: Role | null
+  quota_bytes: number; used_bytes: number
+}
+export type UserOpt = { username: string; name: string | null }
 export type Item = {
   id: number
   parent_id: number | null

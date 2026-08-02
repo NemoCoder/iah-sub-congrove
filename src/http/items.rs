@@ -21,12 +21,32 @@ use crate::error::{AppError, AppResult};
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
-/// 后端直传上限(字节)。更大的走 P2 预签名;这里挡住误传的 GB 级录屏把 pod 内存打爆
-/// (默认资源档只有 512Mi,DESIGN.md §2.2b)。路由层另有 axum body limit 兜底。
-pub const UPLOAD_MAX: usize = 60 * 1024 * 1024;
+/// 流式上传的 part 缓冲(S3 multipart 最小 5MiB;8MiB 平衡内存与 part 数——512Mi 资源档下
+/// 单上传常驻内存 ≈ 一个 part)。**单文件不限大小**(2026-08-02 用户定,录屏几百 MB 常见),
+/// 真正的闸是每空间总配额 quota_bytes(默认 10GiB,迁移 0002)。
+pub const PART_SIZE: usize = 8 * 1024 * 1024;
 
 fn s3_key(space_id: i64, item_id: i64, sha: &str) -> String {
     format!("spaces/{space_id}/{item_id}/{sha}")
+}
+
+/// 空间配额与已用量。已用 = items ∪ item_versions 的对象按 (s3_key,size) 去重求和
+/// (文档当前版与历史版共享同 sha 对象,去重后不重复计)。
+pub async fn space_quota_used(pool: &sqlx::PgPool, sid: i64) -> AppResult<(i64, i64)> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT s.quota_bytes,
+                COALESCE((SELECT sum(u.sz) FROM (
+                    SELECT DISTINCT t.k, t.sz FROM (
+                        SELECT s3_key k, size sz FROM items WHERE space_id = $1 AND s3_key IS NOT NULL
+                        UNION SELECT v.s3_key, v.size FROM item_versions v
+                              JOIN items i ON i.id = v.item_id WHERE i.space_id = $1
+                    ) t) u), 0)::bigint
+           FROM spaces s WHERE s.id = $1",
+    )
+    .bind(sid)
+    .fetch_optional(pool)
+    .await?;
+    row.ok_or(AppError::NotFound)
 }
 
 /// item 所属空间(判权都要先拿它;不存在 = 404)。
@@ -268,6 +288,10 @@ pub async fn content_put(
         return Ok(Json(json!({ "ok": true, "unchanged": true })));
     }
     let size = bytes.len() as i64;
+    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    if used + size > quota {
+        return Err(AppError::BadRequest("超出空间配额,删些内容或找超管调配额".into()));
+    }
     let key = s3_key(sid, iid, &sha);
     state.storage.put_bytes(&key, bytes, "text/markdown; charset=utf-8").await.map_err(AppError::Other)?;
     let actor = id.require_username()?;
@@ -376,8 +400,12 @@ pub struct UploadQuery {
     pub parent_id: Option<i64>,
 }
 
-/// POST /api/spaces/{sid}/upload —— multipart 上传文件(≥editor,≤60MB)。
-/// 逐字段读:第一个带 filename 的字段当文件收。sha256 服务端算(内容寻址 + 完整性)。
+/// POST /api/spaces/{sid}/upload —— **流式** multipart 上传(≥editor,单文件不限大小)。
+/// 浏览器 → pod 边收边按 8MiB part 转推 S3(常驻内存≈一个 part,512Mi 资源档安全);
+/// sha256 边收边算(存 DB 做完整性记录)。⚠ 流式下 key 用不了内容寻址(开传时 sha 未知,
+/// S3 rename=拷贝,Garage 上不划算)→ 文件/录屏的 key 是 `spaces/<sid>/<iid>/blob`,
+/// 一上传一 item 行天然唯一;**文档**(content_put)仍是 sha 内容寻址(版本去重靠它)。
+/// 配额:开传前查一次(拦明显超的),每收一块再累计判(拦"传一半才超"的),超即 abort+删行。
 pub async fn upload(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -387,52 +415,123 @@ pub async fn upload(
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, sid, Role::Editor).await?;
     check_parent(&state.pool, sid, q.parent_id).await?;
-    let mut fname = String::new();
-    let mut mime = "application/octet-stream".to_string();
-    let mut bytes: Option<Vec<u8>> = None;
-    while let Some(field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
+    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    if used >= quota {
+        return Err(AppError::BadRequest("空间配额已满,删些内容或找超管调配额".into()));
+    }
+    let actor = id.require_username()?;
+
+    while let Some(mut field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         if field.file_name().is_none() {
             continue;
         }
-        fname = field.file_name().unwrap_or("unnamed").to_string();
-        mime = field.content_type().unwrap_or("application/octet-stream").to_string();
-        let data = field.bytes().await.map_err(|e| AppError::BadRequest(format!("读取上传失败:{e}")))?;
-        if data.len() > UPLOAD_MAX {
-            return Err(AppError::BadRequest("文件超过 60MB——大文件(录屏)请等预签名直传上线".into()));
+        let fname = { let f = field.file_name().unwrap_or("unnamed").trim(); if f.is_empty() { "unnamed".to_string() } else { f.to_string() } };
+        let mime = field.content_type().unwrap_or("application/octet-stream").to_string();
+        // 先插行拿 item_id(key 要用);kind 按 mime 粗分,失败路径统一删行。
+        let kind = if mime.starts_with("video/") { "video" } else { "file" };
+        let iid: i64 = sqlx::query_scalar(
+            "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+        )
+        .bind(sid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
+        .fetch_one(&state.pool)
+        .await?;
+        let key = format!("spaces/{sid}/{iid}/blob");
+
+        match stream_field_to_s3(&state, &mut field, &key, &mime, quota - used).await {
+            Ok((sha, total)) => {
+                sqlx::query("UPDATE items SET s3_key = $1, size = $2, sha256 = $3 WHERE id = $4")
+                    .bind(&key).bind(total).bind(&sha).bind(iid)
+                    .execute(&state.pool)
+                    .await?;
+                return Ok(Json(json!({ "id": iid, "sha256": sha, "size": total })));
+            }
+            Err(e) => {
+                let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+                return Err(e);
+            }
         }
-        bytes = Some(data.to_vec());
-        break;
     }
-    let Some(data) = bytes else { return Err(AppError::BadRequest("没有收到文件".into())) };
-    if fname.trim().is_empty() {
-        fname = "unnamed".into();
+    Err(AppError::BadRequest("没有收到文件".into()))
+}
+
+/// 把一个 multipart field 流进 S3:小于一个 part 直接 put,否则 S3 multipart。
+/// 返回 (sha256, 总字节)。任何失败(含超配额)内部已 abort 半截 multipart,调用方只须删行。
+async fn stream_field_to_s3(
+    state: &AppState,
+    field: &mut axum::extract::multipart::Field<'_>,
+    key: &str,
+    mime: &str,
+    budget: i64,
+) -> AppResult<(String, i64)> {
+    let mut hasher = Sha256::new();
+    let mut buf: Vec<u8> = Vec::with_capacity(PART_SIZE);
+    let mut total: i64 = 0;
+    let mut upload_id: Option<String> = None;
+    let mut parts: Vec<aws_sdk_s3::types::CompletedPart> = Vec::new();
+    let mut part_no: i32 = 1;
+
+    // 统一的失败出口:半截 multipart 必 abort(不 abort 在 S3 里永久占存储)。
+    macro_rules! fail {
+        ($err:expr) => {{
+            if let Some(uid) = &upload_id {
+                state.storage.multipart_abort(key, uid).await;
+            }
+            return Err($err);
+        }};
     }
-    let sha = hex::encode(Sha256::digest(&data));
-    let size = data.len() as i64;
-    let kind = if mime.starts_with("video/") { "video" } else { "file" };
-    let actor = id.require_username()?;
-    // 先插行拿 item_id(key 里要用),S3 写失败再回滚删行。
-    let iid: i64 = sqlx::query_scalar(
-        "INSERT INTO items (space_id, parent_id, kind, name, size, mime, sha256, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
-    )
-    .bind(sid)
-    .bind(q.parent_id)
-    .bind(kind)
-    .bind(fname.trim())
-    .bind(size)
-    .bind(&mime)
-    .bind(&sha)
-    .bind(actor)
-    .fetch_one(&state.pool)
-    .await?;
-    let key = s3_key(sid, iid, &sha);
-    if let Err(e) = state.storage.put_bytes(&key, data, &mime).await {
-        let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
-        return Err(AppError::Other(e));
+
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(c) => c,
+            Err(e) => fail!(AppError::BadRequest(format!("读取上传流失败:{e}"))),
+        };
+        match chunk {
+            Some(c) => {
+                total += c.len() as i64;
+                if total > budget {
+                    fail!(AppError::BadRequest("超出空间配额(默认 10GiB),删些内容或找超管调配额".into()));
+                }
+                hasher.update(&c);
+                buf.extend_from_slice(&c);
+                if buf.len() >= PART_SIZE {
+                    let uid = match &upload_id {
+                        Some(u) => u.clone(),
+                        None => match state.storage.multipart_begin(key, mime).await {
+                            Ok(u) => { upload_id = Some(u.clone()); u }
+                            Err(e) => fail!(AppError::Other(e)),
+                        },
+                    };
+                    match state.storage.multipart_part(key, &uid, part_no, std::mem::take(&mut buf)).await {
+                        Ok(p) => { parts.push(p); part_no += 1; buf.reserve(PART_SIZE); }
+                        Err(e) => fail!(AppError::Other(e)),
+                    }
+                }
+            }
+            None => break,
+        }
     }
-    sqlx::query("UPDATE items SET s3_key = $1 WHERE id = $2").bind(&key).bind(iid).execute(&state.pool).await?;
-    Ok(Json(json!({ "id": iid, "sha256": sha, "size": size })))
+
+    match &upload_id {
+        // 走了 multipart:把尾巴(可小于 5MiB,末 part 豁免)传完再 complete。
+        Some(uid) => {
+            if !buf.is_empty() {
+                match state.storage.multipart_part(key, uid, part_no, std::mem::take(&mut buf)).await {
+                    Ok(p) => parts.push(p),
+                    Err(e) => fail!(AppError::Other(e)),
+                }
+            }
+            if let Err(e) = state.storage.multipart_complete(key, uid, parts).await {
+                fail!(AppError::Other(e));
+            }
+        }
+        // 整个文件不足一个 part:单发 put_object 最省事。
+        None => {
+            if let Err(e) = state.storage.put_bytes(key, std::mem::take(&mut buf), mime).await {
+                return Err(AppError::Other(e));
+            }
+        }
+    }
+    Ok((hex::encode(hasher.finalize()), total))
 }
 
 /// GET /api/items/{id}/download —— 流式下载(≥viewer)。S3 → 客户端直转,不落内存。

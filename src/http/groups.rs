@@ -166,6 +166,15 @@ pub async fn member_put(
     if uname.is_empty() || !uname.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
         return Err(AppError::BadRequest("用户名只能是 ASCII 字母数字 . - _".into()));
     }
+    // 收紧到「登录过汇流的人」(2026-08-02 用户定:必须平台注册用户;congrove 看不到平台名录,
+    // 先 fail-closed 到本地 app_user,平台用户校验 API 到位后放开——AI_Talks 0091)。
+    let known: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
+        .bind(uname)
+        .fetch_optional(&state.pool)
+        .await?;
+    if known.is_none() {
+        return Err(AppError::BadRequest("该用户还没登录过汇流,暂不能拉入(平台用户校验 API 上线后放开,见 AI_Talks 0091)".into()));
+    }
     if m.role != "member" && m.role != "manager" {
         return Err(AppError::BadRequest("role 必须是 member 或 manager".into()));
     }

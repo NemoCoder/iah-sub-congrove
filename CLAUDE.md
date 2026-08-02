@@ -16,7 +16,7 @@ perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)�
 (内部端点自用 + 外部端点专签预签名,checksum WhenRequired 闸)、0001 迁移(§4 全表)、
 /healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
 **P1 已上**(v0.2.0):空间/组/成员/授权 CRUD、内容树(防环校验)、文档在线编辑+版本历史+恢复、
-文件上传(≤60MB 走后端)/流式下载、审计、超管面(用户/审计 API);自有 logo(汇流入林,web/src/logo.tsx,
+文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、**每空间配额默认 10GiB**(0002 迁移,超管 PUT /api/admin/spaces/{id}/quota 可调)、拉人/按用户授权 fail-closed 到已登录用户(平台用户校验 API 待 AI_Talks 0091)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
 favicon 在 index.html **两处同步**)。**P2 待做**:录屏预签名直传(先跑 §8-1 PoC 四象限,前置:平台配桶 CORS)。
 
 ## 命令

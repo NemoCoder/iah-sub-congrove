@@ -1,12 +1,34 @@
 // 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
-  App as AntdApp, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm,
-  Select, Space as AntSpace, Table, Tag, Tree, Typography, Upload,
+  App as AntdApp, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
+  Select, Space as AntSpace, Table, Tag, Tooltip, Tree, Typography, Upload,
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Grant, type Item, type Role, type Space, type Version } from './api'
+import { api, type Grant, type Item, type Role, type Space, type UserOpt, type Version } from './api'
+
+/// XHR 上传(fetch 至今无标准上传进度,对抗核查 §7.4b-5):onProgress 喂给 antd Upload 画进度条。
+function xhrUpload(url: string, file: File, onProgress: (percent: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)) }
+    xhr.onload = () => {
+      if (xhr.status === 401) { window.location.href = `/auth/login?return=${encodeURIComponent(window.location.pathname)}`; return }
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else {
+        let msg = `${xhr.status}`
+        try { msg = JSON.parse(xhr.responseText).error || msg } catch { /* 非 JSON */ }
+        reject(new Error(msg))
+      }
+    }
+    xhr.onerror = () => reject(new Error('网络错误'))
+    const fd = new FormData()
+    fd.append('file', file)
+    xhr.send(fd)
+  })
+}
 
 const KIND_ICON: Record<Item['kind'], string> = { folder: '📁', doc: '📄', file: '📎', video: '🎬' }
 const ROLE_TAG: Record<Role, ReactNode> = {
@@ -143,7 +165,21 @@ export function SpacesView() {
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card
             size="small"
-            title={<AntSpace>{cur.name}{cur.my_role && ROLE_TAG[cur.my_role]}</AntSpace>}
+            title={
+              <AntSpace>
+                {cur.name}
+                {cur.my_role && ROLE_TAG[cur.my_role]}
+                <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}(超管可调)`}>
+                  <span style={{ width: 120, display: 'inline-block' }}>
+                    <Progress
+                      percent={Math.min(100, Math.round((cur.used_bytes / Math.max(1, cur.quota_bytes)) * 100))}
+                      size="small"
+                      status={cur.used_bytes >= cur.quota_bytes ? 'exception' : 'normal'}
+                    />
+                  </span>
+                </Tooltip>
+              </AntSpace>
+            }
             extra={
               <AntSpace>
                 {canEdit && (
@@ -151,14 +187,17 @@ export function SpacesView() {
                     <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
                     <Button size="small" onClick={() => newItem('doc')}>📄 新建文档</Button>
                     <Upload
-                      showUploadList={false}
-                      customRequest={async ({ file, onSuccess, onError }) => {
-                        const fd = new FormData()
-                        fd.append('file', file as File)
+                      showUploadList={{ showRemoveIcon: false }}
+                      maxCount={3}
+                      customRequest={async ({ file, onSuccess, onError, onProgress }) => {
                         try {
-                          await api(`/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`, { method: 'POST', body: fd })
+                          await xhrUpload(
+                            `/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`,
+                            file as File,
+                            (percent) => onProgress?.({ percent }),
+                          )
                           message.success('上传完成')
-                          await loadItems(cur.id)
+                          await Promise.all([loadItems(cur.id), loadSpaces()]) // 用量条一起刷
                           onSuccess?.({})
                         } catch (e) {
                           message.error((e as Error).message)
@@ -166,7 +205,7 @@ export function SpacesView() {
                         }
                       }}
                     >
-                      <Button size="small">📎 上传文件(≤60MB)</Button>
+                      <Button size="small">📎 上传文件</Button>
                     </Upload>
                   </>
                 )}
@@ -323,10 +362,12 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
   const [gid, setGid] = useState('')
   const [role, setRole] = useState<Role>('viewer')
   const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
+  const [users, setUsers] = useState<UserOpt[]>([])
 
   const load = useCallback(async () => {
     setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
     setMyGroups(await api<{ id: number; name: string }[]>('/api/groups'))
+    setUsers(await api<UserOpt[]>('/api/users'))
   }, [space.id])
   useEffect(() => {
     if (open) load().catch((e) => message.error(e.message))
@@ -347,7 +388,11 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
         {gtype === 'user' ? (
-          <Input placeholder="用户名(平台账号)" value={gid} onChange={(e) => setGid(e.target.value)} style={{ width: 200 }} />
+          // 只能选「登录过汇流的人」——平台用户校验 API 上线后换成平台目录(AI_Talks 0091)。
+          <Select
+            showSearch placeholder="选用户(须登录过汇流)" value={gid || undefined} onChange={setGid} style={{ width: 200 }}
+            options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+          />
         ) : (
           <Select
             placeholder="选组" value={gid || undefined} onChange={setGid} style={{ width: 200 }}
