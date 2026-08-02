@@ -1,20 +1,8 @@
-// IAH 统一品牌页眉(子系统契约):◆IAH 在上、子系统名在下,点击回 hub.ruciah.com。
-// 样式复刻自 _template 占位页(原 app/main.py),别删别改结构。
+// IAH 统一品牌页眉(子系统契约):「◆ IAH 开发平台」小字归属在上、子系统名在下,
+// 点击回 hub.ruciah.com。图标 2026-08-02 起换 congrove 自有 logo(用户要求区分于平台紫钻),
+// 归属小字保留 —— 页眉结构与契约不变,只换图。
+import { CongroveLogo } from './logo'
 import { VERSION } from './version'
-
-const MARK = (
-  <svg viewBox="0 0 64 64" width="34" height="34" style={{ flex: '0 0 auto' }}>
-    <defs>
-      <linearGradient id="iahg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="#6366f1" />
-        <stop offset="1" stopColor="#7c3aed" />
-      </linearGradient>
-    </defs>
-    <rect width="64" height="64" rx="15" fill="url(#iahg)" />
-    <path d="M32 16.5 L47.5 32 L32 47.5 L16.5 32 Z" fill="#ffffff" />
-    <path d="M32 25 L39 32 L32 39 L25 32 Z" fill="#7c3aed" />
-  </svg>
-)
 
 export function IahHeader({ extra }: { extra?: React.ReactNode }) {
   return (
@@ -32,9 +20,9 @@ export function IahHeader({ extra }: { extra?: React.ReactNode }) {
         title="返回 IAH 开发平台"
         style={{ display: 'flex', alignItems: 'center', gap: 11, textDecoration: 'none' }}
       >
-        {MARK}
+        <CongroveLogo />
         <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.18 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: '#6366f1', letterSpacing: 0.3 }}>◆ IAH 开发平台</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#0d9488', letterSpacing: 0.3 }}>◆ IAH 开发平台</span>
           <span style={{ fontSize: 18, fontWeight: 800, color: '#111827' }}>
             汇流 Congrove <span style={{ fontSize: 12, fontWeight: 600, color: '#9ca3af', marginLeft: 7 }}>{VERSION}</span>
           </span>

@@ -2,10 +2,16 @@
 //! 探针/auth 开放,/api 整层 route_layer 挂 require_auth(404 不要 token),
 //! 超管面用 require_super 叠内层(403 不是 401),SPA 由后端同源托管。
 
+mod admin;
+mod groups;
+mod items;
+mod spaces;
+
 use std::time::Duration;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post, put};
 use axum::{middleware, Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -17,15 +23,38 @@ use crate::auth;
 use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
-    // 超管面(P1 起装用户管理/全局审计;先占位挂闸)。
+    // 超管面:用户治理 + 全局审计。require_super 叠在 require_auth 里层(403 不是 401)。
     let admin = Router::new()
-        .route("/admin/ping", get(|| async { "ok" }))
+        .route("/admin/users", get(admin::users))
+        .route("/admin/users/{username}/super", put(admin::set_super))
+        .route("/admin/audit", get(admin::audit_list))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_super));
 
-    // /api:P0 只有 /me;P1 挂 spaces/groups/items/media。整层 require_auth。
     let api = Router::new()
         .route("/me", get(auth::me))
+        // 空间 + 授权
+        .route("/spaces", get(spaces::list).post(spaces::create))
+        .route("/spaces/{id}", get(spaces::detail).put(spaces::update).delete(spaces::remove))
+        .route("/spaces/{id}/grants", get(spaces::grants).put(spaces::grant_put).delete(spaces::grant_delete))
+        // 小组
+        .route("/groups", get(groups::list).post(groups::create))
+        .route("/groups/{id}", put(groups::update).delete(groups::remove))
+        .route("/groups/{id}/members", get(groups::members).post(groups::member_put))
+        .route("/groups/{id}/members/{username}", axum::routing::delete(groups::member_delete))
+        // 内容树
+        .route("/spaces/{id}/items", get(items::list).post(items::create))
+        // 上传单独放大 body limit(axum 默认 2MB;60MB 业务闸在 items::UPLOAD_MAX,这里再留点 multipart 头部余量)
+        .route(
+            "/spaces/{id}/upload",
+            post(items::upload).layer(DefaultBodyLimit::max(items::UPLOAD_MAX + 1024 * 1024)),
+        )
+        .route("/items/{id}", put(items::update).delete(items::remove))
+        .route("/items/{id}/content", get(items::content_get).put(items::content_put))
+        .route("/items/{id}/versions", get(items::versions))
+        .route("/items/{id}/restore/{version_id}", post(items::restore))
+        .route("/items/{id}/download", get(items::download))
         .merge(admin)
+        // 每个 /api 端点都要认证(route_layer:404 不要 token);探针 + /auth/* 开放。
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
     let mut app = Router::new()

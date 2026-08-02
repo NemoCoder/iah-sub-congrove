@@ -15,7 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)、storage.rs 双 S3 client
 (内部端点自用 + 外部端点专签预签名,checksum WhenRequired 闸)、0001 迁移(§4 全表)、
 /healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
-**P1 待做**:空间/组/成员/授权 CRUD + 内容树 + 上传下载;P2 录屏预签名(先跑 §8-1 PoC 四象限)。
+**P1 已上**(v0.2.0):空间/组/成员/授权 CRUD、内容树(防环校验)、文档在线编辑+版本历史+恢复、
+文件上传(≤60MB 走后端)/流式下载、审计、超管面(用户/审计 API);自有 logo(汇流入林,web/src/logo.tsx,
+favicon 在 index.html **两处同步**)。**P2 待做**:录屏预签名直传(先跑 §8-1 PoC 四象限,前置:平台配桶 CORS)。
 
 ## 命令
 

@@ -4,6 +4,7 @@
 //! [`run`] 引导:.env → 配置 → 日志 → PG 池 + 迁移 → S3 → OIDC → 单 axum 服务
 //! (一个端口,REST + 静态同源),优雅停机。
 
+pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod db;

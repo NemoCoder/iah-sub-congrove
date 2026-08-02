@@ -12,6 +12,8 @@ want_oss: true                # Garage S3 → 平台注入 AWS_* / S3_ENDPOINT /
 env:
   # 超管 bootstrap 白名单(§5):登录命中即 is_super=true(只置不清,种子)。
   CONGROVE_SUPER_USERS: liaoruili
+  # 非 dev 值 → telemetry.rs 输出 JSON 结构化日志(平台 Loki 规范);本地 cargo run 缺省 dev = 人读格式。
+  APP_ENV: cluster
   # 预签名专用外部端点(§7.4b-2):未配则录屏走后端流式代理回退。
   # ⚠ 配它之前必须先让平台给桶配 CORS(ExposeHeaders:ETag,pod 的 key 无 owner 位自己配不了,§7.4b-1)。
   S3_PUBLIC_ENDPOINT: https://s3api.ruciah.com

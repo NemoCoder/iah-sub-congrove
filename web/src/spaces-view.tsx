@@ -1,0 +1,379 @@
+// 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
+// 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
+import {
+  App as AntdApp, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm,
+  Select, Space as AntSpace, Table, Tag, Tree, Typography, Upload,
+} from 'antd'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { api, type Grant, type Item, type Role, type Space, type Version } from './api'
+
+const KIND_ICON: Record<Item['kind'], string> = { folder: '📁', doc: '📄', file: '📎', video: '🎬' }
+const ROLE_TAG: Record<Role, ReactNode> = {
+  admin: <Tag color="purple">admin</Tag>,
+  editor: <Tag color="green">editor</Tag>,
+  viewer: <Tag>viewer</Tag>,
+}
+
+function fmtSize(n: number | null) {
+  if (n == null) return ''
+  if (n < 1024) return `${n}B`
+  if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`
+  return `${(n / 1048576).toFixed(1)}MB`
+}
+
+export function SpacesView() {
+  const { message, modal } = AntdApp.useApp()
+  const [spaces, setSpaces] = useState<Space[]>([])
+  const [cur, setCur] = useState<Space | null>(null)
+  const [items, setItems] = useState<Item[]>([])
+  const [selected, setSelected] = useState<Item | null>(null)
+  const [grantsOpen, setGrantsOpen] = useState(false)
+
+  const loadSpaces = useCallback(async () => {
+    const s = await api<Space[]>('/api/spaces')
+    setSpaces(s)
+    setCur((c) => (c ? s.find((x) => x.id === c.id) || null : null))
+  }, [])
+  const loadItems = useCallback(async (sid: number) => {
+    setItems(await api<Item[]>(`/api/spaces/${sid}/items`))
+  }, [])
+  useEffect(() => {
+    loadSpaces().catch((e) => message.error(e.message))
+  }, [loadSpaces, message])
+  useEffect(() => {
+    setSelected(null)
+    if (cur) loadItems(cur.id).catch((e) => message.error(e.message))
+  }, [cur?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const canEdit = cur?.my_role === 'editor' || cur?.my_role === 'admin'
+  const isAdmin = cur?.my_role === 'admin'
+
+  // 平铺 items → antd Tree 结构。folder 在前后端已排序;children 递归组装。
+  const treeData = useMemo(() => {
+    const byParent = new Map<number | null, Item[]>()
+    items.forEach((it) => {
+      const k = it.parent_id
+      byParent.set(k, [...(byParent.get(k) || []), it])
+    })
+    type TreeNode = { key: number; title: string; isLeaf: boolean; children?: TreeNode[] }
+    const build = (pid: number | null): TreeNode[] =>
+      (byParent.get(pid) || []).map((it) => ({
+        key: it.id,
+        title: `${KIND_ICON[it.kind]} ${it.name}`,
+        isLeaf: it.kind !== 'folder',
+        children: it.kind === 'folder' ? build(it.id) : undefined,
+      }))
+    return build(null)
+  }, [items])
+
+  // 新建目标父节点:选中 folder 用它,选中别的用其父,没选中落根。
+  const targetParent = selected ? (selected.kind === 'folder' ? selected.id : selected.parent_id) : null
+
+  const newSpace = () => {
+    let name = ''
+    modal.confirm({
+      title: '新建空间',
+      content: <Input placeholder="空间名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
+      onOk: async () => {
+        await api('/api/spaces', { method: 'POST', body: JSON.stringify({ name }) })
+        await loadSpaces()
+      },
+    })
+  }
+  const newItem = (kind: 'folder' | 'doc') => {
+    let name = ''
+    modal.confirm({
+      title: kind === 'folder' ? '新建文件夹' : '新建文档',
+      content: <Input placeholder="名称" onChange={(e) => (name = e.target.value)} />,
+      onOk: async () => {
+        await api(`/api/spaces/${cur!.id}/items`, {
+          method: 'POST',
+          body: JSON.stringify({ kind, name, parent_id: targetParent }),
+        })
+        await loadItems(cur!.id)
+      },
+    })
+  }
+  const rename = (it: Item) => {
+    let name = it.name
+    modal.confirm({
+      title: '重命名',
+      content: <Input defaultValue={it.name} onChange={(e) => (name = e.target.value)} />,
+      onOk: async () => {
+        await api(`/api/items/${it.id}`, { method: 'PUT', body: JSON.stringify({ name }) })
+        await loadItems(cur!.id)
+      },
+    })
+  }
+  const del = async (it: Item) => {
+    await api(`/api/items/${it.id}`, { method: 'DELETE' })
+    message.success('已删除')
+    setSelected(null)
+    await loadItems(cur!.id)
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      {/* 空间列表 */}
+      <Card
+        size="small"
+        title="空间"
+        extra={<Button size="small" type="primary" onClick={newSpace}>新建</Button>}
+        style={{ width: 240, flex: '0 0 auto' }}
+      >
+        <List
+          size="small"
+          dataSource={spaces}
+          locale={{ emptyText: <Empty description="还没有可见的空间" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          renderItem={(s) => (
+            <List.Item
+              onClick={() => setCur(s)}
+              style={{ cursor: 'pointer', background: cur?.id === s.id ? '#e6fffb' : undefined, borderRadius: 6, padding: '6px 8px' }}
+            >
+              <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }}>{s.name}</Typography.Text>
+              {s.my_role && ROLE_TAG[s.my_role]}
+            </List.Item>
+          )}
+        />
+      </Card>
+
+      {/* 选中空间 */}
+      {cur ? (
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Card
+            size="small"
+            title={<AntSpace>{cur.name}{cur.my_role && ROLE_TAG[cur.my_role]}</AntSpace>}
+            extra={
+              <AntSpace>
+                {canEdit && (
+                  <>
+                    <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
+                    <Button size="small" onClick={() => newItem('doc')}>📄 新建文档</Button>
+                    <Upload
+                      showUploadList={false}
+                      customRequest={async ({ file, onSuccess, onError }) => {
+                        const fd = new FormData()
+                        fd.append('file', file as File)
+                        try {
+                          await api(`/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`, { method: 'POST', body: fd })
+                          message.success('上传完成')
+                          await loadItems(cur.id)
+                          onSuccess?.({})
+                        } catch (e) {
+                          message.error((e as Error).message)
+                          onError?.(e as Error)
+                        }
+                      }}
+                    >
+                      <Button size="small">📎 上传文件(≤60MB)</Button>
+                    </Upload>
+                  </>
+                )}
+                {isAdmin && <Button size="small" onClick={() => setGrantsOpen(true)}>🔑 授权管理</Button>}
+                {isAdmin && (
+                  <Popconfirm
+                    title={`删除空间「${cur.name}」及其全部内容?`}
+                    onConfirm={async () => {
+                      await api(`/api/spaces/${cur.id}`, { method: 'DELETE' })
+                      setCur(null)
+                      await loadSpaces()
+                    }}
+                  >
+                    <Button size="small" danger>删除空间</Button>
+                  </Popconfirm>
+                )}
+              </AntSpace>
+            }
+          >
+            {treeData.length ? (
+              <Tree
+                treeData={treeData}
+                defaultExpandAll
+                selectedKeys={selected ? [selected.id] : []}
+                onSelect={(keys) => setSelected(items.find((i) => i.id === keys[0]) || null)}
+              />
+            ) : (
+              <Empty description="空空如也——建个文件夹或文档开始" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
+          </Card>
+
+          {selected && selected.kind !== 'folder' && (
+            <ItemPanel key={selected.id} item={selected} canEdit={canEdit} onChanged={() => loadItems(cur.id)} onRename={() => rename(selected)} onDelete={() => del(selected)} />
+          )}
+          {selected && selected.kind === 'folder' && canEdit && (
+            <Card size="small" style={{ marginTop: 12 }}>
+              <AntSpace>
+                <span>📁 {selected.name}</span>
+                <Button size="small" onClick={() => rename(selected)}>重命名</Button>
+                <Popconfirm title="删除文件夹及其全部内容?" onConfirm={() => del(selected)}>
+                  <Button size="small" danger>删除</Button>
+                </Popconfirm>
+              </AntSpace>
+            </Card>
+          )}
+          <GrantsModal space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
+        </div>
+      ) : (
+        <Card style={{ flex: 1 }}>
+          <Empty description="选择或新建一个空间" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </Card>
+      )}
+    </div>
+  )
+}
+
+/// 文档/文件面板:doc = 在线编辑 + 版本;file/video = 下载 + 元信息。
+function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
+  item: Item; canEdit: boolean; onChanged: () => void; onRename: () => void; onDelete: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [text, setText] = useState<string | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  const [versions, setVersions] = useState<Version[]>([])
+
+  useEffect(() => {
+    if (item.kind === 'doc') {
+      api<string>(`/api/items/${item.id}/content`).then(setText).catch((e) => message.error(e.message))
+    }
+  }, [item.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = async (label?: string) => {
+    await api(`/api/items/${item.id}/content`, { method: 'PUT', body: JSON.stringify({ text, label }) })
+    setDirty(false)
+    message.success('已保存')
+    onChanged()
+  }
+  const loadVersions = async () => {
+    setVersions(await api<Version[]>(`/api/items/${item.id}/versions`))
+    setVersionsOpen(true)
+  }
+
+  return (
+    <Card
+      size="small"
+      style={{ marginTop: 12 }}
+      title={`${KIND_ICON[item.kind]} ${item.name}`}
+      extra={
+        <AntSpace>
+          {item.kind !== 'doc' && <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>}
+          {item.kind === 'doc' && canEdit && <Button size="small" type="primary" disabled={!dirty} onClick={() => save()}>保存</Button>}
+          {item.kind === 'doc' && <Button size="small" onClick={loadVersions}>版本</Button>}
+          {canEdit && <Button size="small" onClick={onRename}>重命名</Button>}
+          {canEdit && (
+            <Popconfirm title="确认删除?" onConfirm={onDelete}>
+              <Button size="small" danger>删除</Button>
+            </Popconfirm>
+          )}
+        </AntSpace>
+      }
+    >
+      {item.kind === 'doc' ? (
+        text === null ? '加载中…' : canEdit ? (
+          <Input.TextArea
+            value={text}
+            autoSize={{ minRows: 12, maxRows: 32 }}
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' }}
+            placeholder="markdown 正文…(P3 上真编辑器与渲染,先纯文本)"
+            onChange={(e) => { setText(e.target.value); setDirty(true) }}
+          />
+        ) : (
+          <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{text}</pre>
+        )
+      ) : (
+        <Typography.Text type="secondary">
+          {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
+          {item.kind === 'video' && ' ·(在线播放随 P2 预签名直传上线)'}
+        </Typography.Text>
+      )}
+
+      <Drawer title="版本历史" open={versionsOpen} onClose={() => setVersionsOpen(false)} width={420}>
+        <List
+          size="small"
+          dataSource={versions}
+          renderItem={(v) => (
+            <List.Item
+              actions={canEdit ? [
+                <Popconfirm key="r" title="恢复到此版本?(当前版会自动存为快照)" onConfirm={async () => {
+                  await api(`/api/items/${item.id}/restore/${v.id}`, { method: 'POST' })
+                  setVersionsOpen(false)
+                  const t = await api<string>(`/api/items/${item.id}/content`)
+                  setText(t); setDirty(false); onChanged(); message.success('已恢复')
+                }}><a>恢复</a></Popconfirm>,
+              ] : []}
+            >
+              <List.Item.Meta
+                title={v.label || `版本 #${v.id}`}
+                description={`${v.created_by} · ${new Date(v.created_at).toLocaleString()} · ${fmtSize(v.size)}`}
+              />
+            </List.Item>
+          )}
+        />
+      </Drawer>
+    </Card>
+  )
+}
+
+/// 授权管理(admin):user/group × viewer/editor/admin。
+function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; onClose: () => void }) {
+  const { message } = AntdApp.useApp()
+  const [grants, setGrants] = useState<Grant[]>([])
+  const [gtype, setGtype] = useState<'user' | 'group'>('user')
+  const [gid, setGid] = useState('')
+  const [role, setRole] = useState<Role>('viewer')
+  const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
+
+  const load = useCallback(async () => {
+    setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
+    setMyGroups(await api<{ id: number; name: string }[]>('/api/groups'))
+  }, [space.id])
+  useEffect(() => {
+    if (open) load().catch((e) => message.error(e.message))
+  }, [open, load, message])
+
+  const add = async () => {
+    if (!gid.trim()) return message.warning('填用户名或选组')
+    await api(`/api/spaces/${space.id}/grants`, {
+      method: 'PUT',
+      body: JSON.stringify({ grantee_type: gtype, grantee_id: gid.trim(), role }),
+    })
+    setGid('')
+    await load()
+  }
+
+  return (
+    <Modal title={`授权管理 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={640}>
+      <AntSpace style={{ marginBottom: 12 }} wrap>
+        <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
+        {gtype === 'user' ? (
+          <Input placeholder="用户名(平台账号)" value={gid} onChange={(e) => setGid(e.target.value)} style={{ width: 200 }} />
+        ) : (
+          <Select
+            placeholder="选组" value={gid || undefined} onChange={setGid} style={{ width: 200 }}
+            options={myGroups.map((g) => ({ value: String(g.id), label: g.name }))}
+          />
+        )}
+        <Select value={role} onChange={setRole} style={{ width: 110 }}
+          options={[{ value: 'viewer', label: 'viewer 读' }, { value: 'editor', label: 'editor 读写' }, { value: 'admin', label: 'admin 管理' }]} />
+        <Button type="primary" onClick={add}>授权</Button>
+      </AntSpace>
+      <Table
+        size="small" rowKey={(g) => `${g.grantee_type}:${g.grantee_id}`} dataSource={grants} pagination={false}
+        columns={[
+          { title: '类型', dataIndex: 'grantee_type', render: (t) => (t === 'group' ? <Tag color="cyan">组</Tag> : <Tag>用户</Tag>) },
+          { title: '对象', render: (_, g) => g.grantee_name || g.grantee_id },
+          { title: '角色', dataIndex: 'role', render: (r: Role) => ROLE_TAG[r] },
+          {
+            title: '', render: (_, g) => (
+              <Popconfirm title="撤销此授权?" onConfirm={async () => {
+                await api(`/api/spaces/${space.id}/grants`, { method: 'DELETE', body: JSON.stringify({ grantee_type: g.grantee_type, grantee_id: g.grantee_id }) })
+                await load()
+              }}><a>撤销</a></Popconfirm>
+            ),
+          },
+        ]}
+      />
+    </Modal>
+  )
+}

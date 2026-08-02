@@ -57,4 +57,36 @@ impl Storage {
         self.s3.head_bucket().bucket(&self.bucket).send().await?;
         Ok(())
     }
+
+    /// 写对象(小文件/文档正文走这;GB 级录屏 P2 走预签名直传,不进 pod)。
+    pub async fn put_bytes(&self, key: &str, bytes: Vec<u8>, mime: &str) -> anyhow::Result<()> {
+        self.s3
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(mime)
+            .body(aws_sdk_s3::primitives::ByteStream::from(bytes))
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// 整读对象(文档正文,小)。大文件下载用 get_stream,别把 GB 读进内存。
+    pub async fn get_bytes(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+        let obj = self.s3.get_object().bucket(&self.bucket).key(key).send().await?;
+        Ok(obj.body.collect().await?.into_bytes().to_vec())
+    }
+
+    /// 流式读对象(下载转发用):返回 ByteStream,调用方转成 axum Body,不落内存。
+    pub async fn get_stream(&self, key: &str) -> anyhow::Result<(aws_sdk_s3::primitives::ByteStream, Option<i64>)> {
+        let obj = self.s3.get_object().bucket(&self.bucket).key(key).send().await?;
+        Ok((obj.body, obj.content_length))
+    }
+
+    /// 删对象。⚠ 调用方必须先做引用计数(items.s3_key + item_versions.s3_key 都不再引用
+    /// 才能删——citeroot delete_fulltext 的教训),这里只管执行。
+    pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
+        self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
+        Ok(())
+    }
 }

@@ -1,0 +1,286 @@
+//! 空间 CRUD + 授权管理(space_grants)。判权全走 perm.rs,handler 里不重写角色逻辑。
+//! 谁能建空间:任何登录用户(Confluence 模式),建者自动落一条 user→admin 授权。
+
+use axum::extract::{Path, State};
+use axum::{Extension, Json};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::auth::Identity;
+use crate::error::{AppError, AppResult};
+use crate::perm::{self, Role};
+use crate::state::AppState;
+use crate::{audit, perm::require_role};
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SpaceRow {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 我的有效角色(列表接口顺带回,前端显隐编辑入口用;真判权仍在每个写接口)。
+    #[sqlx(skip)]
+    pub my_role: Option<Role>,
+}
+
+/// GET /api/spaces —— 我可见的空间(有效角色非空);超管见全部。
+pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identity>) -> AppResult<Json<Vec<SpaceRow>>> {
+    if id.is_super {
+        let mut rows: Vec<SpaceRow> =
+            sqlx::query_as("SELECT id, name, description, created_by, created_at FROM spaces ORDER BY id")
+                .fetch_all(&state.pool)
+                .await?;
+        rows.iter_mut().for_each(|r| r.my_role = Some(Role::Admin));
+        return Ok(Json(rows));
+    }
+    let username = id.require_username()?;
+    // 拉「我的全部授权 × 空间」一把出,内存里按空间合并取 max(空间量级小,不值得进 SQL 排序)。
+    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, String)> = sqlx::query_as(
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, g.role
+           FROM spaces s JOIN space_grants g ON g.space_id = s.id
+          WHERE (g.grantee_type = 'user' AND g.grantee_id = $1)
+             OR (g.grantee_type = 'group' AND g.grantee_id IN
+                   (SELECT group_id::text FROM group_members WHERE username = $1))
+          ORDER BY s.id",
+    )
+    .bind(username)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut out: Vec<SpaceRow> = Vec::new();
+    for (sid, name, description, created_by, created_at, role) in rows {
+        let r = Role::parse(&role);
+        match out.last_mut() {
+            Some(last) if last.id == sid => last.my_role = perm::merge([last.my_role, r]),
+            _ => out.push(SpaceRow { id: sid, name, description, created_by, created_at, my_role: r }),
+        }
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct SpaceIn {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// POST /api/spaces —— 建空间,建者自动 admin。
+pub async fn create(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Json(input): Json<SpaceIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    let username = id.require_username()?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("空间名不能为空".into()));
+    }
+    let mut tx = state.pool.begin().await?;
+    let sid: i64 = sqlx::query_scalar("INSERT INTO spaces (name, description, created_by) VALUES ($1,$2,$3) RETURNING id")
+        .bind(name)
+        .bind(&input.description)
+        .bind(username)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO space_grants (space_id, grantee_type, grantee_id, role, granted_by) VALUES ($1,'user',$2,'admin',$2)")
+        .bind(sid)
+        .bind(username)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    audit::record(&state.pool, username, "space.create", &sid.to_string(), name).await;
+    Ok(Json(json!({ "id": sid })))
+}
+
+/// GET /api/spaces/{id} —— 详情(≥viewer)。
+pub async fn detail(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let role = require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let row: Option<(String, String, String, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as("SELECT name, description, created_by, created_at FROM spaces WHERE id = $1")
+            .bind(sid)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some((name, description, created_by, created_at)) = row else { return Err(AppError::NotFound) };
+    Ok(Json(json!({
+        "id": sid, "name": name, "description": description,
+        "created_by": created_by, "created_at": created_at, "my_role": role,
+    })))
+}
+
+/// PUT /api/spaces/{id} —— 改名/描述(admin)。
+pub async fn update(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+    Json(input): Json<SpaceIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let n = sqlx::query("UPDATE spaces SET name = $1, description = $2 WHERE id = $3")
+        .bind(input.name.trim())
+        .bind(&input.description)
+        .bind(sid)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound);
+    }
+    audit::record(&state.pool, id.require_username()?, "space.update", &sid.to_string(), input.name.trim()).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// DELETE /api/spaces/{id} —— 删空间(admin)。DB 行级联删(FK CASCADE);
+/// S3 对象按 items+versions 收集 key 逐个删——key 带 space_id 前缀,不会误伤别的空间。
+pub async fn remove(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT k FROM (
+           SELECT s3_key k FROM items WHERE space_id = $1 AND s3_key IS NOT NULL
+           UNION SELECT v.s3_key FROM item_versions v JOIN items i ON i.id = v.item_id WHERE i.space_id = $1
+         ) t",
+    )
+    .bind(sid)
+    .fetch_all(&state.pool)
+    .await?;
+    let n = sqlx::query("DELETE FROM spaces WHERE id = $1").bind(sid).execute(&state.pool).await?.rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound);
+    }
+    // DB 先删(权限即刻收回),对象后清;清失败只 warn——孤儿对象可由 P3 的空间容量巡检兜底。
+    for k in &keys {
+        if let Err(e) = state.storage.delete(k).await {
+            tracing::warn!(error = %e, key = %k, "space delete: s3 cleanup failed");
+        }
+    }
+    audit::record(&state.pool, id.require_username()?, "space.delete", &sid.to_string(), &format!("objects={}", keys.len())).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct GrantRow {
+    pub grantee_type: String,
+    pub grantee_id: String,
+    pub role: String,
+    pub granted_by: String,
+    pub granted_at: chrono::DateTime<chrono::Utc>,
+    /// 组授权顺带带组名,前端别再拉一次。
+    pub grantee_name: Option<String>,
+}
+
+/// GET /api/spaces/{id}/grants —— 授权列表(admin)。
+pub async fn grants(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+) -> AppResult<Json<Vec<GrantRow>>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let rows: Vec<GrantRow> = sqlx::query_as(
+        "SELECT g.grantee_type, g.grantee_id, g.role, g.granted_by, g.granted_at,
+                CASE WHEN g.grantee_type = 'group' THEN gr.name ELSE g.grantee_id END AS grantee_name
+           FROM space_grants g
+           LEFT JOIN groups gr ON g.grantee_type = 'group' AND gr.id::text = g.grantee_id
+          WHERE g.space_id = $1 ORDER BY g.grantee_type, g.grantee_id",
+    )
+    .bind(sid)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct GrantIn {
+    pub grantee_type: String, // 'user' | 'group'
+    pub grantee_id: String,
+    pub role: Role,
+}
+
+/// PUT /api/spaces/{id}/grants —— 加/改一条授权(admin,upsert)。
+pub async fn grant_put(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+    Json(g): Json<GrantIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    if g.grantee_type != "user" && g.grantee_type != "group" {
+        return Err(AppError::BadRequest("grantee_type 必须是 user 或 group".into()));
+    }
+    if g.grantee_type == "group" {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM groups WHERE id::text = $1")
+            .bind(&g.grantee_id)
+            .fetch_optional(&state.pool)
+            .await?;
+        if exists.is_none() {
+            return Err(AppError::BadRequest("组不存在".into()));
+        }
+    }
+    let actor = id.require_username()?;
+    sqlx::query(
+        "INSERT INTO space_grants (space_id, grantee_type, grantee_id, role, granted_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (space_id, grantee_type, grantee_id) DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, granted_at = now()",
+    )
+    .bind(sid)
+    .bind(&g.grantee_type)
+    .bind(&g.grantee_id)
+    .bind(g.role.as_str())
+    .bind(actor)
+    .execute(&state.pool)
+    .await?;
+    audit::record(&state.pool, actor, "space.grant", &sid.to_string(),
+        &format!("{}:{} -> {}", g.grantee_type, g.grantee_id, g.role.as_str())).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct GrantDel {
+    pub grantee_type: String,
+    pub grantee_id: String,
+}
+
+/// DELETE /api/spaces/{id}/grants —— 撤一条授权(admin)。
+/// 防锁死:不许删掉「最后一个 admin 授权」,否则空间从此没人能管(超管除外,但别依赖超管救火)。
+pub async fn grant_delete(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+    Json(g): Json<GrantDel>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let admins: i64 = sqlx::query_scalar("SELECT count(*) FROM space_grants WHERE space_id = $1 AND role = 'admin'")
+        .bind(sid)
+        .fetch_one(&state.pool)
+        .await?;
+    let victim_is_admin: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM space_grants WHERE space_id = $1 AND grantee_type = $2 AND grantee_id = $3",
+    )
+    .bind(sid)
+    .bind(&g.grantee_type)
+    .bind(&g.grantee_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if victim_is_admin.as_deref() == Some("admin") && admins <= 1 {
+        return Err(AppError::BadRequest("不能撤掉最后一个 admin 授权".into()));
+    }
+    let n = sqlx::query("DELETE FROM space_grants WHERE space_id = $1 AND grantee_type = $2 AND grantee_id = $3")
+        .bind(sid)
+        .bind(&g.grantee_type)
+        .bind(&g.grantee_id)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound);
+    }
+    audit::record(&state.pool, id.require_username()?, "space.grant.revoke", &sid.to_string(),
+        &format!("{}:{}", g.grantee_type, g.grantee_id)).await;
+    Ok(Json(json!({ "ok": true })))
+}
