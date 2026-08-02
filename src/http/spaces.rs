@@ -128,6 +128,11 @@ pub async fn create(
     Json(input): Json<SpaceIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let username = id.require_username()?;
+    // D2 决策(docs/PERMISSIONS.md):CONGROVE_SPACE_CREATORS 非空时仅名单内 + 超管可建。
+    let creators = &state.config.space_creators;
+    if !creators.is_empty() && !id.is_super && !creators.iter().any(|u| u == username) {
+        return Err(AppError::Forbidden);
+    }
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("空间名不能为空".into()));

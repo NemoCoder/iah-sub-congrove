@@ -14,6 +14,8 @@ env:
   CONGROVE_SUPER_USERS: liaoruili
   # 非 dev 值 → telemetry.rs 输出 JSON 结构化日志(平台 Loki 规范);本地 cargo run 缺省 dev = 人读格式。
   APP_ENV: cluster
+  # 建空间白名单(D2,docs/PERMISSIONS.md):不配/空 = 全员可建;要收紧填逗号分隔用户名(超管恒可建)。
+  # CONGROVE_SPACE_CREATORS: liaoruili
   # 预签名专用外部端点(§7.4b-2):未配则录屏走后端流式代理回退。
   # ⚠ 配它之前必须先让平台给桶配 CORS(ExposeHeaders:ETag,pod 的 key 无 owner 位自己配不了,§7.4b-1)。
   S3_PUBLIC_ENDPOINT: https://s3api.ruciah.com

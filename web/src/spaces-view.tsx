@@ -98,8 +98,13 @@ export function SpacesView() {
       title: '新建空间',
       content: <Input placeholder="空间名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
-        await api('/api/spaces', { method: 'POST', body: JSON.stringify({ name }) })
-        await loadSpaces()
+        try {
+          await api('/api/spaces', { method: 'POST', body: JSON.stringify({ name }) })
+          await loadSpaces()
+        } catch (e) {
+          message.error((e as Error).message) // 白名单外建空间 403 等,必须可见
+          throw e // 保持弹窗不关
+        }
       },
     })
   }
@@ -358,7 +363,9 @@ function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
 function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; onClose: () => void }) {
   const { message } = AntdApp.useApp()
   const [grants, setGrants] = useState<Grant[]>([])
-  const [gtype, setGtype] = useState<'user' | 'group'>('user')
+  // 默认选「小组」:调研结论(docs/PERMISSIONS.md),按组授权是主战场——整组人(含未来入组者)
+  // 动态获得权限,人员流动只改组;按个人授权是例外通道。
+  const [gtype, setGtype] = useState<'user' | 'group'>('group')
   const [gid, setGid] = useState('')
   const [role, setRole] = useState<Role>('viewer')
   const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
@@ -403,6 +410,9 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
 
   return (
     <Modal title={`授权管理 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={640}>
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 10, fontSize: 13 }}>
+        推荐按<b>小组</b>授权:整组人(含以后新入组的)自动获得本空间权限,人员流动只需改组成员;按个人授权留给例外情况。
+      </Typography.Paragraph>
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
         {gtype === 'user' ? (

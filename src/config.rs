@@ -30,6 +30,10 @@ pub struct Config {
     /// 登录时命中即置 is_super=true。之后超管可在 UI 提别人(只置不清,白名单是种子)。
     pub super_users: Vec<String>,
 
+    /// 建空间白名单(D2 决策,docs/PERMISSIONS.md):CONGROVE_SPACE_CREATORS 逗号分隔用户名。
+    /// **空 = 全员可建**(默认);非空 = 仅名单内 + 超管可建——空间泛滥时随时收紧,不用改码。
+    pub space_creators: Vec<String>,
+
     /// 平台 registry(总注入):用户存在性校验 + 站内信外发(AI_Talks 0094)。
     /// 缺(本地 dev)= 拉人校验降级到本地 app_user、不投站内信。
     pub registry_url: Option<String>,
@@ -96,6 +100,10 @@ impl Config {
             }),
 
             super_users: opt("CONGROVE_SUPER_USERS")
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default(),
+
+            space_creators: opt("CONGROVE_SPACE_CREATORS")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default(),
 
