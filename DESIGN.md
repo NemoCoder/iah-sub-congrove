@@ -362,6 +362,13 @@ Rust SDK 侧 `get_object`/`put_object`/`upload_part` 三个 builder 全支持 `.
    能过、PUT 响应能读到 ETag)——**这项要先给平台提需求,pod 的 key 无 owner 位自己配不了**;
    ③ 反代原样透传 Host/路径/query(签名有效)与 Range/206(Safari 能播);④ 四象限 TLS。
    任一不成 → 走 §6 回退(pod 流式代理,同源域名无跨域/CA/CORS 问题)。**别等做到 P2 才发现。**
+   ★★ PoC 已跑(2026-08-02,`cargo run --example presign_poc`,工具在 examples/ 可复跑):
+   ①②③ **全部通过**——URL 无 checksum 污染、额外签名 headers 为空;预签 PUT 直传 200 且
+   CORS Allow-Origin/ExposeHeaders:ETag 生效(平台已配桶 CORS 且进开桶流程,AI_Talks 0094);
+   preflight OPTIONS 200;Range→206 正确;**multipart 跨端点全链路成立**(内网端点 create 的
+   uploadId + 公网域名签的 part URL + 内网端点 complete,Garage v2.1.0 实测)。
+   ④ TLS 四象限:内网无 CA 的 curl -k 通(传输层问题与签名无关已证);浏览器实测由用户完成。
+   **结论:预签名直传方案成立,P2 按 §7.4b 实施,回退通道(流式代理)保留但预计用不上。★★
 2. **视频容量**:5TB 共享池、和 citeroot 数据共用;必须有上传上限 + 保留策略。
 3. **视频格式**:非 mp4/webm 浏览器播不了;MVP 明确只收这俩。
 4. **无 PVC**:任何本地写盘/sqlite 上线即丢;测试到「重启后数据还在」才算数。
