@@ -397,7 +397,20 @@ pub async fn restore(
 
 #[derive(Deserialize)]
 pub struct UploadQuery {
+    /// 空串按 None 收(浏览器拼 `?parent_id=` 是常见形态,直接 400 太脆——2026-08-03 线上踩过)。
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub parent_id: Option<i64>,
+}
+
+fn empty_as_none<'de, D>(de: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(de)?;
+    match s.as_deref() {
+        None | Some("") => Ok(None),
+        Some(v) => v.parse().map(Some).map_err(serde::de::Error::custom),
+    }
 }
 
 /// POST /api/spaces/{sid}/upload —— **流式** multipart 上传(≥editor,单文件不限大小)。

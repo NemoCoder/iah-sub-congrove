@@ -104,6 +104,8 @@ export function SpacesView() {
   const [items, setItems] = useState<Item[]>([])
   const [selected, setSelected] = useState<Item | null>(null)
   const [grantsOpen, setGrantsOpen] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [uploads, setUploads] = useState<{ key: string; name: string; percent: number }[]>([])
 
   const loadSpaces = useCallback(async () => {
     const s = await api<Space[]>('/api/spaces')
@@ -144,6 +146,29 @@ export function SpacesView() {
 
   // 新建目标父节点:选中 folder 用它,选中别的用其父,没选中落根。
   const targetParent = selected ? (selected.kind === 'folder' ? selected.id : selected.parent_id) : null
+
+  // 统一上传入口(工具栏按钮与拖拽共用):>100MB/视频直传,否则后端流式;逐文件顺序传。
+  const uploadFiles = async (files: File[]) => {
+    if (!cur || !canEdit || !files.length) return
+    for (const f of files) {
+      const key = `${f.name}-${Date.now()}-${Math.random()}`
+      setUploads((u) => [...u, { key, name: f.name, percent: 0 }])
+      const report = (percent: number) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x)))
+      try {
+        let done = false
+        if (f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')) {
+          done = await directUpload(cur.id, f, targetParent, report)
+        }
+        if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${targetParent != null ? `?parent_id=${targetParent}` : ''}`, f, report)
+        message.success(`${f.name} 上传完成`)
+      } catch (e) {
+        message.error(`${f.name}:${(e as Error).message}`)
+      } finally {
+        setUploads((u) => u.filter((x) => x.key !== key))
+      }
+    }
+    await Promise.all([loadItems(cur.id), loadSpaces()])
+  }
 
   const newSpace = () => {
     let name = ''
@@ -245,27 +270,10 @@ export function SpacesView() {
                     <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
                     <Button size="small" onClick={() => newItem('doc')}>📄 新建文档</Button>
                     <Upload
-                      showUploadList={{ showRemoveIcon: false }}
-                      maxCount={3}
-                      customRequest={async ({ file, onSuccess, onError, onProgress }) => {
-                        const f = file as File
-                        const report = (percent: number) => onProgress?.({ percent })
-                        try {
-                          // 大文件/视频优先直传(字节不过 pod);501(预签名未启用)回退后端流式。
-                          let done = false
-                          if (f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')) {
-                            done = await directUpload(cur.id, f, targetParent, report)
-                          }
-                          if (!done) {
-                            await xhrUpload(`/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`, f, report)
-                          }
-                          message.success('上传完成')
-                          await Promise.all([loadItems(cur.id), loadSpaces()]) // 用量条一起刷
-                          onSuccess?.({})
-                        } catch (e) {
-                          message.error((e as Error).message)
-                          onError?.(e as Error)
-                        }
+                      showUploadList={false}
+                      multiple
+                      customRequest={({ file, onSuccess }) => {
+                        uploadFiles([file as File]).then(() => onSuccess?.({}))
                       }}
                     >
                       <Button size="small">📎 上传文件</Button>
@@ -288,16 +296,40 @@ export function SpacesView() {
               </AntSpace>
             }
           >
-            {treeData.length ? (
-              <Tree
-                treeData={treeData}
-                defaultExpandAll
-                selectedKeys={selected ? [selected.id] : []}
-                onSelect={(keys) => setSelected(items.find((i) => i.id === keys[0]) || null)}
-              />
-            ) : (
-              <Empty description="空空如也——建个文件夹或文档开始" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            )}
+            {/* 拖拽上传落区(canEdit 才收):拖进来高亮虚线框,松手即传到当前选中文件夹。 */}
+            <div
+              onDragOver={(e) => { e.preventDefault(); if (canEdit) setDragging(true) }}
+              onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
+              onDrop={(e) => {
+                e.preventDefault(); setDragging(false)
+                if (canEdit) uploadFiles(Array.from(e.dataTransfer.files).filter((f) => f.size > 0))
+              }}
+              style={{
+                minHeight: 120, borderRadius: 8, transition: 'all .15s',
+                outline: dragging ? '2px dashed #0d9488' : 'none',
+                background: dragging ? '#e6fffb' : undefined, padding: dragging ? 8 : 0,
+              }}
+            >
+              {uploads.map((u) => (
+                <div key={u.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <Typography.Text ellipsis style={{ maxWidth: 320, fontSize: 13 }}>⬆ {u.name}</Typography.Text>
+                  <Progress percent={u.percent} size="small" style={{ flex: 1, maxWidth: 360 }} />
+                </div>
+              ))}
+              {treeData.length ? (
+                <Tree
+                  treeData={treeData}
+                  defaultExpandAll
+                  selectedKeys={selected ? [selected.id] : []}
+                  onSelect={(keys) => setSelected(items.find((i) => i.id === keys[0]) || null)}
+                />
+              ) : (
+                <Empty
+                  description={canEdit ? '空空如也——建个文件夹/文档,或把文件直接拖进来' : '空空如也'}
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                />
+              )}
+            </div>
           </Card>
 
           {selected && selected.kind !== 'folder' && (
