@@ -67,6 +67,8 @@ sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字
 - 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z,开发版带 .dev)。
   ★节奏(2026-08-02 用户定):日常改动**只动第三位**(0.3.1→0.3.2…),第二位(minor)**由用户拍板**才升,
   别自作主张跳 0.4——当前这批功能全程停在 0.3.x。
+  ★★改完 Cargo.toml(含只改 version)**必须跑一次 cargo check 再提交**——它刷新 Cargo.lock;
+  漏了则 kaniko 的 `cargo build --locked` 直接拒绝(v0.3.1 就这么挂过一次构建,0096)。★★
 - 三推 Gitea(内网,主)+ Gitee + GitHub(origin 挂三 push URL,已配好);**push 由仓库所有者做,Claude 只 commit**。
   密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。
 - 参考子系统:`../citeroot/`(**主范本**:Rust 栈、auth/storage/Dockerfile/流式代理全在这)、
