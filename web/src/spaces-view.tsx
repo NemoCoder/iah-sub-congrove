@@ -2,11 +2,11 @@
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
   App as AntdApp, AutoComplete, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
-  Select, Space as AntSpace, Table, Tag, Tooltip, Tree, Typography, Upload,
+  Select, Space as AntSpace, Switch, Table, Tag, Tooltip, Tree, Typography, Upload,
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Grant, type Item, type Role, type Space, type UserOpt, type Version } from './api'
+import { api, type Diagnose, type Grant, type Item, type Role, type Space, type UserOpt, type Version } from './api'
 
 /// P2 预签名直传:>100MB 或视频走浏览器→Garage 直传(字节不过 pod)。
 /// begin 拿全部 part URL → File.slice 逐片 PUT(收集 ETag,跨源可读靠桶 CORS 的 ExposeHeaders)
@@ -301,7 +301,7 @@ export function SpacesView() {
           </Card>
 
           {selected && selected.kind !== 'folder' && (
-            <ItemPanel key={selected.id} item={selected} canEdit={canEdit} onChanged={() => loadItems(cur.id)} onRename={() => rename(selected)} onDelete={() => del(selected)} />
+            <ItemPanel key={selected.id} item={selected} canEdit={canEdit} noDownload={cur.my_role === 'viewer' && cur.viewer_no_download} onChanged={() => loadItems(cur.id)} onRename={() => rename(selected)} onDelete={() => del(selected)} />
           )}
           {selected && selected.kind === 'folder' && canEdit && (
             <Card size="small" style={{ marginTop: 12 }}>
@@ -314,7 +314,7 @@ export function SpacesView() {
               </AntSpace>
             </Card>
           )}
-          <GrantsModal space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} />
+          <GrantsModal space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
         </div>
       ) : (
         <Card style={{ flex: 1 }}>
@@ -326,8 +326,8 @@ export function SpacesView() {
 }
 
 /// 文档/文件面板:doc = 在线编辑 + 版本;file/video = 下载 + 元信息。
-function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
-  item: Item; canEdit: boolean; onChanged: () => void; onRename: () => void; onDelete: () => void
+function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }: {
+  item: Item; canEdit: boolean; noDownload: boolean; onChanged: () => void; onRename: () => void; onDelete: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [text, setText] = useState<string | null>(null)
@@ -359,7 +359,7 @@ function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
       title={`${KIND_ICON[item.kind]} ${item.name}`}
       extra={
         <AntSpace>
-          {item.kind !== 'doc' && <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>}
+          {item.kind !== 'doc' && (noDownload ? <Tag>本空间 viewer 禁下载</Tag> : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
           {item.kind === 'doc' && canEdit && <Button size="small" type="primary" disabled={!dirty} onClick={() => save()}>保存</Button>}
           {item.kind === 'doc' && <Button size="small" onClick={loadVersions}>版本</Button>}
           {canEdit && <Button size="small" onClick={onRename}>重命名</Button>}
@@ -427,7 +427,7 @@ function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
 }
 
 /// 授权管理(admin):user/group × viewer/editor/admin。
-function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; onClose: () => void }) {
+function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
   const { message } = AntdApp.useApp()
   const [grants, setGrants] = useState<Grant[]>([])
   // 默认选「小组」:调研结论(docs/PERMISSIONS.md),按组授权是主战场——整组人(含未来入组者)
@@ -437,6 +437,8 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
   const [role, setRole] = useState<Role>('viewer')
   const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
   const [users, setUsers] = useState<UserOpt[]>([])
+  const [diagName, setDiagName] = useState('')
+  const [diag, setDiag] = useState<Diagnose | null>(null)
 
   const load = useCallback(async () => {
     setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
@@ -480,6 +482,26 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
       <Typography.Paragraph type="secondary" style={{ marginBottom: 10, fontSize: 13 }}>
         推荐按<b>小组</b>授权:整组人(含以后新入组的)自动获得本空间权限,人员流动只需改组成员;按个人授权留给例外情况。
       </Typography.Paragraph>
+      {/* D4 空间安全开关:只拦「下载原件」;在线阅读/播放不拦(能播就能录屏,拦了只会逼 viewer 什么都干不了)。 */}
+      <AntSpace style={{ marginBottom: 12 }}>
+        <Switch
+          size="small"
+          checked={space.viewer_no_download}
+          onChange={async (v) => {
+            try {
+              await api(`/api/spaces/${space.id}`, {
+                method: 'PUT',
+                body: JSON.stringify({ name: space.name, description: space.description, viewer_no_download: v }),
+              })
+              message.success(v ? '已开启:viewer 不能下载原件(阅读/播放不受影响)' : '已关闭下载限制')
+              onChanged()
+            } catch (e) {
+              message.error((e as Error).message)
+            }
+          }}
+        />
+        <Typography.Text>viewer 禁止下载原件</Typography.Text>
+      </AntSpace>
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
         {gtype === 'user' ? (
@@ -522,6 +544,32 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
           },
         ]}
       />
+
+      {/* 权限诊断:「为什么他能/不能看」——三家共同痛点,Confluence 的付费卖点,我们白送(docs/PERMISSIONS.md 共识 6)。 */}
+      <Typography.Title level={5} style={{ marginTop: 18 }}>权限诊断</Typography.Title>
+      <AntSpace style={{ marginBottom: 8 }}>
+        <AutoComplete
+          placeholder="输用户名,看 ta 为什么能/不能访问本空间" value={diagName} onChange={setDiagName} style={{ width: 280 }}
+          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+          filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
+        />
+        <Button onClick={async () => {
+          if (!diagName.trim()) return
+          try {
+            setDiag(await api<Diagnose>(`/api/spaces/${space.id}/diagnose?username=${encodeURIComponent(diagName.trim())}`))
+          } catch (e) {
+            message.error((e as Error).message)
+          }
+        }}>诊断</Button>
+      </AntSpace>
+      {diag && (
+        <Typography.Paragraph style={{ fontSize: 13, background: '#f6ffed', padding: 10, borderRadius: 6 }}>
+          <b>{diag.username}</b> 的判定链:超管 {diag.is_super ? '✅(直接 admin)' : '否'} →
+          直接授权 {diag.direct ? <Tag>{diag.direct}</Tag> : '无'} →
+          组授权 {diag.via_groups.length ? diag.via_groups.map((g) => <Tag key={g.group_id} color="cyan">{g.group}:{g.role}</Tag>) : '无'} →
+          <b> 有效角色:{diag.effective ? <Tag color="green">{diag.effective}</Tag> : <Tag color="red">无权访问</Tag>}</b>
+        </Typography.Paragraph>
+      )}
     </Modal>
   )
 }

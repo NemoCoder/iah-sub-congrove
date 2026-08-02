@@ -41,6 +41,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/spaces", get(spaces::list).post(spaces::create))
         .route("/spaces/{id}", get(spaces::detail).put(spaces::update).delete(spaces::remove))
         .route("/spaces/{id}/grants", get(spaces::grants).put(spaces::grant_put).delete(spaces::grant_delete))
+        .route("/spaces/{id}/diagnose", get(spaces::diagnose))
         // 小组
         .route("/groups", get(groups::list).post(groups::create))
         .route("/groups/{id}", put(groups::update).delete(groups::remove))

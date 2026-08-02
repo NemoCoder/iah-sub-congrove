@@ -541,7 +541,17 @@ pub async fn download(
     Path(iid): Path<i64>,
 ) -> AppResult<Response> {
     let sid = space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let role = require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    // D4 开关(迁移 0003):viewer 禁下载原件;editor/admin/超管不受限。阅读/播放不走这,不拦。
+    if role == Role::Viewer {
+        let blocked: bool = sqlx::query_scalar("SELECT viewer_no_download FROM spaces WHERE id = $1")
+            .bind(sid)
+            .fetch_one(&state.pool)
+            .await?;
+        if blocked {
+            return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
+        }
+    }
     let row: Option<(Option<String>, String, Option<String>)> =
         sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1")
             .bind(iid)

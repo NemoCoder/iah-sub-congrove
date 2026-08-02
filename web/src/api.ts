@@ -28,7 +28,11 @@ export type Me = { username: string | null; name: string | null; email: string |
 export type Role = 'viewer' | 'editor' | 'admin'
 export type Space = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
-  quota_bytes: number; used_bytes: number
+  quota_bytes: number; used_bytes: number; viewer_no_download: boolean
+}
+export type Diagnose = {
+  username: string; is_super: boolean; direct: Role | null
+  via_groups: { group_id: number; group: string; role: Role }[]; effective: Role | null
 }
 export type UserOpt = { username: string; name: string | null }
 export type Item = {

@@ -20,6 +20,7 @@ pub struct SpaceRow {
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub quota_bytes: i64,
+    pub viewer_no_download: bool,
     /// 我的有效角色(列表接口顺带回,前端显隐编辑入口用;真判权仍在每个写接口)。
     #[sqlx(skip)]
     pub my_role: Option<Role>,
@@ -78,7 +79,7 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if id.is_super {
         let mut rows: Vec<SpaceRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes FROM spaces ORDER BY id")
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, viewer_no_download FROM spaces ORDER BY id")
                 .fetch_all(&state.pool)
                 .await?;
         rows.iter_mut().for_each(|r| {
@@ -89,8 +90,8 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     }
     let username = id.require_username()?;
     // 拉「我的全部授权 × 空间」一把出,内存里按空间合并取 max(空间量级小,不值得进 SQL 排序)。
-    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, String)> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, g.role
+    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String)> = sqlx::query_as(
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.viewer_no_download, g.role
            FROM spaces s JOIN space_grants g ON g.space_id = s.id
           WHERE (g.grantee_type = 'user' AND g.grantee_id = $1)
              OR (g.grantee_type = 'group' AND g.grantee_id IN
@@ -101,12 +102,12 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     .fetch_all(&state.pool)
     .await?;
     let mut out: Vec<SpaceRow> = Vec::new();
-    for (sid, name, description, created_by, created_at, quota_bytes, role) in rows {
+    for (sid, name, description, created_by, created_at, quota_bytes, viewer_no_download, role) in rows {
         let r = Role::parse(&role);
         match out.last_mut() {
             Some(last) if last.id == sid => last.my_role = perm::merge([last.my_role, r]),
             _ => out.push(SpaceRow {
-                id: sid, name, description, created_by, created_at, quota_bytes,
+                id: sid, name, description, created_by, created_at, quota_bytes, viewer_no_download,
                 my_role: r, used_bytes: usage.get(&sid).copied().unwrap_or(0),
             }),
         }
@@ -119,6 +120,9 @@ pub struct SpaceIn {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// D4 开关(docs/PERMISSIONS.md):Some 才更新;只拦 download 原件,阅读/播放不拦(见迁移 0003 头注)。
+    #[serde(default)]
+    pub viewer_no_download: Option<bool>,
 }
 
 /// POST /api/spaces —— 建空间,建者自动 admin。
@@ -181,9 +185,10 @@ pub async fn update(
     Json(input): Json<SpaceIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, sid, Role::Admin).await?;
-    let n = sqlx::query("UPDATE spaces SET name = $1, description = $2 WHERE id = $3")
+    let n = sqlx::query("UPDATE spaces SET name = $1, description = $2, viewer_no_download = COALESCE($3, viewer_no_download) WHERE id = $4")
         .bind(input.name.trim())
         .bind(&input.description)
+        .bind(input.viewer_no_download)
         .bind(sid)
         .execute(&state.pool)
         .await?
@@ -224,6 +229,58 @@ pub async fn remove(
     }
     audit::record(&state.pool, id.require_username()?, "space.delete", &sid.to_string(), &format!("objects={}", keys.len())).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// GET /api/spaces/{id}/diagnose?username=X(admin)—— 权限诊断:「为什么他能/不能看」。
+/// 三家共同痛点、Confluence 的付费卖点,我们内建(docs/PERMISSIONS.md 共识 6)。
+/// 输出完整判定链:超管? / 直接授权? / 经哪些组授了什么? / 最终有效角色(与 perm.rs 同一推导)。
+pub async fn diagnose(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let username = q.get("username").map(|s| s.trim()).filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::BadRequest("缺 username 参数".into()))?;
+    let is_super: bool = sqlx::query_scalar("SELECT is_super FROM app_user WHERE username = $1")
+        .bind(username)
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or(false);
+    let direct: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM space_grants WHERE space_id = $1 AND grantee_type = 'user' AND grantee_id = $2",
+    )
+    .bind(sid)
+    .bind(username)
+    .fetch_optional(&state.pool)
+    .await?;
+    let via_groups: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT gr.id, gr.name, g.role FROM space_grants g
+           JOIN group_members m ON g.grantee_type = 'group' AND g.grantee_id = m.group_id::text AND m.username = $2
+           JOIN groups gr ON gr.id = m.group_id
+          WHERE g.space_id = $1",
+    )
+    .bind(sid)
+    .bind(username)
+    .fetch_all(&state.pool)
+    .await?;
+    // 有效角色与 perm.rs 同一合并规则(超管短路 admin;否则 direct ∪ groups 取 max)。
+    let effective = if is_super {
+        Some(Role::Admin)
+    } else {
+        perm::merge(
+            std::iter::once(direct.as_deref().and_then(Role::parse))
+                .chain(via_groups.iter().map(|(_, _, r)| Role::parse(r))),
+        )
+    };
+    Ok(Json(json!({
+        "username": username,
+        "is_super": is_super,
+        "direct": direct,
+        "via_groups": via_groups.iter().map(|(gid, name, role)| json!({"group_id": gid, "group": name, "role": role})).collect::<Vec<_>>(),
+        "effective": effective,
+    })))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
