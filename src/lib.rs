@@ -11,6 +11,7 @@ pub mod db;
 pub mod error;
 pub mod http;
 pub mod perm;
+pub mod registry;
 pub mod state;
 pub mod storage;
 pub mod telemetry;
@@ -55,7 +56,23 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { pool, storage: Arc::new(storage), config: Arc::new(cfg.clone()), auth };
+    // 平台 registry 客户端:REGISTRY_URL + 机密客户端齐了才建(缺任一 = 本地 dev,降级)。
+    let registry = match (&cfg.registry_url, &cfg.oidc) {
+        (Some(base), Some(o)) => match (&o.client_id, &o.client_secret) {
+            (Some(cid), Some(csec)) => {
+                let r = registry::Registry::new(base.clone(), o.issuer.clone(), cid.clone(), csec.clone())?;
+                tracing::info!(base = %base, "platform registry client ready(用户校验/站内信)");
+                Some(r)
+            }
+            _ => None,
+        },
+        _ => {
+            tracing::info!("REGISTRY_URL/OIDC 不全 — 用户校验降级到本地 app_user,站内信关闭");
+            None
+        }
+    };
+
+    let state = AppState { pool, storage: Arc::new(storage), config: Arc::new(cfg.clone()), auth, registry };
 
     let app = http::build_router(state);
     let listener = TcpListener::bind(&cfg.bind_addr).await?;

@@ -6,6 +6,7 @@ use sqlx::PgPool;
 
 use crate::auth::Auth;
 use crate::config::Config;
+use crate::registry::Registry;
 use crate::storage::Storage;
 
 #[derive(Clone)]
@@ -15,4 +16,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// OIDC 验证器。None = 鉴权关闭(本地 dev,main.rs 大声 WARN)。
     pub auth: Option<Arc<Auth>>,
+    /// 平台 registry 客户端(用户校验/站内信,AI_Talks 0094)。None = 本地 dev 降级。
+    pub registry: Option<Arc<Registry>>,
 }

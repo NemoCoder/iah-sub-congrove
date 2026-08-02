@@ -29,6 +29,12 @@ pub struct Config {
     /// 超管 bootstrap 白名单(自定义 env CONGROVE_SUPER_USERS=liaoruili,...):
     /// 登录时命中即置 is_super=true。之后超管可在 UI 提别人(只置不清,白名单是种子)。
     pub super_users: Vec<String>,
+
+    /// 平台 registry(总注入):用户存在性校验 + 站内信外发(AI_Talks 0094)。
+    /// 缺(本地 dev)= 拉人校验降级到本地 app_user、不投站内信。
+    pub registry_url: Option<String>,
+    /// 本通道对外地址(总注入),站内信回跳链接用。
+    pub public_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -92,6 +98,9 @@ impl Config {
             super_users: opt("CONGROVE_SUPER_USERS")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default(),
+
+            registry_url: opt("REGISTRY_URL"),
+            public_url: opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
         })
     }
 }

@@ -28,6 +28,38 @@ pub struct SpaceRow {
     pub used_bytes: i64,
 }
 
+/// 校验 username 是平台注册用户(groups/grants 共用):
+/// 首选平台 users/exists(真相源 Keycloak,可拉/授权还没登录过汇流的人;AI_Talks 0094);
+/// registry 不可达(本地 dev / 平台抖动)**降级**到本地 app_user——fail-closed,只是范围收窄。
+pub async fn ensure_platform_user(state: &AppState, username: &str) -> AppResult<()> {
+    if let Some(reg) = &state.registry {
+        match reg.user_exists(username).await {
+            Ok((true, name)) => {
+                // 顺手把显示名占位进 app_user(还没登录过的人下拉里也能显示人名;登录后 upsert 会补全)。
+                let _ = sqlx::query(
+                    "INSERT INTO app_user (username, name) VALUES ($1,$2)
+                     ON CONFLICT (username) DO UPDATE SET name = COALESCE(app_user.name, EXCLUDED.name)",
+                )
+                .bind(username)
+                .bind(&name)
+                .execute(&state.pool)
+                .await;
+                return Ok(());
+            }
+            Ok((false, _)) => return Err(AppError::BadRequest("平台没有这个用户名(以 hub 登录名为准)".into())),
+            Err(e) => tracing::warn!(error = %e, "users/exists 不可达,降级本地校验"),
+        }
+    }
+    let known: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
+        .bind(username)
+        .fetch_optional(&state.pool)
+        .await?;
+    if known.is_none() {
+        return Err(AppError::BadRequest("平台校验暂不可用,且该用户没登录过汇流——稍后再试".into()));
+    }
+    Ok(())
+}
+
 /// 全部空间的已用量一把查(items ∪ item_versions 按 (s3_key,size) 去重)。
 async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i64, i64>> {
     let rows: Vec<(i64, i64)> = sqlx::query_as(
@@ -247,15 +279,8 @@ pub async fn grant_put(
             return Err(AppError::BadRequest("组不存在".into()));
         }
     } else {
-        // 用户授权收紧到「登录过汇流的人」(2026-08-02 用户定:必须平台注册用户;congrove 看不到
-        // 平台名录,先 fail-closed 到本地 app_user,平台用户校验 API 到位后放开——AI_Talks 0091)。
-        let known: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
-            .bind(&g.grantee_id)
-            .fetch_optional(&state.pool)
-            .await?;
-        if known.is_none() {
-            return Err(AppError::BadRequest("该用户还没登录过汇流(平台用户校验 API 上线后可直接授权平台账号)".into()));
-        }
+        // 平台注册用户校验(users/exists,AI_Talks 0094);registry 不可达降级本地 app_user。
+        ensure_platform_user(&state, &g.grantee_id).await?;
     }
     let actor = id.require_username()?;
     sqlx::query(
@@ -271,6 +296,24 @@ pub async fn grant_put(
     .await?;
     audit::record(&state.pool, actor, "space.grant", &sid.to_string(),
         &format!("{}:{} -> {}", g.grantee_type, g.grantee_id, g.role.as_str())).await;
+    // 按用户授权时站内信告知(0094;组授权不逐人打扰,组成员由组内通知覆盖)。
+    if g.grantee_type == "user" {
+        if let Some(reg) = state.registry.clone() {
+            let sname: String = sqlx::query_scalar("SELECT name FROM spaces WHERE id = $1").bind(sid).fetch_one(&state.pool).await?;
+            let (rcpt, actor_s, role_s) = (g.grantee_id.clone(), actor.to_string(), g.role.as_str().to_string());
+            let url = state.config.public_url.clone();
+            tokio::spawn(async move {
+                reg.notify(
+                    &rcpt,
+                    &format!("汇流:你获得了空间「{sname}」的 {role_s} 权限"),
+                    &format!("{actor_s} 给了你空间「{sname}」的 {role_s} 权限。"),
+                    url.as_deref(),
+                    Some(&format!("grant-{sid}-{rcpt}")),
+                )
+                .await;
+            });
+        }
+    }
     Ok(Json(json!({ "ok": true })))
 }
 

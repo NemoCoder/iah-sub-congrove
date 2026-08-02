@@ -166,15 +166,9 @@ pub async fn member_put(
     if uname.is_empty() || !uname.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
         return Err(AppError::BadRequest("用户名只能是 ASCII 字母数字 . - _".into()));
     }
-    // 收紧到「登录过汇流的人」(2026-08-02 用户定:必须平台注册用户;congrove 看不到平台名录,
-    // 先 fail-closed 到本地 app_user,平台用户校验 API 到位后放开——AI_Talks 0091)。
-    let known: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
-        .bind(uname)
-        .fetch_optional(&state.pool)
-        .await?;
-    if known.is_none() {
-        return Err(AppError::BadRequest("该用户还没登录过汇流,暂不能拉入(平台用户校验 API 上线后放开,见 AI_Talks 0091)".into()));
-    }
+    // 平台注册用户校验(users/exists,AI_Talks 0094):真相源 Keycloak,可拉还没登录过汇流的人。
+    // registry 不可达(本地 dev / 平台抖动)降级到本地 app_user(fail-closed,只是范围收窄)。
+    crate::http::spaces::ensure_platform_user(&state, uname).await?;
     if m.role != "member" && m.role != "manager" {
         return Err(AppError::BadRequest("role 必须是 member 或 manager".into()));
     }
@@ -190,6 +184,22 @@ pub async fn member_put(
     .execute(&state.pool)
     .await?;
     audit::record(&state.pool, actor, "group.member", &gid.to_string(), &format!("{} -> {}", uname, m.role)).await;
+    // 站内信告知对方(0094 附赠;best-effort,ref 幂等:改角色重拉不刷屏)。
+    if let Some(reg) = state.registry.clone() {
+        let gname: String = sqlx::query_scalar("SELECT name FROM groups WHERE id = $1").bind(gid).fetch_one(&state.pool).await?;
+        let (rcpt, actor_s, role_s) = (uname.to_string(), actor.to_string(), m.role.clone());
+        let url = state.config.public_url.clone();
+        tokio::spawn(async move {
+            reg.notify(
+                &rcpt,
+                &format!("汇流:你已被加入小组「{gname}」"),
+                &format!("{actor_s} 把你加入了小组「{gname}」(角色 {role_s})。该组被授权的空间你现在都能访问了。"),
+                url.as_deref(),
+                Some(&format!("group-{gid}-{rcpt}")),
+            )
+            .await;
+        });
+    }
     Ok(Json(json!({ "ok": true })))
 }
 

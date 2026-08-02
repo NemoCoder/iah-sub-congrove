@@ -16,7 +16,7 @@ perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)�
 (内部端点自用 + 外部端点专签预签名,checksum WhenRequired 闸)、0001 迁移(§4 全表)、
 /healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
 **P1 已上**(v0.2.0):空间/组/成员/授权 CRUD、内容树(防环校验)、文档在线编辑+版本历史+恢复、
-文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、**每空间配额默认 10GiB**(0002 迁移,超管 PUT /api/admin/spaces/{id}/quota 可调)、拉人/按用户授权 fail-closed 到已登录用户(平台用户校验 API 待 AI_Talks 0091)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
+文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、**每空间配额默认 10GiB**(0002 迁移,超管 PUT /api/admin/spaces/{id}/quota 可调)、拉人/按用户授权走平台 users/exists 校验(Keycloak 真相源,可拉未登录用户;registry 不可达降级本地 app_user;拉人/授权投站内信,0094)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
 favicon 在 index.html **两处同步**)。**P2 待做**:录屏预签名直传(先跑 §8-1 PoC 四象限,前置:平台配桶 CORS)。
 
 ## 命令
@@ -65,6 +65,8 @@ sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字
 
 - 代码/注释/提交信息用**中文**,匹配全树风格(极密一行流 + 长中文注释,注释是文档,别精简)。
 - 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z,开发版带 .dev)。
+  ★节奏(2026-08-02 用户定):日常改动**只动第三位**(0.3.1→0.3.2…),第二位(minor)**由用户拍板**才升,
+  别自作主张跳 0.4——当前这批功能全程停在 0.3.x。
 - 三推 Gitea(内网,主)+ Gitee + GitHub(origin 挂三 push URL,已配好);**push 由仓库所有者做,Claude 只 commit**。
   密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。
 - 参考子系统:`../citeroot/`(**主范本**:Rust 栈、auth/storage/Dockerfile/流式代理全在这)、

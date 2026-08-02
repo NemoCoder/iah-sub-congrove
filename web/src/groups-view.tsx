@@ -1,5 +1,5 @@
 // 小组视图:我的组列表 + 建组 + 成员管理(manager 可拉人/改角色/移出)。
-import { App as AntdApp, Button, Card, Empty, Input, List, Popconfirm, Select, Space as AntSpace, Table, Tag } from 'antd'
+import { App as AntdApp, AutoComplete, Button, Card, Empty, Input, List, Popconfirm, Select, Space as AntSpace, Table, Tag } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Group, type Member, type UserOpt } from './api'
 
@@ -88,10 +88,11 @@ export function GroupsView() {
         >
           {isMgr && (
             <AntSpace style={{ marginBottom: 12 }}>
-              {/* 只能选「登录过汇流的人」(后端同款校验 fail-closed)——平台用户校验 API 上线后放开(AI_Talks 0091)。 */}
-              <Select
-                showSearch placeholder="选用户(须登录过汇流)" value={addName || undefined} onChange={setAddName} style={{ width: 260 }}
+              {/* 下拉 = 用过汇流的人;也可直接输平台账号(后端 users/exists 向 Keycloak 校验,假名 400——AI_Talks 0094)。 */}
+              <AutoComplete
+                placeholder="用户名(平台账号;可输还没用过汇流的人)" value={addName} onChange={setAddName} style={{ width: 280 }}
                 options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+                filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
               />
               <Select value={addRole} onChange={setAddRole} style={{ width: 120 }}
                 options={[{ value: 'member', label: 'member' }, { value: 'manager', label: 'manager' }]} />

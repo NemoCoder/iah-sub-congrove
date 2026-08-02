@@ -1,7 +1,7 @@
 // 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
-  App as AntdApp, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
+  App as AntdApp, AutoComplete, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
   Select, Space as AntSpace, Table, Tag, Tooltip, Tree, Typography, Upload,
 } from 'antd'
 import type { ReactNode } from 'react'
@@ -388,10 +388,11 @@ function GrantsModal({ space, open, onClose }: { space: Space; open: boolean; on
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
         {gtype === 'user' ? (
-          // 只能选「登录过汇流的人」——平台用户校验 API 上线后换成平台目录(AI_Talks 0091)。
-          <Select
-            showSearch placeholder="选用户(须登录过汇流)" value={gid || undefined} onChange={setGid} style={{ width: 200 }}
+          // 下拉 = 用过汇流的人;也可直接输平台账号(后端 users/exists 向 Keycloak 校验——AI_Talks 0094)。
+          <AutoComplete
+            placeholder="用户名(平台账号)" value={gid} onChange={setGid} style={{ width: 200 }}
             options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+            filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
           />
         ) : (
           <Select

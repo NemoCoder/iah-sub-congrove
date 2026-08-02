@@ -311,7 +311,7 @@ struct JwkSet {
 /// webpki-roots 不读系统库 → UnknownIssuer。把平台挂在 SSL_CERT_FILE
 /// (默认 /etc/ssl/iah/ca.crt)的内网 CA **追加**进去——公共根仍信,
 /// 本地 dev 无此文件走公网不受影响。
-fn build_http_client() -> anyhow::Result<reqwest::Client> {
+pub(crate) fn build_http_client() -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(15));
 
     let ca_path = std::env::var("SSL_CERT_FILE").unwrap_or_else(|_| "/etc/ssl/iah/ca.crt".into());
