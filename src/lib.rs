@@ -74,6 +74,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { pool, storage: Arc::new(storage), config: Arc::new(cfg.clone()), auth, registry };
 
+    // 半截上传清理(P2 直传的兜底):前端崩了/关页没调 abort 的 multipart 在 S3 里**永久占存储**,
+    // 每 6h 扫一遍,abort 超过 24h 的,并删对应的孤儿 items 行(s3_key NULL 的未完成行)。
+    // 进程内任务,重启即丢、下个 tick 恢复——与平台「任务别只活在内存」的告诫不冲突:这是纯幂等清扫。
+    tokio::spawn(cleanup_stale_uploads(state.clone()));
+
     let app = http::build_router(state);
     let listener = TcpListener::bind(&cfg.bind_addr).await?;
     tracing::info!(addr = %cfg.bind_addr, "listening");
@@ -82,6 +87,40 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!("shutdown complete");
     Ok(())
 }
+
+/// 每 6h:abort 超过 24h 的半截 multipart + 删 24h 前建、始终没完成(s3_key NULL)的 file/video 行。
+async fn cleanup_stale_uploads(state: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        match state.storage.list_multiparts().await {
+            Ok(ups) => {
+                let now = std::time::SystemTime::now();
+                for (key, uid, initiated) in ups {
+                    let stale = initiated
+                        .and_then(|t| SystemTime::try_from(t).ok())
+                        .and_then(|t| now.duration_since(t).ok())
+                        .map(|d| d.as_secs() > 24 * 3600)
+                        .unwrap_or(true); // 没时间戳的按陈旧处理(反正 abort 幂等)
+                    if stale {
+                        tracing::info!(key, "cleanup: abort 陈旧半截上传");
+                        state.storage.multipart_abort(&key, &uid).await;
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "cleanup: list_multiparts 失败,下轮再试"),
+        }
+        if let Err(e) = sqlx::query(
+            "DELETE FROM items WHERE s3_key IS NULL AND kind IN ('file','video') AND created_at < now() - interval '24 hours'",
+        )
+        .execute(&state.pool)
+        .await
+        {
+            tracing::warn!(error = %e, "cleanup: 孤儿行清理失败");
+        }
+    }
+}
+
+use std::time::SystemTime;
 
 /// SIGTERM(容器)或 Ctrl-C 触发优雅停机。
 async fn shutdown_signal() {

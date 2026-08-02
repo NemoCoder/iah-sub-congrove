@@ -148,4 +148,44 @@ impl Storage {
             tracing::warn!(error = %e, key, "abort multipart failed — 半截上传可能残留,待清理任务兜底");
         }
     }
+
+    // ── 预签名(P2 直传;PoC 已验:examples/presign_poc.rs 八项全绿)──────────────
+    // 签名用公网 client(SigV4 把 Host 算进签名);presigned() 不发网络请求。
+    // ⚠ 别在预签名请求上配任何 checksum(awslabs #1103,签进空 body 的 checksum URL 直接废)。
+
+    /// 签一个 part 的 PUT(浏览器直传用)。expiry 给足:GB 级慢链路一传几小时。
+    pub async fn presign_part(&self, key: &str, upload_id: &str, part_number: i32, expiry: std::time::Duration) -> anyhow::Result<String> {
+        let p = self.presign.as_ref().ok_or_else(|| anyhow::anyhow!("S3_PUBLIC_ENDPOINT 未配,预签名不可用"))?;
+        let req = p
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .presigned(aws_sdk_s3::presigning::PresigningConfig::expires_in(expiry)?)
+            .await?;
+        Ok(req.uri().to_string())
+    }
+
+    /// 签 GET(播放/下载直取)。短时效——每次播放都经我们判权后重签。
+    pub async fn presign_get(&self, key: &str, expiry: std::time::Duration) -> anyhow::Result<String> {
+        let p = self.presign.as_ref().ok_or_else(|| anyhow::anyhow!("S3_PUBLIC_ENDPOINT 未配,预签名不可用"))?;
+        let req = p
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .presigned(aws_sdk_s3::presigning::PresigningConfig::expires_in(expiry)?)
+            .await?;
+        Ok(req.uri().to_string())
+    }
+
+    /// 列半截 multipart(清理任务用)。返回 (key, upload_id, initiated)。
+    pub async fn list_multiparts(&self) -> anyhow::Result<Vec<(String, String, Option<aws_sdk_s3::primitives::DateTime>)>> {
+        let out = self.s3.list_multipart_uploads().bucket(&self.bucket).send().await?;
+        Ok(out
+            .uploads()
+            .iter()
+            .filter_map(|u| Some((u.key()?.to_string(), u.upload_id()?.to_string(), u.initiated().copied())))
+            .collect())
+    }
 }

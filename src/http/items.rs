@@ -50,7 +50,7 @@ pub async fn space_quota_used(pool: &sqlx::PgPool, sid: i64) -> AppResult<(i64, 
 }
 
 /// item 所属空间(判权都要先拿它;不存在 = 404)。
-async fn space_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
+pub async fn space_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
     sqlx::query_scalar("SELECT space_id FROM items WHERE id = $1")
         .bind(item_id)
         .fetch_optional(pool)
@@ -96,7 +96,7 @@ pub struct ItemIn {
 }
 
 /// 校验 parent:必须存在、是 folder、且在同一空间(防把子树挂到别的空间绕权限)。
-async fn check_parent(pool: &sqlx::PgPool, sid: i64, parent_id: Option<i64>) -> AppResult<()> {
+pub async fn check_parent(pool: &sqlx::PgPool, sid: i64, parent_id: Option<i64>) -> AppResult<()> {
     if let Some(pid) = parent_id {
         let ok: Option<(i64, String)> = sqlx::query_as("SELECT space_id, kind FROM items WHERE id = $1")
             .bind(pid)

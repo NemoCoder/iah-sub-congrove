@@ -8,6 +8,59 @@ import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Grant, type Item, type Role, type Space, type UserOpt, type Version } from './api'
 
+/// P2 预签名直传:>100MB 或视频走浏览器→Garage 直传(字节不过 pod)。
+/// begin 拿全部 part URL → File.slice 逐片 PUT(收集 ETag,跨源可读靠桶 CORS 的 ExposeHeaders)
+/// → complete 交回服务端。返回 false = 后端说预签名未启用(501),调用方回退后端流式上传。
+const DIRECT_THRESHOLD = 100 * 1024 * 1024
+
+async function directUpload(sid: number, file: File, parentId: number | null, onProgress: (p: number) => void): Promise<boolean> {
+  const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: file.name, size: file.size, mime: file.type || 'application/octet-stream', parent_id: parentId }),
+  })
+  if (begin.status === 501) return false
+  if (begin.status === 401) {
+    window.location.href = `/auth/login?return=${encodeURIComponent(window.location.pathname)}`
+    throw new Error('未登录')
+  }
+  if (!begin.ok) throw new Error(((await begin.json()) as { error?: string }).error || `${begin.status}`)
+  const { item_id, upload_id, part_size, part_urls } = (await begin.json()) as {
+    item_id: number; upload_id: string; part_size: number; part_urls: string[]
+  }
+  try {
+    const parts: { part_number: number; etag: string }[] = []
+    let sent = 0
+    for (let i = 0; i < part_urls.length; i++) {
+      const blob = file.slice(i * part_size, Math.min(file.size, (i + 1) * part_size))
+      const etag = await putPart(part_urls[i], blob, (loaded) => onProgress(Math.round(((sent + loaded) / file.size) * 100)))
+      sent += blob.size
+      parts.push({ part_number: i + 1, etag })
+    }
+    await api(`/api/items/${item_id}/media/complete`, { method: 'POST', body: JSON.stringify({ upload_id, parts }) })
+    return true
+  } catch (e) {
+    // 失败必 abort:半截 multipart 不清理会永久占存储(后端另有 24h 兜底清扫)。
+    await api(`/api/items/${item_id}/media/abort`, { method: 'POST', body: JSON.stringify({ upload_id }) }).catch(() => {})
+    throw e
+  }
+}
+
+function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url)
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onLoaded(e.loaded) }
+    xhr.onload = () => {
+      const etag = xhr.getResponseHeader('ETag') // 跨源可读靠桶 CORS ExposeHeaders:[ETag](PoC 2c 已验)
+      if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag.replaceAll('"', ''))
+      else reject(new Error(`part 直传失败:status=${xhr.status} etag=${etag ? '有' : '无(桶 CORS?)'}`))
+    }
+    xhr.onerror = () => reject(new Error('part 直传网络错误(证书/CORS?)'))
+    xhr.send(blob)
+  })
+}
+
 /// XHR 上传(fetch 至今无标准上传进度,对抗核查 §7.4b-5):onProgress 喂给 antd Upload 画进度条。
 function xhrUpload(url: string, file: File, onProgress: (percent: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -195,12 +248,17 @@ export function SpacesView() {
                       showUploadList={{ showRemoveIcon: false }}
                       maxCount={3}
                       customRequest={async ({ file, onSuccess, onError, onProgress }) => {
+                        const f = file as File
+                        const report = (percent: number) => onProgress?.({ percent })
                         try {
-                          await xhrUpload(
-                            `/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`,
-                            file as File,
-                            (percent) => onProgress?.({ percent }),
-                          )
+                          // 大文件/视频优先直传(字节不过 pod);501(预签名未启用)回退后端流式。
+                          let done = false
+                          if (f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')) {
+                            done = await directUpload(cur.id, f, targetParent, report)
+                          }
+                          if (!done) {
+                            await xhrUpload(`/api/spaces/${cur.id}/upload?parent_id=${targetParent ?? ''}`, f, report)
+                          }
                           message.success('上传完成')
                           await Promise.all([loadItems(cur.id), loadSpaces()]) // 用量条一起刷
                           onSuccess?.({})
@@ -325,10 +383,19 @@ function ItemPanel({ item, canEdit, onChanged, onRename, onDelete }: {
         ) : (
           <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{text}</pre>
         )
+      ) : item.kind === 'video' ? (
+        <>
+          {/* 播放:同源 /play 判权后 302 到 15min 预签名 GET,Range 拖动由 Garage 206。
+              不带 crossorigin 属性 = no-cors 媒体请求,不需要 CORS(对抗核查 §7.4b-6)。 */}
+          <video controls preload="metadata" style={{ width: '100%', maxHeight: 480, background: '#000' }}
+            src={`/api/items/${item.id}/play`} />
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+            {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传 ·(拖动进度条随点随播;非 mp4/webm 浏览器可能不支持)
+          </Typography.Text>
+        </>
       ) : (
         <Typography.Text type="secondary">
           {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
-          {item.kind === 'video' && ' ·(在线播放随 P2 预签名直传上线)'}
         </Typography.Text>
       )}
 

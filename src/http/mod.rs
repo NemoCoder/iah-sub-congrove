@@ -4,7 +4,8 @@
 
 mod admin;
 mod groups;
-mod items;
+pub(crate) mod items;
+mod media;
 mod spaces;
 
 use std::time::Duration;
@@ -51,6 +52,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
+        // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod);play 判权后 302 预签名 GET。
+        .route("/spaces/{id}/media/begin", post(media::begin))
+        .route("/items/{id}/media/complete", post(media::complete))
+        .route("/items/{id}/media/abort", post(media::abort))
+        .route("/items/{id}/play", get(media::play))
         .merge(admin)
         .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30)));
 
