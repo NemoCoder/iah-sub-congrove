@@ -1,8 +1,8 @@
 // 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
-  App as AntdApp, AutoComplete, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
-  Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, Tree, Typography, Upload,
+  App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
+  Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -172,15 +172,31 @@ function fmtSize(n: number | null) {
   return `${(n / 1048576).toFixed(1)}MB`
 }
 
+function fmtTime(s: string) {
+  const d = new Date(s)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/// 网盘式空间视图(2026-08-03 重做)。**两套操作严格分开**:
+/// - 空间所有者的事(授权管理 / 安全设置 / 重命名空间 / 删除空间)→ 只在左栏空间行的
+///   「⋯」菜单里,且仅 space admin 可见;
+/// - 空间里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
+///   editor 及以上可用。
+/// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
 export function SpacesView({ me }: { me: Me | null }) {
   const { message, modal } = AntdApp.useApp()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [cur, setCur] = useState<Space | null>(null)
   const [items, setItems] = useState<Item[]>([])
-  const [selected, setSelected] = useState<Item | null>(null)
+  const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 空间根)
+  const [checked, setChecked] = useState<number[]>([]) // 批量选中
+  const [preview, setPreview] = useState<Item | null>(null)
   const [grantsOpen, setGrantsOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [uploads, setUploads] = useState<{ key: string; name: string; percent: number }[]>([])
+  const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
+  const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
 
   const loadSpaces = useCallback(async () => {
     const s = await api<Space[]>('/api/spaces')
@@ -194,35 +210,27 @@ export function SpacesView({ me }: { me: Me | null }) {
     loadSpaces().catch((e) => message.error(e.message))
   }, [loadSpaces, message])
   useEffect(() => {
-    setSelected(null)
+    setCwd(null); setChecked([]); setPreview(null)
     if (cur) loadItems(cur.id).catch((e) => message.error(e.message))
   }, [cur?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const canEdit = cur?.my_role === 'editor' || cur?.my_role === 'admin'
-  const isAdmin = cur?.my_role === 'admin'
+  const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
 
-  // 平铺 items → antd Tree 结构。folder 在前后端已排序;children 递归组装。
-  const treeData = useMemo(() => {
-    const byParent = new Map<number | null, Item[]>()
-    items.forEach((it) => {
-      const k = it.parent_id
-      byParent.set(k, [...(byParent.get(k) || []), it])
-    })
-    type TreeNode = { key: number; title: string; isLeaf: boolean; children?: TreeNode[] }
-    const build = (pid: number | null): TreeNode[] =>
-      (byParent.get(pid) || []).map((it) => ({
-        key: it.id,
-        title: `${KIND_ICON[it.kind]} ${it.name}`,
-        isLeaf: it.kind !== 'folder',
-        children: it.kind === 'folder' ? build(it.id) : undefined,
-      }))
-    return build(null)
-  }, [items])
+  // 当前目录内容:文件夹在前,同类按名称。
+  const rows = useMemo(
+    () => items.filter((i) => i.parent_id === cwd)
+      .sort((a, b) => (a.kind === 'folder' ? 0 : 1) - (b.kind === 'folder' ? 0 : 1) || a.name.localeCompare(b.name, 'zh')),
+    [items, cwd],
+  )
+  // 面包屑:顺 parent 链上溯。
+  const trail = useMemo(() => {
+    const out: Item[] = []
+    let p = cwd
+    while (p != null) { const it = byId.get(p); if (!it) break; out.unshift(it); p = it.parent_id }
+    return out
+  }, [cwd, byId])
 
-  // 新建目标父节点:选中 folder 用它,选中别的用其父,没选中落根。
-  const targetParent = selected ? (selected.kind === 'folder' ? selected.id : selected.parent_id) : null
-
-  // 统一上传入口(工具栏按钮与拖拽共用):>100MB/视频直传,否则后端流式;逐文件顺序传。
   const uploadFiles = async (files: File[]) => {
     if (!cur || !canEdit || !files.length) return
     for (const f of files) {
@@ -230,26 +238,21 @@ export function SpacesView({ me }: { me: Me | null }) {
       setUploads((u) => [...u, { key, name: f.name, percent: 0 }])
       const report = (percent: number) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x)))
       try {
-        // 选路(2026-08-03 事故后定):大文件一律分片,只是「片发给谁」二选一——
-        // 探测通过 → 预签直传(片直发 Garage,不过 pod,最快);
-        // 探测不过(本设备不信 s3api 证书)→ 同源分片代理(片发给我们再转推,
-        // 每请求只 32MiB,也过得了公网入口层对大请求的限)。
-        // 小文件仍走整文件 POST(一次往返最省事)。
+        // 选路:大文件/视频走分片(片发给谁由开局探测定),小文件整文件 POST。
         let done = false
         const big = f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')
         if (big) {
           const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(cur.id, f, targetParent, report, direct ? 'presigned' : 'proxy')
+            done = await directUpload(cur.id, f, cwd, report, direct ? 'presigned' : 'proxy')
           } catch (de) {
-            if (!direct) throw de // 已是分片通道,再失败就是真错误
-            // 探测过了但直传仍失败(证书中途变化/网络抖动):记账并降级重试,下次直接走分片。
+            if (!direct) throw de
             sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
-            done = await directUpload(cur.id, f, targetParent, report, 'proxy')
+            done = await directUpload(cur.id, f, cwd, report, 'proxy')
           }
         }
-        if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${targetParent != null ? `?parent_id=${targetParent}` : ''}`, f, report)
+        if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${cwd != null ? `?parent_id=${cwd}` : ''}`, f, report)
         message.success(`${f.name} 上传完成`)
       } catch (e) {
         message.error(`${f.name}:${(e as Error).message}`)
@@ -260,6 +263,102 @@ export function SpacesView({ me }: { me: Me | null }) {
     await Promise.all([loadItems(cur.id), loadSpaces()])
   }
 
+  const refresh = async () => {
+    if (!cur) return
+    setChecked([])
+    await Promise.all([loadItems(cur.id), loadSpaces()])
+  }
+
+  // ── 内容操作(editor+)────────────────────────────────────────────────────
+  const newItem = (kind: 'folder' | 'doc') => {
+    let name = ''
+    modal.confirm({
+      title: kind === 'folder' ? '新建文件夹' : '新建文档',
+      content: <Input placeholder="名称" onChange={(e) => (name = e.target.value)} />,
+      onOk: async () => {
+        try {
+          await api(`/api/spaces/${cur!.id}/items`, { method: 'POST', body: JSON.stringify({ kind, name, parent_id: cwd }) })
+          await refresh()
+        } catch (e) { message.error((e as Error).message); throw e }
+      },
+    })
+  }
+  const rename = (it: Item) => {
+    let name = it.name
+    modal.confirm({
+      title: `重命名「${it.name}」`,
+      content: <Input defaultValue={it.name} onChange={(e) => (name = e.target.value)} />,
+      onOk: async () => {
+        try {
+          await api(`/api/items/${it.id}`, { method: 'PUT', body: JSON.stringify({ name }) })
+          await refresh()
+        } catch (e) { message.error((e as Error).message); throw e }
+      },
+    })
+  }
+  const del = (targets: Item[]) => {
+    const names = targets.map((t) => t.name).join('、')
+    modal.confirm({
+      title: `删除 ${targets.length} 项?`,
+      content: <span>{names.slice(0, 120)}{names.length > 120 ? '…' : ''}<br />文件夹会连同其中全部内容一起删除,不可撤销。</span>,
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        for (const t of targets) {
+          try { await api(`/api/items/${t.id}`, { method: 'DELETE' }) } catch (e) { message.error(`${t.name}:${(e as Error).message}`) }
+        }
+        setPreview((p) => (p && targets.some((t) => t.id === p.id) ? null : p))
+        await refresh()
+      },
+    })
+  }
+  const doMove = async (dest: number | null) => {
+    setMoveDest(null)
+    for (const t of moving!) {
+      try { await api(`/api/items/${t.id}`, { method: 'PUT', body: JSON.stringify({ parent_id: dest }) }) }
+      catch (e) { message.error(`${t.name}:${(e as Error).message}`) }
+    }
+    setMoving(null)
+    await refresh()
+  }
+
+  // ── 空间所有者操作(admin;只在左栏空间「⋯」里)────────────────────────────
+  const spaceMenu = (s: Space) => ({
+    items: [
+      { key: 'grants', label: '🔑 授权与安全设置' },
+      { key: 'rename', label: '✏️ 重命名空间' },
+      { type: 'divider' as const },
+      { key: 'delete', label: <span style={{ color: '#ff4d4f' }}>🗑 删除空间</span> },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      setCur(s)
+      if (key === 'grants') setGrantsOpen(true)
+      if (key === 'rename') {
+        let name = s.name
+        modal.confirm({
+          title: '重命名空间',
+          content: <Input defaultValue={s.name} onChange={(e) => (name = e.target.value)} />,
+          onOk: async () => {
+            await api(`/api/spaces/${s.id}`, { method: 'PUT', body: JSON.stringify({ name, description: s.description }) })
+            await loadSpaces()
+          },
+        })
+      }
+      if (key === 'delete') {
+        modal.confirm({
+          title: `删除空间「${s.name}」?`,
+          content: '空间内全部内容与文件将一并删除,不可撤销。',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await api(`/api/spaces/${s.id}`, { method: 'DELETE' })
+              setCur(null); await loadSpaces()
+            } catch (e) { message.error((e as Error).message); throw e }
+          },
+        })
+      }
+    },
+  })
+
   const newSpace = () => {
     let name = ''
     modal.confirm({
@@ -269,57 +368,22 @@ export function SpacesView({ me }: { me: Me | null }) {
         try {
           await api('/api/spaces', { method: 'POST', body: JSON.stringify({ name }) })
           await loadSpaces()
-        } catch (e) {
-          message.error((e as Error).message) // 白名单外建空间 403 等,必须可见
-          throw e // 保持弹窗不关
-        }
+        } catch (e) { message.error((e as Error).message); throw e }
       },
     })
   }
-  const newItem = (kind: 'folder' | 'doc') => {
-    let name = ''
-    modal.confirm({
-      title: kind === 'folder' ? '新建文件夹' : '新建文档',
-      content: <Input placeholder="名称" onChange={(e) => (name = e.target.value)} />,
-      onOk: async () => {
-        await api(`/api/spaces/${cur!.id}/items`, {
-          method: 'POST',
-          body: JSON.stringify({ kind, name, parent_id: targetParent }),
-        })
-        await loadItems(cur!.id)
-      },
-    })
-  }
-  const rename = (it: Item) => {
-    let name = it.name
-    modal.confirm({
-      title: '重命名',
-      content: <Input defaultValue={it.name} onChange={(e) => (name = e.target.value)} />,
-      onOk: async () => {
-        await api(`/api/items/${it.id}`, { method: 'PUT', body: JSON.stringify({ name }) })
-        await loadItems(cur!.id)
-      },
-    })
-  }
-  const del = async (it: Item) => {
-    await api(`/api/items/${it.id}`, { method: 'DELETE' })
-    message.success('已删除')
-    setSelected(null)
-    await loadItems(cur!.id)
-  }
+
+  const checkedItems = rows.filter((r) => checked.includes(r.id))
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-      {/* 空间列表 */}
+      {/* 左栏:空间列表。空间级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
       <Card
-        size="small"
-        title="空间"
+        size="small" title="空间" style={{ width: 260, flex: '0 0 auto' }}
         extra={<Button size="small" type="primary" onClick={newSpace}>新建</Button>}
-        style={{ width: 240, flex: '0 0 auto' }}
       >
         <List
-          size="small"
-          dataSource={spaces}
+          size="small" dataSource={spaces}
           locale={{ emptyText: <Empty description="还没有可见的空间" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           renderItem={(s) => (
             <List.Item
@@ -328,116 +392,144 @@ export function SpacesView({ me }: { me: Me | null }) {
             >
               <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }}>{s.name}</Typography.Text>
               {s.my_role && ROLE_TAG[s.my_role]}
+              {s.my_role === 'admin' && (
+                <Dropdown menu={spaceMenu(s)} trigger={['click']}>
+                  <Button type="text" size="small" onClick={(e) => e.stopPropagation()} style={{ marginLeft: 2 }}>⋯</Button>
+                </Dropdown>
+              )}
             </List.Item>
           )}
         />
       </Card>
 
-      {/* 选中空间 */}
       {cur ? (
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <Card
-            size="small"
-            title={
-              <AntSpace>
-                {cur.name}
-                {cur.my_role && ROLE_TAG[cur.my_role]}
-                <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}(超管可调)`}>
-                  <span style={{ width: 120, display: 'inline-block' }}>
-                    <Progress
-                      percent={Math.min(100, Math.round((cur.used_bytes / Math.max(1, cur.quota_bytes)) * 100))}
-                      size="small"
-                      status={cur.used_bytes >= cur.quota_bytes ? 'exception' : 'normal'}
-                    />
-                  </span>
-                </Tooltip>
-              </AntSpace>
-            }
-            extra={
-              <AntSpace>
-                {canEdit && (
-                  <>
-                    <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
-                    <Button size="small" onClick={() => newItem('doc')}>📄 新建文档</Button>
-                    <Upload
-                      showUploadList={false}
-                      multiple
-                      customRequest={({ file, onSuccess }) => {
-                        uploadFiles([file as File]).then(() => onSuccess?.({}))
-                      }}
-                    >
-                      <Button size="small">📎 上传文件</Button>
-                    </Upload>
-                  </>
-                )}
-                {isAdmin && <Button size="small" onClick={() => setGrantsOpen(true)}>🔑 授权管理</Button>}
-                {isAdmin && (
-                  <Popconfirm
-                    title={`删除空间「${cur.name}」及其全部内容?`}
-                    onConfirm={async () => {
-                      await api(`/api/spaces/${cur.id}`, { method: 'DELETE' })
-                      setCur(null)
-                      await loadSpaces()
-                    }}
-                  >
-                    <Button size="small" danger>删除空间</Button>
-                  </Popconfirm>
-                )}
-              </AntSpace>
-            }
-          >
-            {/* 拖拽上传落区(canEdit 才收):拖进来高亮虚线框,松手即传到当前选中文件夹。 */}
-            <div
-              onDragOver={(e) => { e.preventDefault(); if (canEdit) setDragging(true) }}
-              onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
-              onDrop={(e) => {
-                e.preventDefault(); setDragging(false)
-                if (canEdit) uploadFiles(Array.from(e.dataTransfer.files).filter((f) => f.size > 0))
-              }}
-              style={{
-                minHeight: 120, borderRadius: 8, transition: 'all .15s',
-                outline: dragging ? '2px dashed #0d9488' : 'none',
-                background: dragging ? '#e6fffb' : undefined, padding: dragging ? 8 : 0,
-              }}
-            >
-              {uploads.map((u) => (
-                <div key={u.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <Typography.Text ellipsis style={{ maxWidth: 320, fontSize: 13 }}>⬆ {u.name}</Typography.Text>
-                  <Progress percent={u.percent} size="small" style={{ flex: 1, maxWidth: 360 }} />
-                </div>
-              ))}
-              {treeData.length ? (
-                <Tree
-                  treeData={treeData}
-                  defaultExpandAll
-                  selectedKeys={selected ? [selected.id] : []}
-                  onSelect={(keys) => setSelected(items.find((i) => i.id === keys[0]) || null)}
+        <Card
+          size="small" style={{ flex: 1, minWidth: 0 }}
+          styles={{ body: { paddingTop: 8 } }}
+          title={
+            <Breadcrumb
+              items={[
+                { title: <a onClick={() => setCwd(null)}>{cur.name}</a> },
+                ...trail.map((t) => ({ title: <a onClick={() => setCwd(t.id)}>{t.name}</a> })),
+              ]}
+            />
+          }
+          extra={
+            <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}`}>
+              <span style={{ width: 130, display: 'inline-block' }}>
+                <Progress
+                  percent={Math.min(100, Math.round((cur.used_bytes / Math.max(1, cur.quota_bytes)) * 100))}
+                  size="small" status={cur.used_bytes >= cur.quota_bytes ? 'exception' : 'normal'}
                 />
-              ) : (
-                <Empty
-                  description={canEdit ? '空空如也——建个文件夹/文档,或把文件直接拖进来' : '空空如也'}
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                />
+              </span>
+            </Tooltip>
+          }
+        >
+          {/* 内容操作工具栏(editor+):只有「在空间里干活」的动作,没有空间管理项。 */}
+          {canEdit && (
+            <AntSpace style={{ marginBottom: 10 }} wrap>
+              <Upload showUploadList={false} multiple
+                customRequest={({ file, onSuccess }) => { uploadFiles([file as File]).then(() => onSuccess?.({})) }}>
+                <Button type="primary" size="small">⬆ 上传文件</Button>
+              </Upload>
+              <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
+              <Button size="small" onClick={() => newItem('doc')}>📝 新建文档</Button>
+              {checkedItems.length > 0 && (
+                <>
+                  <span style={{ color: '#8c8c8c', fontSize: 12 }}>已选 {checkedItems.length} 项</span>
+                  <Button size="small" onClick={() => setMoving(checkedItems)}>移动</Button>
+                  <Button size="small" danger onClick={() => del(checkedItems)}>删除</Button>
+                </>
               )}
-            </div>
-          </Card>
+            </AntSpace>
+          )}
 
-          {selected && selected.kind !== 'folder' && (
-            <ItemPanel key={selected.id} item={selected} canEdit={canEdit} noDownload={cur.my_role === 'viewer' && cur.viewer_no_download} onChanged={() => loadItems(cur.id)} onRename={() => rename(selected)} onDelete={() => del(selected)} />
-          )}
-          {selected && selected.kind === 'folder' && canEdit && (
-            <Card size="small" style={{ marginTop: 12 }}>
-              <AntSpace>
-                <span>📁 {selected.name}</span>
-                <Button size="small" onClick={() => rename(selected)}>重命名</Button>
-                <Popconfirm title="删除文件夹及其全部内容?" onConfirm={() => del(selected)}>
-                  <Button size="small" danger>删除</Button>
-                </Popconfirm>
-              </AntSpace>
-            </Card>
-          )}
+          {/* 拖拽落区:整张表都能接文件 */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); if (canEdit) setDragging(true) }}
+            onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
+            onDrop={(e) => {
+              e.preventDefault(); setDragging(false)
+              if (canEdit) uploadFiles(Array.from(e.dataTransfer.files).filter((f) => f.size > 0))
+            }}
+            style={{
+              borderRadius: 8, transition: 'all .15s', minHeight: 200,
+              outline: dragging ? '2px dashed #0d9488' : 'none',
+              background: dragging ? '#e6fffb' : undefined, padding: dragging ? 6 : 0,
+            }}
+          >
+            {uploads.map((u) => (
+              <div key={u.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <Typography.Text ellipsis style={{ maxWidth: 300, fontSize: 13 }}>⬆ {u.name}</Typography.Text>
+                <Progress percent={u.percent} size="small" style={{ flex: 1, maxWidth: 340 }} />
+              </div>
+            ))}
+            <Table
+              size="small" rowKey="id" dataSource={rows} pagination={false}
+              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
+              rowSelection={canEdit ? { selectedRowKeys: checked, onChange: (k) => setChecked(k as number[]) } : undefined}
+              columns={[
+                {
+                  title: '名称', dataIndex: 'name', ellipsis: true,
+                  render: (_, it) => (
+                    <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
+                      {KIND_ICON[it.kind]} {it.name}
+                    </a>
+                  ),
+                },
+                { title: '大小', dataIndex: 'size', width: 100, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
+                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v) => fmtTime(v) },
+                { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
+                {
+                  title: '操作', width: 190,
+                  render: (_, it) => (
+                    <AntSpace size={4}>
+                      {it.kind !== 'folder' && <a onClick={() => setPreview(it)}>打开</a>}
+                      {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
+                        <a href={`/api/items/${it.id}/download`}>下载</a>
+                      )}
+                      {canEdit && <a onClick={() => rename(it)}>重命名</a>}
+                      {canEdit && <a onClick={() => setMoving([it])}>移动</a>}
+                      {canEdit && <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}>删除</a>}
+                    </AntSpace>
+                  ),
+                },
+              ]}
+            />
+          </div>
+
+          {/* 预览抽屉:文档编辑器 / 视频播放 / PDF·图片预览 / 版本历史 */}
+          <Drawer
+            open={!!preview} onClose={() => setPreview(null)} width="62%" destroyOnHidden
+            title={preview ? `${KIND_ICON[preview.kind]} ${preview.name}` : ''}
+          >
+            {preview && (
+              <ItemPanel
+                key={preview.id} item={preview} canEdit={canEdit}
+                noDownload={cur.my_role === 'viewer' && cur.viewer_no_download}
+                onChanged={refresh}
+              />
+            )}
+          </Drawer>
+
+          {/* 移动目标选择:只列本空间的文件夹 */}
+          <Modal
+            open={!!moving} title={`移动 ${moving?.length ?? 0} 项到…`} okText="移动"
+            onCancel={() => setMoving(null)}
+            onOk={() => doMove(moveDest ?? null)}
+          >
+            <TreeSelect
+              style={{ width: '100%' }} value={moveDest} onChange={setMoveDest} placeholder="选择目标文件夹"
+              treeDefaultExpandAll
+              treeData={[{
+                value: null as unknown as number, title: `📚 ${cur.name}(根目录)`,
+                children: folderTree(items, null, moving?.map((m) => m.id) ?? []),
+              }]}
+            />
+          </Modal>
           <GrantsModal space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
-        </div>
+        </Card>
       ) : (
         <Card style={{ flex: 1 }}>
           <Empty description="选择或新建一个空间" image={Empty.PRESENTED_IMAGE_SIMPLE} />
@@ -447,9 +539,27 @@ export function SpacesView({ me }: { me: Me | null }) {
   )
 }
 
-/// 文档/文件面板:doc = 在线编辑 + 版本;file/video = 下载 + 元信息。
-function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }: {
-  item: Item; canEdit: boolean; noDownload: boolean; onChanged: () => void; onRename: () => void; onDelete: () => void
+/// 移动目标树:只要文件夹,且**排除被移动项自身及其子树**(否则移进自己 = 整棵树消失,
+/// 后端也有递归 CTE 防环兜底,这里先在 UI 上不给选)。
+type FolderNode = { value: number; title: string; children: FolderNode[] }
+function folderTree(items: Item[], parent: number | null, exclude: number[]): FolderNode[] {
+  const blocked = new Set(exclude)
+  const isBlocked = (it: Item): boolean => {
+    let p: number | null = it.id
+    while (p != null) {
+      if (blocked.has(p)) return true
+      p = items.find((x) => x.id === p)?.parent_id ?? null
+    }
+    return false
+  }
+  return items
+    .filter((i) => i.kind === 'folder' && i.parent_id === parent && !isBlocked(i))
+    .map((i) => ({ value: i.id, title: `📁 ${i.name}`, children: folderTree(items, i.id, exclude) }))
+}
+
+/// 内容面板(抽屉里):文档编辑/预览 + 版本;视频播放;PDF/图片预览。
+function ItemPanel({ item, canEdit, noDownload, onChanged }: {
+  item: Item; canEdit: boolean; noDownload: boolean; onChanged: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [text, setText] = useState<string | null>(null)
@@ -470,30 +580,24 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
     message.success('已保存')
     onChanged()
   }
-  const loadVersions = async () => {
-    setVersions(await api<Version[]>(`/api/items/${item.id}/versions`))
-    setVersionsOpen(true)
-  }
 
   return (
-    <Card
-      size="small"
-      style={{ marginTop: 12 }}
-      title={`${KIND_ICON[item.kind]} ${item.name}`}
-      extra={
-        <AntSpace>
-          {item.kind !== 'doc' && (noDownload ? <Tag>本空间 viewer 禁下载</Tag> : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
-          {item.kind === 'doc' && canEdit && <Button size="small" type="primary" disabled={!dirty} onClick={() => save()}>保存</Button>}
-          {item.kind === 'doc' && <Button size="small" onClick={loadVersions}>版本</Button>}
-          {canEdit && <Button size="small" onClick={onRename}>重命名</Button>}
-          {canEdit && (
-            <Popconfirm title="确认删除?" onConfirm={onDelete}>
-              <Button size="small" danger>删除</Button>
-            </Popconfirm>
-          )}
-        </AntSpace>
-      }
-    >
+    <>
+      <AntSpace style={{ marginBottom: 12 }} wrap>
+        {item.kind === 'doc' && canEdit && <Button type="primary" size="small" disabled={!dirty} onClick={() => save()}>保存</Button>}
+        {item.kind === 'doc' && (
+          <Button size="small" onClick={async () => { setVersions(await api<Version[]>(`/api/items/${item.id}/versions`)); setVersionsOpen(true) }}>
+            版本历史
+          </Button>
+        )}
+        {item.kind !== 'doc' && (noDownload
+          ? <Tag>本空间 viewer 禁下载</Tag>
+          : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
+        </Typography.Text>
+      </AntSpace>
+
       {item.kind === 'doc' ? (
         text === null ? '加载中…' : (
           <>
@@ -507,8 +611,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               {canEdit && docView !== 'preview' && (
                 <Input.TextArea
-                  value={text}
-                  autoSize={{ minRows: 16, maxRows: 36 }}
+                  value={text} autoSize={{ minRows: 18, maxRows: 40 }}
                   style={{ flex: 1, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 13 }}
                   placeholder={'# 标题\n\n支持 markdown:**粗体**、列表、表格、`代码`、> 引用…'}
                   onChange={(e) => { setText(e.target.value); setDirty(true) }}
@@ -524,39 +627,24 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
           </>
         )
       ) : item.kind === 'video' ? (
-        <>
-          {/* 播放:同源 /play 判权后 302 到 15min 预签名 GET,Range 拖动由 Garage 206。
-              不带 crossorigin 属性 = no-cors 媒体请求,不需要 CORS(对抗核查 §7.4b-6)。 */}
-          <video controls preload="metadata" style={{ width: '100%', maxHeight: 480, background: '#000' }}
-            src={`/api/items/${item.id}/play`} />
-          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
-            {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传 ·(拖动进度条随点随播;非 mp4/webm 浏览器可能不支持)
-          </Typography.Text>
-        </>
+        <video controls preload="metadata" style={{ width: '100%', maxHeight: 520, background: '#000' }}
+          src={`/api/items/${item.id}/play`} />
       ) : (
-        <>
-          <FilePreview item={item} />
-          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-            {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
-          </Typography.Text>
-        </>
+        <FilePreview item={item} />
       )}
 
       <Drawer title="版本历史" open={versionsOpen} onClose={() => setVersionsOpen(false)} width={420}>
         <List
-          size="small"
-          dataSource={versions}
+          size="small" dataSource={versions}
           renderItem={(v) => (
-            <List.Item
-              actions={canEdit ? [
-                <Popconfirm key="r" title="恢复到此版本?(当前版会自动存为快照)" onConfirm={async () => {
-                  await api(`/api/items/${item.id}/restore/${v.id}`, { method: 'POST' })
-                  setVersionsOpen(false)
-                  const t = await api<string>(`/api/items/${item.id}/content`)
-                  setText(t); setDirty(false); onChanged(); message.success('已恢复')
-                }}><a>恢复</a></Popconfirm>,
-              ] : []}
-            >
+            <List.Item actions={canEdit ? [
+              <Popconfirm key="r" title="恢复到此版本?(当前版会自动存为快照)" onConfirm={async () => {
+                await api(`/api/items/${item.id}/restore/${v.id}`, { method: 'POST' })
+                setVersionsOpen(false)
+                setText(await api<string>(`/api/items/${item.id}/content`)); setDirty(false); onChanged()
+                message.success('已恢复')
+              }}><a>恢复</a></Popconfirm>,
+            ] : []}>
               <List.Item.Meta
                 title={v.label || `版本 #${v.id}`}
                 description={`${v.created_by} · ${new Date(v.created_at).toLocaleString()} · ${fmtSize(v.size)}`}
@@ -565,9 +653,10 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
           )}
         />
       </Drawer>
-    </Card>
+    </>
   )
 }
+
 
 /// 授权管理(admin):user/group × viewer/editor/admin。
 function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
