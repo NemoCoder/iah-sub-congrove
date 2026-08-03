@@ -221,6 +221,85 @@ const MERGE_GAP_SEC: f64 = 1.2;
 /// 停顿超过它无条件断(whisper 的 long_pause 惯例)。
 const HARD_GAP_SEC: f64 = 3.0;
 
+/// ★用全文把分段的句界重排★(2026-08-04 实测,FunASR 1.4.0 仍有):
+/// `sentence_info` 的句界**系统性右移一个字**——「我来的是柯老师来了文本关系然。」「后呢这，」
+/// 「个就是我跟徐晨老师讨论之后呢我,」;而**同一次响应里的全文 `text` 标点完全正确**——
+/// 「……文本关系。然后呢,这个就是我跟徐晨老师讨论之后呢,我们……」。
+/// 即:错的只是分段索引,不是识别结果。所以**文本只信全文、时间轴只信分段**:
+/// 去掉标点与空白后两条字符流逐字相同(实测 1476 段全程对得上),按字符位置把全文重新切段,
+/// 每个字的时间在其所属分段内线性插值。
+///
+/// 为什么不在 congrove 侧「凑合合并」:合并只能拼接**同一说话人的相邻段**,而错位往往正好
+/// 发生在说话人标签翻转处(「第一。」spk0 /「步,」spk3),合并被阻断 → 留下 2 字 cue 一闪而过。
+/// 根治只能回到字符级。⚠ 对不上就返回 None,调用方退回原分段——宁可保守也不能把时间轴搞错。
+pub fn realign(text: &str, segs: &[Segment]) -> Option<Vec<Segment>> {
+    if text.trim().is_empty() || segs.is_empty() { return None }
+    // 分段侧:每个「实字」(非标点非空白)一条 (字, 起, 止, 说话人),段内按字数线性插值。
+    let mut chars: Vec<(char, f64, f64, Option<String>)> = Vec::with_capacity(text.chars().count());
+    for s in segs {
+        let content: Vec<char> = s.text.chars().filter(|c| !is_skippable(*c)).collect();
+        if content.is_empty() { continue }
+        let (n, span) = (content.len() as f64, (s.end - s.start).max(0.0));
+        for (i, c) in content.into_iter().enumerate() {
+            let a = s.start + span * (i as f64) / n;
+            chars.push((c, a, a + span / n, s.speaker.clone()));
+        }
+    }
+    // 全文侧:实字必须与分段侧逐字相同,否则说明两边不是同一次响应(或热词替换只改了一边)。
+    let full: Vec<char> = text.chars().collect();
+    // ⚠ 比对**忽略大小写**:全文里句首英文会被大写(「……都没有听清Ok就是」),分段里是原样小写
+    //   (「听清ok就是」)。实测 17338 个实字里只有这一类差异,不放过就会整段退回原分段(白修)。
+    if full.iter().filter(|c| !is_skippable(**c)).count() != chars.len() { return None }
+    if full.iter().filter(|c| !is_skippable(**c)).zip(chars.iter())
+        .any(|(a, b)| !a.eq_ignore_ascii_case(&b.0)) { return None }
+
+    // 按标点把全文切成细单元(与 sentence_info 本该给的粒度一致),再交给既有的两套合并阈值。
+    let mut out: Vec<Segment> = Vec::new();
+    let (mut buf, mut spks) = (String::new(), Vec::<Option<String>>::new());
+    let (mut start, mut end, mut k) = (0.0_f64, 0.0_f64, 0usize);
+    for c in full {
+        if !is_skippable(c) {
+            let (_, a, b, spk) = &chars[k];
+            if buf.chars().all(is_skippable) { start = *a }   // 单元的第一个实字定起点
+            end = *b;
+            spks.push(spk.clone());
+            k += 1;
+        }
+        buf.push(c);
+        if is_break(c) && !buf.chars().all(is_skippable) {
+            out.push(Segment { start, end, text: buf.trim().to_string(), speaker: majority(&spks) });
+            buf.clear(); spks.clear();
+        }
+    }
+    if !buf.chars().all(is_skippable) {
+        out.push(Segment { start, end, text: buf.trim().to_string(), speaker: majority(&spks) });
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// 对齐时忽略的字符:标点与空白。全文不带空格而分段在英文两侧补了空格
+/// (「这个AI的」vs「这个 AI 的」),所以空白也必须跳过,否则字符流对不上。
+fn is_skippable(c: char) -> bool {
+    c.is_whitespace() || c.is_ascii_punctuation() || matches!(c,
+        '。' | '，' | '、' | '；' | '：' | '？' | '！' | '…' | '—' | '～'
+        | '“' | '”' | '‘' | '’' | '（' | '）' | '《' | '》' | '〈' | '〉' | '「' | '」' | '·')
+}
+
+/// 细单元的断点:句末与句中标点都断——粒度交给 merge_paragraphs / merge_cues 去收。
+fn is_break(c: char) -> bool {
+    matches!(c, '。' | '，' | '？' | '！' | '；' | '、' | '：' | '.' | ',' | '?' | '!' | ';')
+}
+
+/// 一个单元里出现最多的说话人(错位处会混入邻座一两个字,取众数才稳)。
+fn majority(spks: &[Option<String>]) -> Option<String> {
+    let mut best: Option<(String, usize)> = None;
+    for s in spks.iter().flatten() {
+        let n = spks.iter().flatten().filter(|x| *x == s).count();
+        if best.as_ref().is_none_or(|(_, m)| n > *m) { best = Some((s.clone(), n)) }
+    }
+    best.map(|(s, _)| s)
+}
+
 /// 逐字稿:合成可读段落。
 pub fn merge_paragraphs(segs: &[Segment]) -> Vec<Segment> {
     merge_with(segs, 200, 60.0, false)
@@ -438,3 +517,56 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
     G(dir)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(start: f64, end: f64, text: &str, spk: &str) -> Segment {
+        Segment { start, end, text: text.into(), speaker: Some(spk.into()) }
+    }
+
+    /// 样本取自 2026-08-04 线上真实转写(item 20,30 分钟处):句界右移一字、
+    /// 且正好在说话人翻转处断开(「第一。」spk0 /「步,」spk3),是最坏的那种。
+    #[test]
+    fn realign_修正右移一字的句界() {
+        let full = "是说接下来我们分两步。第一步，就是说如果说我们评出来这个大模型不错。";
+        let segs = vec![
+            seg(1824.0, 1826.0, "是说接下来我们分两步第一。", "spk0"),
+            seg(1826.0, 1826.2, "步，", "spk3"),
+            seg(1826.8, 1830.0, "就是说如果说我们评", "spk3"),
+            seg(1830.0, 1835.7, "出来这个大模型不错。", "spk3"),
+        ];
+        let out = realign(full, &segs).expect("实字流一致,必须能对齐");
+        let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["是说接下来我们分两步。", "第一步，", "就是说如果说我们评出来这个大模型不错。"]);
+        // 时间轴仍来自分段:第一个单元不能超出它覆盖的字所在的分段范围。
+        assert!(out[0].start >= 1824.0 && out[0].end <= 1826.0 + 0.01);
+        assert!(out[1].start >= 1824.0 && out[1].end <= 1826.2 + 0.01);
+        // 说话人取众数:「第一步,」三个字里 spk0 占两个。
+        assert_eq!(out[1].speaker.as_deref(), Some("spk0"));
+    }
+
+    /// 全文不带空格、分段在英文两侧补空格——空白必须跳过,否则对不上就白白退回原分段。
+    #[test]
+    fn realign_忽略英文两侧的空格() {
+        let full = "不熟悉这个AI的范式。";
+        let segs = vec![seg(0.0, 2.0, "不熟悉这个 AI 的范式。", "spk0")];
+        let out = realign(full, &segs).expect("空白不该算进字符流");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "不熟悉这个AI的范式。");
+    }
+
+    /// 全文句首英文被大写、分段里是小写——线上 17338 字里唯一的一类差异,必须能对上。
+    #[test]
+    fn realign_忽略英文大小写() {
+        let out = realign("都没有听清Ok就是。", &[seg(0.0, 2.0, "都没有听清ok就是。", "spk0")]);
+        assert_eq!(out.expect("大小写不该算分歧").len(), 1);
+    }
+
+    /// 两边不是同一次响应(字都对不上)时必须放弃,绝不能拿错时间轴硬拼。
+    #[test]
+    fn realign_字符流不一致时放弃() {
+        assert!(realign("完全不同的一句话。", &[seg(0.0, 1.0, "原来那句。", "spk0")]).is_none());
+    }
+}

@@ -283,7 +283,8 @@ pub async fn analysis(
     let tr = tr.map(|(text, segs, dur)| {
         let merged = segs
             .and_then(|v| serde_json::from_value::<Vec<crate::media_ai::Segment>>(v).ok())
-            .map(|v| crate::media_ai::merge_paragraphs(&v))
+            // 同字幕:先按全文重排句界,再合并成可读段落。
+            .map(|v| crate::media_ai::merge_paragraphs(&crate::media_ai::realign(&text, &v).unwrap_or(v)))
             .and_then(|v| serde_json::to_value(v).ok());
         (text, merged, dur)
     });
@@ -309,13 +310,17 @@ pub async fn subtitles(
 ) -> AppResult<Response> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let segs: Option<serde_json::Value> = sqlx::query_scalar("SELECT segments FROM transcripts WHERE item_id=$1")
-        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    let row: Option<(String, Option<serde_json::Value>)> =
+        sqlx::query_as("SELECT text, segments FROM transcripts WHERE item_id=$1")
+            .bind(iid).fetch_optional(&state.pool).await?;
+    let (text, segs) = row.map(|(t, s)| (t, s)).unwrap_or_default();
     // 字幕用**更短的**合并阈值:Netflix 简中规范单行 16 字 ×2 行 = 32 字、时长 1.2~7 秒。
     // 逐字稿那套 200 字的段落直接当字幕会糊满屏(v0.3.19 的错,已分开)。
     let fine: Vec<crate::media_ai::Segment> = segs
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
+    // 先用全文把句界重排(ASR 的 sentence_info 句界右移一字,见 media_ai::realign),对不上就用原分段。
+    let fine = crate::media_ai::realign(&text, &fine).unwrap_or(fine);
     let cues = crate::media_ai::merge_cues(&fine);
     let mut out = String::from("WEBVTT\n\n");
     for (i, s) in cues.iter().enumerate() {

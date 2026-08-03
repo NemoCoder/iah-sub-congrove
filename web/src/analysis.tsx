@@ -21,7 +21,12 @@ function clock(s: number) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}` : `${m}:${String(ss).padStart(2, '0')}`
 }
 
-export function Analysis({ item, onSeek }: { item: Item; onSeek: (t: number) => void }) {
+export function Analysis({ item, onSeek, onTranscript }: {
+  item: Item; onSeek: (t: number) => void
+  /// 转写就绪时回调一次:播放器据此重挂 <track>——它只在挂载那一刻拉一次 vtt,
+  /// 分析跑完时那份是空的,不重挂就永远没字幕(2026-08-04 反馈:字幕只在后开的独立窗口有)。
+  onTranscript?: (segs: number) => void
+}) {
   const { message } = AntdApp.useApp()
   const [d, setD] = useState<Data | null>(null)
   const [tab, setTab] = useState('brief')
@@ -30,7 +35,12 @@ export function Analysis({ item, onSeek }: { item: Item; onSeek: (t: number) => 
   const load = useCallback(async () => {
     try {
       const r = await api<Data>(`/api/items/${item.id}/analysis`)
-      setD(r)
+      setD((prev) => {
+        const before = prev?.transcript?.segments?.length ?? 0
+        const now = r.transcript?.segments?.length ?? 0
+        if (now > 0 && now !== before) onTranscript?.(now)
+        return r
+      })
       // 跑着就 5s 轮询一次,停了就停轮询(别让空闲页面一直打后端)。
       const running = r.job?.status === 'queued' || r.job?.status === 'running'
       if (running && timer.current == null) {
@@ -39,7 +49,7 @@ export function Analysis({ item, onSeek }: { item: Item; onSeek: (t: number) => 
         window.clearInterval(timer.current); timer.current = null
       }
     } catch { /* 无权限/未就绪都静默,不打扰播放 */ }
-  }, [item.id])
+  }, [item.id, onTranscript])
 
   useEffect(() => {
     void load()

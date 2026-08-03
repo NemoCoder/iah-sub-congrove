@@ -1,7 +1,7 @@
 // 视频播放器:续播(位置存后端)+ 画中画 + 独立窗口。
 // 位置为什么存后端而非 localStorage:换设备/清缓存/换浏览器都还在,独立播放窗与主窗口天然一致。
 import { App as AntdApp, Button, Space as AntSpace, Tag, Tooltip } from 'antd'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type Item } from './api'
 import { Analysis } from './analysis'
 
@@ -19,6 +19,10 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
   const [resumed, setResumed] = useState<number | null>(null) // 提示"已从 x:xx 继续"
   const [pipOk, setPipOk] = useState(false)
   const [hoverTools, setHoverTools] = useState(false) // 悬停画面才把右上角两个按钮点亮
+  // 字幕轨版本:<track> 只在挂载时拉一次 vtt,分析没跑完时那份是空的。转写就绪后 +1 → 重挂 → 重新拉。
+  const [vttVer, setVttVer] = useState(0)
+  const [hasCues, setHasCues] = useState(false) // vtt 里真有 cue 才给字幕开关(没转写就别摆个死按钮)
+  const [cc, setCc] = useState(true)
 
   useEffect(() => {
     setPipOk(typeof document !== 'undefined' && 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled)
@@ -94,13 +98,32 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
         >
           {/* 实时字幕:转写好了才有内容(没有则轨为空,播放器不显示字幕按钮)。
               同源 vtt,浏览器原生渲染,自带开关与样式——不用自己画字幕层。 */}
-          <track kind="subtitles" srcLang="zh" label="转写字幕" default src={`/api/items/${item.id}/subtitles.vtt`} />
+          <track
+            key={vttVer} kind="subtitles" srcLang="zh" label="转写字幕" default
+            src={`/api/items/${item.id}/subtitles.vtt?v=${vttVer}`}
+            onLoad={() => {
+              const t = ref.current?.textTracks?.[0]
+              setHasCues(!!t?.cues?.length)
+              if (t) t.mode = cc ? 'showing' : 'hidden'
+            }}
+          />
         </video>
         {!standalone && (
           <AntSpace size={6} style={{
             position: 'absolute', right: 10, top: 10, zIndex: 2,
             opacity: hoverTools ? 1 : 0.35, transition: 'opacity .2s',
           }}>
+            {/* ★自己给一个字幕开关★:原生 CC 键在窄播放器(抽屉 62% 宽)里会被折进 ⋮ 溢出菜单,
+                用户找不到——「字幕只有独立窗口才有」的一半原因就是这个(2026-08-04 反馈)。 */}
+            {hasCues && (
+              <Tooltip title={cc ? '关闭字幕' : '打开字幕'} placement="bottom">
+                <Button size="small" shape="circle" type={cc ? 'primary' : 'default'} onClick={() => {
+                  const t = ref.current?.textTracks?.[0]
+                  if (t) t.mode = cc ? 'hidden' : 'showing'
+                  setCc(!cc)
+                }}>字</Button>
+              </Tooltip>
+            )}
             <Tooltip title="在新窗口播放" placement="bottom">
               <Button size="small" shape="circle" onClick={() => {
                 // ★开新窗口前先把这边停掉★:否则两个播放器同时出声,用户暂停了这个还听见那个(2026-08-03 反馈)。
@@ -122,7 +145,11 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
         )}
       </div>
       {/* AI 纪要:点转写可跳到视频对应时刻(同一个 <video> 实例) */}
-      <Analysis item={item} onSeek={(t) => { if (ref.current) { ref.current.currentTime = t; void ref.current.play() } }} />
+      <Analysis
+        item={item}
+        onSeek={(t) => { if (ref.current) { ref.current.currentTime = t; void ref.current.play() } }}
+        onTranscript={useCallback(() => setVttVer((v) => v + 1), [])}
+      />
     </>
   )
 }
