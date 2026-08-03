@@ -64,10 +64,10 @@ pub fn build_router(state: AppState) -> Router {
     // 慢路由:流式上传/下载 + 代理分片。body limit 整个解除(单文件不限大小,真闸是空间配额),超时 2h。
     let slow = Router::new()
         .route("/spaces/{id}/upload", post(items::upload).layer(DefaultBodyLimit::disable()))
-        // 代理分片:单片 32MiB,给 64MiB 上限留足 multipart/编码余量。
+        // 代理分片:单片 8MiB,上限给 32MiB 余量(防前端换算/编码开销顶格)。
         .route(
             "/items/{id}/media/part",
-            put(media::part).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+            put(media::part).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/items/{id}/download", get(items::download))
         .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(2 * 3600)));

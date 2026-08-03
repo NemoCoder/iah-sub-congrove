@@ -60,9 +60,20 @@ async function directUpload(
       const report = (loaded: number) => onProgress(Math.round(((sent + loaded) / file.size) * 100))
       // presigned:浏览器直发 Garage(最快,要过 s3api 证书关);
       // proxy:同源发给我们再转推 S3(绕开证书关,也绕开入口层对大请求的限——每片只有 32MiB)。
-      const etag = mode === 'presigned'
-        ? await putPart(part_urls[i], blob, report)
-        : await putPart(`/api/items/${item_id}/media/part?upload_id=${encodeURIComponent(upload_id)}&part_number=${i + 1}`, blob, report, true)
+      // 每片重试 3 次(1s/2s 退避):公网入口层偶发掐断时不必整个文件重来。
+      let etag = ''
+      for (let attempt = 1; ; attempt++) {
+        try {
+          etag = mode === 'presigned'
+            ? await putPart(part_urls[i], blob, report)
+            : await putPart(`/api/items/${item_id}/media/part?upload_id=${encodeURIComponent(upload_id)}&part_number=${i + 1}`, blob, report, true)
+          break
+        } catch (pe) {
+          if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败(已重试 3 次):${(pe as Error).message}`)
+          await new Promise((r) => setTimeout(r, attempt * 1000))
+          report(0)
+        }
+      }
       sent += blob.size
       parts.push({ part_number: i + 1, etag })
     }

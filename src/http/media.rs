@@ -25,9 +25,10 @@ use crate::http::items::space_quota_used;
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
-/// 直传 part 大小(前端按此切片)。32MiB:10GB 录屏 = 320 片,兼顾请求数与失败重传粒度;
-/// ≥5MiB 的 S3 下限,末片豁免。
-pub const PART_SIZE: i64 = 32 * 1024 * 1024;
+/// 直传 part 大小(前端按此切片)。**8MiB**(2026-08-03 从 32MiB 降):S3 下限是 5MiB,
+/// 而公网入口层对大请求体/长请求会掐断(502,实测 pod 自身收 300MB 无碍)——片越小越容易
+/// 穿过任意代理,单片失败重传代价也小。10GB 录屏 = 1280 片,离 S3 的万片上限还远。
+pub const PART_SIZE: i64 = 8 * 1024 * 1024;
 /// part URL 有效期:GB 级慢链路一传几小时,给 6h(SigV4 上限 7 天,富余)。
 const PART_URL_TTL: Duration = Duration::from_secs(6 * 3600);
 /// 播放/下载 GET 短时效:每次播放都经判权重签,15 分钟够 <video> 开流(开流后不再验 URL)。
@@ -111,7 +112,7 @@ pub struct PartQuery {
 /// 为什么要它(2026-08-03 线上事故):浏览器直传要过 s3api 的证书关(公网中转层还没套真证书),
 /// 回退到「整个大文件一次 POST 给后端」又会被公网入口层在长/大请求上掐断成 502
 /// (实测:pod 自身收 300MB 完全正常,是入口层的限)。**分片走同源**两边的坑都绕开:
-/// 每个请求只有一片(32MiB),任何代理都过得去;失败只重这一片。
+/// 每个请求只有一片(8MiB),任何代理都过得去;失败只重这一片(前端另有 3 次重试)。
 pub async fn part(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
