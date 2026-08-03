@@ -278,6 +278,15 @@ pub async fn analysis(
     let tr: Option<(String, Option<serde_json::Value>, Option<f64>)> = sqlx::query_as(
         "SELECT text, segments, duration_sec FROM transcripts WHERE item_id=$1",
     ).bind(iid).fetch_optional(&state.pool).await?;
+    // 库里存的是 ASR 原始细分段(按逗号结句,平均 2.4s/14 字);读取时才合并成可读段落,
+    // 这样调阈值不必重跑 ASR(调研结论,见 docs/VIDEO-SUMMARY.md §10)。
+    let tr = tr.map(|(text, segs, dur)| {
+        let merged = segs
+            .and_then(|v| serde_json::from_value::<Vec<crate::media_ai::Segment>>(v).ok())
+            .map(|v| crate::media_ai::merge_paragraphs(&v))
+            .and_then(|v| serde_json::to_value(v).ok());
+        (text, merged, dur)
+    });
     let sums: Vec<(String, String)> = sqlx::query_as("SELECT kind, content FROM summaries WHERE item_id=$1")
         .bind(iid).fetch_all(&state.pool).await?;
     Ok(Json(json!({
@@ -302,16 +311,20 @@ pub async fn subtitles(
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
     let segs: Option<serde_json::Value> = sqlx::query_scalar("SELECT segments FROM transcripts WHERE item_id=$1")
         .bind(iid).fetch_optional(&state.pool).await?.flatten();
-    let arr = segs.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    // 字幕用**更短的**合并阈值:Netflix 简中规范单行 16 字 ×2 行 = 32 字、时长 1.2~7 秒。
+    // 逐字稿那套 200 字的段落直接当字幕会糊满屏(v0.3.19 的错,已分开)。
+    let fine: Vec<crate::media_ai::Segment> = segs
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let cues = crate::media_ai::merge_cues(&fine);
     let mut out = String::from("WEBVTT\n\n");
-    for (i, s) in arr.iter().enumerate() {
-        let st = s.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let en = s.get("end").and_then(|v| v.as_f64()).unwrap_or(st + 2.0);
-        let txt = s.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+    for (i, s) in cues.iter().enumerate() {
+        let txt = s.text.trim();
         if txt.is_empty() { continue }
-        let spk = s.get("speaker").and_then(|v| v.as_str()).unwrap_or("");
-        let prefix = if spk.is_empty() { String::new() } else { format!("{spk}: ") };
-        out.push_str(&format!("{}\n{} --> {}\n{prefix}{txt}\n\n", i + 1, vtt_time(st), vtt_time(en.max(st + 0.5))));
+        // 时长下限 1.2s:太短的 cue 一闪而过读不完(Netflix 硬下限 5/6 秒,中文取 1.2)。
+        let en = s.end.max(s.start + 1.2);
+        let prefix = s.speaker.as_deref().map(|k| format!("{k}: ")).unwrap_or_default();
+        out.push_str(&format!("{}\n{} --> {}\n{prefix}{txt}\n\n", i + 1, vtt_time(s.start), vtt_time(en)));
     }
     Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8")], out).into_response())
 }

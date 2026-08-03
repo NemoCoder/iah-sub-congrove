@@ -42,7 +42,7 @@ const MAP_CHUNK_CHARS: usize = 8_000;
 /// LLM 调用重试:网关偶发 502/上游读超时是常态(模型排队/缩零冷启),重试比整个任务失败便宜。
 const LLM_RETRIES: u32 = 3;
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize, Clone)]
 pub struct Segment {
     pub start: f64,
     pub end: f64,
@@ -142,8 +142,9 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
         .ok_or_else(|| anyhow!("未注入 IAH_BASE_URL,无法调用语音转写"))?;
     // ★整段一次送★:说话人聚类与句子边界都由服务端在全局做,这是标签跨段一致的前提。
     stage(&state.pool, job_id, "语音转写(整段)", 25).await;
+    let mut asr_full_text = String::new();
     let mut segments: Vec<Segment> = match transcribe(state, &asr_base, &audio, &end_user).await {
-        Ok(v) => v,
+        Ok((v, full)) => { asr_full_text = full; v }
         Err(e) => {
             // 整段失败(超时/体积/服务端限制)才回退切段——代价是说话人标签跨段不可比,
             // 所以回退时把 speaker 全部抹掉,免得给用户看错误的"谁在说"。
@@ -155,8 +156,9 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             for (i, part) in parts.iter().enumerate() {
                 stage(&state.pool, job_id, &format!("语音转写 {}/{}", i + 1, total), 30 + (i as i32 * 45 / total as i32)).await;
                 let offset = (i as u32 * FALLBACK_CHUNK_SEC) as f64;
-                let mut segs = transcribe(state, &asr_base, part, &end_user).await
+                let (mut segs, full) = transcribe(state, &asr_base, part, &end_user).await
                     .with_context(|| format!("转写第 {} 段", i + 1))?;
+                if !full.trim().is_empty() { asr_full_text.push_str(&full); asr_full_text.push('\n'); }
                 for s in &mut segs { s.start += offset; s.end += offset; s.speaker = None; }
                 acc.extend(segs);
                 let _ = tokio::fs::remove_file(part).await;
@@ -164,12 +166,19 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             acc
         }
     };
-    // 合并碎片:sentence_info 按标点分句,中文口语逗号极多 → 平均 2.4s/14 字,读起来是碎片。
-    segments = merge_segments(segments);
+    // ★存原始细分段★(不在写库时合并):合并规则按用途不同(逐字稿要长、字幕要短),
+    // 放在读取时做,调阈值不必重跑 ASR。调研结论见 docs/VIDEO-SUMMARY.md §10。
+    segments.retain(|s| !s.text.trim().is_empty());
     if segments.is_empty() {
         return Err(anyhow!("转写结果为空(录屏可能没有人声)"));
     }
-    let full_text: String = segments.iter().map(|s| s.text.trim()).collect::<Vec<_>>().join("\n");
+    // 喂 LLM 用**服务端返回的全文**而不是拼分段:标点是对整个输入一次性做的,
+    // 全文断句质量高于逐段拼接(FunASR 源码:所有 VAD 段文本 join 后一次 punc 推理)。
+    let full_text: String = if asr_full_text.trim().chars().count() > 20 {
+        asr_full_text.clone()
+    } else {
+        segments.iter().map(|s| s.text.trim()).collect::<Vec<_>>().join("\n")
+    };
     let duration = segments.last().map(|s| s.end);
     sqlx::query(
         "INSERT INTO transcripts (item_id, text, segments, model, duration_sec) VALUES ($1,$2,$3,$4,$5)
@@ -200,29 +209,51 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     Ok(())
 }
 
-/// 把 VAD/标点级碎片合并成可读段落:同一说话人、间隔小于 MERGE_GAP 的相邻句子并成一段,
-/// 直到达到 MERGE_MAX_CHARS 或 MERGE_MAX_SEC。**时间戳保留合并区间的首尾**,点击跳转依然准。
-/// 说话人一变就断开(这正是"谁说了什么"的分界)。
+/// 合并规则(2026-08-03 深调研落地,阈值全部有出处):
+/// **两套不同的输出,不能共用一套阈值**——
+/// - 逐字稿/段落:读的人可以慢慢看,合到 200 字/60 秒,信息密度高;
+/// - 字幕 cue:Netflix 简中规范 **单行 16 字 × 最多 2 行 = 32 字**、时长 1.2~7 秒、
+///   **≤9 字/秒**;超了就是糊屏,再合并只会更糟(我 v0.3.19 用 120 字喂字幕是错的)。
+/// 共同的硬规则:**说话人一变无条件断开**(优先级高于标点),这是"谁说了什么"的分界。
+/// 眼动实验(PMC7901653):断错位置让回看次数 +48%、主观疲劳显著上升,但理解率不变——
+/// 所以宁可段短,也别在词中间断。
 const MERGE_GAP_SEC: f64 = 1.2;
-const MERGE_MAX_CHARS: usize = 120;
-const MERGE_MAX_SEC: f64 = 30.0;
+/// 停顿超过它无条件断(whisper 的 long_pause 惯例)。
+const HARD_GAP_SEC: f64 = 3.0;
 
-fn merge_segments(segs: Vec<Segment>) -> Vec<Segment> {
-    let mut out: Vec<Segment> = Vec::with_capacity(segs.len() / 4 + 1);
+/// 逐字稿:合成可读段落。
+pub fn merge_paragraphs(segs: &[Segment]) -> Vec<Segment> {
+    merge_with(segs, 200, 60.0, false)
+}
+
+/// 字幕 cue:Netflix 简中上限(32 字/7 秒),且不跨句末标点合并。
+pub fn merge_cues(segs: &[Segment]) -> Vec<Segment> {
+    merge_with(segs, 32, 7.0, true)
+}
+
+fn merge_with(segs: &[Segment], max_chars: usize, max_sec: f64, stop_at_sentence_end: bool) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::with_capacity(segs.len() / 3 + 1);
     for s in segs {
         let t = s.text.trim();
         if t.is_empty() { continue }
-        match out.last_mut() {
-            Some(last)
-                if last.speaker == s.speaker
+        let mergeable = match out.last() {
+            Some(last) => {
+                last.speaker == s.speaker
                     && s.start - last.end <= MERGE_GAP_SEC
-                    && last.text.chars().count() + t.chars().count() <= MERGE_MAX_CHARS
-                    && s.end - last.start <= MERGE_MAX_SEC =>
-            {
-                last.text.push_str(t);
-                last.end = s.end;
+                    && s.start - last.end < HARD_GAP_SEC
+                    && last.text.chars().count() + t.chars().count() <= max_chars
+                    && s.end - last.start <= max_sec
+                    // 字幕不跨句末标点合并:一条 cue 就是一句话,读起来才自然
+                    && !(stop_at_sentence_end && last.text.ends_with(['。', '?', '？', '!', '！']))
             }
-            _ => out.push(Segment { start: s.start, end: s.end, text: t.to_string(), speaker: s.speaker }),
+            None => false,
+        };
+        if mergeable {
+            let last = out.last_mut().unwrap();
+            last.text.push_str(t);
+            last.end = s.end;
+        } else {
+            out.push(Segment { start: s.start, end: s.end, text: t.to_string(), speaker: s.speaker.clone() });
         }
     }
     out
@@ -272,7 +303,7 @@ async fn split_audio(wav: &Path, dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 /// 调 ASR:OpenAI 兼容的 `/audio/transcriptions`(multipart)。
 /// 返回带时间戳的分段;若服务只回纯文本,退化为单段(start=0)。
-async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -> anyhow::Result<Vec<Segment>> {
+async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -> anyhow::Result<(Vec<Segment>, String)> {
     let bytes = tokio::fs::read(part).await?;
     // 契约见 AI_Talks 0124:file / model=funasr / hotword(空格分隔) / speaker。
     let mut form = reqwest::multipart::Form::new()
@@ -303,15 +334,16 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -
     #[derive(serde::Deserialize)]
     struct Resp { text: Option<String>, segments: Option<Vec<Seg>>, #[allow(dead_code)] duration: Option<f64> }
     let r: Resp = resp.json().await.context("解析 ASR 响应")?;
+    let full = r.text.clone().unwrap_or_default();
     if let Some(segs) = r.segments {
-        return Ok(segs.into_iter()
+        let v: Vec<Segment> = segs.into_iter()
             .map(|s| Segment { start: s.start.unwrap_or(0.0), end: s.end.unwrap_or(0.0), text: s.text, speaker: s.speaker })
             .filter(|s| !s.text.trim().is_empty())
-            .collect());
+            .collect();
+        if !v.is_empty() { return Ok((v, full)) }
     }
-    let t = r.text.unwrap_or_default();
-    if t.trim().is_empty() { return Ok(vec![]) }
-    Ok(vec![Segment { start: 0.0, end: 0.0, text: t, speaker: None }]) // 无分段信息时退化成一整段
+    if full.trim().is_empty() { return Ok((vec![], full)) }
+    Ok((vec![Segment { start: 0.0, end: 0.0, text: full.clone(), speaker: None }], full))
 }
 
 /// 长转写压缩:超过阈值就 map-reduce(分块摘要再合并),避免把 10 万字硬塞进上下文。
