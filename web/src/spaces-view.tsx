@@ -6,16 +6,34 @@ import {
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { MarkdownView, FilePreview, KIND_ICON, fmtSize } from './preview'
+import { MarkdownView, FilePreview, itemIcon, fmtSize } from './preview'
 import { VideoPlayer, openViewer } from './video-player'
-import { DIRECT_THRESHOLD, directUpload, probeDirect, xhrUpload } from './upload'
+import {
+  CANCELED, DIRECT_THRESHOLD, cancelUpload, directUpload, newCtl, probeDirect, xhrUpload, type UploadCtl,
+} from './upload'
+
+/// ★同时最多传几个★(2026-08-03 用户反馈:一次拖 50 个文件不能 50 并发)。
+/// 取 3:再多也吃不到带宽(单文件内部已按 8MiB 分片顺序发满管道),反而会 ①把浏览器每域 6 连接
+/// 全占死,连列表刷新都排不上队;②预签直传时 50 份 begin 同时打 registry/Garage。
+/// 其余排队,队列里的任务用户也能取消(点取消直接出队,不占位)。
+const UPLOAD_CONCURRENCY = 3
+
+/// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
+type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl }
 import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
 
+/// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
+/// 「无权限」是**没有任何授权**的第四态,库里不存它——`effective = null` 即是。
+/// 库里存的仍是 viewer/editor/admin:迁移只增不改,换值要重写 space_grants 全表并同步 perm.rs,
+/// 收益只是换个字面。所以只在这里做**唯一一处**「存储值 → 用词」映射,别在别处再写第二套。
+const ROLE_LABEL: Record<Role, string> = { admin: '管理员', editor: '可编辑', viewer: '只读' }
+const NO_ACCESS = '无权限'
 const ROLE_TAG: Record<Role, ReactNode> = {
-  admin: <Tag color="purple">admin</Tag>,
-  editor: <Tag color="green">editor</Tag>,
-  viewer: <Tag>viewer</Tag>,
+  admin: <Tag color="purple">{ROLE_LABEL.admin}</Tag>,
+  editor: <Tag color="green">{ROLE_LABEL.editor}</Tag>,
+  viewer: <Tag>{ROLE_LABEL.viewer}</Tag>,
 }
+const ROLE_OPTIONS = (['viewer', 'editor', 'admin'] as Role[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))
 
 function fmtTime(s: string) {
   const d = new Date(s)
@@ -39,7 +57,7 @@ export function SpacesView({ me }: { me: Me | null }) {
   const [preview, setPreview] = useState<Item | null>(null)
   const [grantsOpen, setGrantsOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
-  const [uploads, setUploads] = useState<{ key: string; name: string; percent: number }[]>([])
+  const [uploads, setUploads] = useState<UpTask[]>([])
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
 
@@ -76,12 +94,30 @@ export function SpacesView({ me }: { me: Me | null }) {
     return out
   }, [cwd, byId])
 
+  // 上传:先整批入队(立刻在表里出现带进度的伪行),再由 UPLOAD_CONCURRENCY 个 worker 取着做。
+  // 上传中的任务在表里占「伪行」:id 取负,靠 Map 反查回任务(rowKey 仍是 id,不用改 Table)。
+  const upRows = useMemo(
+    () => uploads.map((u, i) => ({
+      id: -(i + 1), parent_id: cwd, kind: 'file' as const, name: u.file.name,
+      size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '', updated_at: '',
+    })),
+    [uploads, cwd, me],
+  )
+  const up = (it: Item): UpTask | null => (it.id < 0 ? uploads[-it.id - 1] ?? null : null)
+
   const uploadFiles = async (files: File[]) => {
     if (!cur || !canEdit || !files.length) return
-    for (const f of files) {
-      const key = `${f.name}-${Date.now()}-${Math.random()}`
-      setUploads((u) => [...u, { key, name: f.name, percent: 0 }])
-      const report = (percent: number) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x)))
+    const sid = cur.id, dir = cwd
+    const stamp = Date.now()
+    const tasks: UpTask[] = files.map((f, i) => ({ key: `${stamp}-${i}-${f.name}`, file: f, percent: 0, running: false, ctl: newCtl() }))
+    setUploads((u) => [...u, ...tasks])
+    const patch = (key: string, p: Partial<UpTask>) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, ...p } : x)))
+
+    const runOne = async (t: UpTask) => {
+      if (t.ctl.canceled) return // 排队期间就被取消了,连 begin 都不用发
+      patch(t.key, { running: true })
+      const f = t.file
+      const report = (percent: number) => patch(t.key, { percent })
       try {
         // 选路:大文件/视频走分片(片发给谁由开局探测定),小文件整文件 POST。
         let done = false
@@ -89,24 +125,34 @@ export function SpacesView({ me }: { me: Me | null }) {
         if (big) {
           const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(cur.id, f, cwd, report, direct ? 'presigned' : 'proxy')
+            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl)
           } catch (de) {
-            if (!direct) throw de
+            if (!direct || t.ctl.canceled) throw de
             sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
-            done = await directUpload(cur.id, f, cwd, report, 'proxy')
+            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl)
           }
         }
-        if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${cwd != null ? `?parent_id=${cwd}` : ''}`, f, report)
+        if (!done) await xhrUpload(`/api/spaces/${sid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)
         message.success(`${f.name} 上传完成`)
       } catch (e) {
-        message.error(`${f.name}:${(e as Error).message}`)
+        // 取消是用户自己按的,不当错误刷红(directUpload 的 catch 已顺手 abort 掉半截 multipart)。
+        if (t.ctl.canceled || (e as Error).message === CANCELED) message.info(`${f.name} 已取消`)
+        else message.error(`${f.name}:${(e as Error).message}`)
       } finally {
-        setUploads((u) => u.filter((x) => x.key !== key))
+        setUploads((u) => u.filter((x) => x.key !== t.key))
       }
     }
-    await Promise.all([loadItems(cur.id), loadSpaces()])
+
+    const queue = [...tasks]
+    await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, tasks.length) }, async () => {
+      for (let t = queue.shift(); t; t = queue.shift()) await runOne(t)
+    }))
+    await Promise.all([loadItems(sid), loadSpaces()])
   }
+
+  /// 取消:中断在传的 xhr(排队中的只置标记,worker 取到时跳过),行立刻消失。
+  const cancelOne = (t: UpTask) => { cancelUpload(t.ctl); if (!t.running) setUploads((u) => u.filter((x) => x.key !== t.key)) }
 
   const refresh = async () => {
     if (!cur) return
@@ -303,32 +349,40 @@ export function SpacesView({ me }: { me: Me | null }) {
               background: dragging ? '#e6fffb' : undefined, padding: dragging ? 6 : 0,
             }}
           >
-            {uploads.map((u) => (
-              <div key={u.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <Typography.Text ellipsis style={{ maxWidth: 300, fontSize: 13 }}>⬆ {u.name}</Typography.Text>
-                <Progress percent={u.percent} size="small" style={{ flex: 1, maxWidth: 340 }} />
-              </div>
-            ))}
             <Table
-              size="small" rowKey="id" dataSource={rows} pagination={false}
+              size="small" rowKey="id" dataSource={[...upRows, ...rows]} pagination={false}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
-              rowSelection={canEdit ? { selectedRowKeys: checked, onChange: (k) => setChecked(k as number[]) } : undefined}
+              rowSelection={canEdit ? {
+                selectedRowKeys: checked, onChange: (k) => setChecked((k as number[]).filter((x) => x > 0)),
+                getCheckboxProps: (it) => ({ disabled: !!up(it) }),
+              } : undefined}
               columns={[
                 {
                   title: '名称', dataIndex: 'name', ellipsis: true,
-                  render: (_, it) => (
-                    <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
-                      {KIND_ICON[it.kind]} {it.name}
-                    </a>
-                  ),
+                  render: (_, it) => (up(it)
+                    ? <Typography.Text type="secondary" ellipsis>⬆ {it.name}</Typography.Text>
+                    : (
+                      <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
+                        {itemIcon(it)} {it.name}
+                      </a>
+                    )),
                 },
                 { title: '大小', dataIndex: 'size', width: 100, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
-                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v) => fmtTime(v) },
+                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v, it) => (up(it) ? '—' : fmtTime(v)) },
                 { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
                 {
-                  title: '操作', width: 190,
-                  render: (_, it) => (
+                  title: '操作', width: 220,
+                  render: (_, it) => (up(it) ? (
+                    // ★上传中的行:进度条 + 取消★(2026-08-03 用户要求)。排队中的显示「排队中」,
+                    // 它还没发任何请求,取消 = 直接出队。
+                    <AntSpace size={6} style={{ width: '100%' }}>
+                      {up(it)!.running
+                        ? <Progress percent={up(it)!.percent} size="small" style={{ width: 120 }} />
+                        : <Typography.Text type="secondary" style={{ fontSize: 12, width: 120 }}>排队中…</Typography.Text>}
+                      <a style={{ color: '#ff4d4f' }} onClick={() => cancelOne(up(it)!)}>取消</a>
+                    </AntSpace>
+                  ) : (
                     <AntSpace size={4}>
                       {it.kind !== 'folder' && <a onClick={() => setPreview(it)}>打开</a>}
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
@@ -338,7 +392,7 @@ export function SpacesView({ me }: { me: Me | null }) {
                       {canEdit && <a onClick={() => setMoving([it])}>移动</a>}
                       {canEdit && <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}>删除</a>}
                     </AntSpace>
-                  ),
+                  )),
                 },
               ]}
             />
@@ -347,7 +401,7 @@ export function SpacesView({ me }: { me: Me | null }) {
           {/* 预览抽屉:文档编辑器 / 视频播放 / PDF·图片预览 / 版本历史 */}
           <Drawer
             open={!!preview} onClose={() => setPreview(null)} width="62%" destroyOnHidden
-            title={preview ? `${KIND_ICON[preview.kind]} ${preview.name}` : ''}
+            title={preview ? `${itemIcon(preview)} ${preview.name}` : ''}
           >
             {preview && (
               <ItemPanel
@@ -437,7 +491,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           </Button>
         )}
         {item.kind !== 'doc' && (noDownload
-          ? <Tag>本空间 viewer 禁下载</Tag>
+          ? <Tag>本空间「只读」不能下载</Tag>
           : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
@@ -503,7 +557,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
 }
 
 
-/// 授权管理(admin):user/group × viewer/editor/admin。
+/// 授权管理(空间管理员):user/group × 只读/可编辑/管理员。
 function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
   const { message } = AntdApp.useApp()
   const [grants, setGrants] = useState<Grant[]>([])
@@ -570,14 +624,14 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
                 method: 'PUT',
                 body: JSON.stringify({ name: space.name, description: space.description, viewer_no_download: v }),
               })
-              message.success(v ? '已开启:viewer 不能下载原件(阅读/播放不受影响)' : '已关闭下载限制')
+              message.success(v ? '已开启:「只读」成员不能下载原件(阅读/播放不受影响)' : '已关闭下载限制')
               onChanged()
             } catch (e) {
               message.error((e as Error).message)
             }
           }}
         />
-        <Typography.Text>viewer 禁止下载原件</Typography.Text>
+        <Typography.Text>「只读」成员禁止下载原件</Typography.Text>
       </AntSpace>
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
@@ -595,7 +649,7 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
           />
         )}
         <Select value={role} onChange={setRole} style={{ width: 110 }}
-          options={[{ value: 'viewer', label: 'viewer 读' }, { value: 'editor', label: 'editor 读写' }, { value: 'admin', label: 'admin 管理' }]} />
+          options={ROLE_OPTIONS} />
         <Button type="primary" onClick={add}>授权</Button>
       </AntSpace>
       <Table
@@ -608,7 +662,7 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
             // 就地改角色(后端 upsert;最后一个 admin 降级会被 400 挡回)。
             render: (r: Role, g) => (
               <Select size="small" value={r} style={{ width: 120 }} onChange={(v) => changeRole(g, v as Role)}
-                options={[{ value: 'viewer', label: 'viewer 读' }, { value: 'editor', label: 'editor 读写' }, { value: 'admin', label: 'admin 管理' }]} />
+                options={ROLE_OPTIONS} />
             ),
           },
           {
@@ -639,13 +693,21 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
           }
         }}>诊断</Button>
       </AntSpace>
+      {/* ★只给结论★(2026-08-03 用户定):原来把「超管→直接授权→组授权→有效角色」整条判定链摊开,
+          看的人要自己在脑子里做一次合并。现在直接是「谁 = 什么角色」,来源压成一句灰字小注
+          (要的就是「他凭什么」这一句,再多就又变成判定链了)。 */}
       {diag && (
-        <Typography.Paragraph style={{ fontSize: 13, background: '#f6ffed', padding: 10, borderRadius: 6 }}>
-          <b>{diag.username}</b> 的判定链:超管 {diag.is_super ? '✅(直接 admin)' : '否'} →
-          直接授权 {diag.direct ? <Tag>{diag.direct}</Tag> : '无'} →
-          组授权 {diag.via_groups.length ? diag.via_groups.map((g) => <Tag key={g.group_id} color="cyan">{g.group}:{g.role}</Tag>) : '无'} →
-          <b> 有效角色:{diag.effective ? <Tag color="green">{diag.effective}</Tag> : <Tag color="red">无权访问</Tag>}</b>
-        </Typography.Paragraph>
+        <div style={{ fontSize: 14, background: '#f6ffed', padding: '10px 12px', borderRadius: 6 }}>
+          <b>{diag.username}</b> ：{diag.effective
+            ? <Tag color="green">{ROLE_LABEL[diag.effective]}</Tag>
+            : <Tag color="red">{NO_ACCESS}</Tag>}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {diag.is_super ? '（超级管理员）'
+              : diag.direct ? '（直接授权）'
+              : diag.via_groups.length ? `（来自小组：${diag.via_groups.map((g) => g.group).join('、')}）`
+              : '（没有任何授权）'}
+          </Typography.Text>
+        </div>
       )}
     </Modal>
   )

@@ -78,9 +78,13 @@ pub async fn list(
     Path(sid): Path<i64>,
 ) -> AppResult<Json<Vec<ItemRow>>> {
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    // ★过滤未完成的上传占位行★(s3_key IS NULL 的 file/video):media/begin 会先建行拿 item_id
+    // 用于拼 S3 key,传完才回填 s3_key。不过滤的话「还没传完就出现在列表里」(2026-08-03 反馈),
+    // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
         "SELECT id, parent_id, kind, name, size, mime, created_by, updated_at
-           FROM items WHERE space_id = $1 ORDER BY kind = 'folder' DESC, name",
+           FROM items WHERE space_id = $1 AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
+          ORDER BY kind = 'folder' DESC, name",
     )
     .bind(sid)
     .fetch_all(&state.pool)

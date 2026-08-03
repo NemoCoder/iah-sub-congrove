@@ -3,6 +3,12 @@
 // → ③整文件 POST(仅小文件)。主窗与将来的其它入口共用这一份。
 import { api } from './api'
 
+/// 上传控制器:取消时中断当前 xhr 并让分片循环退出。
+export type UploadCtl = { canceled: boolean; xhr: XMLHttpRequest | null }
+export const CANCELED = 'upload-canceled'
+export function newCtl(): UploadCtl { return { canceled: false, xhr: null } }
+export function cancelUpload(c: UploadCtl) { c.canceled = true; try { c.xhr?.abort() } catch { /* 已结束 */ } }
+
 /// P2 预签名直传:>100MB 或视频走浏览器→Garage 直传(字节不过 pod)。
 /// begin 拿全部 part URL → File.slice 逐片 PUT(收集 ETag,跨源可读靠桶 CORS 的 ExposeHeaders)
 /// → complete 交回服务端。返回 false = 后端说预签名未启用(501),调用方回退后端流式上传。
@@ -31,7 +37,7 @@ export async function probeDirect(endpoint: string | null): Promise<boolean> {
 
 export async function directUpload(
   sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
-  mode: 'presigned' | 'proxy',
+  mode: 'presigned' | 'proxy', ctl: UploadCtl = newCtl(),
 ): Promise<boolean> {
   const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
     method: 'POST',
@@ -51,6 +57,7 @@ export async function directUpload(
     const parts: { part_number: number; etag: string }[] = []
     let sent = 0
     for (let i = 0; i < part_urls.length; i++) {
+      if (ctl.canceled) throw new Error(CANCELED)
       const blob = file.slice(i * part_size, Math.min(file.size, (i + 1) * part_size))
       const report = (loaded: number) => onProgress(Math.round(((sent + loaded) / file.size) * 100))
       // presigned:浏览器直发 Garage(最快,要过 s3api 证书关);
@@ -60,10 +67,11 @@ export async function directUpload(
       for (let attempt = 1; ; attempt++) {
         try {
           etag = mode === 'presigned'
-            ? await putPart(part_urls[i], blob, report)
-            : await putPart(`/api/items/${item_id}/media/part?upload_id=${encodeURIComponent(upload_id)}&part_number=${i + 1}`, blob, report, true)
+            ? await putPart(part_urls[i], blob, report, false, ctl)
+            : await putPart(`/api/items/${item_id}/media/part?upload_id=${encodeURIComponent(upload_id)}&part_number=${i + 1}`, blob, report, true, ctl)
           break
         } catch (pe) {
+          if (ctl.canceled || (pe as Error).message === CANCELED) throw new Error(CANCELED)
           if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败(已重试 3 次):${(pe as Error).message}`)
           await new Promise((r) => setTimeout(r, attempt * 1000))
           report(0)
@@ -81,9 +89,11 @@ export async function directUpload(
   }
 }
 
-function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, viaProxy = false): Promise<string> {
+function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, viaProxy = false, ctl?: UploadCtl): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
+    if (ctl) ctl.xhr = xhr
+    xhr.onabort = () => reject(new Error(CANCELED))
     xhr.open('PUT', url)
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onLoaded(e.loaded) }
     xhr.onload = () => {
@@ -103,9 +113,11 @@ function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, vi
 }
 
 /// XHR 上传(fetch 至今无标准上传进度,对抗核查 §7.4b-5):onProgress 喂给 antd Upload 画进度条。
-export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void): Promise<void> {
+export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void, ctl?: UploadCtl): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
+    if (ctl) ctl.xhr = xhr
+    xhr.onabort = () => reject(new Error(CANCELED))
     xhr.open('POST', url)
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)) }
     xhr.onload = () => {

@@ -29,7 +29,23 @@ export function FilePreview({ item, tall = false }: { item: Item; tall?: boolean
   return null
 }
 
-export const KIND_ICON: Record<Item['kind'], string> = { folder: '📁', doc: '📄', file: '📎', video: '🎬' }
+export const KIND_ICON: Record<Item['kind'], string> = { folder: '📁', doc: '📝', file: '📄', video: '🎬' }
+
+/// 按 mime 细分图标(回形针 📎 在多数字体里渲染得很怪,换掉)。
+export function itemIcon(it: { kind: Item['kind']; mime?: string | null }): string {
+  if (it.kind !== 'file') return KIND_ICON[it.kind]
+  const m = it.mime || ''
+  if (m === 'application/pdf') return '📕'
+  if (m.startsWith('image/')) return '🖼️'
+  if (m.startsWith('audio/')) return '🎵'
+  if (m.includes('html')) return '🌐'
+  if (m.includes('zip') || m.includes('tar') || m.includes('compressed')) return '🗜️'
+  if (m.includes('sheet') || m.includes('excel') || m.includes('csv')) return '📊'
+  if (m.includes('word') || m.includes('document')) return '📘'
+  if (m.includes('presentation') || m.includes('powerpoint')) return '📽️'
+  if (m.startsWith('text/')) return '📃'
+  return '📄'
+}
 
 export function fmtSize(n: number | null) {
   if (n == null) return ''
