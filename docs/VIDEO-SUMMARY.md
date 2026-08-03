@@ -55,6 +55,31 @@ ROUGE 相当,但**事实一致性 FactVC:视频 71.94 vs 转写 63.38(+8.6)**。
 | **VLM(旁路+汇总)** | `Qwen/Qwen3.6-27B-FP8` | ★2026 年 Qwen 取消了 `-VL` 分支,全系原生多模态★;VideoMME(w/sub) **87.7**、MLVU 86.6,**27B 稠密超上一代 235B MoE**;中文 OCR 是唯一在 CC-OCR/OCRBench_v2-zh/OmniDocBench-zh 三项都有公开数字的家族(C-Eval 91.4、CC-OCR 81.2);★**混合线性注意力(GatedDeltaNet 3:1)把 KV 砍 4 倍**:224K 视频 token 只要 14.3GiB,而 Qwen3-VL-32B 要 57.3GiB——这是"27B 单卡吃满长视频、32B 老架构不能"的原因★ |
 | **检索** | `Qwen3-VL-Embedding-8B` + `Qwen3-VL-Reranker-8B` | MMEB-V2 77.8;text/image/screenshot/**video** 同一向量空间;Matryoshka 可变维度;平台已有同族模型 |
 
+### 3.1 补充调研(第四路,长视频专项):两条会改动方案的发现
+
+**① 时序定位的空白有解了 —— `MCG-NJU/TimeLens2-8B`(Apache-2.0)**
+本文 §7-2 原本记着"Qwen3.5/3.6 未公布 Charades-STA,时序定位无数字支撑"。TimeLens2 正好补这个洞:
+它是 **Qwen3-VL 微调,vLLM 架构名不变**(`Qwen3VLForConditionalGeneration`)——**换权重就能跑,不动推理栈**。
+七榜均分 mIoU **48.0**(Charades 58.6 / ActivityNet 58.6 / QVHighlights 70.2),**超过 GPT-5(40.5)与
+Gemini 2.5 Pro**。512 帧 @2fps,prompt 要求它直接返回 `[start,end]` 秒数 JSON。
+→ **"跳到第几分钟讲了 X"这类需求,用它做专职时间戳定位模型**,与主力 VLM 各司其职。
+
+**② 长视频理解的技术上限是 `Kwai-Keye/Keye-VL-2.0-30B-A3B`(Apache-2.0),但进不了我们的 vLLM 栈**
+- LongVideoBench **74.1**(Qwen3.5-35B-A3B 61.6、Qwen3-VL-235B 70.5);用 DSA 稀疏注意力,
+  **训到 2 小时视频、单段 180K 视频 token**;时序定位 ActivityNet 58.5 / QVHighlights 70.1
+  **双双超过 Gemini-3-Flash**。
+- ★最能说明问题的一条:Video-MME-v2 上帧数 64→512 时**别家掉分,它涨分(35.3→42.4)**——真在用更多帧。
+- **硬伤:vLLM 不支持**(`KeyeVL2MoeForConditionalGeneration` 不在支持列表),官方只给 **SGLang 定制分支**。
+  → 除非愿意为它单起一套 SGLang,否则不选;记在这里是因为它是"以后若要更强长视频"的唯一目标。
+
+**③ 许可地雷(务必避开)**:NVIDIA 的 **Eagle 2.5-8B(许可 nsclv1,仅限学术/非营利)**、
+**NVILA / LongVILA-R1(CC-BY-NC-SA-4.0)** 分数很漂亮但**不能上生产**。
+另:**LLaVA-OneVision-1.5 根本没有视频能力**(名字陷阱,是纯图像模型);**Seed1.5-VL 不开源**
+(GitHub 仓库只是 API cookbook);Gemma 4 官方明确**视频最长 60 秒**。
+
+**④ 小修正**:GLM 系最新是 **GLM-4.6V(MIT,128K 上下文)** 而非 4.5V 的 32K;但它**只报了 LVBench 一项
+视频分数**(59.5),Video-MME/MLVU 全无,选型证据不足。
+
 **别选**:Whisper 系(中文会议 19% 字错,微调版也只到 11%)、Ovis2.5/2.6(视频=抽 8 帧当多图,长视频无证据,
 vLLM 无 LoRA/PP)、GLM-4.5V(**视频上下文仅 32K**,2h 会议要切窗)、InternVL3.5(**官方零量化件**)、
 Fun-ASR-Nano(官方自陈**时间戳不可靠**)。
@@ -106,8 +131,8 @@ mp4
 ## 七、存疑与未验证(落地前要自己测)
 
 1. **没有任何针对"中文会议录屏"的 video-LLM vs ASR 管线头对头实测**——上面是三条间接证据链合成的判断。
-2. Qwen3.5/3.6 **未公布 Charades-STA**,时序定位(输出时间戳)能力无数字支撑,只能推定继承自 Qwen3-VL。
-   若"跳到第几分钟"是硬需求,有证据的是 Qwen3-VL-32B/235B(mIoU 61.2/64.8)或 VideoChat3-4B(56.1)。
+2. ~~Qwen3.5/3.6 未公布 Charades-STA~~ **已有解**:用 `MCG-NJU/TimeLens2-8B`(§3.1-①)做专职时序定位,
+   Apache-2.0 且 vLLM 架构名与 Qwen3-VL 相同,换权重即可,不动推理栈。
 3. H20 的 prefill 耗时是按 FLOPs 粗估,**未实测**;落地前先跑一场真实组会做基准。
 4. H20 的 NVLink 带宽中文源说 900GB/s、另一源说 600GB/s,上机 `nvidia-smi nvlink -s` 核实。
 5. vLLM 的抽帧逻辑与 `qwen_vl_utils` 不同 → **建议客户端自己抽帧、以图片列表送进去**,把策略握在自己手里。
