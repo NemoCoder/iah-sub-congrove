@@ -39,11 +39,15 @@ pub struct Config {
     pub llm_api_key: Option<String>,
     /// 摘要用的模型名(网关侧;换模型不改码)。
     pub llm_model: String,
-    /// ASR 端点。**平台尚未提供(AI_Talks 0123 在求)**,缺则转写阶段明确失败并提示等待开通;
-    /// 到位后填 env 即通,不改码。默认复用 LLM 网关的 base 与 key。
+    /// ASR 端点(AI_Talks 0124 定契约):**走 IAH_BASE_URL 同一个网关、同一把 key**,
+    /// `POST {base}/audio/transcriptions` multipart(file/model/hotword/speaker)。
+    /// 平台选型 = FunASR 一条龙(转写+标点+说话人+热词一个服务出齐,本地模型 cost=0)。
+    /// 默认直接复用 LLM 网关;ASR_BASE_URL 只在要单独指别处时才配。
     pub asr_base_url: Option<String>,
     pub asr_api_key: Option<String>,
     pub asr_model: String,
+    /// 是否要说话人分离(FunASR 侧 speaker 参数;默认 true)。
+    pub asr_speaker: bool,
 
     /// 平台 registry(总注入):用户存在性校验 + 站内信外发(AI_Talks 0094)。
     /// 缺(本地 dev)= 拉人校验降级到本地 app_user、不投站内信。
@@ -121,11 +125,13 @@ impl Config {
             llm_base_url: opt("IAH_BASE_URL").map(|u| u.trim_end_matches('/').to_string()),
             llm_api_key: opt("IAH_API_KEY"),
             llm_model: opt("CONGROVE_LLM_MODEL").unwrap_or_else(|| "Qwen3.6-35B-A3B".into()),
+            // 默认就走 LLM 网关(0124:同端点同 key),不必额外配 env。
             asr_base_url: opt("ASR_BASE_URL")
-                .or_else(|| opt("IAH_ASR_BASE_URL"))
+                .or_else(|| opt("IAH_BASE_URL"))
                 .map(|u| u.trim_end_matches('/').to_string()),
             asr_api_key: opt("ASR_API_KEY").or_else(|| opt("IAH_API_KEY")),
-            asr_model: opt("ASR_MODEL").unwrap_or_else(|| "Qwen3-ASR-1.7B".into()),
+            asr_model: opt("ASR_MODEL").unwrap_or_else(|| "funasr".into()),
+            asr_speaker: opt("ASR_SPEAKER").map(|v| v != "false" && v != "0").unwrap_or(true),
 
             registry_url: opt("REGISTRY_URL"),
             public_url: opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),

@@ -8,8 +8,12 @@
 //! 任务态落 PG(`media_jobs`)而不是内存:无 PVC + pod 随时重建,内存态一重启就丢
 //! (citeroot 的教训),重启后 `reclaim_stale` 把 running 打回 queued 续跑。
 //!
-//! ⚠ ASR 端点平台尚未提供(AI_Talks 0123 在求)。缺 `ASR_BASE_URL` 时任务在转写阶段
-//! **明确失败并写清原因**,不静默卡住;端点到位后填 env 即通,不改一行码。
+//! ASR 端点契约(AI_Talks 0123→0124 定案):**走 `IAH_BASE_URL` 同一个网关、同一把 key**,
+//! `POST {base}/audio/transcriptions` multipart:`file` / `model=funasr` /
+//! `hotword`(空格分隔术语表) / `speaker=true`。平台选型 = **FunASR 一条龙**
+//! (转写+标点+说话人+热词一个服务出齐,句级 start/end 与 spk0/spk1 都给,本地模型 cost=0)。
+//! ★平台纠正过一个前提:他们的 GPU 是 **H20(Hopper)** 不是 5090——VIDEO-SUMMARY §2 那堆
+//! 量化坑(INT8 崩/FP8 慢/必须 Marlin/别 enforce-eager)是消费级 5090 特有,H20 上全不适用。★
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -121,7 +125,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
 
     // 3) 切段 + 转写
     let asr_base = state.config.asr_base_url.clone()
-        .ok_or_else(|| anyhow!("平台尚未开通 ASR 语音转写服务(已提申请 AI_Talks 0123);开通后本功能自动可用"))?;
+        .ok_or_else(|| anyhow!("未注入 IAH_BASE_URL,无法调用语音转写"))?;
     stage(&state.pool, job_id, "切分音频", 20).await;
     let parts = split_audio(&wav, &workdir).await.context("切分音频")?;
     let mut segments: Vec<Segment> = Vec::new();
@@ -214,15 +218,16 @@ async fn split_audio(wav: &Path, dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 /// 返回带时间戳的分段;若服务只回纯文本,退化为单段(start=0)。
 async fn transcribe(state: &AppState, base: &str, part: &Path) -> anyhow::Result<Vec<Segment>> {
     let bytes = tokio::fs::read(part).await?;
+    // 契约见 AI_Talks 0124:file / model=funasr / hotword(空格分隔) / speaker。
     let mut form = reqwest::multipart::Form::new()
         .text("model", state.config.asr_model.clone())
-        .text("response_format", "verbose_json")
+        .text("speaker", if state.config.asr_speaker { "true" } else { "false" })
         .part("file", reqwest::multipart::Part::bytes(bytes)
             .file_name("audio.wav").mime_str("audio/wav")?);
-    // 术语注入:Qwen3-ASR 支持 context prompt 偏置(人名/专业词/上次纪要),这是选它的主要理由。
-    // P2 接空间级术语表;先留通道。
-    if let Some(p) = std::env::var("CONGROVE_ASR_PROMPT").ok().filter(|s| !s.is_empty()) {
-        form = form.text("prompt", p);
+    // 热词:治「人名被识成同音字」「术语写成音近词」——研究组场景里这比 CER 那 1 个点更要命。
+    // 先用 env 兜底,P2 换成空间级术语表(每个空间维护自己的人名/术语)。
+    if let Some(h) = std::env::var("CONGROVE_ASR_HOTWORDS").ok().filter(|s| !s.trim().is_empty()) {
+        form = form.text("hotword", h);
     }
     let mut req = crate::auth::build_http_client_long()?
         .post(format!("{base}/audio/transcriptions"))
@@ -239,7 +244,7 @@ async fn transcribe(state: &AppState, base: &str, part: &Path) -> anyhow::Result
     #[derive(serde::Deserialize)]
     struct Seg { start: Option<f64>, end: Option<f64>, text: String, speaker: Option<String> }
     #[derive(serde::Deserialize)]
-    struct Resp { text: Option<String>, segments: Option<Vec<Seg>> }
+    struct Resp { text: Option<String>, segments: Option<Vec<Seg>>, #[allow(dead_code)] duration: Option<f64> }
     let r: Resp = resp.json().await.context("解析 ASR 响应")?;
     if let Some(segs) = r.segments {
         return Ok(segs.into_iter()

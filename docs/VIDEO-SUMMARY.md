@@ -27,6 +27,11 @@ ROUGE 相当,但**事实一致性 FactVC:视频 71.94 vs 转写 63.38(+8.6)**。
 
 ## 二、硬件的硬约束(决定方案形状,不是偏好)
 
+> ★2026-08-03 平台纠正(AI_Talks 0124):**平台的 GPU 是 H20(Hopper 数据中心卡),不是 5090**。
+> 下面 5090 那一栏的量化坑(INT8 抛异常 / FP8 比 BF16 慢 / 只有 AWQ+Marlin 快 / 别 enforce-eager)
+> **是消费级 Blackwell 特有,在 H20 上全不成立**——H20 上 FP8 原生快、BF16 也没问题。
+> 5090 那栏保留是因为将来若真上 5090 仍然适用;**当前平台部署一律按 H20 看**。★
+
 **5090(32GB,Blackwell sm_120)**——长视频推理**物理上不可行**,只能干别的:
 - 1 小时视频 ≈ 224K 视觉 token,**KV cache 就要 28GB(FP8)~57GB(BF16)**,权重还没算。
 - `INT8 在 SM120 直接抛异常`;**FP8 反而比 BF16 慢 17%**;只有 **AWQ/GPTQ-Int4 + Marlin** 是快路(140–197 tok/s)。
@@ -165,7 +170,7 @@ mp4
 
 ## 八、分期建议
 
-- **P1(一周内可跑通)**:ffmpeg 抽音轨 → FunASR 一条龙(`paraformer-zh` + `fsmn-vad` + `ct-punc` + `cam++`)
+- **P1 ✅ 已实现(v0.3.17,2026-08-03)**:ffmpeg 抽音轨 → FunASR 一条龙(`paraformer-zh` + `fsmn-vad` + `ct-punc` + `cam++`)
   → 现有 Qwen3.6/Qwen3.5 出摘要。**一行代码拿到 `[start,end,spk,text]`,转写与说话人天然对齐**
   (自己拼 pyannote 时间轴是最烦的一段)。代价:Paraformer CER 6.97%,先打通链路与评估脚本。
 - **P2**:ASR 换 Qwen3-ASR-1.7B + 术语热词表 + ForcedAligner;说话人换 3D-Speaker。

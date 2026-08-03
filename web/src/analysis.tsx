@@ -75,7 +75,7 @@ export function Analysis({ item, onSeek }: { item: Item; onSeek: (t: number) => 
       {!d.asr_ready && !d.transcript && (
         <Alert type="info" showIcon style={{ marginBottom: 10 }}
           message="语音转写服务尚未开通"
-          description="已向平台提交开通申请(AI_Talks 0123)。开通后本功能自动可用,无需更新。" />
+          description="平台已确认接入(FunASR:转写+标点+说话人+热词),正在部署中。上线后本功能自动可用,无需更新。" />
       )}
       {running && (
         <div style={{ marginBottom: 10 }}>
