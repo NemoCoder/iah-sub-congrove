@@ -548,10 +548,30 @@ async fn stream_field_to_s3(
 }
 
 /// GET /api/items/{id}/download —— 流式下载(≥viewer)。S3 → 客户端直转,不落内存。
+#[derive(Deserialize)]
+pub struct DownloadQuery {
+    /// ?inline=1 → 浏览器内嵌渲染(PDF/图片/音视频/纯文本白名单内);缺省或非安全类型都下载。
+    #[serde(default, deserialize_with = "empty_as_none_bool")]
+    pub inline: Option<bool>,
+}
+
+fn empty_as_none_bool<'de, D>(de: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(de)?;
+    Ok(match s.as_deref() {
+        None | Some("") => None,
+        Some("0") | Some("false") => Some(false),
+        Some(_) => Some(true),
+    })
+}
+
 pub async fn download(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
+    Query(q): Query<DownloadQuery>,
 ) -> AppResult<Response> {
     let sid = space_of(&state.pool, iid).await?;
     let role = require_role(&state.pool, &id, sid, Role::Viewer).await?;
@@ -574,7 +594,20 @@ pub async fn download(
     let (stream, len) = state.storage.get_stream(&key).await.map_err(AppError::Other)?;
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(stream.into_async_read()));
     // filename* 用 RFC5987 编码,中文文件名不炸 header(纯 ASCII 名两种写法等价)。
-    let disp = format!("attachment; filename*=UTF-8''{}", urlencode(&name));
+    // ★ inline 只对**安全类型**放行(PDF/图片/纯文本/音视频)★:同源 inline 渲染上传的
+    // HTML/SVG 就是存储型 XSS——脚本能读会话 cookie(HttpOnly 挡不住同源 fetch 带 cookie 的操作)。
+    // 白名单之外一律 attachment,浏览器只会下载不会执行。
+    let mime_s = mime.clone().unwrap_or_default();
+    let inline_ok = mime_s == "application/pdf"
+        || (mime_s.starts_with("image/") && mime_s != "image/svg+xml")
+        || mime_s.starts_with("video/")
+        || mime_s.starts_with("audio/")
+        || mime_s == "text/plain";
+    let disp = if q.inline.unwrap_or(false) && inline_ok {
+        format!("inline; filename*=UTF-8''{}", urlencode(&name))
+    } else {
+        format!("attachment; filename*=UTF-8''{}", urlencode(&name))
+    };
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.unwrap_or_else(|| "application/octet-stream".into()))

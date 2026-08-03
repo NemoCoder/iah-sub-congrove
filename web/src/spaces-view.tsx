@@ -2,11 +2,39 @@
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
   App as AntdApp, AutoComplete, Button, Card, Drawer, Empty, Input, List, Modal, Popconfirm, Progress,
-  Select, Space as AntSpace, Switch, Table, Tag, Tooltip, Tree, Typography, Upload,
+  Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, Tree, Typography, Upload,
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
+
+/// markdown 渲染:react-markdown **默认不渲染原始 HTML**(不开 rehype-raw),
+/// 所以团队成员写的文档里就算塞 <script> 也只会当文本显示——同源存储型 XSS 从源头堵死。
+/// remark-gfm 补表格/任务列表/删除线(会议记录高频)。
+function MarkdownView({ text }: { text: string }) {
+  return (
+    <div className="cg-md" style={{ lineHeight: 1.75, wordBreak: 'break-word' }}>
+      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+    </div>
+  )
+}
+
+/// 文件预览:PDF 内嵌、图片直显;其余给下载。
+/// 走同源 /download?inline=1(带会话 cookie),后端按 mime 白名单决定 inline/attachment
+/// ——HTML/SVG 一律 attachment,避免同源渲染上传内容造成存储型 XSS。
+function FilePreview({ item }: { item: Item }) {
+  const src = `/api/items/${item.id}/download?inline=1`
+  const mime = item.mime || ''
+  if (mime === 'application/pdf') {
+    return <embed src={src} type="application/pdf" style={{ width: '100%', height: 620, border: '1px solid #f0f0f0', borderRadius: 6 }} />
+  }
+  if (mime.startsWith('image/') && mime !== 'image/svg+xml') {
+    return <img src={src} alt={item.name} style={{ maxWidth: '100%', maxHeight: 620, borderRadius: 6 }} />
+  }
+  return null
+}
 
 /// P2 预签名直传:>100MB 或视频走浏览器→Garage 直传(字节不过 pod)。
 /// begin 拿全部 part URL → File.slice 逐片 PUT(收集 ETag,跨源可读靠桶 CORS 的 ExposeHeaders)
@@ -426,6 +454,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
   const { message } = AntdApp.useApp()
   const [text, setText] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
+  const [docView, setDocView] = useState<'edit' | 'split' | 'preview'>(canEdit ? 'split' : 'preview')
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [versions, setVersions] = useState<Version[]>([])
 
@@ -466,16 +495,33 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
       }
     >
       {item.kind === 'doc' ? (
-        text === null ? '加载中…' : canEdit ? (
-          <Input.TextArea
-            value={text}
-            autoSize={{ minRows: 12, maxRows: 32 }}
-            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' }}
-            placeholder="markdown 正文…(P3 上真编辑器与渲染,先纯文本)"
-            onChange={(e) => { setText(e.target.value); setDirty(true) }}
-          />
-        ) : (
-          <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{text}</pre>
+        text === null ? '加载中…' : (
+          <>
+            {canEdit && (
+              <Segmented
+                size="small" value={docView} onChange={(v) => setDocView(v as typeof docView)}
+                options={[{ value: 'edit', label: '✏️ 编辑' }, { value: 'split', label: '⇄ 分屏' }, { value: 'preview', label: '👁 预览' }]}
+                style={{ marginBottom: 10 }}
+              />
+            )}
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              {canEdit && docView !== 'preview' && (
+                <Input.TextArea
+                  value={text}
+                  autoSize={{ minRows: 16, maxRows: 36 }}
+                  style={{ flex: 1, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 13 }}
+                  placeholder={'# 标题\n\n支持 markdown:**粗体**、列表、表格、`代码`、> 引用…'}
+                  onChange={(e) => { setText(e.target.value); setDirty(true) }}
+                />
+              )}
+              {docView !== 'edit' && (
+                <div style={{ flex: 1, minWidth: 0, padding: docView === 'split' ? '0 4px' : 0,
+                              borderLeft: docView === 'split' ? '1px solid #f0f0f0' : undefined }}>
+                  <MarkdownView text={text} />
+                </div>
+              )}
+            </div>
+          </>
         )
       ) : item.kind === 'video' ? (
         <>
@@ -488,9 +534,12 @@ function ItemPanel({ item, canEdit, noDownload, onChanged, onRename, onDelete }:
           </Typography.Text>
         </>
       ) : (
-        <Typography.Text type="secondary">
-          {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
-        </Typography.Text>
+        <>
+          <FilePreview item={item} />
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
+          </Typography.Text>
+        </>
       )}
 
       <Drawer title="版本历史" open={versionsOpen} onClose={() => setVersionsOpen(false)} width={420}>
