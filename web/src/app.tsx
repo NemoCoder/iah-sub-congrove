@@ -4,10 +4,21 @@ import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 import { IahHeader } from './iah-header'
+import { ViewerPage } from './viewer-page'
 import { GroupsView } from './groups-view'
 import { SpacesView } from './spaces-view'
 
+/// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
+/// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
+function viewerItemId(): number | null {
+  const m = window.location.pathname.match(/^\/viewer\/(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
 export function App() {
+  const vid = viewerItemId()
+  if (vid != null) return <ViewerPage itemId={vid} />
+
   const [me, setMe] = useState<Me | null>(null)
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
   const [view, setView] = useState<'spaces' | 'groups'>('spaces')

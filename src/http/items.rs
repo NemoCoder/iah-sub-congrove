@@ -88,6 +88,79 @@ pub async fn list(
     Ok(Json(rows))
 }
 
+/// GET /api/items/{id} —— 单项元数据(≥viewer)。独立播放窗(/viewer/{id})靠它拿到
+/// 名称/类型/mime,而不必先拉整个空间的列表。
+pub async fn detail(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<ItemRow>> {
+    let sid = space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let row: Option<ItemRow> = sqlx::query_as(
+        "SELECT id, parent_id, kind, name, size, mime, created_by, updated_at FROM items WHERE id = $1",
+    )
+    .bind(iid)
+    .fetch_optional(&state.pool)
+    .await?;
+    row.map(Json).ok_or(AppError::NotFound)
+}
+
+#[derive(Deserialize)]
+pub struct ProgressIn {
+    pub position_sec: f64,
+    pub duration_sec: Option<f64>,
+}
+
+/// GET /api/items/{id}/progress —— 我上次看到哪(≥viewer)。没看过回 position_sec=0。
+pub async fn progress_get(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let row: Option<(f64, Option<f64>)> = sqlx::query_as(
+        "SELECT position_sec, duration_sec FROM play_progress WHERE username = $1 AND item_id = $2",
+    )
+    .bind(id.require_username()?)
+    .bind(iid)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (pos, dur) = row.unwrap_or((0.0, None));
+    Ok(Json(json!({ "position_sec": pos, "duration_sec": dur })))
+}
+
+/// PUT /api/items/{id}/progress —— 记录播放位置(≥viewer,覆盖写)。
+/// 前端每 ~5s 与暂停/关窗时打一次;快到结尾(剩 <15s)当作看完,归零以免下次一进来就跳到片尾。
+pub async fn progress_put(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+    Json(input): Json<ProgressIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let mut pos = input.position_sec.max(0.0);
+    if let Some(d) = input.duration_sec {
+        if d > 0.0 && pos > d - 15.0 {
+            pos = 0.0; // 看到尾了,下次从头
+        }
+    }
+    sqlx::query(
+        "INSERT INTO play_progress (username, item_id, position_sec, duration_sec) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (username, item_id) DO UPDATE SET position_sec = EXCLUDED.position_sec,
+           duration_sec = COALESCE(EXCLUDED.duration_sec, play_progress.duration_sec), updated_at = now()",
+    )
+    .bind(id.require_username()?)
+    .bind(iid)
+    .bind(pos)
+    .bind(input.duration_sec)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(json!({ "ok": true, "position_sec": pos })))
+}
+
 #[derive(Deserialize)]
 pub struct ItemIn {
     pub kind: String, // 'folder' | 'doc'(file/video 走 upload/预签名,不走这)

@@ -31,8 +31,10 @@ use crate::state::AppState;
 pub const PART_SIZE: i64 = 8 * 1024 * 1024;
 /// part URL 有效期:GB 级慢链路一传几小时,给 6h(SigV4 上限 7 天,富余)。
 const PART_URL_TTL: Duration = Duration::from_secs(6 * 3600);
-/// 播放/下载 GET 短时效:每次播放都经判权重签,15 分钟够 <video> 开流(开流后不再验 URL)。
-const GET_URL_TTL: Duration = Duration::from_secs(15 * 60);
+/// 播放 GET 时效 **6h**(2026-08-03 从 15min 提):`<video>` 拿到 302 后会**记住解析后的
+/// 那个 URL**,后续拖动进度条是直接对它发 Range——15 分钟一过,看长录屏拖进度就 403。
+/// 延长不放大权限面:它仍是一次判权后只对持有该 URL 者有效的短期凭证。
+const GET_URL_TTL: Duration = Duration::from_secs(6 * 3600);
 
 #[derive(Deserialize)]
 pub struct BeginIn {
