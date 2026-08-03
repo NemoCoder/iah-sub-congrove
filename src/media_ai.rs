@@ -36,7 +36,11 @@ use futures_util::TryStreamExt;
 const FALLBACK_CHUNK_SEC: u32 = 900;
 /// 摘要的分块上限(字符)。超过就 map-reduce:分块摘要 → 再摘要
 /// (时序内容用层级合并,研究显示能匹配甚至略超全上下文,且便宜得多)。
-const MAP_CHUNK_CHARS: usize = 12_000;
+/// 8000 而非 12000:首次实测 12000 字 + 思考模式把网关拖到 **502 上游 ReadTimeout**;
+/// 块小一点单次生成短、更不容易触发上游读超时。
+const MAP_CHUNK_CHARS: usize = 8_000;
+/// LLM 调用重试:网关偶发 502/上游读超时是常态(模型排队/缩零冷启),重试比整个任务失败便宜。
+const LLM_RETRIES: u32 = 3;
 
 #[derive(Serialize)]
 pub struct Segment {
@@ -327,6 +331,22 @@ async fn condense(state: &AppState, full: &str, end_user: &str) -> anyhow::Resul
 
 /// 调平台 LLM 网关(OpenAI 兼容)。
 async fn chat(state: &AppState, system: &str, user: &str, end_user: &str) -> anyhow::Result<String> {
+    let mut last: Option<anyhow::Error> = None;
+    for attempt in 1..=LLM_RETRIES {
+        match chat_once(state, system, user, end_user).await {
+            Ok(v) if !v.trim().is_empty() => return Ok(v),
+            Ok(_) => last = Some(anyhow!("模型返回空内容")),
+            Err(e) => {
+                tracing::warn!(attempt, error = %format!("{e:#}"), "LLM 调用失败,重试");
+                last = Some(e);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+    }
+    Err(last.unwrap_or_else(|| anyhow!("LLM 调用失败")))
+}
+
+async fn chat_once(state: &AppState, system: &str, user: &str, end_user: &str) -> anyhow::Result<String> {
     let base = state.config.llm_base_url.clone().ok_or_else(|| anyhow!("未注入 IAH_BASE_URL,无法调用大模型"))?;
     // ★关掉思考模式★:Qwen3.6 默认把推理过程写进 content(实测开头是 "Here's a thinking process:"),
     // 纪要会带一大段自言自语。chat_template_kwargs.enable_thinking=false 实测干净(2026-08-03 验)。
