@@ -13,7 +13,10 @@ import { api, type Diagnose, type Grant, type Item, type Role, type Space, type 
 /// → complete 交回服务端。返回 false = 后端说预签名未启用(501),调用方回退后端流式上传。
 const DIRECT_THRESHOLD = 100 * 1024 * 1024
 
-async function directUpload(sid: number, file: File, parentId: number | null, onProgress: (p: number) => void): Promise<boolean> {
+async function directUpload(
+  sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
+  mode: 'presigned' | 'proxy',
+): Promise<boolean> {
   const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -33,7 +36,12 @@ async function directUpload(sid: number, file: File, parentId: number | null, on
     let sent = 0
     for (let i = 0; i < part_urls.length; i++) {
       const blob = file.slice(i * part_size, Math.min(file.size, (i + 1) * part_size))
-      const etag = await putPart(part_urls[i], blob, (loaded) => onProgress(Math.round(((sent + loaded) / file.size) * 100)))
+      const report = (loaded: number) => onProgress(Math.round(((sent + loaded) / file.size) * 100))
+      // presigned:浏览器直发 Garage(最快,要过 s3api 证书关);
+      // proxy:同源发给我们再转推 S3(绕开证书关,也绕开入口层对大请求的限——每片只有 32MiB)。
+      const etag = mode === 'presigned'
+        ? await putPart(part_urls[i], blob, report)
+        : await putPart(`/api/items/${item_id}/media/part?upload_id=${encodeURIComponent(upload_id)}&part_number=${i + 1}`, blob, report, true)
       sent += blob.size
       parts.push({ part_number: i + 1, etag })
     }
@@ -46,17 +54,23 @@ async function directUpload(sid: number, file: File, parentId: number | null, on
   }
 }
 
-function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void): Promise<string> {
+function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, viaProxy = false): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', url)
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onLoaded(e.loaded) }
     xhr.onload = () => {
-      const etag = xhr.getResponseHeader('ETag') // 跨源可读靠桶 CORS ExposeHeaders:[ETag](PoC 2c 已验)
-      if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag.replaceAll('"', ''))
-      else reject(new Error(`part 直传失败:status=${xhr.status} etag=${etag ? '有' : '无(桶 CORS?)'}`))
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let detail = `${xhr.status}`
+        try { detail = JSON.parse(xhr.responseText).error || detail } catch { /* 非 JSON */ }
+        return reject(new Error(`分片上传失败:${detail}`))
+      }
+      // 代理模式 ETag 在 JSON 体里;直传模式在响应头(跨源可读靠桶 CORS ExposeHeaders:[ETag])。
+      const etag = viaProxy ? (JSON.parse(xhr.responseText).etag as string) : xhr.getResponseHeader('ETag')
+      if (etag) resolve(etag.replaceAll('"', ''))
+      else reject(new Error(viaProxy ? '分片响应缺 etag' : 'part 直传缺 ETag(桶 CORS?)'))
     }
-    xhr.onerror = () => reject(new Error('part 直传网络错误(证书/CORS?)'))
+    xhr.onerror = () => reject(new Error(viaProxy ? '分片上传网络错误' : 'part 直传网络错误(证书/CORS?)'))
     xhr.send(blob)
   })
 }
@@ -156,15 +170,18 @@ export function SpacesView() {
       setUploads((u) => [...u, { key, name: f.name, percent: 0 }])
       const report = (percent: number) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x)))
       try {
+        // 三级策略(2026-08-03 事故后定):①预签直传(最快,要过 s3api 证书关)
+        // → ②同源分片代理(绕证书,且每请求只 32MiB,过得了入口层对大请求的限)
+        // → ③整文件 POST(仅小文件;大文件走这条会被入口层 502)。
         let done = false
-        if (f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')) {
+        const big = f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')
+        if (big) {
           try {
-            done = await directUpload(cur.id, f, targetParent, report)
+            done = await directUpload(cur.id, f, targetParent, report, 'presigned')
           } catch (de) {
-            // 直传失败(典型:该设备不信 s3api 的证书,AI_Talks 0102)→ 自动回退服务器中转,
-            // 功能不挡死,只是大文件多过 pod 一跳。directUpload 内部已 abort 半截上传。
-            message.warning(`${f.name}:直传不可用(${(de as Error).message}),已回退服务器中转`)
+            message.warning(`${f.name}:直传不可用(${(de as Error).message}),改走服务器分片`)
             report(0)
+            done = await directUpload(cur.id, f, targetParent, report, 'proxy')
           }
         }
         if (!done) await xhrUpload(`/api/spaces/${cur.id}/upload${targetParent != null ? `?parent_id=${targetParent}` : ''}`, f, report)

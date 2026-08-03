@@ -101,6 +101,39 @@ pub async fn begin(
 }
 
 #[derive(Deserialize)]
+pub struct PartQuery {
+    pub upload_id: String,
+    pub part_number: i32,
+}
+
+/// PUT /api/items/{id}/media/part?upload_id=&part_number=(≥editor)—— **代理分片**:
+/// 浏览器把这一片的原始字节 PUT 到我们(同源),我们转推 S3,回 ETag。
+/// 为什么要它(2026-08-03 线上事故):浏览器直传要过 s3api 的证书关(公网中转层还没套真证书),
+/// 回退到「整个大文件一次 POST 给后端」又会被公网入口层在长/大请求上掐断成 502
+/// (实测:pod 自身收 300MB 完全正常,是入口层的限)。**分片走同源**两边的坑都绕开:
+/// 每个请求只有一片(32MiB),任何代理都过得去;失败只重这一片。
+pub async fn part(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<PartQuery>,
+    body: axum::body::Bytes,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = crate::http::items::space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    if body.is_empty() {
+        return Err(AppError::BadRequest("空分片".into()));
+    }
+    let key = format!("spaces/{sid}/{iid}/blob");
+    let p = state
+        .storage
+        .multipart_part(&key, &q.upload_id, q.part_number, body.to_vec())
+        .await
+        .map_err(AppError::Other)?;
+    Ok(Json(json!({ "part_number": q.part_number, "etag": p.e_tag().unwrap_or_default() })))
+}
+
+#[derive(Deserialize)]
 pub struct PartIn {
     pub part_number: i32,
     pub etag: String,
