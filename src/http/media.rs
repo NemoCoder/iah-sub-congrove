@@ -17,6 +17,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
+use serde_json;
 use serde_json::json;
 
 use crate::auth::Identity;
@@ -231,4 +232,60 @@ pub async fn play(
         .header(header::CACHE_CONTROL, "no-store") // 预签名短时效,别被缓存住过期 URL
         .body(axum::body::Body::empty())
         .map_err(|e| AppError::Other(e.into()))?)
+}
+
+// ── 录屏分析(转写 + 纪要),docs/VIDEO-SUMMARY.md P1 ────────────────────────
+
+/// POST /api/items/{id}/analyze(≥editor)—— 排一个分析任务。
+/// 已有在跑的任务就返回它(唯一部分索引挡住重复排队),不报错。
+pub async fn analyze(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = crate::http::items::space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let kind: String = sqlx::query_scalar("SELECT kind FROM items WHERE id=$1")
+        .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    if kind != "video" {
+        return Err(AppError::BadRequest("只能分析视频".into()));
+    }
+    let job: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO media_jobs (item_id, requested_by) VALUES ($1,$2)
+         ON CONFLICT DO NOTHING RETURNING id",
+    )
+    .bind(iid).bind(id.require_username()?)
+    .fetch_optional(&state.pool).await?;
+    let job_id = match job {
+        Some(j) => j,
+        None => sqlx::query_scalar("SELECT id FROM media_jobs WHERE item_id=$1 AND status IN ('queued','running')")
+            .bind(iid).fetch_one(&state.pool).await?,
+    };
+    Ok(Json(json!({ "job_id": job_id })))
+}
+
+/// GET /api/items/{id}/analysis(≥viewer)—— 任务状态 + 逐字稿 + 三份纪要。
+pub async fn analysis(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = crate::http::items::space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let job: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
+        "SELECT status, stage, progress, error FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1",
+    ).bind(iid).fetch_optional(&state.pool).await?;
+    let tr: Option<(String, Option<serde_json::Value>, Option<f64>)> = sqlx::query_as(
+        "SELECT text, segments, duration_sec FROM transcripts WHERE item_id=$1",
+    ).bind(iid).fetch_optional(&state.pool).await?;
+    let sums: Vec<(String, String)> = sqlx::query_as("SELECT kind, content FROM summaries WHERE item_id=$1")
+        .bind(iid).fetch_all(&state.pool).await?;
+    Ok(Json(json!({
+        "job": job.map(|(status, stage, progress, error)| json!({
+            "status": status, "stage": stage, "progress": progress, "error": error })),
+        "transcript": tr.map(|(text, segments, duration)| json!({
+            "text": text, "segments": segments, "duration_sec": duration })),
+        "summaries": sums.into_iter().map(|(k, c)| json!({"kind": k, "content": c})).collect::<Vec<_>>(),
+        "asr_ready": state.config.asr_base_url.is_some(),
+    })))
 }

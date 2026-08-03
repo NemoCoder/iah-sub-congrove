@@ -30,6 +30,17 @@ RUN cargo build --release --locked
 # **不需要 apt 装任何东西**,比 citeroot 还薄(它要 poppler/rclone,我们没有原生依赖)。
 FROM docker.m.daocloud.io/library/debian:trixie-slim AS runtime
 WORKDIR /app
+# ffmpeg:录屏分析要抽 16k/mono 音轨并切段(media_ai.rs)。GFW 后 apt 走国内镜像。
+# 用 if/fi 而非 `[ -f ] && sed`——后者文件不存在时返回 1 会让 set -e 直接失败(citeroot 踩过)。
+RUN set -eux; \
+    for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+        if [ -f "$f" ]; then \
+            sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' "$f"; \
+        fi; \
+    done; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ffmpeg; \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/congrove /app/congrove
 COPY --from=web /web/dist /app/web/dist
 # 迁移已由 sqlx::migrate! 编进二进制;后端从 WEB_DIST 托管前端(http/mod.rs 的 ServeDir)。

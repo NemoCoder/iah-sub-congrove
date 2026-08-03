@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod media_ai;
 pub mod perm;
 pub mod registry;
 pub mod state;
@@ -78,6 +79,9 @@ pub async fn run() -> anyhow::Result<()> {
     // 每 6h 扫一遍,abort 超过 24h 的,并删对应的孤儿 items 行(s3_key NULL 的未完成行)。
     // 进程内任务,重启即丢、下个 tick 恢复——与平台「任务别只活在内存」的告诫不冲突:这是纯幂等清扫。
     tokio::spawn(cleanup_stale_uploads(state.clone()));
+
+    // 录屏转写+纪要 worker(docs/VIDEO-SUMMARY.md P1):任务态在 PG,重启自动续跑。
+    tokio::spawn(media_ai::run(state.clone()));
 
     let app = http::build_router(state);
     let listener = TcpListener::bind(&cfg.bind_addr).await?;

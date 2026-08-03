@@ -312,7 +312,16 @@ struct JwkSet {
 /// (默认 /etc/ssl/iah/ca.crt)的内网 CA **追加**进去——公共根仍信,
 /// 本地 dev 无此文件走公网不受影响。
 pub(crate) fn build_http_client() -> anyhow::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(15));
+    build_http_client_timeout(Duration::from_secs(15))
+}
+
+/// 长超时版(ASR 转写 / LLM 摘要可能跑几分钟;模型缩零冷启动官方说要等 1~5 分钟)。
+pub(crate) fn build_http_client_long() -> anyhow::Result<reqwest::Client> {
+    build_http_client_timeout(Duration::from_secs(900))
+}
+
+fn build_http_client_timeout(timeout: Duration) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
 
     let ca_path = std::env::var("SSL_CERT_FILE").unwrap_or_else(|_| "/etc/ssl/iah/ca.crt".into());
     match std::fs::read(&ca_path) {

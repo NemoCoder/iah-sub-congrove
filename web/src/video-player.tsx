@@ -3,6 +3,7 @@
 import { App as AntdApp, Button, Space as AntSpace, Tag } from 'antd'
 import { useEffect, useRef, useState } from 'react'
 import { api, type Item } from './api'
+import { Analysis } from './analysis'
 
 const SAVE_EVERY_MS = 5000 // 播放中每 5s 记一次;暂停/结束/关窗另外各记一次
 
@@ -96,6 +97,8 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
         ref={ref} controls preload="metadata" src={`/api/items/${item.id}/play`}
         style={{ width: '100%', maxHeight: standalone ? '78vh' : 520, background: '#000', borderRadius: 6 }}
       />
+      {/* AI 纪要:点转写可跳到视频对应时刻(同一个 <video> 实例) */}
+      <Analysis item={item} onSeek={(t) => { if (ref.current) { ref.current.currentTime = t; void ref.current.play() } }} />
     </>
   )
 }

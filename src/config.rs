@@ -34,6 +34,17 @@ pub struct Config {
     /// **空 = 全员可建**(默认);非空 = 仅名单内 + 超管可建——空间泛滥时随时收紧,不用改码。
     pub space_creators: Vec<String>,
 
+    /// LLM 网关(平台总注入 IAH_BASE_URL / IAH_API_KEY):摘要与将来的 VLM 旁路都走它。
+    pub llm_base_url: Option<String>,
+    pub llm_api_key: Option<String>,
+    /// 摘要用的模型名(网关侧;换模型不改码)。
+    pub llm_model: String,
+    /// ASR 端点。**平台尚未提供(AI_Talks 0123 在求)**,缺则转写阶段明确失败并提示等待开通;
+    /// 到位后填 env 即通,不改码。默认复用 LLM 网关的 base 与 key。
+    pub asr_base_url: Option<String>,
+    pub asr_api_key: Option<String>,
+    pub asr_model: String,
+
     /// 平台 registry(总注入):用户存在性校验 + 站内信外发(AI_Talks 0094)。
     /// 缺(本地 dev)= 拉人校验降级到本地 app_user、不投站内信。
     pub registry_url: Option<String>,
@@ -106,6 +117,15 @@ impl Config {
             space_creators: opt("CONGROVE_SPACE_CREATORS")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default(),
+
+            llm_base_url: opt("IAH_BASE_URL").map(|u| u.trim_end_matches('/').to_string()),
+            llm_api_key: opt("IAH_API_KEY"),
+            llm_model: opt("CONGROVE_LLM_MODEL").unwrap_or_else(|| "Qwen3.6-35B-A3B".into()),
+            asr_base_url: opt("ASR_BASE_URL")
+                .or_else(|| opt("IAH_ASR_BASE_URL"))
+                .map(|u| u.trim_end_matches('/').to_string()),
+            asr_api_key: opt("ASR_API_KEY").or_else(|| opt("IAH_API_KEY")),
+            asr_model: opt("ASR_MODEL").unwrap_or_else(|| "Qwen3-ASR-1.7B".into()),
 
             registry_url: opt("REGISTRY_URL"),
             public_url: opt("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
