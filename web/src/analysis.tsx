@@ -1,5 +1,6 @@
 // 录屏 AI 纪要面板:排队/进度、三份纪要、可点击跳转的逐字稿。
-// 后端 worker 在 media_ai.rs;ASR 端点由平台提供(AI_Talks 0123),没开通时这里明确提示。
+// 后端 worker 在 media_ai.rs;ASR 端点由平台提供(AI_Talks 0123/0124/0125)。
+// 分段已在后端合并成可读段落(同说话人+间隔<1.2s 合并,上限 120 字/30 秒),这里直接展示。
 import { App as AntdApp, Alert, Button, Empty, Progress, Segmented, Space as AntSpace, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type Item } from './api'

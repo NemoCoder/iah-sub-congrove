@@ -289,3 +289,37 @@ pub async fn analysis(
         "asr_ready": state.config.asr_base_url.is_some(),
     })))
 }
+
+/// GET /api/items/{id}/subtitles.vtt(≥viewer)—— 把转写分段转成 WebVTT 字幕轨。
+/// 挂到 <video> 的 <track> 上就是**原生实时字幕**(播放器自带开关/样式,不用自己画)。
+/// 说话人作为前缀写进 cue 文本(`spk0: …`),这样字幕里也看得出谁在说。
+pub async fn subtitles(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Response> {
+    let sid = crate::http::items::space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let segs: Option<serde_json::Value> = sqlx::query_scalar("SELECT segments FROM transcripts WHERE item_id=$1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    let arr = segs.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let mut out = String::from("WEBVTT\n\n");
+    for (i, s) in arr.iter().enumerate() {
+        let st = s.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let en = s.get("end").and_then(|v| v.as_f64()).unwrap_or(st + 2.0);
+        let txt = s.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if txt.is_empty() { continue }
+        let spk = s.get("speaker").and_then(|v| v.as_str()).unwrap_or("");
+        let prefix = if spk.is_empty() { String::new() } else { format!("{spk}: ") };
+        out.push_str(&format!("{}\n{} --> {}\n{prefix}{txt}\n\n", i + 1, vtt_time(st), vtt_time(en.max(st + 0.5))));
+    }
+    Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8")], out).into_response())
+}
+
+fn vtt_time(t: f64) -> String {
+    let t = t.max(0.0);
+    let h = (t / 3600.0) as u64;
+    let m = ((t % 3600.0) / 60.0) as u64;
+    let s = t % 60.0;
+    format!("{h:02}:{m:02}:{s:06.3}")
+}

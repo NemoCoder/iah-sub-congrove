@@ -77,7 +77,11 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
     <>
       {!standalone && (
         <AntSpace style={{ marginBottom: 8 }} wrap>
-          <Button size="small" onClick={() => openViewer(item.id)}>🗗 在新窗口播放</Button>
+          <Button size="small" onClick={() => {
+            // ★开新窗口前先把这边停掉★:否则两个播放器同时出声,用户暂停了这个还听见那个(2026-08-03 反馈)。
+            if (ref.current) { ref.current.pause(); ref.current.muted = true }
+            openViewer(item.id)
+          }}>🗗 在新窗口播放</Button>
           {pipOk && (
             <Button size="small" onClick={async () => {
               try {
@@ -96,7 +100,11 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
       <video
         ref={ref} controls preload="metadata" src={`/api/items/${item.id}/play`}
         style={{ width: '100%', maxHeight: standalone ? '78vh' : 520, background: '#000', borderRadius: 6 }}
-      />
+      >
+        {/* 实时字幕:转写好了才有内容(没有则轨为空,播放器不显示字幕按钮)。
+            同源 vtt,浏览器原生渲染,自带开关与样式——不用自己画字幕层。 */}
+        <track kind="subtitles" srcLang="zh" label="转写字幕" default src={`/api/items/${item.id}/subtitles.vtt`} />
+      </video>
       {/* AI 纪要:点转写可跳到视频对应时刻(同一个 <video> 实例) */}
       <Analysis item={item} onSeek={(t) => { if (ref.current) { ref.current.currentTime = t; void ref.current.play() } }} />
     </>

@@ -62,6 +62,7 @@ pub fn build_router(state: AppState) -> Router {
         // 录屏分析:排任务 + 查结果(实际跑在后台 worker,见 media_ai.rs)
         .route("/items/{id}/analyze", post(media::analyze))
         .route("/items/{id}/analysis", get(media::analysis))
+        .route("/items/{id}/subtitles.vtt", get(media::subtitles))
         .merge(admin)
         .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30)));
 
