@@ -68,7 +68,11 @@ async fn main() -> anyhow::Result<()> {
     let expose = r.headers().get("access-control-expose-headers").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let etag_visible = r.headers().get("etag").is_some();
     check("2a 预签名 PUT 直传", r.status().is_success(), format!("status={}", r.status()));
-    check("2b CORS Allow-Origin", !cors_origin.is_empty(), format!("allow-origin={cors_origin}"));
+    // ★必须断言「等于请求的 Origin」不能只断言非空(2026-08-03 教训):CORS 规范要求
+    // ACAO 是**单个**源,浏览器做字面比较;Garage 会把一条 rule 里的多个 AllowedOrigins
+    // 拼成 "a, b" 返回 —— 非空但浏览器必判失败,curl 不做 CORS 判定所以测不出来。
+    check("2b CORS Allow-Origin 等于请求 Origin(非仅非空)", cors_origin == origin,
+        format!("allow-origin={cors_origin:?} 期望={origin:?}(逗号串=桶 CORS 需按 origin 拆条)"));
     check("2c ExposeHeaders 带 ETag", expose.to_lowercase().contains("etag") && etag_visible, format!("expose={expose}"));
 
     // ── 3) OPTIONS preflight ────────────────────────────────────────────────
