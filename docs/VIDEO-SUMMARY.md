@@ -80,6 +80,30 @@ Gemini 2.5 Pro**。512 帧 @2fps,prompt 要求它直接返回 `[start,end]` 秒�
 **④ 小修正**:GLM 系最新是 **GLM-4.6V(MIT,128K 上下文)** 而非 4.5V 的 32K;但它**只报了 LVBench 一项
 视频分数**(59.5),Video-MME/MLVU 全无,选型证据不足。
 
+### 3.2 补充调研(第五路,国产厂商横扫):两条影响选型的发现
+
+**① 小模型足够用 —— `Qwen/Qwen3.5-9B` 的长视频分数超上一代 235B**
+LVBench **70.0** vs Qwen3-VL-235B-A22B 的 **63.6**;MLVU 84.4、VideoMME(w/o sub) 78.4、OCRBench 89.2。
+**9B 打赢上一代 235B**,这改变硬件分配:9B(BF16 18GB / Int4 ~5GB)**在 5090 上就能跑**,
+不必事事占 H20。→ **建议先用 9B 起步**,不够再上 27B/35B-A3B;把 H20 留给真正吃显存的长视频与汇总。
+(旗舰参考:Qwen3.5-397B-A17B LVBench **75.5**,已逼近 Gemini-3 Pro 的 76.2。)
+
+**② 长视频的极限选项换成 `InternVideo3-8B`(Apache-2.0,arXiv 2606.12195)**
+比 §3.1-② 的 Keye-VL-2.0 更值得记:**M²LA 低秩 latent 注意力把 KV 砍约 50%**,
+decode 在 128K/256K/384K 上分别快 **4.12×/4.77×/5.01×**,且**不丢 token**(不是抽帧压缩);
+2048 帧@4fps ≈ 256K token,**单卡 H200 能撑到 768K prefill**(原版 Qwen3-VL 512K 就 OOM)。
+时序定位三项(QVHighlights 59.9 / Charades 50.4 / ActivityNet 47.9)开源第一;MLVU 77.3、EgoSchema 76.6。
+- **两个坑**:(a) **vLLM 完全不支持**,只能 transformers + `trust_remote_code`;
+  (b) ★**权重在个人账号 `yanziang/InternVideo3-8B-Instruct`,模型卡示例代码里写的
+  `OpenGVLab/InternVideo3-8B-Instruct` 是 404**★——照抄示例会拉不到权重。
+→ 仅在"1~2 小时视频必须整段理解"时才动它;常规路线仍是 Qwen3.5 + vLLM。
+
+**③ 排除清单(这几家根本不支持视频输入,别浪费时间)**:阶跃 Step3-VL 全系、昆仑 Skywork R1V4、
+小红书 dots.vlm、腾讯 HunyuanOCR(且许可是 `tencent-hunyuan-community` **非标准开源**,商用有条件);
+**腾讯没有开源的视频理解模型**(HunyuanVideo 是生成,Hunyuan-Vision 闭源);
+**"Ling-VL/Ring-VL" 不存在**(蚂蚁多模态线叫 Ming);百度 ERNIE-4.5-VL 官方默认
+**180 帧@2fps ≈ 90 秒**,对小时级视频官方未给方案。
+
 **别选**:Whisper 系(中文会议 19% 字错,微调版也只到 11%)、Ovis2.5/2.6(视频=抽 8 帧当多图,长视频无证据,
 vLLM 无 LoRA/PP)、GLM-4.5V(**视频上下文仅 32K**,2h 会议要切窗)、InternVL3.5(**官方零量化件**)、
 Fun-ASR-Nano(官方自陈**时间戳不可靠**)。
@@ -113,6 +137,7 @@ mp4
 |---|---|---|
 | Qwen3.6-27B-FP8(旁路 VLM + 汇总) | **H20 ×1~2** | 单卡整装(28GB 权重 + 14GB KV),`--kv-cache-dtype fp8 --enable-chunked-prefill --enable-prefix-caching --max-model-len 128000 --mm-encoder-tp-mode data` |
 | GPU 解码 + 关键帧抽取 | **H20**(7 路 NVDEC,5090 只有 2 路) | PyNvVideoCodec batched 模式 |
+| Qwen3.5-9B(轻量 VLM,先起步用这个) | **5090 ×N**(Int4 ~5GB) | LVBench 70.0 已超上一代 235B;不够再上 27B |
 | Qwen3-ASR / ForcedAligner / 3D-Speaker | **5090 ×N,一卡一实例** | 1.7B 小模型高并发,放 96GB 卡上是浪费;AWQ/GPTQ-Int4 + CUDA graph,**别开 enforce-eager** |
 | Embedding / Reranker | H20 剩余卡 或 5090 | 平台已有同族服务,可复用 |
 | 长视频"直喂"兜底 | H20 | 仅用于无语音的纯演示片段,或用户点某时间段问"这里画面上是什么" |
