@@ -18,7 +18,7 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
   const lastSaved = useRef(0)
   const [resumed, setResumed] = useState<number | null>(null) // 提示"已从 x:xx 继续"
   const [pipOk, setPipOk] = useState(false)
-  const [hoverTools, setHoverTools] = useState(false) // 悬停画面才把右下角两个按钮点亮
+  const [hoverTools, setHoverTools] = useState(false) // 悬停画面才把右上角两个按钮点亮
 
   useEffect(() => {
     setPipOk(typeof document !== 'undefined' && 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled)
@@ -77,9 +77,11 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
   return (
     <>
       {resumed != null && <Tag color="cyan" style={{ marginBottom: 8 }}>已从 {fmtClock(resumed)} 继续</Tag>}
-      {/* ★两个按钮浮在画面右下角、只给图标、hover 才出文字★(2026-08-03 用户要求):
-          原来横在视频上方占一整行太抢眼。bottom 给 52px 是给原生控制条让位——
-          浏览器自带控制条约 40px 高,压上去会挡住全屏/⋮ 按钮(见反馈截图)。
+      {/* ★两个按钮浮在画面**右上角**、只给图标、hover 才出文字★:
+          原来横在视频上方占一整行太抢眼(2026-08-03 用户要求收进画面);
+          先放右下角 bottom:52px 想给原生控制条让位,结果还是**压在全屏/⋮ 键上**——
+          控制条高度按播放器宽度自适应,没有一个安全的常数可给(2026-08-04 反馈截图)。
+          右上角是唯一原生控件永远不会占的角,不用猜高度。
           鼠标不在画面上时按钮压到半透明,不干扰观看(没有 css 文件,全树都是内联样式,就用 state 做)。 */}
       <div
         style={{ position: 'relative', lineHeight: 0 }}
@@ -96,10 +98,10 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
         </video>
         {!standalone && (
           <AntSpace size={6} style={{
-            position: 'absolute', right: 10, bottom: 52, zIndex: 2,
-            opacity: hoverTools ? 1 : 0.45, transition: 'opacity .2s',
+            position: 'absolute', right: 10, top: 10, zIndex: 2,
+            opacity: hoverTools ? 1 : 0.35, transition: 'opacity .2s',
           }}>
-            <Tooltip title="在新窗口播放" placement="top">
+            <Tooltip title="在新窗口播放" placement="bottom">
               <Button size="small" shape="circle" onClick={() => {
                 // ★开新窗口前先把这边停掉★:否则两个播放器同时出声,用户暂停了这个还听见那个(2026-08-03 反馈)。
                 if (ref.current) { ref.current.pause(); ref.current.muted = true }
@@ -107,7 +109,7 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
               }}>↗</Button>
             </Tooltip>
             {pipOk && (
-              <Tooltip title="画中画" placement="top">
+              <Tooltip title="画中画" placement="bottom">
                 <Button size="small" shape="circle" onClick={async () => {
                   try {
                     if (document.pictureInPictureElement) await document.exitPictureInPicture()
