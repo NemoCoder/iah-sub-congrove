@@ -44,7 +44,7 @@ export function App() {
           options={[{ value: 'spaces', label: '🌳 空间' }, { value: 'groups', label: '👥 小组' }]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView /> : <GroupsView />}
+        {view === 'spaces' ? <SpacesView me={me} /> : <GroupsView />}
       </div>
     </div>
   )

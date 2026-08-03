@@ -24,7 +24,11 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
   return ct.includes('json') ? r.json() : ((await r.text()) as unknown as T)
 }
 
-export type Me = { username: string | null; name: string | null; email: string | null; is_super: boolean }
+export type Me = {
+  username: string | null; name: string | null; email: string | null; is_super: boolean
+  /// 预签名直传的外部端点;null = 平台未启用。前端据此探测本设备能否信任其证书。
+  direct_upload_endpoint: string | null
+}
 export type Role = 'viewer' | 'editor' | 'admin'
 export type Space = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null

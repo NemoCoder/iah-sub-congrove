@@ -546,9 +546,12 @@ pub async fn oidc_logout() -> Response {
 }
 
 /// /api/me → 当前调用者。is_super 给 SPA 显隐超管入口用,真判权仍在后端。
-pub async fn me(Extension(id): Extension<Identity>) -> Json<serde_json::Value> {
+/// 顺带回 direct_upload_endpoint:前端据此**开局探测**本设备能否信任 s3api 的证书,
+/// 能就走预签直传、不能就直接走同源分片——避免每次上传都先撞一次墙再报警告(2026-08-03)。
+pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity>) -> Json<serde_json::Value> {
     Json(json!({
         "username": id.username, "name": id.name, "email": id.email, "is_super": id.is_super,
+        "direct_upload_endpoint": state.config.s3_public_endpoint,
     }))
 }
 

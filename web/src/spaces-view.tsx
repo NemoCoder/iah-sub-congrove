@@ -6,12 +6,33 @@ import {
 } from 'antd'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Diagnose, type Grant, type Item, type Role, type Space, type UserOpt, type Version } from './api'
+import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
 
 /// P2 预签名直传:>100MB 或视频走浏览器→Garage 直传(字节不过 pod)。
 /// begin 拿全部 part URL → File.slice 逐片 PUT(收集 ETag,跨源可读靠桶 CORS 的 ExposeHeaders)
 /// → complete 交回服务端。返回 false = 后端说预签名未启用(501),调用方回退后端流式上传。
 const DIRECT_THRESHOLD = 100 * 1024 * 1024
+
+/// 开局探测:本设备能不能直连 s3api(证书信不信得过)。
+/// no-cors 的 HEAD:证书不受信 → fetch 直接 reject;受信则即使 403 也算 resolve(opaque)。
+/// 结果缓存在 sessionStorage,每标签页只探一次;探不通就静默走同源分片,不再撞墙报警告。
+async function probeDirect(endpoint: string | null): Promise<boolean> {
+  if (!endpoint) return false
+  const cached = sessionStorage.getItem('cg_direct_ok')
+  if (cached !== null) return cached === '1'
+  let ok = false
+  try {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 6000)
+    await fetch(endpoint, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: ctl.signal })
+    clearTimeout(timer)
+    ok = true
+  } catch {
+    ok = false // 证书不受信 / 该网络到不了 → 走分片
+  }
+  sessionStorage.setItem('cg_direct_ok', ok ? '1' : '0')
+  return ok
+}
 
 async function directUpload(
   sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
@@ -112,7 +133,7 @@ function fmtSize(n: number | null) {
   return `${(n / 1048576).toFixed(1)}MB`
 }
 
-export function SpacesView() {
+export function SpacesView({ me }: { me: Me | null }) {
   const { message, modal } = AntdApp.useApp()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [cur, setCur] = useState<Space | null>(null)
@@ -170,16 +191,21 @@ export function SpacesView() {
       setUploads((u) => [...u, { key, name: f.name, percent: 0 }])
       const report = (percent: number) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x)))
       try {
-        // 三级策略(2026-08-03 事故后定):①预签直传(最快,要过 s3api 证书关)
-        // → ②同源分片代理(绕证书,且每请求只 32MiB,过得了入口层对大请求的限)
-        // → ③整文件 POST(仅小文件;大文件走这条会被入口层 502)。
+        // 选路(2026-08-03 事故后定):大文件一律分片,只是「片发给谁」二选一——
+        // 探测通过 → 预签直传(片直发 Garage,不过 pod,最快);
+        // 探测不过(本设备不信 s3api 证书)→ 同源分片代理(片发给我们再转推,
+        // 每请求只 32MiB,也过得了公网入口层对大请求的限)。
+        // 小文件仍走整文件 POST(一次往返最省事)。
         let done = false
         const big = f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')
         if (big) {
+          const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(cur.id, f, targetParent, report, 'presigned')
+            done = await directUpload(cur.id, f, targetParent, report, direct ? 'presigned' : 'proxy')
           } catch (de) {
-            message.warning(`${f.name}:直传不可用(${(de as Error).message}),改走服务器分片`)
+            if (!direct) throw de // 已是分片通道,再失败就是真错误
+            // 探测过了但直传仍失败(证书中途变化/网络抖动):记账并降级重试,下次直接走分片。
+            sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
             done = await directUpload(cur.id, f, targetParent, report, 'proxy')
           }
