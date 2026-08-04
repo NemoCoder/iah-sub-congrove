@@ -213,10 +213,17 @@ pub async fn update(
 
 /// 术语表规范化:换行/多空格 → 单空格,去重保序。词表是给 ASR 的 `hotword`(空格分隔),
 /// 重复词没有意义,还会把请求撑大。
+/// 上限 500 词 / 4000 字符(2026-08-04 审计):词表会跟着**每一次**转写请求发给 ASR,
+/// 没有上限的话粘一篇文章进来就是每次转写都多传几 MB,而且拼音模糊匹配的误替换面积也随之爆炸。
+const HOTWORDS_MAX_WORDS: usize = 500;
+const HOTWORDS_MAX_CHARS: usize = 4000;
+
 fn normalize_hotwords(raw: &str) -> String {
     let mut seen: Vec<&str> = Vec::new();
+    let mut chars = 0usize;
     for w in raw.split_whitespace() {
-        if !seen.contains(&w) { seen.push(w) }
+        if seen.len() >= HOTWORDS_MAX_WORDS || chars + w.chars().count() > HOTWORDS_MAX_CHARS { break }
+        if !seen.contains(&w) { chars += w.chars().count() + 1; seen.push(w) }
     }
     seen.join(" ")
 }

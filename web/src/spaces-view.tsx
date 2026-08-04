@@ -427,7 +427,10 @@ export function SpacesView({ me }: { me: Me | null }) {
               }]}
             />
           </Modal>
-          <GrantsModal space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
+          {/* key 按空间:这个面板是常驻挂载的(不是 open 才渲染),不给 key 的话切到别的空间时
+              术语表输入框、诊断结果这些内部 state 会留着上一个空间的值——保存就把 A 的词写进 B
+              (2026-08-04 审计发现,v0.3.29 引入)。 */}
+          <GrantsModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>

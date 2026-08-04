@@ -176,6 +176,15 @@ pub async fn complete(
     let head = state.storage.s3.head_object().bucket(&state.storage.bucket).key(&key).send().await
         .map_err(|e| AppError::Other(e.into()))?;
     let size = head.content_length().unwrap_or(0);
+    // ★按实际大小复核配额★(2026-08-04 审计):begin 只按前端**申报**的 size 预判,
+    // 而预签名 PUT 不限制单片实际字节数——申报 1MB 传 5GB 就把配额绕过去了。
+    // 超了就地回滚(删对象 + 删行),不留既成事实。
+    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    if used + size > quota {
+        let _ = state.storage.delete(&key).await;
+        let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
+        return Err(AppError::BadRequest("实际大小超出空间配额,已回滚本次上传".into()));
+    }
     sqlx::query("UPDATE items SET s3_key = $1, size = $2, updated_at = now() WHERE id = $3")
         .bind(&key)
         .bind(size)
@@ -216,11 +225,18 @@ pub async fn play(
 ) -> AppResult<Response> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let key: Option<String> = sqlx::query_scalar("SELECT s3_key FROM items WHERE id = $1")
+    // ★只对可播类型放行★(2026-08-04 审计):/play 会吐一条 6 小时的预签名直链,
+    // 谁拿到谁能取原件。对 video 这是刻意的(能播就能录屏,D4 也明说不拦播放);
+    // 但对 pdf/zip/doc 就等于**把 viewer_no_download 整条开关废掉**——viewer 打一下
+    // /api/items/{id}/play 就拿到原件下载地址。所以这里钉死 kind。
+    let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, s3_key FROM items WHERE id = $1")
         .bind(iid)
         .fetch_optional(&state.pool)
-        .await?
-        .ok_or(AppError::NotFound)?;
+        .await?;
+    let Some((kind, key)) = row else { return Err(AppError::NotFound) };
+    if kind != "video" {
+        return Err(AppError::BadRequest("只有录屏/视频能用播放地址(其他类型走 /download,受空间下载策略约束)".into()));
+    }
     let Some(key) = key else { return Err(AppError::NotFound) };
     let target = match state.storage.presign_get(&key, GET_URL_TTL).await {
         Ok(u) => u,
@@ -258,8 +274,10 @@ pub async fn analyze(
     .fetch_optional(&state.pool).await?;
     let job_id = match job {
         Some(j) => j,
-        None => sqlx::query_scalar("SELECT id FROM media_jobs WHERE item_id=$1 AND status IN ('queued','running')")
-            .bind(iid).fetch_one(&state.pool).await?,
+        // 冲突了才走这:多半是已有在跑的任务。但它可能**恰好在这一瞬跑完**,
+        // fetch_one 会 RowNotFound → 500(2026-08-04 审计)。取最近一条兜底。
+        None => sqlx::query_scalar("SELECT id FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1")
+            .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?,
     };
     Ok(Json(json!({ "job_id": job_id })))
 }

@@ -278,6 +278,8 @@ pub async fn update(
     if n == 0 {
         return Err(AppError::NotFound);
     }
+    // 其余写操作都记审计,唯独这条漏了(2026-08-04 审计)。
+    audit::record(&state.pool, id.require_username()?, "group.update", &gid.to_string(), input.name.trim()).await;
     Ok(Json(json!({ "ok": true })))
 }
 

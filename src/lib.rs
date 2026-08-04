@@ -94,8 +94,12 @@ pub async fn run() -> anyhow::Result<()> {
 
 /// 每 6h:abort 超过 24h 的半截 multipart + 删 24h 前建、始终没完成(s3_key NULL)的 file/video 行。
 async fn cleanup_stale_uploads(state: AppState) {
+    // 先扫一次再进循环:原来 sleep 在开头,pod 活不满 6 小时(平台构建/滚更频繁)就等于从不清理
+    // (2026-08-04 审计)。清扫本身幂等,启动跑一次没有副作用。
+    let mut first = true;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        if !first { tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await }
+        first = false;
         match state.storage.list_multiparts().await {
             Ok(ups) => {
                 let now = std::time::SystemTime::now();
