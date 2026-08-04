@@ -87,7 +87,12 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = TcpListener::bind(&cfg.bind_addr).await?;
     tracing::info!(addr = %cfg.bind_addr, "listening");
 
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    // ★with_connect_info★:分享的访问统计要取访客 IP(ConnectInfo)。不这么起服务的话,
+    // ConnectInfo 提取器编译得过但**运行时取不到 → 500**(2026-08-05 加公开分享时补上)。
+    // 网关后 peer 是 ingress 的 pod IP,真实来源看 X-Forwarded-For,两者都用得上。
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     tracing::info!("shutdown complete");
     Ok(())
 }

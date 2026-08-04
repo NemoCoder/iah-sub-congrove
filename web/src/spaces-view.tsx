@@ -4,7 +4,7 @@ import {
   Alert, App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
-import { DeleteOutlined, DownloadOutlined, EditOutlined, LinkOutlined, SwapOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, EditOutlined, ShareAltOutlined, SwapOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MarkdownView, FilePreview, ItemIcon, fmtSize } from './preview'
@@ -51,7 +51,7 @@ function fmtTime(s: string) {
 /// - 空间里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: string | null }) {
+export function SpacesView({ me }: { me: Me | null }) {
   const { message, modal } = AntdApp.useApp()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [cur, setCur] = useState<Space | null>(null)
@@ -64,7 +64,7 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
   const [uploads, setUploads] = useState<UpTask[]>([])
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
-  const [shareErr, setShareErr] = useState<string | null>(null)  // 分享链接打不开时的说明
+  const [shareFor, setShareFor] = useState<Item | null>(null)   // 正在设置公开分享的那一项
 
   const loadSpaces = useCallback(async () => {
     const s = await api<Space[]>('/api/spaces')
@@ -182,53 +182,6 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
   /// 取消:中断在传的 xhr(排队中的只置标记,worker 取到时跳过),行立刻消失。
   const cancelOne = (t: UpTask) => { cancelUpload(t.ctl); if (!t.running) setUploads((u) => u.filter((x) => x.key !== t.key)) }
 
-  /// 复制分享链接。**不是公开链接**——链接只是「直达地址」,谁点开都要登录且必须是本空间成员,
-  /// 权限仍由后端 require_role 判(前端连隐藏都算不上安全边界)。
-  const copyShare = async (it: Item) => {
-    // ★链接里放的是不可猜的令牌,不是自增 id★(2026-08-05 用户坚持,对):
-    // /i/1 那种形态天然引诱人去试 /i/2,而且一旦将来做公开分享就是灾难。
-    // 令牌懒生成(第一次点复制才建),后端 128 bit 取自 /dev/urandom。
-    let token: string
-    try {
-      token = (await api<{ token: string }>(`/api/items/${it.id}/share`, { method: 'POST' })).token
-    } catch (e) { message.error(`生成分享链接失败:${(e as Error).message}`); return }
-    const url = `${window.location.origin}/i/${token}`
-    try {
-      await navigator.clipboard.writeText(url)
-      message.success({ content: `链接已复制:${it.kind === 'folder' ? '文件夹' : '文件'}「${it.name}」——只有本空间成员打得开`, duration: 4 })
-    } catch {
-      // 剪贴板 API 要安全上下文/用户授权,失败就把链接摆出来让用户自己复制。
-      modal.info({ title: '分享链接(只有本空间成员打得开)', content: <Input readOnly value={url} onFocus={(e) => e.target.select()} /> })
-    }
-  }
-
-  // 分享链接 /i/{id}:解析一次,定位到空间并打开对应内容。
-  // 没权限(403)/已删(404)时给一句人话,而不是让用户对着空列表发呆。
-  useEffect(() => {
-    if (!shareToken || !spaces.length) return
-    let done = false
-    ;(async () => {
-      try {
-        const it = await api<Item>(`/api/share/${shareToken}`)
-        const sp = spaces.find((x) => x.id === it.space_id)
-        if (!sp) { setShareErr('这条链接指向的空间你没有访问权限——找空间管理员开通'); return }
-        if (done) return
-        setCur(sp)
-        if (it.kind === 'folder') setCwd(it.id)
-        else { setCwd(it.parent_id); setPreview(it) }
-      } catch (e) {
-        const m = (e as Error).message
-        // ⚠ 没授权的空间统一回 404(perm.rs 刻意不区分,防按 id 枚举),所以这两种情况
-        //   在前端也必须说同一句话——说「已被删除」会误导,说「没有权限」又等于承认它存在。
-        setShareErr(m.includes('not found') || m.includes('forbidden')
-          ? '打不开:内容不存在,或者你没有它所在空间的访问权限(找空间管理员开通)'
-          : `打不开这条链接:${m}`)
-      }
-    })()
-    return () => { done = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shareToken, spaces.length])
-
   const refresh = async () => {
     if (!cur) return
     setChecked([])
@@ -343,11 +296,6 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
 
   return (
     <>
-      {/* 分享链接打不开:给一句人话,而不是让用户对着空列表发呆 */}
-      {shareErr && (
-        <Alert type="warning" showIcon closable style={{ marginBottom: 12 }}
-          message="分享链接打不开" description={shareErr} onClose={() => setShareErr(null)} />
-      )}
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       {/* 左栏:空间列表。空间级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
       <Card
@@ -485,8 +433,6 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
                     </AntSpace>
                   ) : (
                     <AntSpace size={10}>
-                      {/* 分享:文件与文件夹都能分享;链接不公开,只有本空间成员打得开 */}
-                      <Tooltip title="复制分享链接"><a onClick={() => copyShare(it)}><LinkOutlined /></a></Tooltip>
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
@@ -514,7 +460,7 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
             width={preview?.mime === 'application/pdf' || preview?.mime?.startsWith('image/') ? '82%' : '62%'}
             title={preview && <><ItemIcon it={preview} />{preview.name}</>}
             // 打开着也能直接分享当前这份内容(不用退回列表再找那一行)
-            extra={preview && <Button size="small" icon={<LinkOutlined />} onClick={() => copyShare(preview)}>复制链接</Button>}
+            extra={preview && canEdit && <Button size="small" icon={<ShareAltOutlined />} onClick={() => setShareFor(preview)}>分享</Button>}
           >
             {preview && (
               <ItemPanel
@@ -544,6 +490,7 @@ export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: str
               术语表输入框、诊断结果这些内部 state 会留着上一个空间的值——保存就把 A 的词写进 B
               (2026-08-04 审计发现,v0.3.29 引入)。 */}
           <GrantsModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
+          {shareFor && <ShareModal key={shareFor.id} item={shareFor} onClose={() => setShareFor(null)} />}
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
@@ -862,4 +809,115 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
       )}
     </Modal>
   )
+}
+
+/// 公开分享对话框(2026-08-05,对标百度网盘)。
+/// ★这是把内容送出墙外的入口,所以文案要把边界说清楚★:链接一旦发出去,拿到的人**不需要**是
+/// 本空间成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
+function ShareModal({ item, onClose }: { item: Item; onClose: () => void }) {
+  const { message } = AntdApp.useApp()
+  const [links, setLinks] = useState<ShareLink[]>([])
+  const [code, setCode] = useState(randomCode())
+  const [useCode, setUseCode] = useState(true)
+  const [days, setDays] = useState<number | null>(7)
+  const [maxVisits, setMaxVisits] = useState<number | null>(null)
+  const [allowDownload, setAllowDownload] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    try { setLinks(await api<ShareLink[]>(`/api/items/${item.id}/shares`)) } catch { setLinks([]) }
+  }, [item.id])
+  useEffect(() => { void load() }, [load])
+
+  const create = async () => {
+    setBusy(true)
+    try {
+      const r = await api<{ token: string; code: string | null }>(`/api/items/${item.id}/shares`, {
+        method: 'POST',
+        body: JSON.stringify({
+          code: useCode ? code.trim() : null,
+          expires_days: days, max_visits: maxVisits, allow_download: allowDownload,
+        }),
+      })
+      const url = `${window.location.origin}/s/${r.token}`
+      const text = r.code ? `${url}\n提取码:${r.code}` : url
+      try { await navigator.clipboard.writeText(text); message.success('链接已复制' + (r.code ? '(含提取码)' : '')) }
+      catch { message.info('链接已生成,见下方列表') }
+      await load()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal open onCancel={onClose} footer={null} width={620}
+      title={<span><ItemIcon it={item} />分享「{item.name}」</span>}>
+      <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+        message="这是公开链接:拿到链接的人不需要是本空间成员"
+        description="提取码、有效期、访问次数是仅有的三道闸;发出去之后唯一的后悔药是撤销。" />
+      <AntSpace direction="vertical" style={{ width: '100%' }} size={10}>
+        <AntSpace wrap>
+          <Switch size="small" checked={useCode} onChange={setUseCode} />
+          <Typography.Text>需要提取码</Typography.Text>
+          {useCode && (
+            <AntSpace.Compact>
+              <Input value={code} onChange={(e) => setCode(e.target.value)} style={{ width: 130 }} maxLength={32} />
+              <Button onClick={() => setCode(randomCode())}>换一个</Button>
+            </AntSpace.Compact>
+          )}
+        </AntSpace>
+        <AntSpace wrap>
+          <Typography.Text>有效期</Typography.Text>
+          <Select value={days} onChange={setDays} style={{ width: 130 }}
+            options={[{ value: 1, label: '1 天' }, { value: 7, label: '7 天' }, { value: 30, label: '30 天' },
+                      { value: null as unknown as number, label: '永久有效' }]} />
+          <Typography.Text>访问次数</Typography.Text>
+          <Select value={maxVisits} onChange={setMaxVisits} style={{ width: 130 }}
+            options={[{ value: null as unknown as number, label: '不限' }, { value: 1, label: '1 次' },
+                      { value: 10, label: '10 次' }, { value: 50, label: '50 次' }]} />
+        </AntSpace>
+        <AntSpace>
+          <Switch size="small" checked={allowDownload} onChange={setAllowDownload} />
+          <Typography.Text>允许下载原件(关掉则只能在线看)</Typography.Text>
+        </AntSpace>
+        <Button type="primary" loading={busy} onClick={create}>生成链接并复制</Button>
+      </AntSpace>
+
+      <Typography.Text strong style={{ display: 'block', margin: '16px 0 6px' }}>已有链接</Typography.Text>
+      <Table size="small" rowKey="token" dataSource={links} pagination={false}
+        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有分享过" /> }}
+        columns={[
+          { title: '链接', dataIndex: 'token', ellipsis: true,
+            render: (t: string, r) => (
+              <a onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/s/${t}`); message.success('已复制') }}>
+                /s/{t.slice(0, 8)}… {r.has_code && <Tag>有提取码</Tag>}
+              </a>) },
+          { title: '访问', width: 78, render: (_, r) => `${r.visits}${r.max_visits ? ` / ${r.max_visits}` : ''}` },
+          { title: '状态', width: 96, render: (_, r) => (
+              r.revoked_at ? <Tag color="red">已撤销</Tag>
+                : r.expires_at && new Date(r.expires_at) < new Date() ? <Tag>已过期</Tag>
+                : r.max_visits != null && r.visits >= r.max_visits ? <Tag>次数用尽</Tag>
+                : <Tag color="green">有效</Tag>) },
+          { title: '到期', width: 118, render: (_, r) => (r.expires_at ? fmtTime(r.expires_at) : '永久') },
+          { title: '', width: 52, render: (_, r) => (r.revoked_at ? null : (
+              <Popconfirm title="撤销这条链接?" description="撤销后立刻失效,已发出去的链接也打不开。"
+                onConfirm={async () => {
+                  try { await api(`/api/shares/${r.token}`, { method: 'DELETE' }); message.success('已撤销'); await load() }
+                  catch (e) { message.error((e as Error).message) }
+                }}>
+                <a style={{ color: '#ff4d4f' }}>撤销</a>
+              </Popconfirm>)) },
+        ]} />
+    </Modal>
+  )
+}
+
+type ShareLink = {
+  token: string; expires_at: string | null; max_visits: number | null; visits: number
+  allow_download: boolean; created_by: string; created_at: string
+  revoked_at: string | null; last_visit_at: string | null; has_code: boolean
+}
+
+/// 4 位提取码(去掉易混的 0/O/1/l/I)。只是默认值,用户可改。
+function randomCode(): string {
+  const abc = 'abcdefghjkmnpqrstuvwxyz23456789'
+  return Array.from({ length: 4 }, () => abc[Math.floor(Math.random() * abc.length)]).join('')
 }

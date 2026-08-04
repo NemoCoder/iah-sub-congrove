@@ -324,64 +324,6 @@ pub async fn remove(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// POST /api/items/{id}/share —— 取(或懒生成)本项的分享令牌(≥viewer)。
-/// 令牌**不是授权凭证**:拿到它仍要登录、仍要是该空间成员才打得开——它只是把
-/// 「自增 id 暴露在链接里」这件事去掉(迁移 0002 的头注写了为什么)。
-pub async fn share(
-    State(state): State<AppState>,
-    Extension(id): Extension<Identity>,
-    Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
-    let sid = space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let existing: Option<String> = sqlx::query_scalar("SELECT share_token FROM items WHERE id = $1")
-        .bind(iid).fetch_optional(&state.pool).await?.flatten();
-    let token = match existing {
-        Some(t) => t,
-        None => {
-            let t = new_token();
-            sqlx::query("UPDATE items SET share_token = COALESCE(share_token, $1) WHERE id = $2")
-                .bind(&t).bind(iid).execute(&state.pool).await?;
-            // COALESCE 防并发覆盖:两个人同时点复制,谁先写谁算,这里再读一次拿到最终值。
-            sqlx::query_scalar::<_, Option<String>>("SELECT share_token FROM items WHERE id = $1")
-                .bind(iid).fetch_one(&state.pool).await?.unwrap_or(t)
-        }
-    };
-    Ok(Json(json!({ "token": token })))
-}
-
-/// 128 bit 随机令牌(32 位十六进制)。直接读 /dev/urandom —— 不引 rand 依赖,
-/// 也不用时间戳+计数器那种可预测的凑法(auth.rs 的 CSRF state 有 client_secret 参与才够用,
-/// 这里没有那个前提)。读不到就硬失败,**绝不退化成可猜的值**。
-fn new_token() -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
-        .expect("/dev/urandom 不可读——拒绝生成可猜的分享令牌");
-    hex::encode(buf)
-}
-
-/// GET /api/share/{token} —— 按令牌取内容元数据(≥viewer)。
-/// 令牌只负责「指到哪一项」,**权限照旧由 require_role 判**:不是本空间成员一律 404。
-pub async fn by_share_token(
-    State(state): State<AppState>,
-    Extension(id): Extension<Identity>,
-    Path(token): Path<String>,
-) -> AppResult<Json<ItemRow>> {
-    if token.len() != 32 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(AppError::NotFound);
-    }
-    let iid: i64 = sqlx::query_scalar("SELECT id FROM items WHERE share_token = $1")
-        .bind(&token).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    let sid = space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at FROM items WHERE id = $1",
-    ).bind(iid).fetch_optional(&state.pool).await?;
-    row.map(Json).ok_or(AppError::NotFound)
-}
-
 /// GET /api/items/{id}/content —— 文档正文(≥viewer)。空文档(还没保存过)回空串。
 pub async fn content_get(
     State(state): State<AppState>,
@@ -783,7 +725,7 @@ pub async fn download(
 }
 
 /// 最小 percent-encode(RFC5987 attr-char 之外全编),够 Content-Disposition 用,不引 crate。
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.as_bytes() {
         match b {

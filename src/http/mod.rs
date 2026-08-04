@@ -6,6 +6,7 @@ mod admin;
 mod groups;
 pub(crate) mod items;
 mod media;
+mod share;
 mod spaces;
 
 use std::time::Duration;
@@ -52,9 +53,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}", get(items::detail).put(items::update).delete(items::remove))
         .route("/items/{id}/progress", get(items::progress_get).put(items::progress_put))
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))
-        // 分享:取令牌 / 按令牌解析(令牌不是授权凭证,两端都照常判权)
-        .route("/items/{id}/share", post(items::share))
-        .route("/share/{token}", get(items::by_share_token))
+        // 公开分享的**管理面**(建/列/撤销;建与列要 ≥editor,见 share.rs 头注)
+        .route("/items/{id}/shares", get(share::list).post(share::create))
+        .route("/shares/{token}", axum::routing::delete(share::revoke))
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
         // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod);play 判权后 302 预签名 GET。
@@ -98,6 +99,17 @@ pub fn build_router(state: AppState) -> Router {
                 .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60))),
         )
         .nest("/api", api)
+        // ★公开分享面:**不挂 require_auth**★(访客没有会话)。它只认「令牌 + 提取码 + 短命票」,
+        // 拿不到任何空间级能力;过期/超次数/撤销一律 404。超时给 2h(大文件下载走这条)。
+        .nest(
+            "/pub",
+            Router::new()
+                .route("/share/{token}", get(share::pub_meta))
+                .route("/share/{token}/open", post(share::pub_open))
+                .route("/share/{token}/list", get(share::pub_list))
+                .route("/share/{token}/file/{item_id}", get(share::pub_file))
+                .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(2 * 3600))),
+        )
         // ⚠ 全局层只有 Trace,**没有** TimeoutLayer——超时按路由组分层(fast 30s / slow 2h / auth 60s),
         // 放回全局会把慢路由重新掐回 30s。
         .layer(TraceLayer::new_for_http());

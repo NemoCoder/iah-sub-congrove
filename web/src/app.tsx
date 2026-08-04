@@ -7,6 +7,7 @@ import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
 import { GroupsView } from './groups-view'
 import { SpacesView } from './spaces-view'
+import { SharePage } from './share-page'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -15,17 +16,19 @@ function viewerItemId(): number | null {
   return m ? Number(m[1]) : null
 }
 
-/// 分享链接:/i/{token} —— 直达某个文件/文件夹。
-/// ★token 是 128 bit 随机十六进制,不是自增 id★:自增 id 的链接天然引诱人去试下一个,
-/// 而且一旦将来做公开分享就是灾难(2026-08-05)。
-/// **仍不是公开链接**:照常要登录、且必须是该空间成员(后端 require_role,前端只负责导航);
-/// 未登录时 api.ts 整页跳登录并带 return,登录后自动回到这条链接。
-function sharedToken(): string | null {
-  const m = window.location.pathname.match(/^\/i\/([0-9a-f]{32})$/)
+/// 公开分享落地页:/s/{token} —— **不需要登录**,凭令牌(+提取码)访问。
+function sharePageToken(): string | null {
+  const m = window.location.pathname.match(/^\/s\/([0-9a-f]{32})$/)
   return m ? m[1] : null
 }
 
+
 export function App() {
+  // ★公开分享页最先劫路由★:它不需要登录,所以必须在 /api/me 之前返回——
+  // 否则访客会被 401 整页跳去 Keycloak(2026-08-05 公开分享)。
+  const st = sharePageToken()
+  if (st) return <SharePage token={st} />
+
   const vid = viewerItemId()
   if (vid != null) return <ViewerPage itemId={vid} />
 
@@ -65,7 +68,7 @@ export function App() {
           options={[{ value: 'spaces', label: '🌳 空间' }, { value: 'groups', label: '👥 小组' }]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView me={me} shareToken={sharedToken()} /> : <GroupsView />}
+        {view === 'spaces' ? <SpacesView me={me} /> : <GroupsView />}
       </div>
     </div>
   )
