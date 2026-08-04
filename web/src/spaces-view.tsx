@@ -7,7 +7,7 @@ import {
 import { DeleteOutlined, DownloadOutlined, EditOutlined, LinkOutlined, SwapOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { MarkdownView, FilePreview, itemIcon, fmtSize } from './preview'
+import { MarkdownView, FilePreview, ItemIcon, fmtSize } from './preview'
 import { VideoPlayer, openViewer } from './video-player'
 import {
   CANCELED, DIRECT_THRESHOLD, cancelUpload, directUpload, newCtl, probeDirect, xhrUpload, type UploadCtl,
@@ -442,12 +442,12 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
                   title: '名称', dataIndex: 'name',
                   sorter: true, sortOrder: sortKey === 'name' ? (sortAsc ? 'ascend' : 'descend') : null,
                   render: (_, it) => (it.id === PARENT_ROW_ID
-                    ? <a onClick={goUp} style={{ fontFamily: 'ui-monospace, monospace' }}>📁 ..</a>
+                    ? <a onClick={goUp}><ItemIcon it={it} /><span style={{ fontFamily: 'ui-monospace, monospace' }}>..</span></a>
                     : up(it)
                     ? <Typography.Text type="secondary" ellipsis>⬆ {it.name}</Typography.Text>
                     : (
                       <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
-                        {itemIcon(it)} {it.name}
+                        <ItemIcon it={it} />{it.name}
                       </a>
                     )),
                 },
@@ -502,7 +502,7 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
             // PDF/图片给更宽的抽屉(62% 下 A4 排版字太小),文档与视频维持 62%
             open={!!preview} onClose={() => setPreview(null)} destroyOnHidden
             width={preview?.mime === 'application/pdf' || preview?.mime?.startsWith('image/') ? '82%' : '62%'}
-            title={preview ? `${itemIcon(preview)} ${preview.name}` : ''}
+            title={preview && <><ItemIcon it={preview} />{preview.name}</>}
             // 打开着也能直接分享当前这份内容(不用退回列表再找那一行)
             extra={preview && <Button size="small" icon={<LinkOutlined />} onClick={() => copyShare(preview)}>复制链接</Button>}
           >

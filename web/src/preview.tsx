@@ -1,5 +1,10 @@
 // 内容渲染件(主窗抽屉与独立查看窗共用)。
 import type { Item } from './api'
+import {
+  AudioOutlined, FileExcelOutlined, FileImageOutlined, FileMarkdownOutlined, FileOutlined, FilePdfOutlined,
+  FilePptOutlined, FileTextOutlined, FileWordOutlined, FileZipOutlined, FolderFilled, Html5Outlined,
+  VideoCameraOutlined,
+} from '@ant-design/icons'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -32,22 +37,27 @@ export function FilePreview({ item, tall = false }: { item: Item; tall?: boolean
   return null
 }
 
-export const KIND_ICON: Record<Item['kind'], string> = { folder: '📁', doc: '📝', file: '📄', video: '🎬' }
-
-/// 按 mime 细分图标(回形针 📎 在多数字体里渲染得很怪,换掉)。
-export function itemIcon(it: { kind: Item['kind']; mime?: string | null }): string {
-  if (it.kind !== 'file') return KIND_ICON[it.kind]
+/// 文件图标:用 antd 的 File* 系列(**不是 emoji**)。
+/// 2026-08-05 用户反馈「PDF 怎么是本合着的书」——emoji 的 📕 在各家字体里长相差异极大,
+/// 而 pdf/word/excel/ppt 这些格式本来就有通用图标,专业图标一眼可辨、颜色也统一。
+/// 颜色沿用各格式的通行色(PDF 红、Word 蓝、Excel 绿、PPT 橙…),文件夹用暖黄。
+export function ItemIcon({ it }: { it: { kind: Item['kind']; mime?: string | null } }) {
+  const st = (color: string) => ({ color, fontSize: 15, marginRight: 6 })
+  if (it.kind === 'folder') return <FolderFilled style={st('#f0b429')} />
+  if (it.kind === 'doc') return <FileMarkdownOutlined style={st('#0d9488')} />
+  if (it.kind === 'video') return <VideoCameraOutlined style={st('#7c3aed')} />
   const m = it.mime || ''
-  if (m === 'application/pdf') return '📕'
-  if (m.startsWith('image/')) return '🖼️'
-  if (m.startsWith('audio/')) return '🎵'
-  if (m.includes('html')) return '🌐'
-  if (m.includes('zip') || m.includes('tar') || m.includes('compressed')) return '🗜️'
-  if (m.includes('sheet') || m.includes('excel') || m.includes('csv')) return '📊'
-  if (m.includes('word') || m.includes('document')) return '📘'
-  if (m.includes('presentation') || m.includes('powerpoint')) return '📽️'
-  if (m.startsWith('text/')) return '📃'
-  return '📄'
+  if (m === 'application/pdf') return <FilePdfOutlined style={st('#d93025')} />
+  if (m.startsWith('image/')) return <FileImageOutlined style={st('#16a34a')} />
+  if (m.startsWith('audio/')) return <AudioOutlined style={st('#db2777')} />
+  if (m.includes('html')) return <Html5Outlined style={st('#e34c26')} />
+  if (m.includes('zip') || m.includes('tar') || m.includes('compressed') || m.includes('rar'))
+    return <FileZipOutlined style={st('#a16207')} />
+  if (m.includes('sheet') || m.includes('excel') || m.includes('csv')) return <FileExcelOutlined style={st('#107c41')} />
+  if (m.includes('word') || m.includes('officedocument.wordprocessing')) return <FileWordOutlined style={st('#2b579a')} />
+  if (m.includes('presentation') || m.includes('powerpoint')) return <FilePptOutlined style={st('#d24726')} />
+  if (m.startsWith('text/') || m.includes('json') || m.includes('xml')) return <FileTextOutlined style={st('#6b7280')} />
+  return <FileOutlined style={st('#6b7280')} />
 }
 
 export function fmtSize(n: number | null) {
