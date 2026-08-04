@@ -83,12 +83,25 @@ export function SpacesView({ me }: { me: Me | null }) {
   const canEdit = cur?.my_role === 'editor' || cur?.my_role === 'admin'
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
 
-  // 当前目录内容:文件夹在前,同类按名称。
-  const rows = useMemo(
-    () => items.filter((i) => i.parent_id === cwd)
-      .sort((a, b) => (a.kind === 'folder' ? 0 : 1) - (b.kind === 'folder' ? 0 : 1) || a.name.localeCompare(b.name, 'zh')),
-    [items, cwd],
-  )
+  /// 排序(2026-08-04 用户要求)。**文件夹恒在前**,排序只在同类之间比——网盘/资源管理器都是这个惯例,
+  /// 按大小排时也不该把文件夹混进文件堆里。
+  /// 名称用 localeCompare('zh', {numeric:true}):带数字的文件名(20260723… / 20260730…)按数值排,
+  /// 不然 "10" 会排在 "9" 前面。
+  const [sortKey, setSortKey] = useState<'name' | 'size' | 'updated_at' | 'created_by'>('name')
+  const [sortAsc, setSortAsc] = useState(true)
+  const rows = useMemo(() => {
+    const cmp = (a: Item, b: Item) => {
+      switch (sortKey) {
+        case 'size': return (a.size ?? 0) - (b.size ?? 0)
+        case 'updated_at': return a.updated_at.localeCompare(b.updated_at)
+        case 'created_by': return a.created_by.localeCompare(b.created_by, 'zh')
+        default: return a.name.localeCompare(b.name, 'zh', { numeric: true })
+      }
+    }
+    return items.filter((i) => i.parent_id === cwd).sort(
+      (a, b) => (a.kind === 'folder' ? 0 : 1) - (b.kind === 'folder' ? 0 : 1) || (sortAsc ? cmp(a, b) : -cmp(a, b)),
+    )
+  }, [items, cwd, sortKey, sortAsc])
   // 面包屑:顺 parent 链上溯。
   const trail = useMemo(() => {
     const out: Item[] = []
@@ -364,6 +377,14 @@ export function SpacesView({ me }: { me: Me | null }) {
           >
             <Table
               size="small" rowKey="id" dataSource={[...parentRow, ...upRows, ...rows]} pagination={false}
+              // 受控排序:伪行(..、上传中)不能被卷进排序,所以自己算 dataSource,
+              // 这里只把表头的箭头状态同步过去。
+              onChange={(_p, _f, so) => {
+                const s2 = Array.isArray(so) ? so[0] : so
+                const k = (s2?.field as typeof sortKey) || 'name'
+                setSortKey(k)
+                setSortAsc(s2?.order !== 'descend')
+              }}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
               rowSelection={canEdit ? {
@@ -373,6 +394,7 @@ export function SpacesView({ me }: { me: Me | null }) {
               columns={[
                 {
                   title: '名称', dataIndex: 'name', ellipsis: true,
+                  sorter: true, sortOrder: sortKey === 'name' ? (sortAsc ? 'ascend' : 'descend') : null,
                   render: (_, it) => (it.id === PARENT_ROW_ID
                     ? <a onClick={goUp}>📁 ..（上一层）</a>
                     : up(it)
@@ -383,9 +405,12 @@ export function SpacesView({ me }: { me: Me | null }) {
                       </a>
                     )),
                 },
-                { title: '大小', dataIndex: 'size', width: 100, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
-                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
-                { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
+                { title: '大小', dataIndex: 'size', width: 100,
+                  sorter: true, sortOrder: sortKey === 'size' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
+                { title: '修改时间', dataIndex: 'updated_at', width: 150,
+                  sorter: true, sortOrder: sortKey === 'updated_at' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
+                { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true,
+                  sorter: true, sortOrder: sortKey === 'created_by' ? (sortAsc ? 'ascend' : 'descend') : null },
                 {
                   title: '操作', width: 220,
                   render: (_, it) => (it.id === PARENT_ROW_ID ? null : up(it) ? (
