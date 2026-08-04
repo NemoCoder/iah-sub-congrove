@@ -15,6 +15,14 @@ function viewerItemId(): number | null {
   return m ? Number(m[1]) : null
 }
 
+/// 分享链接:/i/{id} —— 直达某个文件/文件夹。**不是公开链接**:照常要登录,
+/// 而且只有该空间的成员打得开(后端 require_role,前端只负责导航)。
+/// 未登录时 api.ts 会整页跳登录并带 return,登录后自动回到这条链接。
+function sharedItemId(): number | null {
+  const m = window.location.pathname.match(/^\/i\/(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
 export function App() {
   const vid = viewerItemId()
   if (vid != null) return <ViewerPage itemId={vid} />
@@ -55,7 +63,7 @@ export function App() {
           options={[{ value: 'spaces', label: '🌳 空间' }, { value: 'groups', label: '👥 小组' }]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView me={me} /> : <GroupsView />}
+        {view === 'spaces' ? <SpacesView me={me} shareItemId={sharedItemId()} /> : <GroupsView />}
       </div>
     </div>
   )

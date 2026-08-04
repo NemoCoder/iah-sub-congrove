@@ -63,6 +63,11 @@ pub async fn space_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ItemRow {
     pub id: i64,
+    /// 所属空间。列表接口用不着(调用方本来就按空间拉),但**分享链接**要靠它:
+    /// 拿到 /i/{id} 只知道 item,得先定位到空间才能打开(迁移无关,纯查询字段)。
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<i64>,
     pub parent_id: Option<i64>,
     pub kind: String,
     pub name: String,
@@ -104,7 +109,7 @@ pub async fn detail(
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, parent_id, kind, name, size, mime, created_by, updated_at FROM items WHERE id = $1",
+        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, updated_at FROM items WHERE id = $1",
     )
     .bind(iid)
     .fetch_optional(&state.pool)

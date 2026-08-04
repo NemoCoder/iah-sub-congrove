@@ -43,6 +43,8 @@ export type Diagnose = {
 export type UserOpt = { username: string; name: string | null }
 export type Item = {
   id: number
+  /// 只有 GET /api/items/{id} 会带(列表接口不带):分享链接 /i/{id} 靠它定位空间
+  space_id?: number
   parent_id: number | null
   kind: 'folder' | 'doc' | 'file' | 'video'
   name: string

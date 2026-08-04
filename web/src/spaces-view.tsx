@@ -1,10 +1,10 @@
 // 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
-  App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
+  Alert, App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
-import { DeleteOutlined, DownloadOutlined, EditOutlined, SwapOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, EditOutlined, LinkOutlined, SwapOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MarkdownView, FilePreview, itemIcon, fmtSize } from './preview'
@@ -51,7 +51,7 @@ function fmtTime(s: string) {
 /// - 空间里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function SpacesView({ me }: { me: Me | null }) {
+export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: number | null }) {
   const { message, modal } = AntdApp.useApp()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [cur, setCur] = useState<Space | null>(null)
@@ -64,6 +64,7 @@ export function SpacesView({ me }: { me: Me | null }) {
   const [uploads, setUploads] = useState<UpTask[]>([])
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
+  const [shareErr, setShareErr] = useState<string | null>(null)  // 分享链接打不开时的说明
 
   const loadSpaces = useCallback(async () => {
     const s = await api<Space[]>('/api/spaces')
@@ -181,6 +182,43 @@ export function SpacesView({ me }: { me: Me | null }) {
   /// 取消:中断在传的 xhr(排队中的只置标记,worker 取到时跳过),行立刻消失。
   const cancelOne = (t: UpTask) => { cancelUpload(t.ctl); if (!t.running) setUploads((u) => u.filter((x) => x.key !== t.key)) }
 
+  /// 复制分享链接。**不是公开链接**——链接只是「直达地址」,谁点开都要登录且必须是本空间成员,
+  /// 权限仍由后端 require_role 判(前端连隐藏都算不上安全边界)。
+  const copyShare = async (it: Item) => {
+    const url = `${window.location.origin}/i/${it.id}`
+    try {
+      await navigator.clipboard.writeText(url)
+      message.success({ content: `链接已复制:${it.kind === 'folder' ? '文件夹' : '文件'}「${it.name}」——只有本空间成员打得开`, duration: 4 })
+    } catch {
+      // 剪贴板 API 要安全上下文/用户授权,失败就把链接摆出来让用户自己复制。
+      modal.info({ title: '分享链接(只有本空间成员打得开)', content: <Input readOnly value={url} onFocus={(e) => e.target.select()} /> })
+    }
+  }
+
+  // 分享链接 /i/{id}:解析一次,定位到空间并打开对应内容。
+  // 没权限(403)/已删(404)时给一句人话,而不是让用户对着空列表发呆。
+  useEffect(() => {
+    if (shareItemId == null || !spaces.length) return
+    let done = false
+    ;(async () => {
+      try {
+        const it = await api<Item>(`/api/items/${shareItemId}`)
+        const sp = spaces.find((x) => x.id === it.space_id)
+        if (!sp) { setShareErr('这条链接指向的空间你没有访问权限——找空间管理员开通'); return }
+        if (done) return
+        setCur(sp)
+        if (it.kind === 'folder') setCwd(it.id)
+        else { setCwd(it.parent_id); setPreview(it) }
+      } catch (e) {
+        const m = (e as Error).message
+        setShareErr(m.includes('forbidden') ? '这条链接指向的内容你没有访问权限——找空间管理员开通'
+          : m.includes('not found') ? '这条链接指向的内容已被删除' : `打不开这条链接:${m}`)
+      }
+    })()
+    return () => { done = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareItemId, spaces.length])
+
   const refresh = async () => {
     if (!cur) return
     setChecked([])
@@ -294,6 +332,12 @@ export function SpacesView({ me }: { me: Me | null }) {
   const checkedItems = rows.filter((r) => checked.includes(r.id))
 
   return (
+    <>
+      {/* 分享链接打不开:给一句人话,而不是让用户对着空列表发呆 */}
+      {shareErr && (
+        <Alert type="warning" showIcon closable style={{ marginBottom: 12 }}
+          message="分享链接打不开" description={shareErr} onClose={() => setShareErr(null)} />
+      )}
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       {/* 左栏:空间列表。空间级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
       <Card
@@ -417,7 +461,7 @@ export function SpacesView({ me }: { me: Me | null }) {
                   // ★图标化★(2026-08-04 反馈:操作列太宽,把文件名挤没了)。
                   // 「打开」去掉——点名称就是打开,重复给一个按钮只是占地方;
                   // 其余四个动作用图标 + hover 出文字,列宽从 220 收到 132,省下的全给名称列。
-                  title: '操作', width: 132,
+                  title: '操作', width: 158,
                   render: (_, it) => (it.id === PARENT_ROW_ID ? null : up(it) ? (
                     // ★上传中的行:进度条 + 取消★(2026-08-03 用户要求)。排队中的显示「排队中」,
                     // 它还没发任何请求,取消 = 直接出队。
@@ -429,6 +473,8 @@ export function SpacesView({ me }: { me: Me | null }) {
                     </AntSpace>
                   ) : (
                     <AntSpace size={10}>
+                      {/* 分享:文件与文件夹都能分享;链接不公开,只有本空间成员打得开 */}
+                      <Tooltip title="复制分享链接"><a onClick={() => copyShare(it)}><LinkOutlined /></a></Tooltip>
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
@@ -453,6 +499,8 @@ export function SpacesView({ me }: { me: Me | null }) {
           <Drawer
             open={!!preview} onClose={() => setPreview(null)} width="62%" destroyOnHidden
             title={preview ? `${itemIcon(preview)} ${preview.name}` : ''}
+            // 打开着也能直接分享当前这份内容(不用退回列表再找那一行)
+            extra={preview && <Button size="small" icon={<LinkOutlined />} onClick={() => copyShare(preview)}>复制链接</Button>}
           >
             {preview && (
               <ItemPanel
@@ -489,6 +537,7 @@ export function SpacesView({ me }: { me: Me | null }) {
         </Card>
       )}
     </div>
+    </>
   )
 }
 
