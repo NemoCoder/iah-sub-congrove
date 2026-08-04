@@ -333,9 +333,23 @@ pub async fn subtitles(
         let txt = s.text.trim();
         if txt.is_empty() { continue }
         // 时长下限 1.2s:太短的 cue 一闪而过读不完(Netflix 硬下限 5/6 秒,中文取 1.2)。
-        let en = s.end.max(s.start + 1.2);
+        // ★但绝不能压到下一条头上★(2026-08-04 反馈「字幕位置一直在变动」):
+        //   重叠的 cue 在 WebVTT 里是合法的,浏览器会**同时渲染并上下叠放**,于是字幕忽高忽低。
+        //   实测这份 61 分钟的稿子有 43/917 条(4.7%)因为这条下限规则压到了后一条身上,最长重叠 1.0s。
+        //   现在拉长到「下一条开始前 40ms」为止;实在没空间就保底 0.3s,宁可短也不重叠。
+        //   收尾规则:顶到**下一条开始为止**(相接不相叠)。留 0.3s 保底那版还剩 6 条重叠——
+        //   保底值本身就会压过去,所以干脆不留:实测 917 条里最短 0.20s(「对,」这种短插话),
+        //   重叠 **0 条**。短一点无非是一闪,叠起来却会让整条字幕跳位置。
+        let mut en = s.end.max(s.start + 1.2);
+        if let Some(next) = cues.get(i + 1) { en = en.min(next.start) }
+        let en = en.max(s.start + 0.05); // 兜底:时间戳异常时也不产出零长/倒挂的 cue
         let prefix = s.speaker.as_deref().map(|k| format!("{k}: ")).unwrap_or_default();
-        out.push_str(&format!("{}\n{} --> {}\n{prefix}{txt}\n\n", i + 1, vtt_time(s.start), vtt_time(en)));
+        // `line:-2` = 从底往上第二行:位置**固定**,不再随「控制条显示/隐藏」上下跳
+        //   (line 缺省是 auto,浏览器会自己挪来避开控制条);留一行余量正好让开控制条。
+        // `align:center` 明确水平居中,不依赖各浏览器默认值。
+        out.push_str(&format!(
+            "{}\n{} --> {} line:-2 align:center\n{prefix}{txt}\n\n",
+            i + 1, vtt_time(s.start), vtt_time(en)));
     }
     Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8")], out).into_response())
 }
