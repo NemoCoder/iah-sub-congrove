@@ -300,6 +300,23 @@ fn majority(spks: &[Option<String>]) -> Option<String> {
     best.map(|(s, _)| s)
 }
 
+/// ★时间轴漂移自检★(2026-08-04 实测):ASR 给的**段时间戳是对的**(尾段落在音频真实结尾),
+/// 但**文字被过快消耗**——61 分钟的会,文字在 3624 秒就用完,末尾几段只剩标点,
+/// 于是字幕越走越快(一小时累计提前 46 秒,约 1.25%;与英文/数字连写的累计量相关 r=0.66,
+/// 是「标点/分词单元 vs timestamp 单元」错配,已发信 0136 请平台透出字级 timestamp)。
+///
+/// 判据就用这个自证现象:**最后一个「有字」的段离音频结尾差多少**。返回秒数,
+/// 前端据此提示「时间轴可能不准」——不能默默给用户一份越走越快的字幕。
+/// 阈值交给前端(现取 max(15 秒, 2%)),这里只给事实。
+pub fn timeline_drift(segs: &[Segment], duration_sec: Option<f64>) -> Option<f64> {
+    let dur = duration_sec?;
+    if dur <= 0.0 { return None }
+    let last_text_end = segs.iter().rev()
+        .find(|s| s.text.chars().any(|c| !is_skippable(c)))
+        .map(|s| s.end)?;
+    Some((dur - last_text_end).max(0.0))
+}
+
 /// 逐字稿:合成可读段落。
 pub fn merge_paragraphs(segs: &[Segment]) -> Vec<Segment> {
     merge_with(segs, 200, 60.0, false)
@@ -562,6 +579,20 @@ mod tests {
     fn realign_忽略英文大小写() {
         let out = realign("都没有听清Ok就是。", &[seg(0.0, 2.0, "都没有听清ok就是。", "spk0")]);
         assert_eq!(out.expect("大小写不该算分歧").len(), 1);
+    }
+
+    /// 尾部只剩标点 = 文字提前用完 = 时间轴漂了(线上 61 分钟那份就是这个形状)。
+    #[test]
+    fn timeline_drift_尾部只剩标点算漂移() {
+        let segs = vec![
+            seg(0.0, 10.0, "有字的一段。", "spk0"),
+            seg(3656.8, 3659.3, "。", "spk0"),
+            seg(3669.1, 3670.2, "。", "spk0"),
+        ];
+        let d = timeline_drift(&segs, Some(3670.2)).unwrap();
+        assert!((d - 3660.2).abs() < 0.01, "应按最后一个有字的段算,得到 {d}");
+        // 文字铺到结尾就不该报漂移。
+        assert!(timeline_drift(&[seg(0.0, 3670.0, "一直说到结尾。", "spk0")], Some(3670.2)).unwrap() < 1.0);
     }
 
     /// 两边不是同一次响应(字都对不上)时必须放弃,绝不能拿错时间轴硬拼。

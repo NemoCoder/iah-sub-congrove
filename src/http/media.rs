@@ -281,20 +281,24 @@ pub async fn analysis(
     // 库里存的是 ASR 原始细分段(按逗号结句,平均 2.4s/14 字);读取时才合并成可读段落,
     // 这样调阈值不必重跑 ASR(调研结论,见 docs/VIDEO-SUMMARY.md §10)。
     let tr = tr.map(|(text, segs, dur)| {
-        let merged = segs
-            .and_then(|v| serde_json::from_value::<Vec<crate::media_ai::Segment>>(v).ok())
-            // 同字幕:先按全文重排句界,再合并成可读段落。
-            .map(|v| crate::media_ai::merge_paragraphs(&crate::media_ai::realign(&text, &v).unwrap_or(v)))
-            .and_then(|v| serde_json::to_value(v).ok());
-        (text, merged, dur)
+        let fine: Vec<crate::media_ai::Segment> = segs
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        // 同字幕:先按全文重排句界,再合并成可读段落。
+        let fine = crate::media_ai::realign(&text, &fine).unwrap_or(fine);
+        let drift = crate::media_ai::timeline_drift(&fine, dur);
+        let merged = serde_json::to_value(crate::media_ai::merge_paragraphs(&fine)).ok();
+        (text, merged, dur, drift)
     });
     let sums: Vec<(String, String)> = sqlx::query_as("SELECT kind, content FROM summaries WHERE item_id=$1")
         .bind(iid).fetch_all(&state.pool).await?;
     Ok(Json(json!({
         "job": job.map(|(status, stage, progress, error)| json!({
             "status": status, "stage": stage, "progress": progress, "error": error })),
-        "transcript": tr.map(|(text, segments, duration)| json!({
-            "text": text, "segments": segments, "duration_sec": duration })),
+        "transcript": tr.map(|(text, segments, duration, drift)| json!({
+            "text": text, "segments": segments, "duration_sec": duration,
+            // 时间轴漂移自检:>0 表示尾部有多少秒没有文字覆盖(见 media_ai::timeline_drift)。
+            "drift_sec": drift })),
         "summaries": sums.into_iter().map(|(k, c)| json!({"kind": k, "content": c})).collect::<Vec<_>>(),
         "asr_ready": state.config.asr_base_url.is_some(),
     })))

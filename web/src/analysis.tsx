@@ -9,7 +9,7 @@ import { MarkdownView } from './preview'
 type Seg = { start: number; end: number; text: string; speaker?: string | null }
 type Data = {
   job: { status: string; stage: string; progress: number; error: string | null } | null
-  transcript: { text: string; segments: Seg[] | null; duration_sec: number | null } | null
+  transcript: { text: string; segments: Seg[] | null; duration_sec: number | null; drift_sec: number | null } | null
   summaries: { kind: string; content: string }[]
   asr_ready: boolean
 }
@@ -60,6 +60,8 @@ export function Analysis({ item, onSeek, onTranscript }: {
   const job = d.job
   const running = job?.status === 'queued' || job?.status === 'running'
   const sum = d.summaries.find((s) => s.kind === tab)
+  const drift = d.transcript?.drift_sec ?? null
+  const dur = d.transcript?.duration_sec ?? null
 
   return (
     <div style={{ marginTop: 14 }}>
@@ -82,6 +84,16 @@ export function Analysis({ item, onSeek, onTranscript }: {
         )}
         {job?.status === 'failed' && <Tag color="red">上次失败</Tag>}
       </AntSpace>
+
+      {/* ★时间轴漂移提示★(2026-08-04):ASR 的段时间戳是对的,但文字被过快消耗——61 分钟的会
+          文字在 3624 秒就用完,字幕越走越快(累计提前 46 秒)。判据 = 最后一个有字的段离结尾多远。
+          阈值 max(15 秒, 2%):短视频用绝对值兜底,长视频按比例。已发信 0136 请平台透出字级时间戳,
+          修好之前**明说**,不能让用户以为字幕是准的。 */}
+      {drift != null && dur != null && drift > Math.max(15, dur * 0.02) && (
+        <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+          message={`字幕时间轴可能偏快(末尾约 ${Math.round(drift)} 秒没有文字覆盖)`}
+          description="转写文字本身是准的,但语音识别服务返回的「文字↔时间」对应会随时长累积偏移,越到后面字幕越提前。已请平台改用字级时间戳,修好后本提示会自动消失。逐字稿与纪要不受影响。" />
+      )}
 
       {!d.asr_ready && !d.transcript && (
         <Alert type="info" showIcon style={{ marginBottom: 10 }}
