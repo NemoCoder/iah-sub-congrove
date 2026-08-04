@@ -21,6 +21,30 @@ function clock(s: number) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}` : `${m}:${String(ss).padStart(2, '0')}`
 }
 
+/// 逐行渲染带时间戳的文本:行首的 `[mm:ss]` / `mm:ss` / `[hh:mm:ss]` 变成可点的跳转链接。
+/// 模型偶尔会写成「00:00 - 标题」或「[00:00] 标题」,两种都认;认不出的行原样显示,不吞内容。
+function TimedLines({ text, onSeek }: { text: string; onSeek: (t: number) => void }) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  return (
+    <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+      {lines.map((line, i) => {
+        const m = line.match(/^[-*\s]*\[?(\d{1,2}):(\d{2})(?::(\d{2}))?\]?\s*[-—:：]?\s*(.*)$/)
+        if (!m) return <div key={i} style={{ marginBottom: 6, fontSize: 13, lineHeight: 1.7 }}>{line}</div>
+        // 三段 = hh:mm:ss,两段 = mm:ss
+        const t = m[3] ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2]
+        return (
+          <div key={i} style={{ marginBottom: 6, fontSize: 13, lineHeight: 1.7 }}>
+            <a onClick={() => onSeek(t)} style={{ fontFamily: 'ui-monospace, monospace', marginRight: 8 }}>
+              {m[3] ? `${m[1]}:${m[2]}:${m[3]}` : `${m[1]}:${m[2]}`}
+            </a>
+            {m[4]}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function Analysis({ item, onSeek, onTranscript }: {
   item: Item; onSeek: (t: number) => void
   /// 转写就绪时回调一次:播放器据此重挂 <track>——它只在挂载那一刻拉一次 vtt,
@@ -138,7 +162,9 @@ export function Analysis({ item, onSeek, onTranscript }: {
               <Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>{d.transcript?.text || '—'}</Typography.Paragraph>
             )
           ) : sum ? (
-            <MarkdownView text={sum.content} />
+            // 大纲/决议里模型会照抄原文的 [mm:ss] —— 逐行渲染并把时间变成可点的跳转。
+            // 不能交给 MarkdownView:markdown 会把单换行折叠成一整段(2026-08-04 反馈「没有分行」)。
+            tab === 'outline' ? <TimedLines text={sum.content} onSeek={onSeek} /> : <MarkdownView text={sum.content} />
           ) : (
             <Empty description={running ? '生成中…' : '还没有这部分内容'} image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}

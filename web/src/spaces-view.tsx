@@ -570,6 +570,7 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
   const [users, setUsers] = useState<UserOpt[]>([])
   const [diagName, setDiagName] = useState('')
   const [diag, setDiag] = useState<Diagnose | null>(null)
+  const [hot, setHot] = useState(space.hotwords ?? '') // 术语表编辑框(受控;保存后由 onChanged 拉新值)
 
   const load = useCallback(async () => {
     setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
@@ -632,6 +633,36 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
           }}
         />
         <Typography.Text>「只读」成员禁止下载原件</Typography.Text>
+      </AntSpace>
+
+      {/* ★转写术语表★(v0.3.29):落到空间而不是全局——人名/专业词天然按组不同,
+          思想史组的「柯老师」和 CS 组的「benchmark」互不相干,也只有空间管理员知道自己组的词。
+          填错的代价是真的:平台侧是拼音模糊匹配的确定性替换,词表乱填会把正常的字改坏,
+          所以文案里明说「宁少勿滥」。改完只对**之后**的转写生效,老视频要重新生成。 */}
+      <Typography.Text strong style={{ fontSize: 13 }}>录屏转写术语表</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 6px' }}>
+        本空间常出现的<b>人名、专业词</b>,空格或换行分隔。语音识别会把音近的词纠回这些写法
+        (「柯老师」不再识成「科老师」)。<b>宁少勿滥</b>——匹配是按拼音做的,填了不该填的词会把正常的字改坏。
+        改动只对之后的转写生效,已有视频需点「重新生成」。
+      </Typography.Paragraph>
+      <Input.TextArea
+        rows={3} value={hot} onChange={(e) => setHot(e.target.value)} style={{ marginBottom: 6 }}
+        placeholder="柯老师 徐晨 benchmark prompt 语言行为识别"
+      />
+      <AntSpace style={{ marginBottom: 14 }}>
+        <Button size="small" type="primary" disabled={hot === (space.hotwords ?? '')} onClick={async () => {
+          try {
+            await api(`/api/spaces/${space.id}`, {
+              method: 'PUT',
+              body: JSON.stringify({ name: space.name, description: space.description, hotwords: hot }),
+            })
+            message.success('术语表已保存(对之后的转写生效)')
+            onChanged()
+          } catch (e) { message.error((e as Error).message) }
+        }}>保存术语表</Button>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {hot.trim() ? `${hot.trim().split(/\s+/).length} 个词` : '未设置'}
+        </Typography.Text>
       </AntSpace>
       <AntSpace style={{ marginBottom: 12 }} wrap>
         <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />

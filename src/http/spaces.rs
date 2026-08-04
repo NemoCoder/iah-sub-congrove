@@ -21,6 +21,8 @@ pub struct SpaceRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub quota_bytes: i64,
     pub viewer_no_download: bool,
+    /// 本空间的转写术语表(空格/换行分隔;迁移 0007)。人名与专业词按组不同,由空间管理员维护。
+    pub hotwords: String,
     /// 我的有效角色(列表接口顺带回,前端显隐编辑入口用;真判权仍在每个写接口)。
     #[sqlx(skip)]
     pub my_role: Option<Role>,
@@ -79,7 +81,7 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if id.is_super {
         let mut rows: Vec<SpaceRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, viewer_no_download FROM spaces ORDER BY id")
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, viewer_no_download, hotwords FROM spaces ORDER BY id")
                 .fetch_all(&state.pool)
                 .await?;
         rows.iter_mut().for_each(|r| {
@@ -90,8 +92,8 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     }
     let username = id.require_username()?;
     // 拉「我的全部授权 × 空间」一把出,内存里按空间合并取 max(空间量级小,不值得进 SQL 排序)。
-    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String)> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.viewer_no_download, g.role
+    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String, String)> = sqlx::query_as(
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.viewer_no_download, s.hotwords, g.role
            FROM spaces s JOIN space_grants g ON g.space_id = s.id
           WHERE (g.grantee_type = 'user' AND g.grantee_id = $1)
              OR (g.grantee_type = 'group' AND g.grantee_id IN
@@ -102,12 +104,12 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     .fetch_all(&state.pool)
     .await?;
     let mut out: Vec<SpaceRow> = Vec::new();
-    for (sid, name, description, created_by, created_at, quota_bytes, viewer_no_download, role) in rows {
+    for (sid, name, description, created_by, created_at, quota_bytes, viewer_no_download, hotwords, role) in rows {
         let r = Role::parse(&role);
         match out.last_mut() {
             Some(last) if last.id == sid => last.my_role = perm::merge([last.my_role, r]),
             _ => out.push(SpaceRow {
-                id: sid, name, description, created_by, created_at, quota_bytes, viewer_no_download,
+                id: sid, name, description, created_by, created_at, quota_bytes, viewer_no_download, hotwords,
                 my_role: r, used_bytes: usage.get(&sid).copied().unwrap_or(0),
             }),
         }
@@ -123,6 +125,9 @@ pub struct SpaceIn {
     /// D4 开关(docs/PERMISSIONS.md):Some 才更新;只拦 download 原件,阅读/播放不拦(见迁移 0003 头注)。
     #[serde(default)]
     pub viewer_no_download: Option<bool>,
+    /// 转写术语表(迁移 0007):Some 才更新,空字符串 = 清空。
+    #[serde(default)]
+    pub hotwords: Option<String>,
 }
 
 /// POST /api/spaces —— 建空间,建者自动 admin。
@@ -185,11 +190,17 @@ pub async fn update(
     Json(input): Json<SpaceIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, sid, Role::Admin).await?;
-    let n = sqlx::query("UPDATE spaces SET name = $1, description = $2, viewer_no_download = COALESCE($3, viewer_no_download) WHERE id = $4")
+    let n = sqlx::query(
+        "UPDATE spaces SET name = $1, description = $2,
+            viewer_no_download = COALESCE($3, viewer_no_download),
+            hotwords = COALESCE($5, hotwords)
+          WHERE id = $4")
         .bind(input.name.trim())
         .bind(&input.description)
         .bind(input.viewer_no_download)
         .bind(sid)
+        // 术语表规范化:空白/换行统一成单空格(平台契约是空格分隔),顺手去重留原序。
+        .bind(input.hotwords.as_deref().map(normalize_hotwords))
         .execute(&state.pool)
         .await?
         .rows_affected();
@@ -198,6 +209,16 @@ pub async fn update(
     }
     audit::record(&state.pool, id.require_username()?, "space.update", &sid.to_string(), input.name.trim()).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// 术语表规范化:换行/多空格 → 单空格,去重保序。词表是给 ASR 的 `hotword`(空格分隔),
+/// 重复词没有意义,还会把请求撑大。
+fn normalize_hotwords(raw: &str) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for w in raw.split_whitespace() {
+        if !seen.contains(&w) { seen.push(w) }
+    }
+    seen.join(" ")
 }
 
 /// DELETE /api/spaces/{id} —— 删空间(admin)。DB 行级联删(FK CASCADE);

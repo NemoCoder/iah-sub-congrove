@@ -33,6 +33,8 @@ export type Role = 'viewer' | 'editor' | 'admin'
 export type Space = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
   quota_bytes: number; used_bytes: number; viewer_no_download: boolean
+  /// 本空间的转写术语表(空格分隔;迁移 0007),空间管理员在授权与安全设置里维护
+  hotwords: string
 }
 export type Diagnose = {
   username: string; is_super: boolean; direct: Role | null

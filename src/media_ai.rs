@@ -145,11 +145,17 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 3) 切段 + 转写
     let asr_base = state.config.asr_base_url.clone()
         .ok_or_else(|| anyhow!("未注入 IAH_BASE_URL,无法调用语音转写"))?;
+    // ★转写术语表★(迁移 0007):本空间的词表 + env 全局兜底。人名/专业词按组不同,
+    // 所以主真相源是空间设置里那张表(空间管理员维护),env 只留给「全所都要纠」的少数词。
+    let hotwords = load_hotwords(&state.pool, item_id).await;
+    if !hotwords.is_empty() {
+        tracing::info!(words = hotwords.split_whitespace().count(), "转写将带术语表");
+    }
     // ★整段一次送★:说话人聚类与句子边界都由服务端在全局做,这是标签跨段一致的前提。
     stage(&state.pool, job_id, "语音转写(整段)", 25).await;
     let mut asr_full_text = String::new();
     let mut char_ts: Vec<(f64, f64)> = Vec::new();
-    let mut segments: Vec<Segment> = match transcribe(state, &asr_base, &audio, &end_user).await {
+    let mut segments: Vec<Segment> = match transcribe(state, &asr_base, &audio, &end_user, &hotwords).await {
         Ok(a) => { asr_full_text = a.text; char_ts = a.char_ts; a.segments }
         Err(e) => {
             // 整段失败(超时/体积/服务端限制)才回退切段——代价是说话人标签跨段不可比,
@@ -162,7 +168,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             for (i, part) in parts.iter().enumerate() {
                 stage(&state.pool, job_id, &format!("语音转写 {}/{}", i + 1, total), 30 + (i as i32 * 45 / total as i32)).await;
                 let offset = (i as u32 * FALLBACK_CHUNK_SEC) as f64;
-                let a = transcribe(state, &asr_base, part, &end_user).await
+                let a = transcribe(state, &asr_base, part, &end_user, &hotwords).await
                     .with_context(|| format!("转写第 {} 段", i + 1))?;
                 if !a.text.trim().is_empty() { asr_full_text.push_str(&a.text); asr_full_text.push('\n'); }
                 let mut segs = a.segments;
@@ -200,11 +206,17 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     .execute(&state.pool).await?;
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)
+    // ★喂给 LLM 的稿子必须带时间戳★(2026-08-04 反馈:大纲里时间全是 00:00)——
+    // 之前喂的是纯 full_text,一个时间都没有,模型只能瞎编一个 00:00。
+    // 现在按段落(200 字/60 秒)前缀 [mm:ss],模型照抄即可,前端再把它变成可点的跳转。
     stage(&state.pool, job_id, "压缩长转写", 78).await;
-    let condensed = condense(state, &full_text, &end_user).await.context("压缩长转写")?;
+    let timed = timed_transcript(&full_text, &segments, &char_ts);
+    let condensed = condense(state, &timed, &end_user).await.context("压缩长转写")?;
     for (kind, prompt, label, prog) in [
         ("brief", "用中文写一段 150~300 字的会议摘要,直接给结论,不要客套和小标题。", "生成摘要", 84),
-        ("outline", "用中文列出分段大纲:每段一行,格式「时间范围 — 议题:要点」,按时间顺序,不超过 15 行。", "生成分段大纲", 90),
+        ("outline", "用中文列出分段大纲,按时间顺序,不超过 15 行。★每行必须以原文里出现过的时间戳开头★,\
+格式:`[mm:ss] 议题 — 要点`。时间戳只能从原文抄,**绝对不许自己编**(原文每段开头的 [mm:ss] 就是它的真实时间);\
+一行一个议题,行与行之间用换行分隔,不要写成一段。", "生成分段大纲", 90),
         ("decisions", "用中文列出这次会议的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
     ] {
         stage(&state.pool, job_id, label, prog).await;
@@ -366,6 +378,23 @@ pub fn timeline_drift(segs: &[Segment], duration_sec: Option<f64>) -> Option<f64
     Some((dur - last_text_end).max(0.0))
 }
 
+/// 给 LLM 的稿子:每个段落前缀 `[mm:ss]`,让它能写出真实时间的分段大纲。
+/// 用与逐字稿同一套合并(200 字/60 秒),所以模型看到的时间点和用户点开逐字稿看到的一致。
+pub fn timed_transcript(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> String {
+    let fine = realign(text, segs, char_ts).unwrap_or_else(|| segs.to_vec());
+    let paras = merge_paragraphs(&fine);
+    if paras.is_empty() { return text.to_string() }
+    let mut out = String::with_capacity(text.len() + paras.len() * 10);
+    for p in &paras {
+        let (m, sec) = ((p.start / 60.0) as u64, (p.start % 60.0) as u64);
+        out.push_str(&format!("[{m:02}:{sec:02}] "));
+        if let Some(spk) = &p.speaker { out.push_str(spk); out.push_str(": ") }
+        out.push_str(p.text.trim());
+        out.push('\n');
+    }
+    out
+}
+
 /// 逐字稿:合成可读段落。
 pub fn merge_paragraphs(segs: &[Segment]) -> Vec<Segment> {
     merge_with(segs, 200, 60.0, false)
@@ -453,7 +482,21 @@ async fn split_audio(wav: &Path, dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 /// 一次 ASR 的产出:细分段 + 全文 + **字级时间戳**(与全文实字一一对应,单位秒)。
 pub struct Asr { pub segments: Vec<Segment>, pub text: String, pub char_ts: Vec<(f64, f64)> }
 
-async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -> anyhow::Result<Asr> {
+/// 取这个视频该用的术语表:所在空间的词表 + `CONGROVE_ASR_HOTWORDS` 全局兜底,去重保序。
+/// 查不到空间(视频已删等)也不让转写失败——最多是没热词。
+async fn load_hotwords(pool: &PgPool, item_id: i64) -> String {
+    let space: Option<String> = sqlx::query_scalar(
+        "SELECT s.hotwords FROM items i JOIN spaces s ON s.id = i.space_id WHERE i.id = $1",
+    ).bind(item_id).fetch_optional(pool).await.ok().flatten();
+    let env = std::env::var("CONGROVE_ASR_HOTWORDS").unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for w in space.unwrap_or_default().split_whitespace().chain(env.split_whitespace()) {
+        if !out.iter().any(|x| x == w) { out.push(w.to_string()) }
+    }
+    out.join(" ")
+}
+
+async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, hotwords: &str) -> anyhow::Result<Asr> {
     let bytes = tokio::fs::read(part).await?;
     // 契约见 AI_Talks 0124:file / model=funasr / hotword(空格分隔) / speaker。
     let mut form = reqwest::multipart::Form::new()
@@ -462,9 +505,10 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -
         .part("file", reqwest::multipart::Part::bytes(bytes)
             .file_name("audio.opus").mime_str("audio/ogg")?);
     // 热词:治「人名被识成同音字」「术语写成音近词」——研究组场景里这比 CER 那 1 个点更要命。
-    // 先用 env 兜底,P2 换成空间级术语表(每个空间维护自己的人名/术语)。
-    if let Some(h) = std::env::var("CONGROVE_ASR_HOTWORDS").ok().filter(|s| !s.trim().is_empty()) {
-        form = form.text("hotword", h);
+    // 词表来自空间设置(迁移 0007)+ env 兜底,由 load_hotwords 合并;平台收 `hotword`(空格分隔),
+    // 服务端内部转 postprocess_hotwords(拼音模糊匹配的确定性替换,0128→0130)。
+    if !hotwords.trim().is_empty() {
+        form = form.text("hotword", hotwords.to_string());
     }
     let mut req = crate::auth::build_http_client_long()?
         .post(format!("{base}/audio/transcriptions"))
