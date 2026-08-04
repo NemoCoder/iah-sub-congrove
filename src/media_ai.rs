@@ -57,6 +57,12 @@ pub async fn run(state: AppState) {
     if let Err(e) = reclaim_stale(&state.pool).await {
         tracing::warn!(error = %e, "media_ai: 回收僵尸任务失败");
     }
+    // 启动扫地:正常结束由 scopeguard 的 Drop 清,但进程被 OOM/驱逐/重启打断时 Drop 跑不到,
+    // 半截录屏会留在容器可写层里慢慢攒(2026-08-04 用户问到)。反正内存态任务都随进程没了,
+    // 上面刚把它们打回 queued 要重跑,残留文件一个都不用留。
+    if tokio::fs::remove_dir_all("/tmp/congrove-media").await.is_ok() {
+        tracing::info!("media_ai: 已清理上次进程遗留的临时录屏目录");
+    }
     loop {
         match claim_job(&state.pool).await {
             Ok(Some((job_id, item_id))) => {
@@ -241,18 +247,51 @@ pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<V
     // 分段侧:每个「实字」(非标点非空白)一条 (字, 起, 止, 说话人),段内按字数线性插值。
     #[allow(clippy::type_complexity)]
     let mut chars: Vec<(char, f64, f64, Option<String>)> = Vec::with_capacity(text.chars().count());
+    // token 边界(下标, 字数):字级时间戳是**按 token 给的**,详见下面 char_ts 那段。
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
     for s in segs {
-        let content: Vec<char> = s.text.chars().filter(|c| !is_skippable(*c)).collect();
-        if content.is_empty() { continue }
-        let (n, span) = (content.len() as f64, (s.end - s.start).max(0.0));
-        for (i, c) in content.into_iter().enumerate() {
-            let a = s.start + span * (i as f64) / n;
-            chars.push((c, a, a + span / n, s.speaker.clone()));
+        // 先摊平成实字,并记住「与上一个实字之间是否隔着空白/标点」——切 token 要用它。
+        let mut content: Vec<(char, bool)> = Vec::new();
+        let mut sep = true;
+        for c in s.text.chars() {
+            if is_skippable(c) { sep = true; continue }
+            content.push((c, sep));
+            sep = false;
         }
+        if content.is_empty() { continue }
+        let base = chars.len();
+        let (n, span) = (content.len() as f64, (s.end - s.start).max(0.0));
+        for (i, (c, brk)) in content.iter().enumerate() {
+            // 兜底时间:段内按字数线性插值(没有字级时间戳时就用这个)。
+            let a = s.start + span * (i as f64) / n;
+            chars.push((*c, a, a + span / n, s.speaker.clone()));
+            // 连着的 ASCII 字母数字算**一个** token(「metric」1 条不是 6 条);其余每字一个。
+            let joins = !*brk && c.is_ascii_alphanumeric()
+                && tokens.last().is_some_and(|&(st, ln)| {
+                    st + ln == chars.len() - 1 && chars[st].0.is_ascii_alphanumeric()
+                });
+            if joins { tokens.last_mut().unwrap().1 += 1 } else { tokens.push((chars.len() - 1, 1)) }
+        }
+        debug_assert!(chars.len() - base == content.len());
     }
-    // ★有字级时间戳就用它★(平台 asr-funasr v4 起提供,0137):条数与实字数相等才用——
-    // 这正是 sentence_info 那套错配的解药,时间不再靠段内插值,漂移从根上没了。
-    if char_ts.len() == chars.len() {
+    // ★有字级时间戳就用它★(平台 asr-funasr v4 起提供,0137)——这是 46 秒漂移的解药:
+    // 时间不再由 sentence_info 的句界决定,而是每个字自己的 CIF 对齐时间。
+    // ⚠ 它是**按 token 给的,不是按字**:2026-08-04 线上实测 61 分钟那段 char_ts=16792 条、
+    //   实字 17338 个,差 546——正好等于「英文/数字连写整串算一条」的差额
+    //   (按分段文本切出的 token 数 = 16792,**逐个吻合**)。
+    //   必须拿**分段文本**切:全文里英文之间没有空格(evaluation+function 粘成 evaluationfunction),
+    //   只有分段文本保留了空格。对上之后最后一个实字落在 3670.2s = 音频真实结尾(此前 3624s 就用完)。
+    if char_ts.len() == tokens.len() {
+        for (&(st, ln), t) in tokens.iter().zip(char_ts.iter()) {
+            // 一个 token 里的多个字符(英文单词)按字数均分它的时间跨度。
+            let (a, b) = (t.0, t.1);
+            for k in 0..ln {
+                chars[st + k].1 = a + (b - a) * (k as f64) / (ln as f64);
+                chars[st + k].2 = a + (b - a) * ((k + 1) as f64) / (ln as f64);
+            }
+        }
+    } else if char_ts.len() == chars.len() {
+        // 万一哪天服务端改成按字给,也直接能用。
         for (c, t) in chars.iter_mut().zip(char_ts.iter()) { c.1 = t.0; c.2 = t.1 }
     }
     // 全文侧:实字必须与分段侧逐字相同,否则说明两边不是同一次响应(或热词替换只改了一边)。
@@ -615,6 +654,23 @@ mod tests {
     fn realign_忽略英文大小写() {
         let out = realign("都没有听清Ok就是。", &[seg(0.0, 2.0, "都没有听清ok就是。", "spk0")], &[]);
         assert_eq!(out.expect("大小写不该算分歧").len(), 1);
+    }
+
+    /// ★字级时间戳是按 token 给的★:英文/数字连写整串一条。线上实测 16792 条 vs 17338 实字,
+    /// 差 546 全在英文词上。这条用例锁住这个换算,改坏了 46 秒漂移就会回来。
+    #[test]
+    fn realign_字级时间戳按token对齐英文词() {
+        let full = "这个AI的范式。";                       // 全文:英文两侧无空格
+        let segs = vec![seg(0.0, 9.0, "这个 AI 的范式。", "spk0")]; // 分段:英文两侧有空格
+        // 实字 7 个(这个AI的范式),token 6 个(AI 算一条)。给 6 条时间戳。
+        let cts = [(1.0, 2.0), (2.0, 3.0), (3.0, 5.0), (5.0, 6.0), (6.0, 7.0), (7.0, 8.0)];
+        let out = realign(full, &segs, &cts).expect("token 数对得上");
+        assert_eq!(out.len(), 1);
+        assert!((out[0].start - 1.0).abs() < 1e-9, "起点取第一个 token 的起 {}", out[0].start);
+        assert!((out[0].end - 8.0).abs() < 1e-9, "终点取最后一个 token 的止 {}", out[0].end);
+        // 条数既不等于 token 数也不等于实字数 → 忽略,退回段内插值(绝不硬套)。
+        let bad = realign(full, &segs, &[(1.0, 2.0), (2.0, 3.0)]).expect("仍能对齐文本");
+        assert!(bad[0].start < 1e-9);
     }
 
     /// 有字级时间戳(平台 v4,0137)时:时间必须来自它,而不是段内插值。
