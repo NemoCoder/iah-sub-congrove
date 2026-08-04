@@ -1,7 +1,8 @@
 // 录屏 AI 纪要面板:排队/进度、三份纪要、可点击跳转的逐字稿。
 // 后端 worker 在 media_ai.rs;ASR 端点由平台提供(AI_Talks 0123/0124/0125)。
 // 分段已在后端合并成可读段落(同说话人+间隔<1.2s 合并,上限 120 字/30 秒),这里直接展示。
-import { App as AntdApp, Alert, Button, Empty, Progress, Segmented, Space as AntSpace, Tag, Typography } from 'antd'
+import { App as AntdApp, Alert, Button, Empty, Popconfirm, Progress, Segmented, Tag, Typography } from 'antd'
+import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type Item } from './api'
 import { MarkdownView } from './preview'
@@ -28,7 +29,12 @@ function TimedLines({ text, onSeek }: { text: string; onSeek: (t: number) => voi
   return (
     <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
       {lines.map((line, i) => {
-        const m = line.match(/^[-*\s]*\[?(\d{1,2}):(\d{2})(?::(\d{2}))?\]?\s*[-—:：]?\s*(.*)$/)
+        // 认三种形态:`00:00 标题` / `[00:00] 标题` / **`00:00-00:05 — 标题`(时间范围)**。
+        // ★范围必须整段吃掉★:模型有时给起止两个时间,只吃第一个的话第二个会原样漏到正文里
+        // (2026-08-05 反馈:每行显示两个 00:00)。范围取**起点**做跳转。
+        const m = line.match(
+          /^[-*\s]*\[?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*[-—~～至]\s*\d{1,2}:\d{2}(?::\d{2})?)?\]?\s*[-—–:：]?\s*(.*)$/,
+        )
         if (!m) return <div key={i} style={{ marginBottom: 6, fontSize: 13, lineHeight: 1.7 }}>{line}</div>
         // 三段 = hh:mm:ss,两段 = mm:ss
         const t = m[3] ? +m[1] * 3600 + +m[2] * 60 + +m[3] : +m[1] * 60 + +m[2]
@@ -89,25 +95,38 @@ export function Analysis({ item, onSeek, onTranscript }: {
 
   return (
     <div style={{ marginTop: 14 }}>
-      <AntSpace style={{ marginBottom: 8 }} wrap>
+      {/* 标题独占一行、按钮靠右:原来标题和「重新生成」挤在一个 AntSpace 里,和下面那排
+          「摘要/分段大纲/…」的 Segmented 视觉上连成一片,用户会把它当成又一个 tab
+          (2026-08-05 反馈)。现在左标题右按钮、按钮带图标,和 tab 明确分开。 */}
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
         <Typography.Text strong>AI 会议纪要</Typography.Text>
-        {!d.transcript && !running && (
-          <Button size="small" type="primary" disabled={!d.asr_ready}
-            onClick={async () => {
-              try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已排队,几分钟后回来看'); void load() }
-              catch (e) { message.error((e as Error).message) }
-            }}>
-            生成纪要
-          </Button>
-        )}
-        {d.transcript && !running && (
-          <Button size="small" onClick={async () => {
-            try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已重新排队'); void load() }
-            catch (e) { message.error((e as Error).message) }
-          }}>重新生成</Button>
-        )}
-        {job?.status === 'failed' && <Tag color="red">上次失败</Tag>}
-      </AntSpace>
+        {job?.status === 'failed' && <Tag color="red" style={{ marginLeft: 8 }}>上次失败</Tag>}
+        <div style={{ marginLeft: 'auto' }}>
+          {!d.transcript && !running && (
+            <Button size="small" type="primary" icon={<ThunderboltOutlined />} disabled={!d.asr_ready}
+              onClick={async () => {
+                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已排队,几分钟后回来看'); void load() }
+                catch (e) { message.error((e as Error).message) }
+              }}>
+              生成纪要
+            </Button>
+          )}
+          {/* ★二次确认★:重跑要几分钟、会**覆盖**现有纪要、还要占 GPU 与模型额度,
+              误点的代价不小(2026-08-05 反馈)。 */}
+          {d.transcript && !running && (
+            <Popconfirm
+              title="重新生成纪要?" okText="重新生成" cancelText="取消"
+              description={<div style={{ maxWidth: 260, fontSize: 12 }}>会重跑语音转写与摘要(几分钟),完成后<b>覆盖</b>现有的摘要、大纲、决议与逐字稿。</div>}
+              onConfirm={async () => {
+                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已重新排队,几分钟后回来看'); void load() }
+                catch (e) { message.error((e as Error).message) }
+              }}
+            >
+              <Button size="small" icon={<ReloadOutlined />}>重新生成</Button>
+            </Popconfirm>
+          )}
+        </div>
+      </div>
 
       {/* ★时间轴漂移提示★(2026-08-04):ASR 的段时间戳是对的,但文字被过快消耗——61 分钟的会
           文字在 3624 秒就用完,字幕越走越快(累计提前 46 秒)。判据 = 最后一个有字的段离结尾多远。
