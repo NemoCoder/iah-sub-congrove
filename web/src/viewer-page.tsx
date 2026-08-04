@@ -18,7 +18,7 @@ export function ViewerPage({ itemId }: { itemId: number }) {
     api<Item>(`/api/items/${itemId}`)
       .then(async (it) => {
         setItem(it)
-        document.title = `${it.name} · 汇流`
+        document.title = `${it.name} · Congrove·汇流`
         if (it.kind === 'doc') setText(await api<string>(`/api/items/${itemId}/content`))
       })
       .catch((e) => { if (e.message !== '未登录') setErr(e.message) })
@@ -32,7 +32,7 @@ export function ViewerPage({ itemId }: { itemId: number }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', background: '#fff', borderBottom: '1px solid #ececf1' }}>
         <CongroveLogo size={24} />
         <Typography.Text strong ellipsis style={{ flex: 1 }}>{item.name}</Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>汇流 · 独立窗口</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>Congrove·汇流 · 独立窗口</Typography.Text>
       </div>
       <div style={{ padding: 16 }}>
         {item.kind === 'video' ? (

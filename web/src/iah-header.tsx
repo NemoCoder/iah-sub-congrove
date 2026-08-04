@@ -23,8 +23,11 @@ export function IahHeader({ extra }: { extra?: React.ReactNode }) {
         <CongroveLogo />
         <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.18 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: '#0d9488', letterSpacing: 0.3 }}>◆ IAH 开发平台</span>
-          <span style={{ fontSize: 18, fontWeight: 800, color: '#111827' }}>
-            汇流 Congrove <span style={{ fontSize: 12, fontWeight: 600, color: '#9ca3af', marginLeft: 7 }}>{VERSION}</span>
+          {/* 名字统一成「Congrove·汇流」(2026-08-04 用户定,与浏览器标签页同一写法);
+              中点用居中的 `·`,前后不留空格——原来的「汇流 Congrove」中英之间那个空格显得散。 */}
+          <span style={{ fontSize: 18, fontWeight: 800, color: '#111827', letterSpacing: 0.2 }}>
+            Congrove<span style={{ margin: '0 1px', color: '#9ca3af' }}>·</span>汇流
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#9ca3af', marginLeft: 7 }}>{VERSION}</span>
           </span>
         </span>
       </a>
