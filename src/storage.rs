@@ -179,6 +179,33 @@ impl Storage {
         Ok(req.uri().to_string())
     }
 
+    /// 列一个 multipart 已经传好的分片(断点续传用):返回 (part_number, etag, size),按片号升序。
+    /// 同样要翻页(单次上限 1000 片,10GB 录屏 = 1280 片,不翻页就少算后面的)。
+    /// upload_id 不存在时 S3 报 NoSuchUpload —— 调用方据此判定「这个断点已经作废」。
+    pub async fn list_parts(&self, key: &str, upload_id: &str) -> anyhow::Result<Vec<(i32, String, i64)>> {
+        let mut out = Vec::new();
+        let mut marker: Option<String> = None;
+        for _ in 0..20 {
+            let r = self
+                .s3
+                .list_parts()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(upload_id)
+                .set_part_number_marker(marker.clone())
+                .send()
+                .await?;
+            out.extend(r.parts().iter().filter_map(|p| {
+                Some((p.part_number()?, p.e_tag()?.trim_matches('"').to_string(), p.size().unwrap_or(0)))
+            }));
+            if !r.is_truncated().unwrap_or(false) { break }
+            marker = r.next_part_number_marker().map(str::to_string);
+            if marker.is_none() { break }
+        }
+        out.sort_by_key(|(n, _, _)| *n);
+        Ok(out)
+    }
+
     /// 列半截 multipart(清理任务用)。返回 (key, upload_id, initiated)。
     /// ★翻页★(2026-08-04 审计):单次最多回 1000 条且 is_truncated,不翻页的话
     /// 残留超过 1000 个半截上传后就永远清不到后面的。用 key-marker + upload-id-marker 走完;

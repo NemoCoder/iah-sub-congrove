@@ -17,7 +17,11 @@ perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)�
 /healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
 **P1 已上**(v0.2.0):空间/组/成员/授权 CRUD、内容树(防环校验)、文档在线编辑+版本历史+恢复、
 文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、**每空间配额默认 10GiB**(0002 迁移,超管 PUT /api/admin/spaces/{id}/quota 可调)、拉人/按用户授权走平台 users/exists 校验(Keycloak 真相源,可拉未登录用户;registry 不可达降级本地 app_user;拉人/授权投站内信,0094)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
-favicon 在 index.html **两处同步**)。**P2 已上**(v0.3.5):>100MB/视频浏览器直传 Garage(begin 签全部 part→分片 PUT 收 ETag→服务端 complete;失败 abort+24h 兜底清扫;501 回退后端流式);video 面板 <video> 播放(/play 判权 302 预签名 GET,Range 拖动)。**P3 进行中**:✅viewer 禁下载开关(0003 迁移,只拦 download 原件,阅读/播放不拦)+✅权限诊断(/api/spaces/{id}/diagnose,判定链与 perm.rs 同一推导);待做:PG 全文搜索(中文 trgm+ILIKE 双路)、语义搜。
+favicon 在 index.html **两处同步**)。**P2 已上**(v0.3.5):>100MB/视频浏览器直传 Garage(begin 签全部 part→分片 PUT 收 ETag→服务端 complete;失败 abort+24h 兜底清扫;501 回退后端流式);video 面板 <video> 播放(/play 判权 302 预签名 GET,Range 拖动)。
+**P2 收尾**(v0.3.33):**断点续传**——items 记 `upload_fp`(大小+改动时间+文件名)与 `upload_id`(迁移 0009),
+begin 带指纹来就认领「本人 24h 内没传完的同一个文件」,已传分片问 S3 的 ListParts 要、前端只补缺的;
+complete 的分片清单**以 ListParts 为准**(续传时前端手里没有旧片的 ETag);
+★失败不 abort、只有用户主动取消才 abort★——abort 会把断点一起删掉。**P3 进行中**:✅viewer 禁下载开关(0003 迁移,只拦 download 原件,阅读/播放不拦)+✅权限诊断(/api/spaces/{id}/diagnose,判定链与 perm.rs 同一推导);待做:PG 全文搜索(中文 trgm+ILIKE 双路)、语义搜。
 
 ## 命令
 

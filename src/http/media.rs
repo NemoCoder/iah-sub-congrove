@@ -43,6 +43,10 @@ pub struct BeginIn {
     pub size: i64,
     pub mime: Option<String>,
     pub parent_id: Option<i64>,
+    /// 文件指纹(前端给:大小+修改时间+文件名)。带上它就能**断点续传**:
+    /// 同一个人、同一空间、24h 内、指纹相同且没传完的那一行会被复用,已传的片不再重传。
+    #[serde(default)]
+    pub fp: Option<String>,
 }
 
 /// POST /api/spaces/{sid}/media/begin(≥editor)。预签名不可用回 501,前端回退后端流式上传。
@@ -67,25 +71,68 @@ pub async fn begin(
     let name = { let n = input.name.trim(); if n.is_empty() { "unnamed" } else { n } };
     let mime = input.mime.unwrap_or_else(|| "application/octet-stream".into());
     let kind = if mime.starts_with("video/") { "video" } else { "file" };
-    let iid: i64 = sqlx::query_scalar(
-        "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-    )
-    .bind(sid)
-    .bind(input.parent_id)
-    .bind(kind)
-    .bind(name)
-    .bind(&mime)
-    .bind(id.require_username()?)
-    .fetch_one(&state.pool)
-    .await?;
+    let actor = id.require_username()?;
+
+    // ★断点续传★(迁移 0009):带指纹来的先看看「上次没传完的那个文件」还在不在。
+    // 条件卡死到本人 + 本空间 + 本目录 + 未完成 + 24h 内——别把别人的半截上传认成我的。
+    // 24h 与 lib.rs 的清扫窗口对齐:过期的那半截已被 abort,续也续不上。
+    let mut resume: Option<(i64, String, Vec<(i32, String, i64)>)> = None;
+    if let Some(fp) = input.fp.as_deref().filter(|f| !f.trim().is_empty()) {
+        let row: Option<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT id, upload_id FROM items
+              WHERE space_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND s3_key IS NULL
+                AND created_by = $3 AND upload_fp = $4 AND upload_id IS NOT NULL
+                AND created_at > now() - interval '24 hours'
+              ORDER BY id DESC LIMIT 1",
+        )
+        .bind(sid).bind(input.parent_id).bind(actor).bind(fp)
+        .fetch_optional(&state.pool).await?;
+        if let Some((old_iid, Some(old_uid))) = row {
+            let old_key = format!("spaces/{sid}/{old_iid}/blob");
+            match state.storage.list_parts(&old_key, &old_uid).await {
+                // 断点还在:复用它。已传的片原样保留,前端只补缺的。
+                Ok(done) => resume = Some((old_iid, old_uid, done)),
+                // upload_id 已失效(被清扫 abort / 服务端丢了)→ 当新上传,顺手把废行删掉。
+                Err(e) => {
+                    tracing::info!(error = %e, item = old_iid, "续传断点已失效,改为重新开始");
+                    let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL")
+                        .bind(old_iid).execute(&state.pool).await;
+                }
+            }
+        }
+    }
+
+    let (iid, existing) = match &resume {
+        Some((old_iid, old_uid, done)) => (*old_iid, Some((old_uid.clone(), done.clone()))),
+        None => {
+            let iid: i64 = sqlx::query_scalar(
+                "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, upload_fp) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+            )
+            .bind(sid)
+            .bind(input.parent_id)
+            .bind(kind)
+            .bind(name)
+            .bind(&mime)
+            .bind(actor)
+            .bind(input.fp.as_deref())
+            .fetch_one(&state.pool)
+            .await?;
+            (iid, None)
+        }
+    };
     let key = format!("spaces/{sid}/{iid}/blob");
 
     let run = async {
-        let upload_id = state.storage.multipart_begin(&key, &mime).await?;
+        // 续传复用旧 upload_id;新上传才 create。
+        let upload_id = match &existing {
+            Some((uid, _)) => uid.clone(),
+            None => state.storage.multipart_begin(&key, &mime).await?,
+        };
         let parts = ((input.size + PART_SIZE - 1) / PART_SIZE).max(1); // 有符号 div_ceil 尚未稳定
         if parts > 10_000 {
             anyhow::bail!("超过 S3 万片上限(单文件 >320GB?)");
         }
+        // ⚠ URL **每次都重签**:预签名 6 小时到期,续传时旧 URL 多半已经死了。
         let mut urls = Vec::with_capacity(parts as usize);
         for n in 1..=parts as i32 {
             urls.push(state.storage.presign_part(&key, &upload_id, n, PART_URL_TTL).await?);
@@ -93,12 +140,28 @@ pub async fn begin(
         anyhow::Ok((upload_id, urls))
     };
     match run.await {
-        Ok((upload_id, part_urls)) => Ok(Json(json!({
-            "item_id": iid, "upload_id": upload_id, "part_size": PART_SIZE, "part_urls": part_urls,
-        }))
-        .into_response()),
+        Ok((upload_id, part_urls)) => {
+            // 记住 upload_id:下次断了才认得回来(新上传要写,续传是幂等重写)。
+            sqlx::query("UPDATE items SET upload_id = $1, upload_fp = COALESCE($2, upload_fp) WHERE id = $3")
+                .bind(&upload_id).bind(input.fp.as_deref()).bind(iid)
+                .execute(&state.pool).await?;
+            let done = existing.map(|(_, d)| d).unwrap_or_default();
+            if !done.is_empty() {
+                tracing::info!(item = iid, parts = done.len(), "续传:跳过已传分片");
+            }
+            Ok(Json(json!({
+                "item_id": iid, "upload_id": upload_id, "part_size": PART_SIZE, "part_urls": part_urls,
+                // 已经传好的片(片号 + 字节数);前端据此跳过并把进度条直接推到对应位置。
+                "uploaded_parts": done.iter().map(|(n, _, sz)| json!({"part_number": n, "size": sz})).collect::<Vec<_>>(),
+                "resumed": !done.is_empty(),
+            }))
+            .into_response())
+        }
         Err(e) => {
-            let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+            // 只删「本次新建的」行;续传失败别把用户已经传了一半的断点删了。
+            if resume.is_none() {
+                let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+            }
             Err(AppError::Other(e))
         }
     }
@@ -139,13 +202,20 @@ pub async fn part(
 
 #[derive(Deserialize)]
 pub struct PartIn {
+    // 只反序列化用来对数(清单以服务端 ListParts 为准),字段本身不再读——别删,
+    // 删了前端交回的 JSON 会因为多余字段…… serde 默认忽略未知字段,但保留它是接口契约的一部分。
+    #[allow(dead_code)]
     pub part_number: i32,
+    #[allow(dead_code)]
     pub etag: String,
 }
 
 #[derive(Deserialize)]
 pub struct CompleteIn {
     pub upload_id: String,
+    /// 前端本次传的分片(续传时只有增量,甚至可能为空)。**只用来对数**,
+    /// 真正提交的清单来自服务端 ListParts。
+    #[serde(default)]
     pub parts: Vec<PartIn>,
 }
 
@@ -158,18 +228,21 @@ pub async fn complete(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
-    if input.parts.is_empty() {
-        return Err(AppError::BadRequest("parts 为空".into()));
-    }
     let key = format!("spaces/{sid}/{iid}/blob");
-    let parts: Vec<_> = input
-        .parts
+    // ★分片清单以 S3 为准★(断点续传后必须这样):续传时前端手里只有**本次**传的那几片的 ETag,
+    // 上一轮传好的它根本没有。ListParts 是权威来源,拿它组装;前端交回的 parts 只用来对数量、
+    // 对不上就把两边的数字写进日志(不拦——以服务端看到的为准更安全)。
+    let listed = state.storage.list_parts(&key, &input.upload_id).await.map_err(AppError::Other)?;
+    if listed.is_empty() {
+        return Err(AppError::BadRequest("这个上传没有任何已完成的分片(可能已过期或被清理)".into()));
+    }
+    if listed.len() != input.parts.len() {
+        tracing::info!(item = iid, listed = listed.len(), client = input.parts.len(), "complete:分片数与前端不一致(续传属正常)");
+    }
+    let parts: Vec<_> = listed
         .iter()
-        .map(|p| {
-            aws_sdk_s3::types::CompletedPart::builder()
-                .part_number(p.part_number)
-                .e_tag(p.etag.trim_matches('"'))
-                .build()
+        .map(|(n, etag, _)| {
+            aws_sdk_s3::types::CompletedPart::builder().part_number(*n).e_tag(etag.as_str()).build()
         })
         .collect();
     state.storage.multipart_complete(&key, &input.upload_id, parts).await.map_err(AppError::Other)?;
@@ -185,7 +258,8 @@ pub async fn complete(
         let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
         return Err(AppError::BadRequest("实际大小超出空间配额,已回滚本次上传".into()));
     }
-    sqlx::query("UPDATE items SET s3_key = $1, size = $2, updated_at = now() WHERE id = $3")
+    // 落 s3_key 的同时清掉续传痕迹:这一行已经完成,不该再被当成断点认领。
+    sqlx::query("UPDATE items SET s3_key = $1, size = $2, upload_id = NULL, upload_fp = NULL, updated_at = now() WHERE id = $3")
         .bind(&key)
         .bind(size)
         .bind(iid)

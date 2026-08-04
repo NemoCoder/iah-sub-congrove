@@ -118,6 +118,9 @@ export function SpacesView({ me }: { me: Me | null }) {
       patch(t.key, { running: true })
       const f = t.file
       const report = (percent: number) => patch(t.key, { percent })
+      // 断点续传命中时说一声:否则用户会以为进度条从 60% 起跳是出了错(2026-08-04 P2)。
+      const resumed = (parts: number, bytes: number) =>
+        message.info(`${f.name}:从断点继续,已跳过 ${parts} 片(${fmtSize(bytes)})`)
       try {
         // 选路:大文件/视频走分片(片发给谁由开局探测定),小文件整文件 POST。
         let done = false
@@ -125,12 +128,12 @@ export function SpacesView({ me }: { me: Me | null }) {
         if (big) {
           const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl)
+            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl, resumed)
           } catch (de) {
             if (!direct || t.ctl.canceled) throw de
             sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
-            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl)
+            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl, resumed)
           }
         }
         if (!done) await xhrUpload(`/api/spaces/${sid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)
@@ -138,7 +141,8 @@ export function SpacesView({ me }: { me: Me | null }) {
       } catch (e) {
         // 取消是用户自己按的,不当错误刷红(directUpload 的 catch 已顺手 abort 掉半截 multipart)。
         if (t.ctl.canceled || (e as Error).message === CANCELED) message.info(`${f.name} 已取消`)
-        else message.error(`${f.name}:${(e as Error).message}`)
+        // 失败时半截上传**保留**着(只有主动取消才清):告诉用户重拖即可续,别让他以为要从头来。
+        else message.error(`${f.name}:${(e as Error).message}——把同一个文件再拖进来可从断点继续(24 小时内有效)`)
       } finally {
         setUploads((u) => u.filter((x) => x.key !== t.key))
       }

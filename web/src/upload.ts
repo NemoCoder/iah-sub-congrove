@@ -35,14 +35,26 @@ export async function probeDirect(endpoint: string | null): Promise<boolean> {
   return ok
 }
 
+/// 文件指纹:大小 + 最后修改时间 + 文件名。断点续传靠它认出「你重新拖进来的就是上次那个文件」。
+/// 不用内容 hash:GB 级录屏算一遍 sha256 要好几十秒,而这三样组合起来碰撞的概率对本场景足够低
+/// (同一个人、同一目录、24 小时内、同名同大小同修改时间 —— 那就是同一个文件)。
+function fingerprint(f: File): string {
+  return `${f.size}:${f.lastModified}:${f.name}`.slice(0, 300)
+}
+
 export async function directUpload(
   sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
   mode: 'presigned' | 'proxy', ctl: UploadCtl = newCtl(),
+  /// 命中断点时回调一次(跳过的片数、已有的字节数),调用方用来提示「从断点继续」。
+  onResume?: (skippedParts: number, skippedBytes: number) => void,
 ): Promise<boolean> {
   const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: file.name, size: file.size, mime: file.type || 'application/octet-stream', parent_id: parentId }),
+    body: JSON.stringify({
+      name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
+      parent_id: parentId, fp: fingerprint(file),
+    }),
   })
   if (begin.status === 501) return false
   if (begin.status === 401) {
@@ -50,14 +62,20 @@ export async function directUpload(
     throw new Error('未登录')
   }
   if (!begin.ok) throw new Error(((await begin.json()) as { error?: string }).error || `${begin.status}`)
-  const { item_id, upload_id, part_size, part_urls } = (await begin.json()) as {
+  const { item_id, upload_id, part_size, part_urls, uploaded_parts } = (await begin.json()) as {
     item_id: number; upload_id: string; part_size: number; part_urls: string[]
+    uploaded_parts?: { part_number: number; size: number }[]
   }
+  // ★断点续传★:服务端问过 S3 了,这些片上次已经传好——跳过它们,进度条直接推到对应位置。
+  // (以服务端的清单为准,不信任何本地记录:换标签页/清缓存都不影响,而且不会和 S3 实际状态打架。)
+  const doneSet = new Set((uploaded_parts ?? []).map((p) => p.part_number))
+  let sent = (uploaded_parts ?? []).reduce((a, p) => a + p.size, 0)
+  if (doneSet.size) { onProgress(Math.round((sent / file.size) * 100)); onResume?.(doneSet.size, sent) }
   try {
     const parts: { part_number: number; etag: string }[] = []
-    let sent = 0
     for (let i = 0; i < part_urls.length; i++) {
       if (ctl.canceled) throw new Error(CANCELED)
+      if (doneSet.has(i + 1)) continue
       const blob = file.slice(i * part_size, Math.min(file.size, (i + 1) * part_size))
       const report = (loaded: number) => onProgress(Math.round(((sent + loaded) / file.size) * 100))
       // presigned:浏览器直发 Garage(最快,要过 s3api 证书关);
@@ -83,8 +101,12 @@ export async function directUpload(
     await api(`/api/items/${item_id}/media/complete`, { method: 'POST', body: JSON.stringify({ upload_id, parts }) })
     return true
   } catch (e) {
-    // 失败必 abort:半截 multipart 不清理会永久占存储(后端另有 24h 兜底清扫)。
-    await api(`/api/items/${item_id}/media/abort`, { method: 'POST', body: JSON.stringify({ upload_id }) }).catch(() => {})
+    // ★只有「用户主动取消」才 abort★:abort 会把已经传好的片一起删掉,断点就没了。
+    // 网络断、分片重试耗尽这类**失败**要**保留**半截上传——用户重新拖同一个文件即可续传
+    // (24h 内有效;超时由后端清扫任务 abort,不会永久占存储)。
+    if (ctl.canceled || (e as Error).message === CANCELED) {
+      await api(`/api/items/${item_id}/media/abort`, { method: 'POST', body: JSON.stringify({ upload_id }) }).catch(() => {})
+    }
     throw e
   }
 }
