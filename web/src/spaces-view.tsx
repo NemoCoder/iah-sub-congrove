@@ -18,6 +18,9 @@ import {
 /// 其余排队,队列里的任务用户也能取消(点取消直接出队,不占位)。
 const UPLOAD_CONCURRENCY = 3
 
+/// 「上一层」伪行的 id。用一个很大的负数,和上传伪行(-1、-2…)拉开距离,互不打架。
+const PARENT_ROW_ID = -1_000_000
+
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl }
 import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
@@ -103,7 +106,13 @@ export function SpacesView({ me }: { me: Me | null }) {
     })),
     [uploads, cwd, me],
   )
-  const up = (it: Item): UpTask | null => (it.id < 0 ? uploads[-it.id - 1] ?? null : null)
+  const up = (it: Item): UpTask | null => (it.id < 0 && it.id !== PARENT_ROW_ID ? uploads[-it.id - 1] ?? null : null)
+  // 「上一层」行:进了子目录才有。面包屑够用但不好点(2026-08-04 反馈),列表里给一行更顺手。
+  const parentRow: Item[] = cwd == null ? [] : [{
+    id: PARENT_ROW_ID, parent_id: null, kind: 'folder', name: '..',
+    size: null, mime: null, created_by: '', updated_at: '',
+  }]
+  const goUp = () => { setCwd(cwd == null ? null : byId.get(cwd)?.parent_id ?? null); setChecked([]) }
 
   const uploadFiles = async (files: File[]) => {
     if (!cur || !canEdit || !files.length) return
@@ -354,17 +363,19 @@ export function SpacesView({ me }: { me: Me | null }) {
             }}
           >
             <Table
-              size="small" rowKey="id" dataSource={[...upRows, ...rows]} pagination={false}
+              size="small" rowKey="id" dataSource={[...parentRow, ...upRows, ...rows]} pagination={false}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
               rowSelection={canEdit ? {
                 selectedRowKeys: checked, onChange: (k) => setChecked((k as number[]).filter((x) => x > 0)),
-                getCheckboxProps: (it) => ({ disabled: !!up(it) }),
+                getCheckboxProps: (it) => ({ disabled: !!up(it) || it.id === PARENT_ROW_ID }),
               } : undefined}
               columns={[
                 {
                   title: '名称', dataIndex: 'name', ellipsis: true,
-                  render: (_, it) => (up(it)
+                  render: (_, it) => (it.id === PARENT_ROW_ID
+                    ? <a onClick={goUp}>📁 ..（上一层）</a>
+                    : up(it)
                     ? <Typography.Text type="secondary" ellipsis>⬆ {it.name}</Typography.Text>
                     : (
                       <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
@@ -373,11 +384,11 @@ export function SpacesView({ me }: { me: Me | null }) {
                     )),
                 },
                 { title: '大小', dataIndex: 'size', width: 100, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
-                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v, it) => (up(it) ? '—' : fmtTime(v)) },
+                { title: '修改时间', dataIndex: 'updated_at', width: 150, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
                 { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
                 {
                   title: '操作', width: 220,
-                  render: (_, it) => (up(it) ? (
+                  render: (_, it) => (it.id === PARENT_ROW_ID ? null : up(it) ? (
                     // ★上传中的行:进度条 + 取消★(2026-08-03 用户要求)。排队中的显示「排队中」,
                     // 它还没发任何请求,取消 = 直接出队。
                     <AntSpace size={6} style={{ width: '100%' }}>
