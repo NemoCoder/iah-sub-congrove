@@ -52,6 +52,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}", get(items::detail).put(items::update).delete(items::remove))
         .route("/items/{id}/progress", get(items::progress_get).put(items::progress_put))
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))
+        // 分享:取令牌 / 按令牌解析(令牌不是授权凭证,两端都照常判权)
+        .route("/items/{id}/share", post(items::share))
+        .route("/share/{token}", get(items::by_share_token))
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
         // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod);play 判权后 302 预签名 GET。

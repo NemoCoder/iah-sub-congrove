@@ -51,7 +51,7 @@ function fmtTime(s: string) {
 /// - 空间里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: number | null }) {
+export function SpacesView({ me, shareToken }: { me: Me | null; shareToken?: string | null }) {
   const { message, modal } = AntdApp.useApp()
   const [spaces, setSpaces] = useState<Space[]>([])
   const [cur, setCur] = useState<Space | null>(null)
@@ -185,7 +185,14 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
   /// 复制分享链接。**不是公开链接**——链接只是「直达地址」,谁点开都要登录且必须是本空间成员,
   /// 权限仍由后端 require_role 判(前端连隐藏都算不上安全边界)。
   const copyShare = async (it: Item) => {
-    const url = `${window.location.origin}/i/${it.id}`
+    // ★链接里放的是不可猜的令牌,不是自增 id★(2026-08-05 用户坚持,对):
+    // /i/1 那种形态天然引诱人去试 /i/2,而且一旦将来做公开分享就是灾难。
+    // 令牌懒生成(第一次点复制才建),后端 128 bit 取自 /dev/urandom。
+    let token: string
+    try {
+      token = (await api<{ token: string }>(`/api/items/${it.id}/share`, { method: 'POST' })).token
+    } catch (e) { message.error(`生成分享链接失败:${(e as Error).message}`); return }
+    const url = `${window.location.origin}/i/${token}`
     try {
       await navigator.clipboard.writeText(url)
       message.success({ content: `链接已复制:${it.kind === 'folder' ? '文件夹' : '文件'}「${it.name}」——只有本空间成员打得开`, duration: 4 })
@@ -198,11 +205,11 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
   // 分享链接 /i/{id}:解析一次,定位到空间并打开对应内容。
   // 没权限(403)/已删(404)时给一句人话,而不是让用户对着空列表发呆。
   useEffect(() => {
-    if (shareItemId == null || !spaces.length) return
+    if (!shareToken || !spaces.length) return
     let done = false
     ;(async () => {
       try {
-        const it = await api<Item>(`/api/items/${shareItemId}`)
+        const it = await api<Item>(`/api/share/${shareToken}`)
         const sp = spaces.find((x) => x.id === it.space_id)
         if (!sp) { setShareErr('这条链接指向的空间你没有访问权限——找空间管理员开通'); return }
         if (done) return
@@ -220,7 +227,7 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
     })()
     return () => { done = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shareItemId, spaces.length])
+  }, [shareToken, spaces.length])
 
   const refresh = async () => {
     if (!cur) return

@@ -15,12 +15,14 @@ function viewerItemId(): number | null {
   return m ? Number(m[1]) : null
 }
 
-/// 分享链接:/i/{id} —— 直达某个文件/文件夹。**不是公开链接**:照常要登录,
-/// 而且只有该空间的成员打得开(后端 require_role,前端只负责导航)。
-/// 未登录时 api.ts 会整页跳登录并带 return,登录后自动回到这条链接。
-function sharedItemId(): number | null {
-  const m = window.location.pathname.match(/^\/i\/(\d+)/)
-  return m ? Number(m[1]) : null
+/// 分享链接:/i/{token} —— 直达某个文件/文件夹。
+/// ★token 是 128 bit 随机十六进制,不是自增 id★:自增 id 的链接天然引诱人去试下一个,
+/// 而且一旦将来做公开分享就是灾难(2026-08-05)。
+/// **仍不是公开链接**:照常要登录、且必须是该空间成员(后端 require_role,前端只负责导航);
+/// 未登录时 api.ts 整页跳登录并带 return,登录后自动回到这条链接。
+function sharedToken(): string | null {
+  const m = window.location.pathname.match(/^\/i\/([0-9a-f]{32})$/)
+  return m ? m[1] : null
 }
 
 export function App() {
@@ -63,7 +65,7 @@ export function App() {
           options={[{ value: 'spaces', label: '🌳 空间' }, { value: 'groups', label: '👥 小组' }]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView me={me} shareItemId={sharedItemId()} /> : <GroupsView />}
+        {view === 'spaces' ? <SpacesView me={me} shareToken={sharedToken()} /> : <GroupsView />}
       </div>
     </div>
   )
