@@ -1,6 +1,6 @@
 [package]
 name = "congrove"
-version = "0.3.26"
+version = "0.3.27"
 edition = "2021"
 rust-version = "1.86"
 description = "congrove — 汇流:团队知识库(空间+小组+会议录屏+论文库),IAH 平台子系统"
@@ -13,7 +13,6 @@ license = "MIT"
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }   # 下载流式转发:S3 ByteStream → axum Body
-futures-util = "0.3"                                  # 流式落盘(录屏转写前先取到临时盘)
 # web
 axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["limit", "timeout"] }

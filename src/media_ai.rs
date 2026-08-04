@@ -24,7 +24,6 @@ use sqlx::PgPool;
 use tokio::io::AsyncWriteExt;
 
 use crate::state::AppState;
-use futures_util::TryStreamExt;
 
 /// ★整段送,不再自己切★(2026-08-03 事故复盘)。读平台服务端源码(`iah-platform-src/asr-funasr/app.py`)
 /// 确认它是 `AutoModel(vad_model="fsmn-vad", spk_model="cam++").generate(batch_size_s=300)`——
@@ -367,6 +366,8 @@ fn merge_with(segs: &[Segment], max_chars: usize, max_sec: f64, stop_at_sentence
 }
 
 /// 从 S3 流式下载到本地文件(不进内存)。
+/// ⚠ 这里的 `try_next` 是 `aws_sdk_s3::primitives::ByteStream` 的**固有方法**,
+/// 不需要 `use futures_util::TryStreamExt`(加了反而是 unused import 警告,v0.3.27 清掉了)。
 async fn download_to(state: &AppState, key: &str, dest: &Path) -> anyhow::Result<()> {
     let (mut stream, _) = state.storage.get_stream(key).await?;
     let mut f = tokio::fs::File::create(dest).await?;
