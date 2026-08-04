@@ -76,12 +76,19 @@ pub async fn is_super_now(pool: &PgPool, id: &Identity) -> AppResult<bool> {
         .unwrap_or(false))
 }
 
-/// 守门:不够 `need` 就 403(未登录早在 require_auth 就 401 了)。
-/// 返回实际角色,handler 可用于响应里回显。
+/// 守门:不够 `need` 就挡(未登录早在 require_auth 就 401 了)。返回实际角色,handler 可回显。
+///
+/// ★两档区别对待(2026-08-05,分享链接用数字 id 引出的存在性泄露)★:
+/// - **完全没授权 → 404**,不是 403。id 是自增数字,`/i/1..N` 爬一遍时,
+///   403(存在但你不能看)和 404(不存在)可区分 = 一个**存在性预言机**:
+///   内容拿不到,但「这个所里有多少东西、id 分布到哪」就漏出去了。统一回 404,爬到的全是一个样。
+/// - **有授权但档位不够 → 403**(如 viewer 想删):这种情况下他本来就在列表里看得见这个东西,
+///   回 404 只会让人以为「文件没了」,反而误导。
 pub async fn require_role(pool: &PgPool, id: &Identity, space_id: i64, need: Role) -> AppResult<Role> {
     match effective_role(pool, id, space_id).await? {
         Some(r) if r >= need => Ok(r),
-        _ => Err(AppError::Forbidden),
+        Some(_) => Err(AppError::Forbidden),
+        None => Err(AppError::NotFound),
     }
 }
 

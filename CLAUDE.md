@@ -39,6 +39,9 @@ cd web && pnpm typecheck             # ⚠ 平台构建管道零类型检查,改
 之后 push 到通道分支即自动构建。构建失败唯一入口 `GET .../build-log?channel=dev`(不进 Loki);
 dev 库改 schema 可走 `POST .../db/sql`(dev-only,prod 403)。API 都带个人令牌(门户「日志」页生成)。
 **迁移纪律:只增不改**(sqlx::migrate! 校验和,改已应用的文件 = 全部实例启动失败),变更开新文件写 ALTER。
+★2026-08-05 重建过一次★:用户把部署连同 PG/OSS 全删后,0001~0009 压成了单个 
+(那是唯一能破例的时刻——没有任何实例的 `_sqlx_migrations` 里还有记录)。**从那版起纪律恢复**,
+以后一律开 0002、0003… 写 ALTER,别再想着「反正能重建」。
 sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字段后手动核对 FromRow/类型。
 
 ## 架构决策(详证据见 DESIGN.md §3,别重新论证)

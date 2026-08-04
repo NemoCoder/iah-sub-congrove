@@ -211,8 +211,11 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
         else { setCwd(it.parent_id); setPreview(it) }
       } catch (e) {
         const m = (e as Error).message
-        setShareErr(m.includes('forbidden') ? '这条链接指向的内容你没有访问权限——找空间管理员开通'
-          : m.includes('not found') ? '这条链接指向的内容已被删除' : `打不开这条链接:${m}`)
+        // ⚠ 没授权的空间统一回 404(perm.rs 刻意不区分,防按 id 枚举),所以这两种情况
+        //   在前端也必须说同一句话——说「已被删除」会误导,说「没有权限」又等于承认它存在。
+        setShareErr(m.includes('not found') || m.includes('forbidden')
+          ? '打不开:内容不存在,或者你没有它所在空间的访问权限(找空间管理员开通)'
+          : `打不开这条链接:${m}`)
       }
     })()
     return () => { done = true }
