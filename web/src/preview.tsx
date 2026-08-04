@@ -20,11 +20,14 @@ export function MarkdownView({ text }: { text: string }) {
 export function FilePreview({ item, tall = false }: { item: Item; tall?: boolean }) {
   const src = `/api/items/${item.id}/download?inline=1`
   const mime = item.mime || ''
+  // ★吃满可用高度★(2026-08-05 反馈「PDF 预览窗口太小」):原来抽屉里写死 620px,
+  // 下面空一大片。改成按视口算——抽屉里减掉页眉/标题/工具条那约 170px,独立窗给 82vh。
+  const h = tall ? '82vh' : 'calc(100vh - 170px)'
   if (mime === 'application/pdf') {
-    return <embed src={src} type="application/pdf" style={{ width: '100%', height: tall ? '82vh' : 620, border: '1px solid #f0f0f0', borderRadius: 6 }} />
+    return <embed src={src} type="application/pdf" style={{ width: '100%', height: h, border: '1px solid #f0f0f0', borderRadius: 6 }} />
   }
   if (mime.startsWith('image/') && mime !== 'image/svg+xml') {
-    return <img src={src} alt={item.name} style={{ maxWidth: '100%', maxHeight: tall ? '82vh' : 620, borderRadius: 6 }} />
+    return <img src={src} alt={item.name} style={{ maxWidth: '100%', maxHeight: h, borderRadius: 6 }} />
   }
   return null
 }

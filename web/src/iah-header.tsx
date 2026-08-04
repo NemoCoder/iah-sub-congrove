@@ -4,6 +4,11 @@
 import { CongroveLogo } from './logo'
 import { VERSION } from './version'
 
+/// 通道按**运行时域名**判,不能编进构建产物:promote 复用 dev 镜像,
+/// 任何写死在代码里的通道标记都会跟着跑到 prod(2026-08-05 用户在 prod 上看到 .dev)。
+/// 平台域名约定:dev = `<slug>-dev.sub.ruciah.com`,prod = `<slug>.sub.ruciah.com`。
+const IS_DEV = typeof window !== 'undefined' && /(^|\.)[a-z0-9-]+-dev\.sub\./.test(window.location.hostname)
+
 export function IahHeader({ extra }: { extra?: React.ReactNode }) {
   return (
     <div
@@ -28,6 +33,12 @@ export function IahHeader({ extra }: { extra?: React.ReactNode }) {
           <span style={{ fontSize: 18, fontWeight: 800, color: '#111827', letterSpacing: 0.2 }}>
             Congrove<span style={{ margin: '0 1px', color: '#9ca3af' }}>·</span>汇流
             <span style={{ fontSize: 12, fontWeight: 600, color: '#9ca3af', marginLeft: 7 }}>{VERSION}</span>
+            {IS_DEV && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, color: '#b45309', background: '#fef3c7',
+                border: '1px solid #fde68a', borderRadius: 4, padding: '0 5px', marginLeft: 6,
+              }}>dev</span>
+            )}
           </span>
         </span>
       </a>

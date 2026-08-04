@@ -74,6 +74,10 @@ pub struct ItemRow {
     pub size: Option<i64>,
     pub mime: Option<String>,
     pub created_by: String,
+    /// 上传/创建时间。★列表展示用它而不是 updated_at★:移动、重命名都会刷新 updated_at
+    /// (update handler 两条路径都写了 now()),用户看到「刚挪了一下位置,修改时间就变了」很困惑
+    /// (2026-08-05 反馈)。
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -89,7 +93,7 @@ pub async fn list(
     // 用于拼 S3 key,传完才回填 s3_key。不过滤的话「还没传完就出现在列表里」(2026-08-03 反馈),
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
-        "SELECT id, parent_id, kind, name, size, mime, created_by, updated_at
+        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at
            FROM items WHERE space_id = $1 AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     )
@@ -109,7 +113,7 @@ pub async fn detail(
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, updated_at FROM items WHERE id = $1",
+        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at FROM items WHERE id = $1",
     )
     .bind(iid)
     .fetch_optional(&state.pool)

@@ -51,6 +51,7 @@ export type Item = {
   size: number | null
   mime: string | null
   created_by: string
+  created_at: string
   updated_at: string
 }
 export type Grant = { grantee_type: 'user' | 'group'; grantee_id: string; role: Role; grantee_name: string | null }

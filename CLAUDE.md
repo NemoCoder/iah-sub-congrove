@@ -68,7 +68,10 @@ sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字
 ## 风格与 Git
 
 - 代码/注释/提交信息用**中文**,匹配全树风格(极密一行流 + 长中文注释,注释是文档,别精简)。
-- 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z,开发版带 .dev)。
+- 每完成一个功能升版本号,**两处同步**:`Cargo.toml` + `web/src/version.ts`(语义化 vX.Y.Z)。
+  ★**别再往版本号里写 `.dev`**(2026-08-05 修正):promote 是**复用 dev 镜像**上 prod 的,
+  编进字符串的通道标记会原样跟到 prod(用户在 congrove.sub.ruciah.com 上看到 `v0.3.42.dev`)。
+  通道靠**运行时域名**判——`iah-header.tsx` 的 `IS_DEV` 认 `<slug>-dev.sub.*`,只在 dev 上挂黄色小标。★
   ★节奏(2026-08-02 用户定):日常改动**只动第三位**(0.3.1→0.3.2…),第二位(minor)**由用户拍板**才升,
   别自作主张跳 0.4——当前这批功能全程停在 0.3.x。
   ★★改完 Cargo.toml(含只改 version)**必须跑一次 cargo check 再提交**——它刷新 Cargo.lock;

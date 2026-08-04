@@ -89,13 +89,13 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
   /// 按大小排时也不该把文件夹混进文件堆里。
   /// 名称用 localeCompare('zh', {numeric:true}):带数字的文件名(20260723… / 20260730…)按数值排,
   /// 不然 "10" 会排在 "9" 前面。
-  const [sortKey, setSortKey] = useState<'name' | 'size' | 'updated_at' | 'created_by'>('name')
+  const [sortKey, setSortKey] = useState<'name' | 'size' | 'created_at' | 'created_by'>('name')
   const [sortAsc, setSortAsc] = useState(true)
   const rows = useMemo(() => {
     const cmp = (a: Item, b: Item) => {
       switch (sortKey) {
         case 'size': return (a.size ?? 0) - (b.size ?? 0)
-        case 'updated_at': return a.updated_at.localeCompare(b.updated_at)
+        case 'created_at': return a.created_at.localeCompare(b.created_at)
         case 'created_by': return a.created_by.localeCompare(b.created_by, 'zh')
         default: return a.name.localeCompare(b.name, 'zh', { numeric: true })
       }
@@ -117,7 +117,7 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
   const upRows = useMemo(
     () => uploads.map((u, i) => ({
       id: -(i + 1), parent_id: cwd, kind: 'file' as const, name: u.file.name,
-      size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '', updated_at: '',
+      size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '', created_at: '', updated_at: '',
     })),
     [uploads, cwd, me],
   )
@@ -125,7 +125,7 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
   // 「上一层」行:进了子目录才有。面包屑够用但不好点(2026-08-04 反馈),列表里给一行更顺手。
   const parentRow: Item[] = cwd == null ? [] : [{
     id: PARENT_ROW_ID, parent_id: null, kind: 'folder', name: '..',
-    size: null, mime: null, created_by: '', updated_at: '',
+    size: null, mime: null, created_by: '', created_at: '', updated_at: '',
   }]
   const goUp = () => { setCwd(cwd == null ? null : byId.get(cwd)?.parent_id ?? null); setChecked([]) }
 
@@ -453,8 +453,10 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
                 },
                 { title: '大小', dataIndex: 'size', width: 100,
                   sorter: true, sortOrder: sortKey === 'size' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (it.kind === 'folder' ? '—' : fmtSize(v)) },
-                { title: '修改时间', dataIndex: 'updated_at', width: 150,
-                  sorter: true, sortOrder: sortKey === 'updated_at' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
+                // ★展示上传时间而不是修改时间★(2026-08-05 反馈):移动/重命名都会刷新 updated_at,
+                // 「挪个位置修改时间就变了」很反直觉;created_at 才是用户心里的「什么时候传的」。
+                { title: '上传时间', dataIndex: 'created_at', width: 150,
+                  sorter: true, sortOrder: sortKey === 'created_at' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
                 { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true,
                   sorter: true, sortOrder: sortKey === 'created_by' ? (sortAsc ? 'ascend' : 'descend') : null },
                 {
@@ -497,7 +499,9 @@ export function SpacesView({ me, shareItemId }: { me: Me | null; shareItemId?: n
 
           {/* 预览抽屉:文档编辑器 / 视频播放 / PDF·图片预览 / 版本历史 */}
           <Drawer
-            open={!!preview} onClose={() => setPreview(null)} width="62%" destroyOnHidden
+            // PDF/图片给更宽的抽屉(62% 下 A4 排版字太小),文档与视频维持 62%
+            open={!!preview} onClose={() => setPreview(null)} destroyOnHidden
+            width={preview?.mime === 'application/pdf' || preview?.mime?.startsWith('image/') ? '82%' : '62%'}
             title={preview ? `${itemIcon(preview)} ${preview.name}` : ''}
             // 打开着也能直接分享当前这份内容(不用退回列表再找那一行)
             extra={preview && <Button size="small" icon={<LinkOutlined />} onClick={() => copyShare(preview)}>复制链接</Button>}
