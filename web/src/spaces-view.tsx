@@ -4,7 +4,7 @@ import {
   App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
-import { DeleteOutlined, DownloadOutlined, EditOutlined, ExportOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, EditOutlined, SendOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MarkdownView, FilePreview, itemIcon, fmtSize } from './preview'
@@ -433,9 +433,10 @@ export function SpacesView({ me }: { me: Me | null }) {
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
                       {canEdit && <Tooltip title="重命名"><a onClick={() => rename(it)}><EditOutlined /></a></Tooltip>}
-                      {/* 移动用 ExportOutlined(方框+外指箭头 = 移出到别处):
-                          原来的 FolderOpenOutlined 更像「打开文件夹」,语义撞了(2026-08-04 用户选定)。 */}
-                      {canEdit && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><ExportOutlined /></a></Tooltip>}
+                      {/* 移动用 SendOutlined(纸飞机 = 送到别处),2026-08-04 用户在 16 个候选里挑定。
+                          此前试过 FolderOpenOutlined(更像「打开文件夹」,和已去掉的「打开」撞)
+                          和 ExportOutlined(读起来更像「导出/在新窗口打开」)。 */}
+                      {canEdit && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><SendOutlined /></a></Tooltip>}
                       {canEdit && (
                         <Tooltip title="删除">
                           <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}><DeleteOutlined /></a>
