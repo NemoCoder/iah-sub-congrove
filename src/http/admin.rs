@@ -67,13 +67,34 @@ pub async fn set_super(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// GET /api/users —— 选人下拉的数据源(**不在** admin 闸内,任何登录用户可用)。
-/// 只回「登录过汇流的人」的 username+显示名——这是临时口径(2026-08-02):产品要求
-/// 「平台注册用户」,但 congrove 看不到平台名录(真相在 Keycloak),已发 AI_Talks 0091
-/// 求平台出校验/检索 API;届时这里换成代理平台接口。不回邮箱,最小暴露。
-pub async fn user_options(State(state): State<AppState>) -> AppResult<Json<Vec<serde_json::Value>>> {
-    let rows: Vec<(String, Option<String>)> =
-        sqlx::query_as("SELECT username, name FROM app_user ORDER BY username").fetch_all(&state.pool).await?;
+#[derive(Deserialize)]
+pub struct UserQuery {
+    /// 前缀(用户名或显示名)。**必填**,见下。
+    pub q: Option<String>,
+}
+
+/// GET /api/users?q=前缀 —— 选人下拉的数据源(**不在** admin 闸内,任何登录用户可用)。
+/// ★2026-08-04 审计收紧★:原来不带参数就吐全表 = 任何登录用户可枚举全所名单
+/// (username + 真名),这是没必要的暴露面。现在**必须带 q 前缀**、只回 20 条、且要求 ≥1 字符;
+/// 不带 q 回空数组(前端下拉在用户开始输入后才有候选)。仍不回邮箱。
+/// 口径仍是「登录过汇流的人」(平台名录真相在 Keycloak,拉人时由 users/exists 兜底校验)。
+pub async fn user_options(
+    State(state): State<AppState>,
+    Query(q): Query<UserQuery>,
+) -> AppResult<Json<Vec<serde_json::Value>>> {
+    let prefix = q.q.unwrap_or_default().trim().to_string();
+    if prefix.is_empty() {
+        return Ok(Json(vec![]));
+    }
+    let like = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT username, name FROM app_user
+          WHERE username ILIKE $1 ESCAPE '\\' OR name ILIKE $1 ESCAPE '\\'
+          ORDER BY username LIMIT 20",
+    )
+    .bind(&like)
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(rows.into_iter().map(|(u, n)| serde_json::json!({ "username": u, "name": n })).collect()))
 }
 

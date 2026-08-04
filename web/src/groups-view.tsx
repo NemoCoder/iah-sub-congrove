@@ -11,12 +11,18 @@ export function GroupsView() {
   const [addName, setAddName] = useState('')
   const [addRole, setAddRole] = useState('member')
   const [users, setUsers] = useState<UserOpt[]>([])
+  /// 按前缀查人(后端 /api/users?q= 只回 20 条)。2026-08-04 审计:不再整表下发人员名单。
+  const searchUsers = async (q: string) => {
+    const t = q.trim()
+    if (!t) { setUsers([]); return }
+    try { setUsers(await api<UserOpt[]>(`/api/users?q=${encodeURIComponent(t)}`)) } catch { setUsers([]) }
+  }
 
   const load = useCallback(async () => {
     const g = await api<Group[]>('/api/groups')
     setGroups(g)
     setCur((c) => (c ? g.find((x) => x.id === c.id) || null : null))
-    setUsers(await api<UserOpt[]>('/api/users'))
+    setUsers([]) // 同 spaces-view:名单不整表下发,改成输入时按前缀查
   }, [])
   const loadMembers = useCallback(async (gid: number) => {
     setMembers(await api<Member[]>(`/api/groups/${gid}/members`))
@@ -106,7 +112,8 @@ export function GroupsView() {
               {/* 下拉 = 用过汇流的人;也可直接输平台账号(后端 users/exists 向 Keycloak 校验,假名 400——AI_Talks 0094)。 */}
               <AutoComplete
                 placeholder="用户名(平台账号;可输还没用过汇流的人)" value={addName} onChange={setAddName} style={{ width: 280 }}
-                options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+            onSearch={searchUsers}
+          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
                 filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
               />
               <Select value={addRole} onChange={setAddRole} style={{ width: 120 }}

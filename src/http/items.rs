@@ -34,13 +34,15 @@ fn s3_key(space_id: i64, item_id: i64, sha: &str) -> String {
 /// (文档当前版与历史版共享同 sha 对象,去重后不重复计)。
 pub async fn space_quota_used(pool: &sqlx::PgPool, sid: i64) -> AppResult<(i64, i64)> {
     let row: Option<(i64, i64)> = sqlx::query_as(
+        // 按 **key** 分组取 max(size),不是按 (key,size) 去重:同一个 key 若两行记了不同 size
+        // (历史行与当前行先后写入的窗口),DISTINCT (k,sz) 会把它算两遍(2026-08-04 审计)。
         "SELECT s.quota_bytes,
                 COALESCE((SELECT sum(u.sz) FROM (
-                    SELECT DISTINCT t.k, t.sz FROM (
+                    SELECT t.k, max(t.sz) sz FROM (
                         SELECT s3_key k, size sz FROM items WHERE space_id = $1 AND s3_key IS NOT NULL
-                        UNION SELECT v.s3_key, v.size FROM item_versions v
+                        UNION ALL SELECT v.s3_key, v.size FROM item_versions v
                               JOIN items i ON i.id = v.item_id WHERE i.space_id = $1
-                    ) t) u), 0)::bigint
+                    ) t GROUP BY t.k) u), 0)::bigint
            FROM spaces s WHERE s.id = $1",
     )
     .bind(sid)
@@ -511,6 +513,10 @@ pub async fn upload(
     }
     let actor = id.require_username()?;
 
+    // 收**所有**文件字段(2026-08-04 审计):原来处理完第一个就 return,同一请求里的第二个文件
+    // **连报错都没有、直接消失**。前端是一文件一请求,但接口不该静默丢数据。
+    // 兼容:响应仍带首个文件的 id/sha256/size,另加 items 数组列全部。
+    let mut done: Vec<serde_json::Value> = Vec::new();
     while let Some(mut field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         if field.file_name().is_none() {
             continue;
@@ -526,20 +532,34 @@ pub async fn upload(
         .fetch_one(&state.pool)
         .await?;
         let key = format!("spaces/{sid}/{iid}/blob");
-
-        match stream_field_to_s3(&state, &mut field, &key, &mime, quota - used).await {
+        // 预算按**当前**已用量算,多文件时逐个收窄(不是拿开头那一份快照一路用到底)。
+        let (q_now, used_now) = space_quota_used(&state.pool, sid).await?;
+        match stream_field_to_s3(&state, &mut field, &key, &mime, q_now - used_now).await {
             Ok((sha, total)) => {
+                // ★收尾复核配额★:开传前那次 used 是快照,同一空间并发上传各自都会读到它,
+                // 两个 9GiB 能一起过 10GiB 的闸。按落地时的真实总量再判一次,超了回滚。
+                let (q2, used2) = space_quota_used(&state.pool, sid).await?;
+                if used2 + total > q2 {
+                    let _ = state.storage.delete(&key).await;
+                    let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+                    return Err(AppError::BadRequest("空间配额已被并发上传占满,本次已回滚".into()));
+                }
                 sqlx::query("UPDATE items SET s3_key = $1, size = $2, sha256 = $3 WHERE id = $4")
                     .bind(&key).bind(total).bind(&sha).bind(iid)
                     .execute(&state.pool)
                     .await?;
-                return Ok(Json(json!({ "id": iid, "sha256": sha, "size": total })));
+                done.push(json!({ "id": iid, "sha256": sha, "size": total, "name": fname }));
             }
             Err(e) => {
                 let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
                 return Err(e);
             }
         }
+    }
+    if let Some(first) = done.first().cloned() {
+        let mut out = first;
+        out["items"] = json!(done);
+        return Ok(Json(out));
     }
     Err(AppError::BadRequest("没有收到文件".into()))
 }

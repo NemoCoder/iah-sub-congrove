@@ -180,12 +180,31 @@ impl Storage {
     }
 
     /// 列半截 multipart(清理任务用)。返回 (key, upload_id, initiated)。
+    /// ★翻页★(2026-08-04 审计):单次最多回 1000 条且 is_truncated,不翻页的话
+    /// 残留超过 1000 个半截上传后就永远清不到后面的。用 key-marker + upload-id-marker 走完;
+    /// 再加一道 100 页的保险,免得服务端 marker 行为异常时死循环。
     pub async fn list_multiparts(&self) -> anyhow::Result<Vec<(String, String, Option<aws_sdk_s3::primitives::DateTime>)>> {
-        let out = self.s3.list_multipart_uploads().bucket(&self.bucket).send().await?;
-        Ok(out
-            .uploads()
-            .iter()
-            .filter_map(|u| Some((u.key()?.to_string(), u.upload_id()?.to_string(), u.initiated().copied())))
-            .collect())
+        let mut all = Vec::new();
+        let (mut key_marker, mut id_marker) = (None::<String>, None::<String>);
+        for _ in 0..100 {
+            let out = self
+                .s3
+                .list_multipart_uploads()
+                .bucket(&self.bucket)
+                .set_key_marker(key_marker.clone())
+                .set_upload_id_marker(id_marker.clone())
+                .send()
+                .await?;
+            all.extend(
+                out.uploads()
+                    .iter()
+                    .filter_map(|u| Some((u.key()?.to_string(), u.upload_id()?.to_string(), u.initiated().copied()))),
+            );
+            if !out.is_truncated().unwrap_or(false) { break }
+            key_marker = out.next_key_marker().map(str::to_string);
+            id_marker = out.next_upload_id_marker().map(str::to_string);
+            if key_marker.is_none() && id_marker.is_none() { break } // 没给游标就别转圈
+        }
+        Ok(all)
     }
 }

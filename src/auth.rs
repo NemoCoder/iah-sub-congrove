@@ -416,9 +416,13 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
 }
 
 /// 中间件:超管闸。叠在 require_auth **里层**(Identity 已就位),非超管 403 不是 401。
-pub async fn require_super(State(_state): State<AppState>, req: Request, next: Next) -> Result<Response, AppError> {
+pub async fn require_super(State(state): State<AppState>, req: Request, next: Next) -> Result<Response, AppError> {
     let id = req.extensions().get::<Identity>().cloned().unwrap_or_default();
-    if id.is_super {
+    // ★以库为准,不信 cookie 里的快照★(2026-08-04 审计):会话 8 小时,撤销超管后
+    // 那 8 小时他还能进超管面。这条路径调用频率极低(只有超管面),多一次查库无所谓。
+    // 鉴权关闭的本地 dev(state.auth 为 None)保持假身份放行。
+    let ok = if state.auth.is_none() { id.is_super } else { crate::perm::is_super_now(&state.pool, &id).await? };
+    if ok {
         Ok(next.run(req).await)
     } else {
         tracing::warn!(user = ?id.username, "super route denied");
@@ -558,8 +562,11 @@ pub async fn oidc_logout() -> Response {
 /// 顺带回 direct_upload_endpoint:前端据此**开局探测**本设备能否信任 s3api 的证书,
 /// 能就走预签直传、不能就直接走同源分片——避免每次上传都先撞一次墙再报警告(2026-08-03)。
 pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity>) -> Json<serde_json::Value> {
+    // is_super 以库为准(cookie 里那份是登录时快照):撤销后前端的超管入口要立刻消失,
+    // 否则用户看得见按钮却处处 403,比藏起来更糟。
+    let is_super = crate::perm::is_super_now(&state.pool, &id).await.unwrap_or(id.is_super);
     Json(json!({
-        "username": id.username, "name": id.name, "email": id.email, "is_super": id.is_super,
+        "username": id.username, "name": id.name, "email": id.email, "is_super": is_super,
         "direct_upload_endpoint": state.config.s3_public_endpoint,
     }))
 }

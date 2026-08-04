@@ -79,7 +79,7 @@ async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i
 /// GET /api/spaces —— 我可见的空间(有效角色非空);超管见全部。
 pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identity>) -> AppResult<Json<Vec<SpaceRow>>> {
     let usage = usage_map(&state.pool).await?;
-    if id.is_super {
+    if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<SpaceRow> =
             sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, viewer_no_download, hotwords FROM spaces ORDER BY id")
                 .fetch_all(&state.pool)
@@ -139,7 +139,7 @@ pub async fn create(
     let username = id.require_username()?;
     // D2 决策(docs/PERMISSIONS.md):CONGROVE_SPACE_CREATORS 非空时仅名单内 + 超管可建。
     let creators = &state.config.space_creators;
-    if !creators.is_empty() && !id.is_super && !creators.iter().any(|u| u == username) {
+    if !creators.is_empty() && !crate::perm::is_super_now(&state.pool, &id).await? && !creators.iter().any(|u| u == username) {
         return Err(AppError::Forbidden);
     }
     let name = input.name.trim();

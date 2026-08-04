@@ -196,13 +196,16 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     };
     let duration = segments.last().map(|s| s.end);
     sqlx::query(
-        "INSERT INTO transcripts (item_id, text, segments, model, duration_sec, char_ts) VALUES ($1,$2,$3,$4,$5,$6)
+        "INSERT INTO transcripts (item_id, text, segments, model, duration_sec, char_ts, fine) VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (item_id) DO UPDATE SET text=EXCLUDED.text, segments=EXCLUDED.segments,
-           model=EXCLUDED.model, duration_sec=EXCLUDED.duration_sec, char_ts=EXCLUDED.char_ts, created_at=now()",
+           model=EXCLUDED.model, duration_sec=EXCLUDED.duration_sec, char_ts=EXCLUDED.char_ts,
+           fine=EXCLUDED.fine, created_at=now()",
     )
     .bind(item_id).bind(&full_text).bind(serde_json::to_value(&segments)?)
     .bind(&state.config.asr_model).bind(duration)
     .bind((!char_ts.is_empty()).then(|| serde_json::to_value(&char_ts)).transpose()?)
+    // 重排结果落库(迁移 0008):读取路径不必每次重算(审计 2026-08-04)。
+    .bind(realign(&full_text, &segments, &char_ts).map(|v| serde_json::to_value(v)).transpose()?)
     .execute(&state.pool).await?;
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)

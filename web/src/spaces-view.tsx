@@ -571,6 +571,13 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
   const [role, setRole] = useState<Role>('viewer')
   const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
   const [users, setUsers] = useState<UserOpt[]>([])
+  /// 按输入的前缀查人(后端只回 20 条、且必须带 q)。原来是进页面就把全所名单拉下来,
+  /// 任何登录用户都能拿到完整人员表——2026-08-04 审计收紧,前端跟着改成按需查。
+  const searchUsers = useCallback(async (q: string) => {
+    const t = q.trim()
+    if (!t) { setUsers([]); return }
+    try { setUsers(await api<UserOpt[]>(`/api/users?q=${encodeURIComponent(t)}`)) } catch { setUsers([]) }
+  }, [])
   const [diagName, setDiagName] = useState('')
   const [diag, setDiag] = useState<Diagnose | null>(null)
   const [hot, setHot] = useState(space.hotwords ?? '') // 术语表编辑框(受控;保存后由 onChanged 拉新值)
@@ -578,7 +585,7 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
   const load = useCallback(async () => {
     setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
     setMyGroups(await api<{ id: number; name: string }[]>('/api/groups'))
-    setUsers(await api<UserOpt[]>('/api/users'))
+    setUsers([]) // 名单不再整表下发(审计收紧):改成输入前缀时才查,见 searchUsers
   }, [space.id])
   useEffect(() => {
     if (open) load().catch((e) => message.error(e.message))
@@ -673,7 +680,8 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
           // 下拉 = 用过汇流的人;也可直接输平台账号(后端 users/exists 向 Keycloak 校验——AI_Talks 0094)。
           <AutoComplete
             placeholder="用户名(平台账号)" value={gid} onChange={setGid} style={{ width: 200 }}
-            options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
+            onSearch={searchUsers}
+          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
             filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
           />
         ) : (
@@ -715,6 +723,7 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
       <AntSpace style={{ marginBottom: 8 }}>
         <AutoComplete
           placeholder="输用户名,看 ta 为什么能/不能访问本空间" value={diagName} onChange={setDiagName} style={{ width: 280 }}
+          onSearch={searchUsers}
           options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
           filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
         />

@@ -293,18 +293,21 @@ pub async fn analysis(
     let job: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT status, stage, progress, error FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1",
     ).bind(iid).fetch_optional(&state.pool).await?;
-    let tr: Option<(String, Option<serde_json::Value>, Option<f64>, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT text, segments, duration_sec, char_ts FROM transcripts WHERE item_id=$1",
-    ).bind(iid).fetch_optional(&state.pool).await?;
+    let tr: Option<(String, Option<serde_json::Value>, Option<f64>, Option<serde_json::Value>, Option<serde_json::Value>)> =
+        sqlx::query_as("SELECT text, segments, duration_sec, char_ts, fine FROM transcripts WHERE item_id=$1")
+            .bind(iid).fetch_optional(&state.pool).await?;
     // 库里存的是 ASR 原始细分段(按逗号结句,平均 2.4s/14 字);读取时才合并成可读段落,
     // 这样调阈值不必重跑 ASR(调研结论,见 docs/VIDEO-SUMMARY.md §10)。
-    let tr = tr.map(|(text, segs, dur, cts)| {
+    let tr = tr.map(|(text, segs, dur, cts, fine_cached)| {
         let fine: Vec<crate::media_ai::Segment> = segs
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
         // 同字幕:先按全文重排句界,再合并成可读段落。
         let char_ts: Vec<(f64, f64)> = cts.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
-        let fine = crate::media_ai::realign(&text, &fine, &char_ts).unwrap_or(fine);
+        // 优先用转写时算好的重排结果(迁移 0008);没有再现算(老数据)。
+        let fine = fine_cached
+            .and_then(|v| serde_json::from_value::<Vec<crate::media_ai::Segment>>(v).ok())
+            .unwrap_or_else(|| crate::media_ai::realign(&text, &fine, &char_ts).unwrap_or(fine));
         let drift = crate::media_ai::timeline_drift(&fine, dur);
         let merged = serde_json::to_value(crate::media_ai::merge_paragraphs(&fine)).ok();
         (text, merged, dur, drift)
@@ -333,18 +336,21 @@ pub async fn subtitles(
 ) -> AppResult<Response> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let row: Option<(String, Option<serde_json::Value>, Option<serde_json::Value>)> =
-        sqlx::query_as("SELECT text, segments, char_ts FROM transcripts WHERE item_id=$1")
+    let row: Option<(String, Option<serde_json::Value>, Option<serde_json::Value>, Option<serde_json::Value>)> =
+        sqlx::query_as("SELECT text, segments, char_ts, fine FROM transcripts WHERE item_id=$1")
             .bind(iid).fetch_optional(&state.pool).await?;
-    let (text, segs, cts) = row.unwrap_or_default();
+    let (text, segs, cts, fine_cached) = row.unwrap_or_default();
     let char_ts: Vec<(f64, f64)> = cts.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     // 字幕用**更短的**合并阈值:Netflix 简中规范单行 16 字 ×2 行 = 32 字、时长 1.2~7 秒。
     // 逐字稿那套 200 字的段落直接当字幕会糊满屏(v0.3.19 的错,已分开)。
     let fine: Vec<crate::media_ai::Segment> = segs
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    // 先用全文把句界重排(ASR 的 sentence_info 句界右移一字,见 media_ai::realign),对不上就用原分段。
-    let fine = crate::media_ai::realign(&text, &fine, &char_ts).unwrap_or(fine);
+    // 句界重排(见 media_ai::realign)。转写时已经算好存进 transcripts.fine(迁移 0008),
+    // 这里直接用;老转写没有那列才现算——每次请求重算 17000 字纯属浪费(审计 2026-08-04)。
+    let fine = fine_cached
+        .and_then(|v| serde_json::from_value::<Vec<crate::media_ai::Segment>>(v).ok())
+        .unwrap_or_else(|| crate::media_ai::realign(&text, &fine, &char_ts).unwrap_or(fine));
     let cues = crate::media_ai::merge_cues(&fine);
     let mut out = String::from("WEBVTT\n\n");
     for (i, s) in cues.iter().enumerate() {

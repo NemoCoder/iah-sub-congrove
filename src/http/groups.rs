@@ -15,7 +15,8 @@ use crate::state::AppState;
 
 /// 组内管理权:超管 || 组 manager。(组的 manager 和空间的 admin 是两套独立体系,别混。)
 async fn require_manager(pool: &PgPool, id: &Identity, gid: i64) -> AppResult<()> {
-    if id.is_super {
+    // 超管位查库(cookie 里那份是 8 小时快照,撤销不即时,2026-08-04 审计)。
+    if crate::perm::is_super_now(pool, id).await? {
         return Ok(());
     }
     let username = id.require_username()?;
@@ -45,7 +46,7 @@ pub struct GroupRow {
 /// GET /api/groups —— 我所在的组;超管见全部(便于治理)。
 pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identity>) -> AppResult<Json<Vec<GroupRow>>> {
     let username = id.require_username()?;
-    let rows: Vec<GroupRow> = if id.is_super {
+    let rows: Vec<GroupRow> = if crate::perm::is_super_now(&state.pool, &id).await? {
         sqlx::query_as(
             "SELECT g.id, g.name, g.description, g.created_by, g.created_at,
                     (SELECT count(*) FROM group_members m WHERE m.group_id = g.id) member_count,
@@ -121,7 +122,7 @@ pub async fn members(
     Extension(id): Extension<Identity>,
     Path(gid): Path<i64>,
 ) -> AppResult<Json<Vec<MemberRow>>> {
-    if !id.is_super {
+    if !crate::perm::is_super_now(&state.pool, &id).await? {
         let username = id.require_username()?;
         let in_group: Option<String> =
             sqlx::query_scalar("SELECT role FROM group_members WHERE group_id = $1 AND username = $2")
@@ -162,6 +163,11 @@ pub async fn member_put(
     Json(m): Json<MemberIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_manager(&state.pool, &id, gid).await?;
+    // 参数校验一律最前:原来 role 的合法性放在最后,非法值也会先打一次平台 users/exists
+    // 和两次查库才报错(2026-08-04 审计)。
+    if m.role != "member" && m.role != "manager" {
+        return Err(AppError::BadRequest("role 必须是 member 或 manager".into()));
+    }
     let uname = m.username.trim();
     if uname.is_empty() || !uname.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
         return Err(AppError::BadRequest("用户名只能是 ASCII 字母数字 . - _".into()));
@@ -187,9 +193,6 @@ pub async fn member_put(
                 return Err(AppError::BadRequest("不能把最后一个 manager 降为 member".into()));
             }
         }
-    }
-    if m.role != "member" && m.role != "manager" {
-        return Err(AppError::BadRequest("role 必须是 member 或 manager".into()));
     }
     let actor = id.require_username()?;
     sqlx::query(

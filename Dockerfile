@@ -47,6 +47,14 @@ COPY --from=web /web/dist /app/web/dist
 ENV WEB_DIST=/app/web/dist \
     BIND_ADDR=0.0.0.0:8030
 EXPOSE 8030
+
+# ★非 root 运行★(2026-08-04 审计):容器跑在 k8s 上,以 root 跑没有任何必要——
+# 端口 8030 > 1024 不需要特权,程序只写 /tmp(录屏转写的临时目录)。
+# UID 用固定的 10001(不建 /etc/passwd 条目也能跑;k8s 的 runAsNonRoot 只认数字 UID,
+# 用户名形式的 USER 它判不出来会直接拒绝启动)。
+# /tmp 显式给权限:基础镜像里是 1777,这里保险起见不依赖它。
+RUN install -d -m 1777 /tmp && chown -R 10001:10001 /app
+USER 10001:10001
 CMD ["/app/congrove"]
 
 # 部署(iah.yaml + 门户/CLI)时平台注入的环境变量:
