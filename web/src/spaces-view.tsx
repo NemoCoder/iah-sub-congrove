@@ -4,6 +4,7 @@ import {
   App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
+import { DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MarkdownView, FilePreview, itemIcon, fmtSize } from './preview'
@@ -393,10 +394,11 @@ export function SpacesView({ me }: { me: Me | null }) {
               } : undefined}
               columns={[
                 {
-                  title: '名称', dataIndex: 'name', ellipsis: true,
+                  // 不设 width、不 ellipsis:名称吃满剩余宽度,长文件名整行显示(2026-08-04 反馈显示不全)。
+                  title: '名称', dataIndex: 'name',
                   sorter: true, sortOrder: sortKey === 'name' ? (sortAsc ? 'ascend' : 'descend') : null,
                   render: (_, it) => (it.id === PARENT_ROW_ID
-                    ? <a onClick={goUp}>📁 ..（上一层）</a>
+                    ? <a onClick={goUp} style={{ fontFamily: 'ui-monospace, monospace' }}>📁 ..</a>
                     : up(it)
                     ? <Typography.Text type="secondary" ellipsis>⬆ {it.name}</Typography.Text>
                     : (
@@ -412,7 +414,10 @@ export function SpacesView({ me }: { me: Me | null }) {
                 { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true,
                   sorter: true, sortOrder: sortKey === 'created_by' ? (sortAsc ? 'ascend' : 'descend') : null },
                 {
-                  title: '操作', width: 220,
+                  // ★图标化★(2026-08-04 反馈:操作列太宽,把文件名挤没了)。
+                  // 「打开」去掉——点名称就是打开,重复给一个按钮只是占地方;
+                  // 其余四个动作用图标 + hover 出文字,列宽从 220 收到 132,省下的全给名称列。
+                  title: '操作', width: 132,
                   render: (_, it) => (it.id === PARENT_ROW_ID ? null : up(it) ? (
                     // ★上传中的行:进度条 + 取消★(2026-08-03 用户要求)。排队中的显示「排队中」,
                     // 它还没发任何请求,取消 = 直接出队。
@@ -423,14 +428,17 @@ export function SpacesView({ me }: { me: Me | null }) {
                       <a style={{ color: '#ff4d4f' }} onClick={() => cancelOne(up(it)!)}>取消</a>
                     </AntSpace>
                   ) : (
-                    <AntSpace size={4}>
-                      {it.kind !== 'folder' && <a onClick={() => setPreview(it)}>打开</a>}
+                    <AntSpace size={10}>
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
-                        <a href={`/api/items/${it.id}/download`}>下载</a>
+                        <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
-                      {canEdit && <a onClick={() => rename(it)}>重命名</a>}
-                      {canEdit && <a onClick={() => setMoving([it])}>移动</a>}
-                      {canEdit && <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}>删除</a>}
+                      {canEdit && <Tooltip title="重命名"><a onClick={() => rename(it)}><EditOutlined /></a></Tooltip>}
+                      {canEdit && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><FolderOpenOutlined /></a></Tooltip>}
+                      {canEdit && (
+                        <Tooltip title="删除">
+                          <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}><DeleteOutlined /></a>
+                        </Tooltip>
+                      )}
                     </AntSpace>
                   )),
                 },
@@ -661,9 +669,6 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
 
   return (
     <Modal title={`授权管理 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={640}>
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 10, fontSize: 13 }}>
-        推荐按<b>小组</b>授权:整组人(含以后新入组的)自动获得本空间权限,人员流动只需改组成员;按个人授权留给例外情况。
-      </Typography.Paragraph>
       {/* D4 空间安全开关:只拦「下载原件」;在线阅读/播放不拦(能播就能录屏,拦了只会逼 viewer 什么都干不了)。 */}
       <AntSpace style={{ marginBottom: 12 }}>
         <Switch
@@ -690,14 +695,11 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
           填错的代价是真的:平台侧是拼音模糊匹配的确定性替换,词表乱填会把正常的字改坏,
           所以文案里明说「宁少勿滥」。改完只对**之后**的转写生效,老视频要重新生成。 */}
       <Typography.Text strong style={{ fontSize: 13 }}>录屏转写术语表</Typography.Text>
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 6px' }}>
-        本空间常出现的<b>人名、专业词</b>,空格或换行分隔。语音识别会把音近的词纠回这些写法
-        (「柯老师」不再识成「科老师」)。<b>宁少勿滥</b>——匹配是按拼音做的,填了不该填的词会把正常的字改坏。
-        改动只对之后的转写生效,已有视频需点「重新生成」。
-      </Typography.Paragraph>
+      {/* 长说明按用户要求删了(2026-08-04):「宁少勿滥、拼音匹配会改坏字」这条压进 placeholder,
+          完整背景在 docs/PERMISSIONS.md 与 media_ai.rs 的注释里,别再往界面上堆。 */}
       <Input.TextArea
         rows={3} value={hot} onChange={(e) => setHot(e.target.value)} style={{ marginBottom: 6 }}
-        placeholder="柯老师 徐晨 benchmark prompt 语言行为识别"
+        placeholder="人名、专业词,空格或换行分隔;宁少勿滥(按拼音匹配,乱填会把正常的字改坏)"
       />
       <AntSpace style={{ marginBottom: 14 }}>
         <Button size="small" type="primary" disabled={hot === (space.hotwords ?? '')} onClick={async () => {

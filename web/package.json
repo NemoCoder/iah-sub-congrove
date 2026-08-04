@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ant-design/icons": "^6.3.2",
     "antd": "^6",
     "react": "^19",
     "react-dom": "^19",
