@@ -143,8 +143,9 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // ★整段一次送★:说话人聚类与句子边界都由服务端在全局做,这是标签跨段一致的前提。
     stage(&state.pool, job_id, "语音转写(整段)", 25).await;
     let mut asr_full_text = String::new();
+    let mut char_ts: Vec<(f64, f64)> = Vec::new();
     let mut segments: Vec<Segment> = match transcribe(state, &asr_base, &audio, &end_user).await {
-        Ok((v, full)) => { asr_full_text = full; v }
+        Ok(a) => { asr_full_text = a.text; char_ts = a.char_ts; a.segments }
         Err(e) => {
             // 整段失败(超时/体积/服务端限制)才回退切段——代价是说话人标签跨段不可比,
             // 所以回退时把 speaker 全部抹掉,免得给用户看错误的"谁在说"。
@@ -156,10 +157,13 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             for (i, part) in parts.iter().enumerate() {
                 stage(&state.pool, job_id, &format!("语音转写 {}/{}", i + 1, total), 30 + (i as i32 * 45 / total as i32)).await;
                 let offset = (i as u32 * FALLBACK_CHUNK_SEC) as f64;
-                let (mut segs, full) = transcribe(state, &asr_base, part, &end_user).await
+                let a = transcribe(state, &asr_base, part, &end_user).await
                     .with_context(|| format!("转写第 {} 段", i + 1))?;
-                if !full.trim().is_empty() { asr_full_text.push_str(&full); asr_full_text.push('\n'); }
+                if !a.text.trim().is_empty() { asr_full_text.push_str(&a.text); asr_full_text.push('\n'); }
+                let mut segs = a.segments;
                 for s in &mut segs { s.start += offset; s.end += offset; s.speaker = None; }
+                // 字级时间戳同样要加回段偏移,否则拼起来的全局数组是错的。
+                char_ts.extend(a.char_ts.into_iter().map(|(x, y)| (x + offset, y + offset)));
                 acc.extend(segs);
                 let _ = tokio::fs::remove_file(part).await;
             }
@@ -181,12 +185,13 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     };
     let duration = segments.last().map(|s| s.end);
     sqlx::query(
-        "INSERT INTO transcripts (item_id, text, segments, model, duration_sec) VALUES ($1,$2,$3,$4,$5)
+        "INSERT INTO transcripts (item_id, text, segments, model, duration_sec, char_ts) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (item_id) DO UPDATE SET text=EXCLUDED.text, segments=EXCLUDED.segments,
-           model=EXCLUDED.model, duration_sec=EXCLUDED.duration_sec, created_at=now()",
+           model=EXCLUDED.model, duration_sec=EXCLUDED.duration_sec, char_ts=EXCLUDED.char_ts, created_at=now()",
     )
     .bind(item_id).bind(&full_text).bind(serde_json::to_value(&segments)?)
     .bind(&state.config.asr_model).bind(duration)
+    .bind((!char_ts.is_empty()).then(|| serde_json::to_value(&char_ts)).transpose()?)
     .execute(&state.pool).await?;
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)
@@ -232,9 +237,10 @@ const HARD_GAP_SEC: f64 = 3.0;
 /// 为什么不在 congrove 侧「凑合合并」:合并只能拼接**同一说话人的相邻段**,而错位往往正好
 /// 发生在说话人标签翻转处(「第一。」spk0 /「步,」spk3),合并被阻断 → 留下 2 字 cue 一闪而过。
 /// 根治只能回到字符级。⚠ 对不上就返回 None,调用方退回原分段——宁可保守也不能把时间轴搞错。
-pub fn realign(text: &str, segs: &[Segment]) -> Option<Vec<Segment>> {
+pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<Vec<Segment>> {
     if text.trim().is_empty() || segs.is_empty() { return None }
     // 分段侧:每个「实字」(非标点非空白)一条 (字, 起, 止, 说话人),段内按字数线性插值。
+    #[allow(clippy::type_complexity)]
     let mut chars: Vec<(char, f64, f64, Option<String>)> = Vec::with_capacity(text.chars().count());
     for s in segs {
         let content: Vec<char> = s.text.chars().filter(|c| !is_skippable(*c)).collect();
@@ -244,6 +250,11 @@ pub fn realign(text: &str, segs: &[Segment]) -> Option<Vec<Segment>> {
             let a = s.start + span * (i as f64) / n;
             chars.push((c, a, a + span / n, s.speaker.clone()));
         }
+    }
+    // ★有字级时间戳就用它★(平台 asr-funasr v4 起提供,0137):条数与实字数相等才用——
+    // 这正是 sentence_info 那套错配的解药,时间不再靠段内插值,漂移从根上没了。
+    if char_ts.len() == chars.len() {
+        for (c, t) in chars.iter_mut().zip(char_ts.iter()) { c.1 = t.0; c.2 = t.1 }
     }
     // 全文侧:实字必须与分段侧逐字相同,否则说明两边不是同一次响应(或热词替换只改了一边)。
     let full: Vec<char> = text.chars().collect();
@@ -399,7 +410,10 @@ async fn split_audio(wav: &Path, dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 /// 调 ASR:OpenAI 兼容的 `/audio/transcriptions`(multipart)。
 /// 返回带时间戳的分段;若服务只回纯文本,退化为单段(start=0)。
-async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -> anyhow::Result<(Vec<Segment>, String)> {
+/// 一次 ASR 的产出:细分段 + 全文 + **字级时间戳**(与全文实字一一对应,单位秒)。
+pub struct Asr { pub segments: Vec<Segment>, pub text: String, pub char_ts: Vec<(f64, f64)> }
+
+async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -> anyhow::Result<Asr> {
     let bytes = tokio::fs::read(part).await?;
     // 契约见 AI_Talks 0124:file / model=funasr / hotword(空格分隔) / speaker。
     let mut form = reqwest::multipart::Form::new()
@@ -426,20 +440,41 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str) -
         return Err(anyhow!("ASR 返回 {code}:{}", body.chars().take(300).collect::<String>()));
     }
     #[derive(serde::Deserialize)]
-    struct Seg { start: Option<f64>, end: Option<f64>, text: String, speaker: Option<String> }
+    struct Seg {
+        start: Option<f64>, end: Option<f64>, text: String, speaker: Option<String>,
+        /// asr-funasr v4 起每段自带字级时间戳(毫秒);顶层为空时退用它拼。
+        timestamp: Option<Vec<Vec<f64>>>,
+    }
     #[derive(serde::Deserialize)]
-    struct Resp { text: Option<String>, segments: Option<Vec<Seg>>, #[allow(dead_code)] duration: Option<f64> }
+    struct Resp {
+        text: Option<String>, segments: Option<Vec<Seg>>, #[allow(dead_code)] duration: Option<f64>,
+        /// 顶层全局字级时间戳(毫秒),与全文 text 对齐——这是我们要的那份(0137)。
+        timestamp: Option<Vec<Vec<f64>>>,
+    }
     let r: Resp = resp.json().await.context("解析 ASR 响应")?;
     let full = r.text.clone().unwrap_or_default();
+    // 毫秒 → 秒;顶层优先,顶层空就把每段的按序拼起来(0137 说全 pipeline 下有时只在段里)。
+    let ms2s = |v: &Vec<Vec<f64>>| -> Vec<(f64, f64)> {
+        v.iter().filter(|p| p.len() >= 2).map(|p| (p[0] / 1000.0, p[1] / 1000.0)).collect()
+    };
+    let mut char_ts: Vec<(f64, f64)> = r.timestamp.as_ref().map(ms2s).unwrap_or_default();
     if let Some(segs) = r.segments {
+        if char_ts.is_empty() {
+            char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(|v| ms2s(v)).collect();
+        }
         let v: Vec<Segment> = segs.into_iter()
             .map(|s| Segment { start: s.start.unwrap_or(0.0), end: s.end.unwrap_or(0.0), text: s.text, speaker: s.speaker })
             .filter(|s| !s.text.trim().is_empty())
             .collect();
-        if !v.is_empty() { return Ok((v, full)) }
+        // ★这条日志就是 0137 要我验的那点★:字级时间戳条数 vs 全文实字数。
+        // 相等 = 「第 i 实字配第 i 时间戳」成立,时间轴根治;不等 = 仍是单元错配,得上 fa-zh 强制对齐。
+        let n_chars = full.chars().filter(|c| !is_skippable(*c)).count();
+        tracing::info!(char_ts = char_ts.len(), content_chars = n_chars, segs = v.len(),
+            aligned = (!char_ts.is_empty() && char_ts.len() == n_chars), "ASR 字级时间戳对齐自检");
+        if !v.is_empty() { return Ok(Asr { segments: v, text: full, char_ts }) }
     }
-    if full.trim().is_empty() { return Ok((vec![], full)) }
-    Ok((vec![Segment { start: 0.0, end: 0.0, text: full.clone(), speaker: None }], full))
+    if full.trim().is_empty() { return Ok(Asr { segments: vec![], text: full, char_ts }) }
+    Ok(Asr { segments: vec![Segment { start: 0.0, end: 0.0, text: full.clone(), speaker: None }], text: full, char_ts })
 }
 
 /// 长转写压缩:超过阈值就 map-reduce(分块摘要再合并),避免把 10 万字硬塞进上下文。
@@ -554,7 +589,7 @@ mod tests {
             seg(1826.8, 1830.0, "就是说如果说我们评", "spk3"),
             seg(1830.0, 1835.7, "出来这个大模型不错。", "spk3"),
         ];
-        let out = realign(full, &segs).expect("实字流一致,必须能对齐");
+        let out = realign(full, &segs, &[]).expect("实字流一致,必须能对齐");
         let texts: Vec<&str> = out.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["是说接下来我们分两步。", "第一步，", "就是说如果说我们评出来这个大模型不错。"]);
         // 时间轴仍来自分段:第一个单元不能超出它覆盖的字所在的分段范围。
@@ -569,7 +604,7 @@ mod tests {
     fn realign_忽略英文两侧的空格() {
         let full = "不熟悉这个AI的范式。";
         let segs = vec![seg(0.0, 2.0, "不熟悉这个 AI 的范式。", "spk0")];
-        let out = realign(full, &segs).expect("空白不该算进字符流");
+        let out = realign(full, &segs, &[]).expect("空白不该算进字符流");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text, "不熟悉这个AI的范式。");
     }
@@ -577,8 +612,24 @@ mod tests {
     /// 全文句首英文被大写、分段里是小写——线上 17338 字里唯一的一类差异,必须能对上。
     #[test]
     fn realign_忽略英文大小写() {
-        let out = realign("都没有听清Ok就是。", &[seg(0.0, 2.0, "都没有听清ok就是。", "spk0")]);
+        let out = realign("都没有听清Ok就是。", &[seg(0.0, 2.0, "都没有听清ok就是。", "spk0")], &[]);
         assert_eq!(out.expect("大小写不该算分歧").len(), 1);
+    }
+
+    /// 有字级时间戳(平台 v4,0137)时:时间必须来自它,而不是段内插值。
+    #[test]
+    fn realign_优先用字级时间戳() {
+        let full = "一二三。四五。";
+        let segs = vec![seg(0.0, 100.0, "一二三。", "spk0"), seg(100.0, 200.0, "四五。", "spk0")];
+        // 5 个实字,给一份与分段插值完全不同的时间,验证确实用了它。
+        let cts = [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (10.0, 11.0), (11.0, 12.0)];
+        let out = realign(full, &segs, &cts).expect("实字数一致");
+        assert_eq!(out.len(), 2);
+        assert!((out[0].start - 1.0).abs() < 1e-9 && (out[0].end - 4.0).abs() < 1e-9, "{:?}", (out[0].start, out[0].end));
+        assert!((out[1].start - 10.0).abs() < 1e-9 && (out[1].end - 12.0).abs() < 1e-9);
+        // 条数对不上就必须忽略它、退回段内插值(绝不能拿错位的时间硬套)。
+        let out2 = realign(full, &segs, &[(1.0, 2.0)]).expect("仍应能对齐,只是不用字级时间");
+        assert!(out2[0].start < 1e-9);
     }
 
     /// 尾部只剩标点 = 文字提前用完 = 时间轴漂了(线上 61 分钟那份就是这个形状)。
@@ -598,6 +649,6 @@ mod tests {
     /// 两边不是同一次响应(字都对不上)时必须放弃,绝不能拿错时间轴硬拼。
     #[test]
     fn realign_字符流不一致时放弃() {
-        assert!(realign("完全不同的一句话。", &[seg(0.0, 1.0, "原来那句。", "spk0")]).is_none());
+        assert!(realign("完全不同的一句话。", &[seg(0.0, 1.0, "原来那句。", "spk0")], &[]).is_none());
     }
 }
