@@ -55,16 +55,16 @@ export function Analysis({ item, onSeek, onTranscript }: {
   const [d, setD] = useState<Data | null>(null)
   const [tab, setTab] = useState('brief')
   const timer = useRef<number | null>(null)
+  const lastSegs = useRef(0) // 上次看到的转写段数,用来判断「转写刚就绪」
 
   const load = useCallback(async () => {
     try {
       const r = await api<Data>(`/api/items/${item.id}/analysis`)
-      setD((prev) => {
-        const before = prev?.transcript?.segments?.length ?? 0
-        const now = r.transcript?.segments?.length ?? 0
-        if (now > 0 && now !== before) onTranscript?.(now)
-        return r
-      })
+      // ⚠ 回调放在 setState 的更新函数**外面**:更新函数必须是纯的,React 严格模式会调它两次,
+      //   副作用写在里面就会跟着执行两次(2026-08-04 二轮审计)。用 ref 记上一次的段数来比。
+      const now = r.transcript?.segments?.length ?? 0
+      if (now > 0 && now !== lastSegs.current) { lastSegs.current = now; onTranscript?.(now) }
+      setD(r)
       // 跑着就 5s 轮询一次,停了就停轮询(别让空闲页面一直打后端)。
       const running = r.job?.status === 'queued' || r.job?.status === 'running'
       if (running && timer.current == null) {

@@ -91,7 +91,21 @@ pub async fn begin(
             let old_key = format!("spaces/{sid}/{old_iid}/blob");
             match state.storage.list_parts(&old_key, &old_uid).await {
                 // 断点还在:复用它。已传的片原样保留,前端只补缺的。
-                Ok(done) => resume = Some((old_iid, old_uid, done)),
+                // ⚠ 先校验切法一致:除最后一片外每片都必须正好 PART_SIZE。
+                //   将来若调整 PART_SIZE,24h 内的旧断点就是按旧切法传的,继续接着传会把文件**拼坏**
+                //   (而且 complete 会成功,是静默的数据损坏)。对不上就当断点失效,重新来过。
+                Ok(done) => {
+                    let last = done.iter().map(|(n, _, _)| *n).max().unwrap_or(0);
+                    let uniform = done.iter().all(|(n, _, sz)| *n == last || *sz == PART_SIZE);
+                    if uniform {
+                        resume = Some((old_iid, old_uid, done));
+                    } else {
+                        tracing::warn!(item = old_iid, "续传:分片大小与当前 PART_SIZE 不一致,弃用该断点");
+                        state.storage.multipart_abort(&old_key, &old_uid).await;
+                        let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL")
+                            .bind(old_iid).execute(&state.pool).await;
+                    }
+                }
                 // upload_id 已失效(被清扫 abort / 服务端丢了)→ 当新上传,顺手把废行删掉。
                 Err(e) => {
                     tracing::info!(error = %e, item = old_iid, "续传断点已失效,改为重新开始");
@@ -117,6 +131,10 @@ pub async fn begin(
             .bind(input.fp.as_deref())
             .fetch_one(&state.pool)
             .await?;
+            // 申报大小先记进 size(未完成行的 size 本来闲着):complete 时拿它对账,
+            // 少传了片也能发现(见 complete 的完整性校验)。
+            let _ = sqlx::query("UPDATE items SET size = $1 WHERE id = $2")
+                .bind(input.size).bind(iid).execute(&state.pool).await;
             (iid, None)
         }
     };
@@ -249,6 +267,18 @@ pub async fn complete(
     let head = state.storage.s3.head_object().bucket(&state.storage.bucket).key(&key).send().await
         .map_err(|e| AppError::Other(e.into()))?;
     let size = head.content_length().unwrap_or(0);
+    // ★完整性校验★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
+    // 「只传了一半就调 complete」会拼出一个**不完整却报成功**的文件 —— 静默数据损坏,最难查。
+    // begin 时把前端申报的大小记进了 items.size,这里对账:差一个字节都不认。
+    let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    if let Some(d) = declared.filter(|d| *d > 0) {
+        if d != size {
+            tracing::warn!(item = iid, declared = d, actual = size, "complete:大小对不上,判定为不完整上传");
+            return Err(AppError::BadRequest(format!(
+                "上传不完整(应为 {d} 字节,实到 {size} 字节)——分片没传全,把同一个文件再拖进来可从断点继续")));
+        }
+    }
     // ★按实际大小复核配额★(2026-08-04 审计):begin 只按前端**申报**的 size 预判,
     // 而预签名 PUT 不限制单片实际字节数——申报 1MB 传 5GB 就把配额绕过去了。
     // 超了就地回滚(删对象 + 删行),不留既成事实。

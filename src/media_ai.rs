@@ -591,7 +591,10 @@ async fn chat(state: &AppState, system: &str, user: &str, end_user: &str) -> any
                 last = Some(e);
             }
         }
-        tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+        // 最后一次失败就别再睡了:原来无条件睡,末次要白等 9 秒才把错误抛出去(二轮审计)。
+        if attempt < LLM_RETRIES {
+            tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+        }
     }
     Err(last.unwrap_or_else(|| anyhow!("LLM 调用失败")))
 }
@@ -637,7 +640,9 @@ fn strip_thinking(s: &str) -> String {
     }
     let head = s.chars().take(40).collect::<String>().to_lowercase();
     if head.contains("thinking process") || head.starts_with("okay, the user") {
-        if let Some(i) = s.rfind("\n\n") {
+        // ★find 不是 rfind★(2026-08-04 二轮审计):要剥掉的是**开头**那段思考,
+        // 取第一个空行之后的全部;用 rfind 会只留最后一段,把纪要正文砍没了。
+        if let Some(i) = s.find("\n\n") {
             return s[i..].trim().to_string();
         }
     }
@@ -645,12 +650,14 @@ fn strip_thinking(s: &str) -> String {
 }
 
 /// 简易 drop 守卫:任务结束(含 panic/早返回)必删临时目录。
+/// ★同步删,不 spawn★(2026-08-04 二轮审计):原来在 Drop 里 `tokio::spawn` 一个异步删除——
+/// 而 Drop 最常发生在**进程正在停机**的时候(SIGTERM/panic),那时 runtime 都要没了,
+/// 派出去的任务根本跑不到,临时文件原样留下。删一个目录是毫秒级的同步 IO,直接做完更可靠。
 fn scopeguard(dir: PathBuf) -> impl Drop {
     struct G(PathBuf);
     impl Drop for G {
         fn drop(&mut self) {
-            let d = self.0.clone();
-            tokio::spawn(async move { let _ = tokio::fs::remove_dir_all(&d).await; });
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
     G(dir)
@@ -734,6 +741,19 @@ mod tests {
         // 条数对不上就必须忽略它、退回段内插值(绝不能拿错位的时间硬套)。
         let out2 = realign(full, &segs, &[(1.0, 2.0)]).expect("仍应能对齐,只是不用字级时间");
         assert!(out2[0].start < 1e-9);
+    }
+
+    /// strip_thinking 的兜底分支必须只剥**开头**那段思考:用 rfind 会把正文砍到只剩最后一段
+    /// (2026-08-04 二轮审计发现)。
+    #[test]
+    fn strip_thinking_只剥开头不砍正文() {
+        let s = "Here's a thinking process:\n先想想。\n\n第一段结论。\n\n第二段结论。";
+        let out = strip_thinking(s);
+        assert!(out.contains("第一段结论"), "正文第一段不该被砍掉:{out}");
+        assert!(out.contains("第二段结论"));
+        assert!(!out.contains("thinking process"));
+        // 有 </think> 标记时取最后一个标记之后的全部。
+        assert_eq!(strip_thinking("<think>啰嗦</think>正文"), "正文");
     }
 
     /// 尾部只剩标点 = 文字提前用完 = 时间轴漂了(线上 61 分钟那份就是这个形状)。
