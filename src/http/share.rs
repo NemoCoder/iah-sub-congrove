@@ -45,10 +45,15 @@ pub struct CreateIn {
     /// 是否允许下载原件。false = 只能在线看。
     #[serde(default = "yes")]
     pub allow_download: bool,
+    /// 多选分享:一并放进这条链接的其它项(必须与主项**同一空间**,逐个校验)。
+    #[serde(default)]
+    pub items: Vec<i64>,
 }
 fn yes() -> bool { true }
 
 /// POST /api/items/{id}/shares —— 建一条公开分享链接(**≥editor**)。
+/// `items` 里可以再带若干项 → **一条链接带多份内容**(多选分享,2026-08-05);
+/// 路径上的 {id} 是「主项」,访客页的标题与根目录用它。
 pub async fn create(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -80,6 +85,18 @@ pub async fn create(
     .bind(&token).bind(iid).bind(&salt).bind(&hash)
     .bind(expires_days).bind(max_visits).bind(input.allow_download).bind(actor)
     .execute(&state.pool).await?;
+    // 多选:主项 + 附加项都登记进 share_items。附加项必须同空间(否则等于跨空间越权打包)。
+    let mut all: Vec<i64> = vec![iid];
+    for extra in input.items.iter().copied().filter(|x| *x != iid) {
+        if space_of(&state.pool, extra).await? != sid {
+            return Err(AppError::BadRequest("只能把同一空间的内容放进同一条分享".into()));
+        }
+        all.push(extra);
+    }
+    for x in &all {
+        sqlx::query("INSERT INTO share_items (token, item_id) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+            .bind(&token).bind(x).execute(&state.pool).await?;
+    }
     audit::record(&state.pool, actor, "share.create", &iid.to_string(),
         &format!("token={} code={} days={:?} max={:?} download={}",
             &token[..8], if code.is_some() { "有" } else { "无" }, expires_days, max_visits, input.allow_download)).await;
@@ -131,6 +148,13 @@ pub async fn revoke(
 
 /// 一条可用的分享(过期/超次数/撤销都取不到)。
 struct Live { item_id: i64, has_code: bool, salt: Option<String>, hash: Option<String>, allow_download: bool }
+
+/// 本条分享的**全部根**(多选时 N 个;老链接没登记 share_items 就退回主项一个)。
+async fn share_roots(pool: &sqlx::PgPool, token: &str, main: i64) -> AppResult<Vec<i64>> {
+    let rows: Vec<i64> = sqlx::query_scalar("SELECT item_id FROM share_items WHERE token = $1").bind(token)
+        .fetch_all(pool).await?;
+    Ok(if rows.is_empty() { vec![main] } else { rows })
+}
 
 async fn live(pool: &sqlx::PgPool, token: &str) -> AppResult<Live> {
     // 令牌形状先卡一道:非 32 位十六进制根本不查库(省得被拿来刷)。
@@ -192,7 +216,11 @@ pub async fn pub_open(
         .bind(&token).bind(&ipp).bind(&uah).execute(&state.pool).await;
 
     let it = item_brief(&state.pool, l.item_id).await?;
-    Ok(Json(json!({ "ticket": issue_ticket(&state, &token)?, "item": it, "allow_download": l.allow_download })))
+    let roots = share_roots(&state.pool, &token, l.item_id).await?;
+    Ok(Json(json!({
+        "ticket": issue_ticket(&state, &token)?, "item": it,
+        "allow_download": l.allow_download, "multi": roots.len() > 1, "count": roots.len(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -214,9 +242,21 @@ pub async fn pub_list(
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
     let l = live(&state.pool, &token).await?;
     check_ticket(&state, &token, &q.k)?;
-    let parent = q.parent.unwrap_or(l.item_id);
-    // parent 必须是被分享项本身或它的后代,否则改个数字就能翻到同空间别的东西。
-    ensure_descendant(&state.pool, l.item_id, parent).await?;
+    let roots = share_roots(&state.pool, &token, l.item_id).await?;
+    // 不带 parent:多选分享列「所有根」;单选就是那一项(文件夹则列它的子项)。
+    let parent = match q.parent {
+        Some(p) => { ensure_any_descendant(&state.pool, &roots, p).await?; p }
+        None if roots.len() > 1 => {
+            let rows: Vec<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> =
+                sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items
+                                 WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY kind = 'folder' DESC, name")
+                    .bind(&roots).fetch_all(&state.pool).await?;
+            return Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, at)| json!({
+                "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at,
+            })).collect()));
+        }
+        None => l.item_id,
+    };
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT id, kind, name, size, mime, created_at FROM items
           WHERE parent_id = $1 AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
@@ -235,7 +275,8 @@ pub async fn pub_file(
 ) -> AppResult<Response> {
     let l = live(&state.pool, &token).await?;
     check_ticket(&state, &token, &q.k)?;
-    ensure_descendant(&state.pool, l.item_id, iid).await?;
+    let roots = share_roots(&state.pool, &token, l.item_id).await?;
+    ensure_any_descendant(&state.pool, &roots, iid).await?;
     let inline = q.inline.unwrap_or(0) == 1;
     // 分享方关掉「允许下载」时只放行在线预览(inline),不给原件。
     if !l.allow_download && !inline {
@@ -271,6 +312,14 @@ async fn item_brief(pool: &sqlx::PgPool, iid: i64) -> AppResult<serde_json::Valu
             .bind(iid).fetch_optional(pool).await?;
     let (id, kind, name, size, mime, at) = row.ok_or(AppError::NotFound)?;
     Ok(json!({ "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at }))
+}
+
+/// 多根版本:命中任一根即可(多选分享)。
+async fn ensure_any_descendant(pool: &sqlx::PgPool, roots: &[i64], target: i64) -> AppResult<()> {
+    for r in roots {
+        if ensure_descendant(pool, *r, target).await.is_ok() { return Ok(()) }
+    }
+    Err(AppError::NotFound)
 }
 
 /// 目标必须是被分享项本身或它的后代——文件夹分享时挡住「改个 item_id 越权取」。

@@ -24,7 +24,8 @@ const UPLOAD_CONCURRENCY = 3
 const PARENT_ROW_ID = -1_000_000
 
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
-type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl }
+type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
+import { fileSha256 } from './sha256'
 import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -65,7 +66,8 @@ export function SpacesView({ me }: { me: Me | null }) {
   const [uploads, setUploads] = useState<UpTask[]>([])
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
-  const [shareFor, setShareFor] = useState<Item | null>(null)   // 正在设置公开分享的那一项
+  const [shareFor, setShareFor] = useState<Item[] | null>(null) // 正在设置公开分享的那些项(可多选)
+  const [trashOpen, setTrashOpen] = useState(false)             // 回收站抽屉
 
   const loadSpaces = useCallback(async () => {
     const s = await api<Space[]>('/api/spaces')
@@ -147,6 +149,23 @@ export function SpacesView({ me }: { me: Me | null }) {
       const resumed = (parts: number, bytes: number) =>
         message.info(`${f.name}:从断点继续,已跳过 ${parts} 片(${fmtSize(bytes)})`)
       try {
+        // ★秒传预检★(2026-08-05):先在本地按块算 SHA-256(不吃内存,GB 级也行),
+        // 服务端若发现**我本来就能读到**同内容的文件,直接建引用、零字节传输。
+        // 读不到的同内容不给秒传——那是百度网盘那个「知道哈希就能认领别人文件」的坑。
+        patch(t.key, { hashing: true })
+        let sha = ''
+        try { sha = await fileSha256(f, (p) => patch(t.key, { percent: Math.round(p * 0.15) })) } catch { /* 算不出就照常传 */ }
+        patch(t.key, { hashing: false })
+        if (t.ctl.canceled) throw new Error(CANCELED)
+        if (sha) {
+          try {
+            const pre = await api<{ instant: boolean }>(`/api/spaces/${sid}/precheck`, {
+              method: 'POST',
+              body: JSON.stringify({ sha256: sha, size: f.size, name: f.name, mime: f.type || null, parent_id: dir }),
+            })
+            if (pre.instant) { message.success(`${f.name} 秒传完成(库里已有同样内容)`); return }
+          } catch { /* 预检失败不影响正常上传 */ }
+        }
         // 选路:大文件/视频走分片(片发给谁由开局探测定),小文件整文件 POST。
         let done = false
         const big = f.size > DIRECT_THRESHOLD || f.type.startsWith('video/')
@@ -222,7 +241,9 @@ export function SpacesView({ me }: { me: Me | null }) {
     const names = targets.map((t) => t.name).join('、')
     modal.confirm({
       title: `删除 ${targets.length} 项?`,
-      content: <span>{names.slice(0, 120)}{names.length > 120 ? '…' : ''}<br />文件夹会连同其中全部内容一起删除,不可撤销。</span>,
+      // 软删除之后文案要改:不再是「不可撤销」,而是「进回收站、30 天内可还原」(2026-08-05)。
+      content: <span>{names.slice(0, 120)}{names.length > 120 ? '…' : ''}<br />
+        文件夹会连同其中全部内容一起放进<b>回收站</b>,30 天内可以还原。</span>,
       okButtonProps: { danger: true },
       onOk: async () => {
         for (const t of targets) {
@@ -357,9 +378,12 @@ export function SpacesView({ me }: { me: Me | null }) {
               </Upload>
               <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
               <Button size="small" onClick={() => newItem('doc')}>📝 新建文档</Button>
+              <Button size="small" icon={<DeleteOutlined />} onClick={() => setTrashOpen(true)}>回收站</Button>
               {checkedItems.length > 0 && (
                 <>
                   <span style={{ color: '#8c8c8c', fontSize: 12 }}>已选 {checkedItems.length} 项</span>
+                  {/* 多选分享(2026-08-05):一条链接带多份内容,和单项分享同一套闸(提取码/有效期/次数) */}
+                  <Button size="small" icon={<ShareAltOutlined />} onClick={() => setShareFor(checkedItems)}>分享</Button>
                   <Button size="small" onClick={() => setMoving(checkedItems)}>移动</Button>
                   <Button size="small" danger onClick={() => del(checkedItems)}>删除</Button>
                 </>
@@ -430,7 +454,8 @@ export function SpacesView({ me }: { me: Me | null }) {
                     // 它还没发任何请求,取消 = 直接出队。
                     <AntSpace size={6} style={{ width: '100%' }}>
                       {up(it)!.running
-                        ? <Progress percent={up(it)!.percent} size="small" style={{ width: 120 }} />
+                        ? <Progress percent={up(it)!.percent} size="small" style={{ width: 120 }}
+                            format={(p) => (up(it)!.hashing ? '校验中' : `${p}%`)} />
                         : <Typography.Text type="secondary" style={{ fontSize: 12, width: 120 }}>排队中…</Typography.Text>}
                       <a style={{ color: '#ff4d4f' }} onClick={() => cancelOne(up(it)!)}>取消</a>
                     </AntSpace>
@@ -463,7 +488,7 @@ export function SpacesView({ me }: { me: Me | null }) {
             width={preview?.mime === 'application/pdf' || preview?.mime?.startsWith('image/') ? '82%' : '62%'}
             title={preview && <><ItemIcon it={preview} />{preview.name}</>}
             // 打开着也能直接分享当前这份内容(不用退回列表再找那一行)
-            extra={preview && canEdit && <Button size="small" icon={<ShareAltOutlined />} onClick={() => setShareFor(preview)}>分享</Button>}
+            extra={preview && canEdit && <Button size="small" icon={<ShareAltOutlined />} onClick={() => setShareFor([preview])}>分享</Button>}
           >
             {preview && (
               <ItemPanel
@@ -493,7 +518,8 @@ export function SpacesView({ me }: { me: Me | null }) {
               术语表输入框、诊断结果这些内部 state 会留着上一个空间的值——保存就把 A 的词写进 B
               (2026-08-04 审计发现,v0.3.29 引入)。 */}
           <GrantsModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
-          {shareFor && <ShareModal key={shareFor.id} item={shareFor} onClose={() => setShareFor(null)} />}
+          {shareFor && <ShareModal key={shareFor.map((i) => i.id).join('-')} items={shareFor} onClose={() => setShareFor(null)} />}
+          <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
@@ -818,6 +844,57 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
   )
 }
 
+/// 回收站(2026-08-05 软删除):列被删的东西,可还原;空间 admin 还能彻底删。
+/// ★彻底删除才真正动对象★,而且按引用计数——同样内容被别处引用着就只删行不删对象。
+function TrashDrawer({ space, open, onClose, onChanged }:
+  { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
+  const { message, modal } = AntdApp.useApp()
+  const [rows, setRows] = useState<TrashRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const load = useCallback(async () => {
+    setLoading(true)
+    try { setRows(await api<TrashRow[]>(`/api/spaces/${space.id}/trash`)) } catch { setRows([]) } finally { setLoading(false) }
+  }, [space.id])
+  useEffect(() => { if (open) void load() }, [open, load])
+
+  return (
+    <Drawer title="🗑 回收站" open={open} onClose={onClose} width={640}>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+        删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用空间配额</b>。
+      </Typography.Paragraph>
+      <Table size="small" rowKey="id" dataSource={rows} loading={loading} pagination={false}
+        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="回收站是空的" /> }}
+        columns={[
+          { title: '名称', dataIndex: 'name', ellipsis: true,
+            render: (_, r) => <span><ItemIcon it={r} />{r.name}</span> },
+          { title: '大小', dataIndex: 'size', width: 92, render: (v, r) => (r.kind === 'folder' ? '—' : fmtSize(v)) },
+          { title: '删除时间', dataIndex: 'deleted_at', width: 148, render: (v) => fmtTime(v) },
+          { title: '删除者', dataIndex: 'deleted_by', width: 100, ellipsis: true },
+          { title: '', width: 130, render: (_, r) => (
+            <AntSpace size={8}>
+              <a onClick={async () => {
+                try { await api(`/api/items/${r.id}/undelete`, { method: 'POST' }); message.success('已还原'); await load(); onChanged() }
+                catch (e) { message.error((e as Error).message) }
+              }}>还原</a>
+              {space.my_role === 'admin' && (
+                <a style={{ color: '#ff4d4f' }} onClick={() => modal.confirm({
+                  title: '彻底删除?', okButtonProps: { danger: true },
+                  content: '这一步不可撤销:内容会从对象存储里真正抹掉(若没有别处引用同一份内容)。',
+                  onOk: async () => {
+                    try { await api(`/api/items/${r.id}/purge`, { method: 'DELETE' }); message.success('已彻底删除'); await load(); onChanged() }
+                    catch (e) { message.error((e as Error).message) }
+                  },
+                })}>彻底删除</a>
+              )}
+            </AntSpace>) },
+        ]} />
+    </Drawer>
+  )
+}
+
+type TrashRow = { id: number; kind: Item['kind']; name: string; size: number | null; mime: string | null
+  deleted_by: string; deleted_at: string }
+
 /// 音频面板:原生 <audio> + AI 纪要。上传后纪要已自动排队(后端 enqueue_analysis),
 /// 所以打开时通常直接看到「排队中/转写中」的进度,不用再点一次生成。
 function AudioPanel({ item }: { item: Item }) {
@@ -834,7 +911,8 @@ function AudioPanel({ item }: { item: Item }) {
 /// 公开分享对话框(2026-08-05,对标百度网盘)。
 /// ★这是把内容送出墙外的入口,所以文案要把边界说清楚★:链接一旦发出去,拿到的人**不需要**是
 /// 本空间成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
-function ShareModal({ item, onClose }: { item: Item; onClose: () => void }) {
+function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) {
+  const item = items[0]  // 主项:标题与「已有链接」列表按它查(多选时其余项登记在 share_items)
   const { message } = AntdApp.useApp()
   const [links, setLinks] = useState<ShareLink[]>([])
   const [code, setCode] = useState(randomCode())
@@ -857,6 +935,7 @@ function ShareModal({ item, onClose }: { item: Item; onClose: () => void }) {
         body: JSON.stringify({
           code: useCode ? code.trim() : null,
           expires_days: days, max_visits: maxVisits, allow_download: allowDownload,
+          items: items.map((i) => i.id),   // 多选分享:一条链接带这些内容
         }),
       })
       const url = `${window.location.origin}/s/${r.token}`
@@ -869,7 +948,8 @@ function ShareModal({ item, onClose }: { item: Item; onClose: () => void }) {
 
   return (
     <Modal open onCancel={onClose} footer={null} width={620}
-      title={<span><ItemIcon it={item} />分享「{item.name}」</span>}>
+      title={<span><ItemIcon it={item} />
+        {items.length > 1 ? `分享 ${items.length} 项(${item.name} 等)` : `分享「${item.name}」`}</span>}>
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
         message="这是公开链接:拿到链接的人不需要是本空间成员"
         description="提取码、有效期、访问次数是仅有的三道闸;发出去之后唯一的后悔药是撤销。" />

@@ -32,6 +32,8 @@ export function SharePage({ token }: { token: string }) {
   const [rows, setRows] = useState<Brief[]>([])
   const [cwd, setCwd] = useState<number | null>(null)
   const [doc, setDoc] = useState<string | null>(null)
+  const [multi, setMulti] = useState(false)
+  const [count, setCount] = useState(1)
 
   useEffect(() => {
     pub<{ needs_code: boolean }>(`/pub/share/${token}`)
@@ -43,10 +45,13 @@ export function SharePage({ token }: { token: string }) {
   const open = useCallback(async (c?: string) => {
     setBusy(true); setErr(null)
     try {
-      const r = await pub<{ ticket: string; item: Brief; allow_download: boolean }>(
+      const r = await pub<{ ticket: string; item: Brief; allow_download: boolean; multi?: boolean; count?: number }>(
         `/pub/share/${token}/open`, { method: 'POST', body: JSON.stringify({ code: c ?? null }) })
       setTicket(r.ticket); setItem(r.item); setAllowDownload(r.allow_download); setPhase('open')
-      if (r.item.kind === 'folder') setCwd(r.item.id)
+      setMulti(!!r.multi); setCount(r.count ?? 1)
+      // 多选分享:列表就是那 N 项(不带 parent 时服务端返回全部根);单个文件夹则进它自己。
+      if (r.multi) setCwd(null)
+      else if (r.item.kind === 'folder') setCwd(r.item.id)
     } catch (e) {
       const m = (e as Error).message
       // 提取码错是可重试的;其它(404)一律当「链接已失效」——服务端刻意不区分原因。
@@ -59,10 +64,12 @@ export function SharePage({ token }: { token: string }) {
 
   // 文件夹分享:逛子树
   useEffect(() => {
-    if (!ticket || cwd == null) return
-    pub<Brief[]>(`/pub/share/${token}/list?k=${encodeURIComponent(ticket)}&parent=${cwd}`)
+    if (!ticket) return
+    if (cwd == null && !multi) return
+    const q = cwd == null ? '' : `&parent=${cwd}`
+    pub<Brief[]>(`/pub/share/${token}/list?k=${encodeURIComponent(ticket)}${q}`)
       .then(setRows).catch(() => setRows([]))
-  }, [ticket, cwd, token])
+  }, [ticket, cwd, token, multi])
 
   // 文档正文:公开面没有 content 接口,直接按文件取(text/markdown 会走 inline)
   useEffect(() => {
@@ -103,8 +110,8 @@ export function SharePage({ token }: { token: string }) {
 
   if (!item) return shell(<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>)
 
-  // 单个文件/文档/视频
-  if (item.kind !== 'folder')
+  // 单个文件/文档/视频(多选分享一律走下面的列表)
+  if (!multi && item.kind !== 'folder')
     return shell(
       <Card>
         <Space style={{ marginBottom: 12 }} wrap>
@@ -128,8 +135,12 @@ export function SharePage({ token }: { token: string }) {
     <Card>
       <Space style={{ marginBottom: 10 }}>
         <ItemIcon it={item} />
-        <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
-        {cwd !== item.id && <Button size="small" onClick={() => setCwd(item.id)}>回到分享根目录</Button>}
+        <Typography.Text strong style={{ fontSize: 16 }}>
+          {multi ? `分享了 ${count} 项` : item.name}
+        </Typography.Text>
+        {((multi && cwd != null) || (!multi && cwd !== item.id)) && (
+          <Button size="small" onClick={() => setCwd(multi ? null : item.id)}>回到分享根目录</Button>
+        )}
       </Space>
       <Table size="small" rowKey="id" dataSource={rows} pagination={false}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个文件夹是空的" /> }}

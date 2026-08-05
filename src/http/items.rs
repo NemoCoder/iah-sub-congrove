@@ -30,6 +30,77 @@ fn s3_key(space_id: i64, item_id: i64, sha: &str) -> String {
     format!("spaces/{space_id}/{item_id}/{sha}")
 }
 
+/// 内容寻址的对象 key(2026-08-05 去重):**同样内容全库只存一份**。
+/// 删除按引用计数(purge_subtree),所以谁删都不影响还引用着它的人。
+pub(crate) fn blob_key(sha: &str) -> String {
+    format!("blobs/{sha}")
+}
+
+/// 我能不能读到某份内容(按 sha256)——**秒传的安全闸**。
+/// 百度网盘那个著名的坑:只凭哈希就能「认领」文件 = 知道哈希的人可以把别人的私有文件
+/// 秒传进自己账户。所以这里区分两件事:
+///   - **省空间**无条件:真传完字节的人指向同一对象(他确实拥有这份文件,安全);
+///   - **省时间(秒传)有条件**:只有当调用者本来就能读到同 sha 的内容时才免传。
+pub(crate) async fn readable_blob(state: &AppState, id: &Identity, sha: &str) -> AppResult<Option<(String, Option<i64>, Option<String>)>> {
+    let rows: Vec<(i64, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT space_id, s3_key, size, mime FROM items
+          WHERE sha256 = $1 AND s3_key IS NOT NULL AND deleted_at IS NULL LIMIT 50",
+    ).bind(sha).fetch_all(&state.pool).await?;
+    for (sid, key, size, mime) in rows {
+        if crate::perm::effective_role(&state.pool, id, sid).await?.is_some() {
+            return Ok(Some((key, size, mime)));
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Deserialize)]
+pub struct PrecheckIn {
+    pub sha256: String,
+    pub size: i64,
+    pub name: String,
+    pub mime: Option<String>,
+    pub parent_id: Option<i64>,
+}
+
+/// POST /api/spaces/{sid}/precheck —— 秒传预检(≥editor)。
+/// 命中(我本来就能读到同内容)→ 直接建行指过去,**零字节传输**;否则告诉前端照常传。
+pub async fn precheck(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+    Json(input): Json<PrecheckIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    check_parent(&state.pool, sid, input.parent_id).await?;
+    let sha = input.sha256.trim().to_lowercase();
+    if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::BadRequest("sha256 形状不对".into()));
+    }
+    let Some((key, size, mime)) = readable_blob(&state, &id, &sha).await? else {
+        // 没命中(或命中了但我读不到那份)→ 照常传。key 给出去,传完就是内容寻址的共享对象。
+        return Ok(Json(json!({ "instant": false })));
+    };
+    // 配额照算:秒传省的是传输与存储,不是配额额度(否则同一份东西被反复「免费」摆进各空间)。
+    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    if used + size.unwrap_or(input.size) > quota {
+        return Err(AppError::BadRequest("超出空间配额,删些内容或找超管调配额".into()));
+    }
+    let name = { let n = input.name.trim(); if n.is_empty() { "unnamed" } else { n } };
+    let mime = input.mime.or(mime).unwrap_or_else(|| "application/octet-stream".into());
+    let kind = if mime.starts_with("video/") { "video" } else { "file" };
+    let iid: i64 = sqlx::query_scalar(
+        "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
+    )
+    .bind(sid).bind(input.parent_id).bind(kind).bind(name).bind(&mime)
+    .bind(id.require_username()?).bind(&key).bind(size.unwrap_or(input.size)).bind(&sha)
+    .fetch_one(&state.pool).await?;
+    tracing::info!(item = iid, sha = %&sha[..8], "秒传命中:零字节建立引用");
+    crate::http::media::enqueue_analysis(&state, iid, id.require_username()?).await;
+    Ok(Json(json!({ "instant": true, "id": iid })))
+}
+
 /// 空间配额与已用量。已用 = items ∪ item_versions 的对象按 (s3_key,size) 去重求和
 /// (文档当前版与历史版共享同 sha 对象,去重后不重复计)。
 pub async fn space_quota_used(pool: &sqlx::PgPool, sid: i64) -> AppResult<(i64, i64)> {
@@ -94,7 +165,7 @@ pub async fn list(
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
         "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at
-           FROM items WHERE space_id = $1 AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
+           FROM items WHERE space_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     )
     .bind(sid)
@@ -290,8 +361,10 @@ pub async fn update(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// DELETE /api/items/{id} —— 删除(≥editor)。folder 级联整棵子树;
-/// S3 对象收集自「被删 items + 其 versions」,key 带 item_id 不跨 item 共享,放心删。
+/// DELETE /api/items/{id} —— **软删除**(≥editor,2026-08-05 用户:「所有的删除都是软删除」)。
+/// 整棵子树打 deleted_at 标记,S3 对象一个字节都不动;进回收站,空间 admin 可还原或彻底删除,
+/// 满 30 天由清理任务自动 purge。★配额仍然计入回收站里的东西★——占着空间就该算,
+/// 这也是「清空回收站」的动力(与网盘一致)。
 pub async fn remove(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -299,7 +372,92 @@ pub async fn remove(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
-    // 先收集整棵子树的对象 key(items FK 级联删了就找不回了)。
+    let actor = id.require_username()?;
+    let n = sqlx::query(
+        "WITH RECURSIVE sub AS (
+           SELECT id FROM items WHERE id = $1
+           UNION ALL SELECT i.id FROM items i JOIN sub ON i.parent_id = sub.id
+         )
+         UPDATE items SET deleted_at = now(), deleted_by = $2
+          WHERE id IN (SELECT id FROM sub) AND deleted_at IS NULL",
+    ).bind(iid).bind(actor).execute(&state.pool).await?.rows_affected();
+    audit::record(&state.pool, actor, "item.delete", &iid.to_string(),
+        &format!("space={sid} 软删除 {n} 项(进回收站)")).await;
+    Ok(Json(json!({ "ok": true, "trashed": n })))
+}
+
+/// GET /api/spaces/{id}/trash —— 回收站(≥editor)。只列**被直接删除的那一项**
+/// (子树里的行也打了标记,但它们是被连带的,列出来只会刷屏)。
+pub async fn trash(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(sid): Path<i64>,
+) -> AppResult<Json<Vec<serde_json::Value>>> {
+    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let rows: Vec<(i64, String, String, Option<i64>, Option<String>, String,
+                   chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
+        "SELECT i.id, i.kind, i.name, i.size, i.mime, COALESCE(i.deleted_by,''), i.deleted_at, i.mime
+           FROM items i
+          WHERE i.space_id = $1 AND i.deleted_at IS NOT NULL
+            -- 只要「删除动作的根」:父节点没被删(或没有父节点)的那些
+            AND (i.parent_id IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM items p WHERE p.id = i.parent_id AND p.deleted_at IS NOT NULL))
+          ORDER BY i.deleted_at DESC LIMIT 500",
+    ).bind(sid).fetch_all(&state.pool).await?;
+    Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, by, at, _)| json!({
+        "id": id, "kind": kind, "name": name, "size": size, "mime": mime,
+        "deleted_by": by, "deleted_at": at,
+    })).collect()))
+}
+
+/// POST /api/items/{id}/undelete —— 从回收站还原(≥editor)。整棵子树一起还原;
+/// 若它的父目录也在回收站里(没被一起还原),就还原到空间根 —— 否则还原出来的东西看不见。
+pub async fn undelete(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let actor = id.require_username()?;
+    let mut tx = state.pool.begin().await?;
+    let n = sqlx::query(
+        "WITH RECURSIVE sub AS (
+           SELECT id FROM items WHERE id = $1
+           UNION ALL SELECT i.id FROM items i JOIN sub ON i.parent_id = sub.id
+         )
+         UPDATE items SET deleted_at = NULL, deleted_by = NULL
+          WHERE id IN (SELECT id FROM sub) AND deleted_at IS NOT NULL",
+    ).bind(iid).execute(&mut *tx).await?.rows_affected();
+    // 父还在回收站 → 挪到根,免得还原了却在树上看不见。
+    sqlx::query(
+        "UPDATE items SET parent_id = NULL, updated_at = now()
+          WHERE id = $1 AND parent_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM items p WHERE p.id = items.parent_id AND p.deleted_at IS NOT NULL)",
+    ).bind(iid).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record(&state.pool, actor, "item.undelete", &iid.to_string(), &format!("space={sid} 还原 {n} 项")).await;
+    Ok(Json(json!({ "ok": true, "restored": n })))
+}
+
+/// DELETE /api/items/{id}/purge —— **彻底删除**(空间 **admin**)。行删掉、对象按引用计数清。
+/// ⚠ 引用计数必须把**软删除的行也算上**:回收站里的东西还指着同一个对象,
+/// 现在删掉它,回收站里那份还原出来就是个空壳(内容寻址共享对象之后,这是最容易踩的坑)。
+pub async fn purge(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let sid = space_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, sid, Role::Admin).await?;
+    let actor = id.require_username()?;
+    let n = purge_subtree(&state, iid).await?;
+    audit::record(&state.pool, actor, "item.purge", &iid.to_string(), &format!("space={sid} 彻底删除,清对象 {n}")).await;
+    Ok(Json(json!({ "ok": true, "objects_deleted": n })))
+}
+
+/// 彻底删一棵子树:先收集候选对象 key,删行,再对**已无人引用**的 key 删对象。返回真正删掉的对象数。
+pub(crate) async fn purge_subtree(state: &AppState, iid: i64) -> AppResult<usize> {
     let keys: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE sub AS (
            SELECT id FROM items WHERE id = $1
@@ -309,19 +467,22 @@ pub async fn remove(
            SELECT s3_key k FROM items WHERE id IN (SELECT id FROM sub) AND s3_key IS NOT NULL
            UNION SELECT s3_key FROM item_versions WHERE item_id IN (SELECT id FROM sub)
          ) t",
-    )
-    .bind(iid)
-    .fetch_all(&state.pool)
-    .await?;
+    ).bind(iid).fetch_all(&state.pool).await?;
     sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await?;
+    let mut gone = 0usize;
     for k in &keys {
-        if let Err(e) = state.storage.delete(k).await {
-            tracing::warn!(error = %e, key = %k, "item delete: s3 cleanup failed");
+        // ★含软删除行★:回收站里的东西也算引用,它还等着被还原。
+        let refs: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM items WHERE s3_key = $1)
+                  + (SELECT count(*) FROM item_versions WHERE s3_key = $1)",
+        ).bind(k).fetch_one(&state.pool).await?;
+        if refs == 0 {
+            if let Err(e) = state.storage.delete(k).await {
+                tracing::warn!(error = %e, key = %k, "purge: s3 清理失败(孤儿对象,待巡检)");
+            } else { gone += 1 }
         }
     }
-    audit::record(&state.pool, id.require_username()?, "item.delete", &iid.to_string(),
-        &format!("space={} objects={}", sid, keys.len())).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(gone)
 }
 
 /// GET /api/items/{id}/content —— 文档正文(≥viewer)。空文档(还没保存过)回空串。
@@ -540,11 +701,23 @@ pub async fn upload(
         .bind(sid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
         .fetch_one(&state.pool)
         .await?;
-        let key = format!("spaces/{sid}/{iid}/blob");
-        // 预算按**当前**已用量算,多文件时逐个收窄(不是拿开头那一份快照一路用到底)。
+        // ★先落临时 key,算完真实 sha 再按内容寻址归位★:边收边算哈希,收完才知道内容的 key。
+        // 直接按客户端申报的 sha 写会给「内容投毒」开门(写坏别人引用着的同名对象)——
+        // 服务端自己算出来的哈希才作数。
+        let tmp_key = format!("tmp/{sid}-{iid}");
         let (q_now, used_now) = space_quota_used(&state.pool, sid).await?;
-        match stream_field_to_s3(&state, &mut field, &key, &mime, q_now - used_now).await {
+        match stream_field_to_s3(&state, &mut field, &tmp_key, &mime, q_now - used_now).await {
             Ok((sha, total)) => {
+                // 归位:对象已存在就直接引用(哈希是我们自己算的,内容必然一致),否则服务端复制过去。
+                let key = blob_key(&sha);
+                if !state.storage.exists(&key).await {
+                    if let Err(e) = state.storage.copy(&tmp_key, &key).await {
+                        let _ = state.storage.delete(&tmp_key).await;
+                        let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+                        return Err(AppError::Other(e));
+                    }
+                }
+                let _ = state.storage.delete(&tmp_key).await;
                 // ★收尾复核配额★:开传前那次 used 是快照,同一空间并发上传各自都会读到它,
                 // 两个 9GiB 能一起过 10GiB 的闸。按落地时的真实总量再判一次,超了回滚。
                 let (q2, used2) = space_quota_used(&state.pool, sid).await?;

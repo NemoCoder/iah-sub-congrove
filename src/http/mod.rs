@@ -50,6 +50,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/groups/{id}/members/{username}", axum::routing::delete(groups::member_delete))
         // 内容树(文档正文小,留在快路由)
         .route("/spaces/{id}/items", get(items::list).post(items::create))
+        // 秒传预检(内容寻址去重):命中且**我本来就能读到**才免传,见 items::readable_blob
+        .route("/spaces/{id}/precheck", post(items::precheck))
+        // 回收站:软删除的东西在这里还原 / 彻底删除(purge 要空间 admin)
+        .route("/spaces/{id}/trash", get(items::trash))
+        .route("/items/{id}/undelete", post(items::undelete))
+        .route("/items/{id}/purge", axum::routing::delete(items::purge))
         .route("/items/{id}", get(items::detail).put(items::update).delete(items::remove))
         .route("/items/{id}/progress", get(items::progress_get).put(items::progress_put))
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))

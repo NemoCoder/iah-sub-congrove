@@ -123,12 +123,29 @@ async fn cleanup_stale_uploads(state: AppState) {
             Err(e) => tracing::warn!(error = %e, "cleanup: list_multiparts 失败,下轮再试"),
         }
         if let Err(e) = sqlx::query(
-            "DELETE FROM items WHERE s3_key IS NULL AND kind IN ('file','video') AND created_at < now() - interval '24 hours'",
+            "DELETE FROM items WHERE s3_key IS NULL AND deleted_at IS NULL AND kind IN ('file','video')
+               AND created_at < now() - interval '24 hours'",
         )
         .execute(&state.pool)
         .await
         {
             tracing::warn!(error = %e, "cleanup: 孤儿行清理失败");
+        }
+        // ★回收站保留 30 天★(2026-08-05 软删除):到期的「删除动作根」逐个 purge——
+        // 走 purge_subtree 而不是一条 DELETE,因为要按引用计数决定对象删不删
+        // (共享对象之后,直接删对象会把别人还引用着的内容清掉)。
+        let expired: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM items i
+              WHERE i.deleted_at IS NOT NULL AND i.deleted_at < now() - interval '30 days'
+                AND (i.parent_id IS NULL OR NOT EXISTS (
+                      SELECT 1 FROM items p WHERE p.id = i.parent_id AND p.deleted_at IS NOT NULL))
+              LIMIT 200",
+        ).fetch_all(&state.pool).await.unwrap_or_default();
+        for iid in expired {
+            match crate::http::items::purge_subtree(&state, iid).await {
+                Ok(n) => tracing::info!(item = iid, objects = n, "cleanup: 回收站满 30 天,已彻底删除"),
+                Err(e) => tracing::warn!(error = %format!("{e:?}"), item = iid, "cleanup: 自动 purge 失败"),
+            }
         }
     }
 }

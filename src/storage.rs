@@ -85,6 +85,25 @@ impl Storage {
         Ok((obj.body, obj.content_length))
     }
 
+    /// 对象是否存在(秒传/去重要先问一句)。
+    pub async fn exists(&self, key: &str) -> bool {
+        self.s3.head_object().bucket(&self.bucket).key(key).send().await.is_ok()
+    }
+
+    /// **服务端**复制(字节不经过 pod)。流式上传落 tmp 后按真实 sha 归位用:
+    /// 边收边算哈希 → 收完才知道内容寻址的 key,所以只能先落 tmp 再搬。
+    /// Garage 支持 CopyObject,几百 MB 也是它内部搬,不占我们带宽。
+    pub async fn copy(&self, from_key: &str, to_key: &str) -> anyhow::Result<()> {
+        self.s3
+            .copy_object()
+            .bucket(&self.bucket)
+            .copy_source(format!("{}/{}", self.bucket, from_key))
+            .key(to_key)
+            .send()
+            .await?;
+        Ok(())
+    }
+
     /// 删对象。⚠ 调用方必须先做引用计数(items.s3_key + item_versions.s3_key 都不再引用
     /// 才能删——citeroot delete_fulltext 的教训),这里只管执行。
     pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
