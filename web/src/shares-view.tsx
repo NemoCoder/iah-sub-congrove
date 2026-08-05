@@ -10,7 +10,7 @@ type Row = {
   token: string; item_id: number; kind: Item['kind']; name: string; mime: string | null; space: string
   expires_at: string | null; max_visits: number | null; visits: number; allow_download: boolean
   created_at: string; revoked_at: string | null; last_visit_at: string | null
-  has_code: boolean; item_count: number
+  has_code: boolean; item_count: number; item_deleted: boolean
 }
 
 function fmt(s: string | null) {
@@ -22,6 +22,8 @@ function fmt(s: string | null) {
 /// 状态是**算出来的**,不是存的:过期/次数用尽都会随时间自然发生,存一个字段就得有人去刷新它。
 function status(r: Row) {
   if (r.revoked_at) return <Tag color="red">已撤销</Tag>
+  // 内容进了回收站,链接就已经打不开了(服务端 live() 会 404)——排在过期之前,因为它更常见也更意外。
+  if (r.item_deleted) return <Tag color="orange">内容已删除</Tag>
   if (r.expires_at && new Date(r.expires_at) < new Date()) return <Tag>已过期</Tag>
   if (r.max_visits != null && r.visits >= r.max_visits) return <Tag>次数用尽</Tag>
   return <Tag color="green">有效</Tag>
@@ -55,7 +57,9 @@ export function SharesView() {
         公开链接:拿到的人不需要是空间成员。撤销后立刻失效,已发出去的也打不开。
         提取码只在生成时显示一次(库里存的是哈希),这里复制的文案只带链接。
       </Typography.Paragraph>
-      <Table size="small" rowKey="token" dataSource={rows} loading={loading} pagination={{ pageSize: 20, hideOnSinglePage: true }}
+      {/* 10 列,窄屏放不下 —— 给横向滚动而不是让它们互相挤扁(v0.3.55)。 */}
+      <Table size="small" rowKey="token" dataSource={rows} loading={loading} scroll={{ x: 1150 }}
+        pagination={{ pageSize: 20, hideOnSinglePage: true }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有发出过分享链接" /> }}
         columns={[
           { title: '内容', dataIndex: 'name', ellipsis: true,

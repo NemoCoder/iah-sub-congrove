@@ -77,15 +77,9 @@ pub async fn create(
     };
     let expires_days = input.expires_days.filter(|d| *d > 0);
     let max_visits = input.max_visits.filter(|v| *v > 0);
-    let token = rand_hex(16);
-    sqlx::query(
-        "INSERT INTO share_links (token, item_id, code_salt, code_hash, expires_at, max_visits, allow_download, created_by)
-         VALUES ($1,$2,$3,$4, CASE WHEN $5::bigint IS NULL THEN NULL ELSE now() + ($5 || ' days')::interval END, $6,$7,$8)",
-    )
-    .bind(&token).bind(iid).bind(&salt).bind(&hash)
-    .bind(expires_days).bind(max_visits).bind(input.allow_download).bind(actor)
-    .execute(&state.pool).await?;
-    // 多选:主项 + 附加项都登记进 share_items。附加项必须同空间(否则等于跨空间越权打包)。
+    // ★先把附加项全校验完再落任何一行★(v0.3.55 审计):原先是「先 INSERT share_links、
+    // 再逐个校验附加项」,校验失败时 share_links 那行已经落库了 —— 用户看到报错以为没建成,
+    // 实际上生成了一条**只含主项**的可用链接(静默的多余暴露)。校验前置 + 整体事务,要么全成要么全不成。
     let mut all: Vec<i64> = vec![iid];
     for extra in input.items.iter().copied().filter(|x| *x != iid) {
         if space_of(&state.pool, extra).await? != sid {
@@ -93,10 +87,20 @@ pub async fn create(
         }
         all.push(extra);
     }
+    let token = rand_hex(16);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO share_links (token, item_id, code_salt, code_hash, expires_at, max_visits, allow_download, created_by)
+         VALUES ($1,$2,$3,$4, CASE WHEN $5::bigint IS NULL THEN NULL ELSE now() + ($5 || ' days')::interval END, $6,$7,$8)",
+    )
+    .bind(&token).bind(iid).bind(&salt).bind(&hash)
+    .bind(expires_days).bind(max_visits).bind(input.allow_download).bind(actor)
+    .execute(&mut *tx).await?;
     for x in &all {
         sqlx::query("INSERT INTO share_items (token, item_id) VALUES ($1,$2) ON CONFLICT DO NOTHING")
-            .bind(&token).bind(x).execute(&state.pool).await?;
+            .bind(&token).bind(x).execute(&mut *tx).await?;
     }
+    tx.commit().await?;
     audit::record(&state.pool, actor, "share.create", &iid.to_string(),
         &format!("token={} code={} days={:?} max={:?} download={}",
             &token[..8], if code.is_some() { "有" } else { "无" }, expires_days, max_visits, input.allow_download)).await;
@@ -132,25 +136,30 @@ pub async fn mine(
     Extension(id): Extension<Identity>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
     let me = id.require_username()?;
+    // ★item_deleted★(v0.3.55 审计):主项进了回收站,这条链接就已经 404 了(见 live()),
+    // 但列表原先只按撤销/过期/次数算状态,照样显示绿色「有效」—— 使用者会以为链接还能用。
+    // 项数也只数**没删的**根,和访客那边真正列得出来的项数对上。
     let rows: Vec<(String, i64, String, String, Option<String>, String,
                    Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool,
                    chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
-                   Option<chrono::DateTime<chrono::Utc>>, bool, i64)> = sqlx::query_as(
+                   Option<chrono::DateTime<chrono::Utc>>, bool, i64, bool)> = sqlx::query_as(
         "SELECT l.token, i.id, i.kind, i.name, i.mime, s.name,
                 l.expires_at, l.max_visits, l.visits, l.allow_download, l.created_at,
                 l.revoked_at, l.last_visit_at, (l.code_hash IS NOT NULL),
-                (SELECT count(*) FROM share_items si WHERE si.token = l.token)
+                (SELECT count(*) FROM share_items si JOIN items si2 ON si2.id = si.item_id
+                  WHERE si.token = l.token AND si2.deleted_at IS NULL),
+                (i.deleted_at IS NOT NULL)
            FROM share_links l
            JOIN items  i ON i.id = l.item_id
            JOIN spaces s ON s.id = i.space_id
           WHERE l.created_by = $1
           ORDER BY l.created_at DESC LIMIT 500",
     ).bind(me).fetch_all(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt)| json!({
+    Ok(Json(rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt, gone)| json!({
         "token": token, "item_id": iid, "kind": kind, "name": name, "mime": mime, "space": space,
         "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
         "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
-        "item_count": if cnt > 0 { cnt } else { 1 },
+        "item_count": if cnt > 0 { cnt } else { 1 }, "item_deleted": gone,
     })).collect()))
 }
 
@@ -165,9 +174,11 @@ pub async fn revoke(
     let Some((iid, creator)) = row else { return Err(AppError::NotFound) };
     let sid = space_of(&state.pool, iid).await?;
     let me = id.require_username()?;
-    // 创建者本人,或该空间的 admin。
+    // 创建者本人**无条件**可撤销;别人要空间 admin。
+    // ★创建者这一路不再要求 ≥editor★(v0.3.55 审计):撤销是「减少暴露」的动作,
+    // 越权风险为零,却曾被权限拦住 —— 把人降级成 viewer 或移出空间之后,
+    // 他先前发出去的公开链接**依然生效而他自己撤不掉**,只能等 admin 发现。
     if creator != me { require_role(&state.pool, &id, sid, Role::Admin).await?; }
-    else { require_role(&state.pool, &id, sid, Role::Editor).await?; }
     sqlx::query("UPDATE share_links SET revoked_at = now() WHERE token = $1 AND revoked_at IS NULL")
         .bind(&token).execute(&state.pool).await?;
     audit::record(&state.pool, me, "share.revoke", &iid.to_string(), &token[..8]).await;
@@ -180,9 +191,12 @@ pub async fn revoke(
 struct Live { item_id: i64, has_code: bool, salt: Option<String>, hash: Option<String>, allow_download: bool }
 
 /// 本条分享的**全部根**(多选时 N 个;老链接没登记 share_items 就退回主项一个)。
+/// ★过滤已软删除的根★(v0.3.55 审计):删进回收站的东西不该继续在墙外可达。
 async fn share_roots(pool: &sqlx::PgPool, token: &str, main: i64) -> AppResult<Vec<i64>> {
-    let rows: Vec<i64> = sqlx::query_scalar("SELECT item_id FROM share_items WHERE token = $1").bind(token)
-        .fetch_all(pool).await?;
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT si.item_id FROM share_items si JOIN items i ON i.id = si.item_id
+          WHERE si.token = $1 AND i.deleted_at IS NULL",
+    ).bind(token).fetch_all(pool).await?;
     Ok(if rows.is_empty() { vec![main] } else { rows })
 }
 
@@ -191,11 +205,17 @@ async fn live(pool: &sqlx::PgPool, token: &str) -> AppResult<Live> {
     if token.len() != 32 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(AppError::NotFound);
     }
+    // ★JOIN items 且要求主项未软删除★(v0.3.55 审计发现的数据泄露):
+    // 软删除只打 deleted_at 标记、S3 对象一个字节不动,原先这里不看这一列 ——
+    // 用户把材料删进回收站、以为收回来了,**墙外的公开链接照样能列目录、照样能下载**。
+    // 判据取「主项」:它是这条分享的身份(标题与根目录都用它),它没了整条就该失效。
+    // 单个子项被删由 pub_list/pub_file 各自过滤,不牵连整条链接。
     let row: Option<(i64, Option<String>, Option<String>, bool)> = sqlx::query_as(
-        "SELECT item_id, code_salt, code_hash, allow_download FROM share_links
-          WHERE token = $1 AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > now())
-            AND (max_visits IS NULL OR visits < max_visits)",
+        "SELECT l.item_id, l.code_salt, l.code_hash, l.allow_download FROM share_links l
+           JOIN items i ON i.id = l.item_id
+          WHERE l.token = $1 AND l.revoked_at IS NULL AND i.deleted_at IS NULL
+            AND (l.expires_at IS NULL OR l.expires_at > now())
+            AND (l.max_visits IS NULL OR l.visits < l.max_visits)",
     ).bind(token).fetch_optional(pool).await?;
     // ★不区分「不存在 / 过期 / 超次数 / 已撤销」★:区分了就是给探测者送信息。
     let (item_id, salt, hash, allow_download) = row.ok_or(AppError::NotFound)?;
@@ -221,13 +241,28 @@ pub async fn pub_open(
     Json(input): Json<OpenIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let l = live(&state.pool, &token).await?;
+    let ipp = ip_prefix(&peer, &headers);
     if l.has_code {
+        // ★在线爆破闸★(v0.3.55 审计):提取码是低熵的(用户实际只设 4 位 = 10^4 种),
+        // 加盐 sha256 只防「库被拖走后离线爆破」,防不了在线一条条试。原先失败尝试
+        // 既不留痕也不限速,几秒钟就能把一条链接试穿。20 次/15 分钟:正常人输错几次绰绰有余,
+        // 爆破 10^4 则要 125 小时。★按 token 限而不按 IP★——按 IP 限,换个出口就绕过了。
+        let fails: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM share_visits WHERE token = $1 AND NOT ok AND at > now() - interval '15 minutes'",
+        ).bind(&token).fetch_one(&state.pool).await.unwrap_or(0);
+        if fails >= 20 {
+            return Err(AppError::BadRequest("提取码错误次数过多,请 15 分钟后再试".into()));
+        }
         let given = input.code.unwrap_or_default();
         let ok = match (&l.salt, &l.hash) {
             (Some(s), Some(h)) => ct_eq(&code_hash(s, given.trim()), h),
             _ => false,
         };
-        if !ok { return Err(AppError::BadRequest("提取码不对".into())) }
+        if !ok {
+            let _ = sqlx::query("INSERT INTO share_visits (token, ip_prefix, ok) VALUES ($1,$2,false)")
+                .bind(&token).bind(&ipp).execute(&state.pool).await;
+            return Err(AppError::BadRequest("提取码不对".into()));
+        }
     }
     // ★原子计数 + 次数上限★:并发打开时不会冲破上限(条件写在 UPDATE 的 WHERE 里)。
     let bumped: Option<i32> = sqlx::query_scalar(
@@ -239,7 +274,6 @@ pub async fn pub_open(
     ).bind(&token).fetch_optional(&state.pool).await?;
     if bumped.is_none() { return Err(AppError::NotFound) }
     // 访问明细只留粗粒度(IP /24、UA 摘要):够统计「多少不同的人来过」,不攒可识别信息。
-    let ipp = ip_prefix(&peer, &headers);
     let uah = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok())
         .map(|ua| hex::encode(Sha256::digest(ua.as_bytes()))[..16].to_string());
     let _ = sqlx::query("INSERT INTO share_visits (token, ip_prefix, ua_hash) VALUES ($1,$2,$3)")
@@ -287,9 +321,10 @@ pub async fn pub_list(
         }
         None => l.item_id,
     };
+    // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的子项不列给访客。
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT id, kind, name, size, mime, created_at FROM items
-          WHERE parent_id = $1 AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
+          WHERE parent_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     ).bind(parent).fetch_all(&state.pool).await?;
     Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, at)| json!({
@@ -312,8 +347,9 @@ pub async fn pub_file(
     if !l.allow_download && !inline {
         return Err(AppError::BadRequest("该分享未开放下载".into()));
     }
+    // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的原件不再从公开面吐出去。
     let row: Option<(Option<String>, String, Option<String>)> =
-        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1").bind(iid)
+        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1 AND deleted_at IS NULL").bind(iid)
             .fetch_optional(&state.pool).await?;
     let Some((Some(key), name, mime)) = row else { return Err(AppError::NotFound) };
     let (stream, len) = state.storage.get_stream(&key).await.map_err(AppError::Other)?;
@@ -338,7 +374,7 @@ pub async fn pub_file(
 
 async fn item_brief(pool: &sqlx::PgPool, iid: i64) -> AppResult<serde_json::Value> {
     let row: Option<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items WHERE id = $1")
+        sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid).fetch_optional(pool).await?;
     let (id, kind, name, size, mime, at) = row.ok_or(AppError::NotFound)?;
     Ok(json!({ "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at }))
@@ -353,12 +389,15 @@ async fn ensure_any_descendant(pool: &sqlx::PgPool, roots: &[i64], target: i64) 
 }
 
 /// 目标必须是被分享项本身或它的后代——文件夹分享时挡住「改个 item_id 越权取」。
+/// ★整条祖先链都必须未软删除★(v0.3.55 审计):否则「删掉中间那层文件夹」之后,
+/// 底下的文件仍然是被分享根的后代 → 照样能被取走。爬链时就地把删掉的挡在外面。
 async fn ensure_descendant(pool: &sqlx::PgPool, root: i64, target: i64) -> AppResult<()> {
     if root == target { return Ok(()) }
     let ok: bool = sqlx::query_scalar(
         "WITH RECURSIVE up AS (
-           SELECT id, parent_id FROM items WHERE id = $2
+           SELECT id, parent_id FROM items WHERE id = $2 AND deleted_at IS NULL
            UNION ALL SELECT i.id, i.parent_id FROM items i JOIN up ON i.id = up.parent_id
+            WHERE i.deleted_at IS NULL
          ) SELECT EXISTS (SELECT 1 FROM up WHERE id = $1)",
     ).bind(root).bind(target).fetch_one(pool).await?;
     if ok { Ok(()) } else { Err(AppError::NotFound) }
@@ -436,4 +475,75 @@ fn ip_prefix(peer: &std::net::SocketAddr, headers: &HeaderMap) -> Option<String>
 
 fn now_sec() -> usize {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as usize).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ct_eq_只在完全相同时为真() {
+        assert!(ct_eq("abcd", "abcd"));
+        assert!(!ct_eq("abcd", "abce"));
+        assert!(!ct_eq("abc", "abcd"));       // 长度不同直接否
+        assert!(!ct_eq("", "a"));
+        assert!(ct_eq("", ""));
+    }
+
+    #[test]
+    fn code_hash_同码不同盐必须不同() {
+        // 每条分享独立盐 —— 否则「同一个提取码在别处也是这个哈希」,一张彩虹表通吃。
+        assert_ne!(code_hash("s1", "1234"), code_hash("s2", "1234"));
+        assert_eq!(code_hash("s1", "1234"), code_hash("s1", "1234"));   // 同盐同码稳定
+        assert_ne!(code_hash("s1", "1234"), code_hash("s1", "1235"));
+        // 盐与码之间有分隔符,防「盐尾+码头」拼接歧义(salt="a",code="bc" 不能等于 salt="ab",code="c")
+        assert_ne!(code_hash("a", "bc"), code_hash("ab", "c"));
+    }
+
+    #[test]
+    fn rand_hex_长度与字符集() {
+        let a = rand_hex(16);
+        assert_eq!(a.len(), 32);                                  // live() 卡的就是这个长度
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, rand_hex(16));                              // 两次不能一样
+    }
+
+    fn xff(v: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", v.parse().unwrap());
+        h
+    }
+    fn peer(s: &str) -> std::net::SocketAddr { s.parse().unwrap() }
+
+    #[test]
+    fn ip_prefix_取粗粒度网段() {
+        // v4 → /24,末位归零;v6 → /48,只留前三段。
+        assert_eq!(ip_prefix(&peer("10.1.2.3:1"), &HeaderMap::new()).as_deref(), Some("10.1.2.0/24"));
+        assert_eq!(ip_prefix(&peer("[2001:db8:abcd:1234::1]:1"), &HeaderMap::new()).as_deref(),
+                   Some("2001:db8:abcd::/48"));
+    }
+
+    #[test]
+    fn ip_prefix_优先认网关的xff第一跳() {
+        // 网关后 peer 恒是网关自己,不看 XFF 就把所有访客记成同一个网段。
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("203.0.113.9, 10.0.0.1")).as_deref(),
+                   Some("203.0.113.0/24"));
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(" 203.0.113.9 ")).as_deref(),
+                   Some("203.0.113.0/24"));   // 两侧空格要 trim
+    }
+
+    #[test]
+    fn ip_prefix_畸形xff不panic() {
+        // ⚠ XFF 是**客户端可伪造**的,所以这里只用于粗粒度统计,绝不用于限速判定
+        //   (提取码限速按 token 算,换 IP 绕不过)。畸形输入只要不炸就行。
+        // 两条路径不一样,分开钉住:
+        // ① 头**可读但不是 IP** → 认下来再 parse 失败 → None(不回退,因为它确实声称了个东西)
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("garbage")), None);
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("")), None);
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(",,,")), None);
+        // ② 头**不可读**(非 ASCII,to_str 失败)→ 当作没有这个头 → 回退真实 peer
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", axum::http::HeaderValue::from_bytes("不是IP".as_bytes()).unwrap());
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &h).as_deref(), Some("10.0.0.0/24"));
+    }
 }

@@ -81,10 +81,14 @@ pub async fn begin(
     // ★断点续传★(迁移 0009):带指纹来的先看看「上次没传完的那个文件」还在不在。
     // 条件卡死到本人 + 本空间 + 本目录 + 未完成 + 24h 内——别把别人的半截上传认成我的。
     // 24h 与 lib.rs 的清扫窗口对齐:过期的那半截已被 abort,续也续不上。
-    let mut resume: Option<(i64, String, Vec<(i32, String, i64)>)> = None;
+    let mut resume: Option<(i64, String, String, Vec<(i32, String, i64)>)> = None;
     if let Some(fp) = input.fp.as_deref().filter(|f| !f.trim().is_empty()) {
-        let row: Option<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT id, upload_id FROM items
+        // ★把 upload_key 一起读回来★(v0.3.55 审计发现的静默失效):内容寻址之后,分片是按
+        // `blobs/<sha>` 建的,而这里原本硬拼 `spaces/{sid}/{iid}/blob` 去找 —— 两个 key 对不上,
+        // list_parts 必然失败 → 每次都走「断点已失效」分支重新传。前端**每次上传都带 sha**
+        // (秒传预检顺手算的),所以断点续传实际上对**所有**上传都没生效过,而且不报错只是重传。
+        let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, upload_id, upload_key FROM items
               WHERE space_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND s3_key IS NULL
                 AND created_by = $3 AND upload_fp = $4 AND upload_id IS NOT NULL
                 AND created_at > now() - interval '24 hours'
@@ -92,8 +96,9 @@ pub async fn begin(
         )
         .bind(sid).bind(input.parent_id).bind(actor).bind(fp)
         .fetch_optional(&state.pool).await?;
-        if let Some((old_iid, Some(old_uid))) = row {
-            let old_key = format!("spaces/{sid}/{old_iid}/blob");
+        if let Some((old_iid, Some(old_uid), old_key_col)) = row {
+            // 老行没有 upload_key 就退回旧规则(与 upload_key_of 同一套兼容逻辑)。
+            let old_key = old_key_col.unwrap_or_else(|| format!("spaces/{sid}/{old_iid}/blob"));
             match state.storage.list_parts(&old_key, &old_uid).await {
                 // 断点还在:复用它。已传的片原样保留,前端只补缺的。
                 // ⚠ 先校验切法一致:除最后一片外每片都必须正好 PART_SIZE。
@@ -103,7 +108,7 @@ pub async fn begin(
                     let last = done.iter().map(|(n, _, _)| *n).max().unwrap_or(0);
                     let uniform = done.iter().all(|(n, _, sz)| *n == last || *sz == PART_SIZE);
                     if uniform {
-                        resume = Some((old_iid, old_uid, done));
+                        resume = Some((old_iid, old_uid, old_key.clone(), done));
                     } else {
                         tracing::warn!(item = old_iid, "续传:分片大小与当前 PART_SIZE 不一致,弃用该断点");
                         state.storage.multipart_abort(&old_key, &old_uid).await;
@@ -122,7 +127,7 @@ pub async fn begin(
     }
 
     let (iid, existing) = match &resume {
-        Some((old_iid, old_uid, done)) => (*old_iid, Some((old_uid.clone(), done.clone()))),
+        Some((old_iid, old_uid, old_key, done)) => (*old_iid, Some((old_uid.clone(), old_key.clone(), done.clone()))),
         None => {
             let iid: i64 = sqlx::query_scalar(
                 "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, upload_fp) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
@@ -147,7 +152,9 @@ pub async fn begin(
     // 已存在则另起 `blobs/<sha>-<rand>`:客户端申报的哈希不可信,覆盖已有对象 = 内容投毒。
     // 续传时沿用原 key(断点是按那个 key 建的)。
     let key = match &existing {
-        Some(_) => format!("spaces/{sid}/{iid}/blob"),
+        // ★续传沿用**断点原本那个 key**★(v0.3.55 审计):这里原先也是硬拼 sid/iid,
+        // 于是即使断点侥幸认领成功,接下来的分片和 complete 也会打到另一个 key 上 —— 拼坏且不报错。
+        Some((_, old_key, _)) => old_key.clone(),
         None => match input.sha256.as_deref().map(str::trim).filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())) {
             Some(sha) => {
                 let k = crate::http::items::blob_key(sha);
@@ -163,7 +170,7 @@ pub async fn begin(
     let run = async {
         // 续传复用旧 upload_id;新上传才 create。
         let upload_id = match &existing {
-            Some((uid, _)) => uid.clone(),
+            Some((uid, _, _)) => uid.clone(),
             None => state.storage.multipart_begin(&key, &mime).await?,
         };
         let parts = ((input.size + PART_SIZE - 1) / PART_SIZE).max(1); // 有符号 div_ceil 尚未稳定
@@ -183,7 +190,7 @@ pub async fn begin(
             sqlx::query("UPDATE items SET upload_id = $1, upload_fp = COALESCE($2, upload_fp) WHERE id = $3")
                 .bind(&upload_id).bind(input.fp.as_deref()).bind(iid)
                 .execute(&state.pool).await?;
-            let done = existing.map(|(_, d)| d).unwrap_or_default();
+            let done = existing.map(|(_, _, d)| d).unwrap_or_default();
             if !done.is_empty() {
                 tracing::info!(item = iid, parts = done.len(), "续传:跳过已传分片");
             }
@@ -359,10 +366,12 @@ pub async fn play(
     // 谁拿到谁能取原件。对 video 这是刻意的(能播就能录屏,D4 也明说不拦播放);
     // 但对 pdf/zip/doc 就等于**把 viewer_no_download 整条开关废掉**——viewer 打一下
     // /api/items/{id}/play 就拿到原件下载地址。所以这里钉死 kind。
-    let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, s3_key FROM items WHERE id = $1")
-        .bind(iid)
-        .fetch_optional(&state.pool)
-        .await?;
+    // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的录屏不再吐预签名直链。
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT kind, s3_key FROM items WHERE id = $1 AND deleted_at IS NULL")
+            .bind(iid)
+            .fetch_optional(&state.pool)
+            .await?;
     let Some((kind, key)) = row else { return Err(AppError::NotFound) };
     if kind != "video" {
         return Err(AppError::BadRequest("只有录屏/视频能用播放地址(其他类型走 /download,受空间下载策略约束)".into()));

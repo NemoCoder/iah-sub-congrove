@@ -63,7 +63,10 @@ export function SharePage({ token }: { token: string }) {
     } catch (e) {
       const m = (e as Error).message
       // 提取码错是可重试的;其它(404)一律当「链接已失效」——服务端刻意不区分原因。
-      if (m.includes('提取码')) setErr('提取码不对,再试一次')
+      // ★被限速时要原样透出服务端那句★(v0.3.55):限速消息里也带「提取码」三个字,
+      // 早先一律改写成「提取码不对」,结果用户看不到「已被限速」,只会继续一遍遍试。
+      if (m.includes('次数过多')) setErr(m)
+      else if (m.includes('提取码')) setErr('提取码不对,再试一次')
       else setPhase('gone')
     } finally { setBusy(false) }
   }, [token])

@@ -79,6 +79,12 @@ pub async fn precheck(
     if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(AppError::BadRequest("sha256 形状不对".into()));
     }
+    // ★size 必须非负★(v0.3.55 审计):下面命中时用 `size.unwrap_or(input.size)` —— 库里那份
+    // size 为 NULL(历史行)时会退回客户端申报值。申报个负数,配额判断 `used + size > quota`
+    // 恒为假、直接放行,还会把负数写进 items.size,把整个空间的已用量算小(甚至算成负的)。
+    if input.size < 0 {
+        return Err(AppError::BadRequest("size 不能为负".into()));
+    }
     let Some((key, size, mime)) = readable_blob(&state, &id, &sha).await? else {
         // 没命中(或命中了但我读不到那份)→ 照常传。key 给出去,传完就是内容寻址的共享对象。
         return Ok(Json(json!({ "instant": false })));
@@ -186,7 +192,8 @@ pub async fn detail(
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at FROM items WHERE id = $1",
+        "SELECT id, space_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at
+           FROM items WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(iid)
     .fetch_optional(&state.pool)
@@ -256,13 +263,17 @@ pub struct ItemIn {
     pub parent_id: Option<i64>,
 }
 
-/// 校验 parent:必须存在、是 folder、且在同一空间(防把子树挂到别的空间绕权限)。
+/// 校验 parent:必须存在、是 folder、在同一空间(防把子树挂到别的空间绕权限)、**且不在回收站里**。
+/// ★deleted_at IS NULL★(v0.3.55 审计):原先没这一条,于是能把新建或移动的内容挂到一个
+/// 已经删掉的文件夹底下 —— 子项自己 deleted_at 是 NULL、父却不在树里,tree 拉不到它的父,
+/// 结果是个**谁也看不见、回收站里也找不到的孤儿**(要等有人恰好还原了那个父目录才会重现)。
 pub async fn check_parent(pool: &sqlx::PgPool, sid: i64, parent_id: Option<i64>) -> AppResult<()> {
     if let Some(pid) = parent_id {
-        let ok: Option<(i64, String)> = sqlx::query_as("SELECT space_id, kind FROM items WHERE id = $1")
-            .bind(pid)
-            .fetch_optional(pool)
-            .await?;
+        let ok: Option<(i64, String)> =
+            sqlx::query_as("SELECT space_id, kind FROM items WHERE id = $1 AND deleted_at IS NULL")
+                .bind(pid)
+                .fetch_optional(pool)
+                .await?;
         match ok {
             Some((psid, kind)) if psid == sid && kind == "folder" => {}
             _ => return Err(AppError::BadRequest("父节点不存在或不是本空间的文件夹".into())),
@@ -325,6 +336,10 @@ pub async fn update(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
+    // 回收站里的东西不给改名/移动 —— 要动它先还原(v0.3.55 审计)。
+    let alive: Option<i64> = sqlx::query_scalar("SELECT id FROM items WHERE id = $1 AND deleted_at IS NULL")
+        .bind(iid).fetch_optional(&state.pool).await?;
+    if alive.is_none() { return Err(AppError::NotFound) }
     if let Some(new_parent) = p.parent_id {
         check_parent(&state.pool, sid, new_parent).await?;
         if let Some(np) = new_parent {
@@ -423,14 +438,25 @@ pub async fn undelete(
     require_role(&state.pool, &id, sid, Role::Editor).await?;
     let actor = id.require_username()?;
     let mut tx = state.pool.begin().await?;
+    // ★只还原「和它同一批被删的」行★(v0.3.55 审计)。remove 是一条 UPDATE 打的标记,
+    // 同一次删除动作里所有行的 deleted_at 完全相等,拿它当批次号。
+    // 原先用 `deleted_at IS NOT NULL` 还原整棵子树,会把**先前单独删掉的子项一起复活**:
+    //   删文件 a(T1) → 删它的父目录 F(T2,a 因已有标记不动) → 还原 F ⇒ a 也回来了。
+    // 用户明确删过的东西自己爬回来,是数据错误,不是便利。
+    let batch: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT deleted_at FROM items WHERE id = $1")
+            .bind(iid).fetch_optional(&mut *tx).await?.flatten();
+    let Some(batch) = batch else {
+        return Err(AppError::BadRequest("这一项不在回收站里".into()));
+    };
     let n = sqlx::query(
         "WITH RECURSIVE sub AS (
            SELECT id FROM items WHERE id = $1
            UNION ALL SELECT i.id FROM items i JOIN sub ON i.parent_id = sub.id
          )
          UPDATE items SET deleted_at = NULL, deleted_by = NULL
-          WHERE id IN (SELECT id FROM sub) AND deleted_at IS NOT NULL",
-    ).bind(iid).execute(&mut *tx).await?.rows_affected();
+          WHERE id IN (SELECT id FROM sub) AND deleted_at = $2",
+    ).bind(iid).bind(batch).execute(&mut *tx).await?.rows_affected();
     // ★父目录一起还原★(2026-08-05 用户纠正:原来是挪到空间根)。
     // 还原一份材料却把它从原来的目录里拽出来,等于"还原了但路径没了" —— 用户要找回的是
     // 「东西回到它原来在的地方」。所以沿 parent 链往上,把还在回收站里的祖先一并还原。
@@ -459,6 +485,16 @@ pub async fn purge(
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Admin).await?;
     let actor = id.require_username()?;
+    // ★必须先在回收站里★(v0.3.55 审计):原先这里不看 deleted_at,空间 admin 直接
+    // DELETE /api/items/{id}/purge 就能把一个**正常的、没删过的**文件永久抹掉,绕开回收站
+    // ——正对着「所有的删除都是软删除」这条要求。UI 上没这个入口,但 API 是公开的,
+    // 而且到期清理任务也调 purge_subtree,唯有在这道人工入口上钉死才算数。
+    let trashed: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT deleted_at FROM items WHERE id = $1")
+            .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    if trashed.is_none() {
+        return Err(AppError::BadRequest("只能彻底删除回收站里的内容,请先删除(软删除)".into()));
+    }
     let n = purge_subtree(&state, iid).await?;
     audit::record(&state.pool, actor, "item.purge", &iid.to_string(), &format!("space={sid} 彻底删除,清对象 {n}")).await;
     Ok(Json(json!({ "ok": true, "objects_deleted": n })))
@@ -501,7 +537,7 @@ pub async fn content_get(
 ) -> AppResult<Response> {
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Viewer).await?;
-    let key: Option<String> = sqlx::query_scalar("SELECT s3_key FROM items WHERE id = $1 AND kind = 'doc'")
+    let key: Option<String> = sqlx::query_scalar("SELECT s3_key FROM items WHERE id = $1 AND kind = 'doc' AND deleted_at IS NULL")
         .bind(iid)
         .fetch_optional(&state.pool)
         .await?
@@ -530,8 +566,9 @@ pub async fn content_put(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
+    // 回收站里的文档不接受写入(v0.3.55 审计):否则改完还得先还原才看得见,白改一场。
     let row: Option<(String, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT kind, s3_key, sha256 FROM items WHERE id = $1")
+        sqlx::query_as("SELECT kind, s3_key, sha256 FROM items WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;
@@ -874,8 +911,9 @@ pub async fn download(
             return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
         }
     }
+    // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =
-        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1")
+        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;
