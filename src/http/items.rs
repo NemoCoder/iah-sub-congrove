@@ -557,6 +557,8 @@ pub async fn upload(
                     .bind(&key).bind(total).bind(&sha).bind(iid)
                     .execute(&state.pool)
                     .await?;
+                // 录屏/录音传完即自动排队生成纪要(2026-08-05,与预签名直传那条路径一致)。
+                crate::http::media::enqueue_analysis(&state, iid, actor).await;
                 done.push(json!({ "id": iid, "sha256": sha, "size": total, "name": fname }));
             }
             Err(e) => {

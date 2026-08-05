@@ -6,9 +6,10 @@ import {
 } from 'antd'
 import { DeleteOutlined, DownloadOutlined, EditOutlined, ShareAltOutlined, SwapOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MarkdownView, FilePreview, ItemIcon, fmtSize } from './preview'
 import { VideoPlayer, openViewer } from './video-player'
+import { Analysis } from './analysis'
 import {
   CANCELED, DIRECT_THRESHOLD, cancelUpload, directUpload, newCtl, probeDirect, xhrUpload, type UploadCtl,
 } from './upload'
@@ -161,7 +162,9 @@ export function SpacesView({ me }: { me: Me | null }) {
           }
         }
         if (!done) await xhrUpload(`/api/spaces/${sid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)
-        message.success(`${f.name} 上传完成`)
+        // 录屏/录音传完后端会自动排队生成纪要(v0.3.49),这里说一声,免得用户以为要手动点。
+        const auto = f.type.startsWith('video/') || f.type.startsWith('audio/')
+        message.success(`${f.name} 上传完成${auto ? '——已自动排队生成纪要' : ''}`)
       } catch (e) {
         // 取消是用户自己按的,不当错误刷红(directUpload 的 catch 已顺手 abort 掉半截 multipart)。
         if (t.ctl.canceled || (e as Error).message === CANCELED) message.info(`${f.name} 已取消`)
@@ -592,6 +595,10 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
         )
       ) : item.kind === 'video' ? (
         <VideoPlayer item={item} />
+      ) : item.mime?.startsWith('audio/') ? (
+        // 音频没有单独的 kind(见后端 http::media::analyzable):按 mime 认,
+        // 给一个原生播放器 + 同一套 AI 纪要(转写/大纲/决议/逐字稿都适用于录音)。
+        <AudioPanel item={item} />
       ) : (
         <FilePreview item={item} />
       )}
@@ -808,6 +815,19 @@ function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: 
         </div>
       )}
     </Modal>
+  )
+}
+
+/// 音频面板:原生 <audio> + AI 纪要。上传后纪要已自动排队(后端 enqueue_analysis),
+/// 所以打开时通常直接看到「排队中/转写中」的进度,不用再点一次生成。
+function AudioPanel({ item }: { item: Item }) {
+  const ref = useRef<HTMLAudioElement>(null)
+  return (
+    <>
+      <audio ref={ref} controls preload="metadata" src={`/api/items/${item.id}/download?inline=1`}
+        style={{ width: '100%' }} />
+      <Analysis item={item} onSeek={(t) => { if (ref.current) { ref.current.currentTime = t; void ref.current.play() } }} />
+    </>
   )
 }
 

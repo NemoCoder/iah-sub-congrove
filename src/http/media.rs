@@ -295,6 +295,8 @@ pub async fn complete(
         .bind(iid)
         .execute(&state.pool)
         .await?;
+    // 录屏/录音传完即自动排队生成纪要(2026-08-05):后台队列串行跑,用户不用再点一次。
+    enqueue_analysis(&state, iid, id.require_username()?).await;
     Ok(Json(json!({ "ok": true, "size": size })))
 }
 
@@ -356,6 +358,34 @@ pub async fn play(
 
 // ── 录屏分析(转写 + 纪要),docs/VIDEO-SUMMARY.md P1 ────────────────────────
 
+/// 这一项能不能做转写+纪要:**视频**或**音频**。
+/// 音频没有单独的 kind(items.kind 的 CHECK 只有 folder/doc/file/video),按 mime 认——
+/// 加一档 kind 要改 CHECK 约束还要牵动图标/播放器/预览三处,收益不抵改动面。
+pub async fn analyzable(pool: &sqlx::PgPool, iid: i64) -> AppResult<bool> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, mime FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(pool).await?;
+    let (kind, mime) = row.ok_or(AppError::NotFound)?;
+    Ok(kind == "video" || mime.as_deref().is_some_and(|m| m.starts_with("audio/")))
+}
+
+/// 排一个分析任务(幂等:同一项已有 queued/running 就什么都不做)。
+/// 上传完成后自动调用——用户传完录音/录屏不用再点一次「生成纪要」(2026-08-05 需求)。
+/// ⚠ 只在 ASR 端点已注入时排:没配就排 = 攒一堆必败的任务,还把失败态摆给用户看。
+pub async fn enqueue_analysis(state: &AppState, iid: i64, actor: &str) {
+    if state.config.asr_base_url.is_none() { return }
+    match analyzable(&state.pool, iid).await {
+        Ok(true) => {}
+        _ => return,
+    }
+    let r = sqlx::query("INSERT INTO media_jobs (item_id, requested_by) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+        .bind(iid).bind(actor).execute(&state.pool).await;
+    match r {
+        Ok(q) if q.rows_affected() > 0 => tracing::info!(item = iid, "上传完成:已自动排队生成纪要"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, item = iid, "自动排队失败(用户仍可手动点生成)"),
+    }
+}
+
 /// POST /api/items/{id}/analyze(≥editor)—— 排一个分析任务。
 /// 已有在跑的任务就返回它(唯一部分索引挡住重复排队),不报错。
 pub async fn analyze(
@@ -365,10 +395,8 @@ pub async fn analyze(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
-    let kind: String = sqlx::query_scalar("SELECT kind FROM items WHERE id=$1")
-        .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    if kind != "video" {
-        return Err(AppError::BadRequest("只能分析视频".into()));
+    if !analyzable(&state.pool, iid).await? {
+        return Err(AppError::BadRequest("只能分析视频或音频".into()));
     }
     let job: Option<i64> = sqlx::query_scalar(
         "INSERT INTO media_jobs (item_id, requested_by) VALUES ($1,$2)

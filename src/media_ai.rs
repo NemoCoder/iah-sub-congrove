@@ -128,13 +128,16 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
 
     // 1) 取录屏(流式落盘,别整个进内存——512Mi 资源档)
     stage(&state.pool, job_id, "下载录屏", 5).await;
-    let key: String = sqlx::query_scalar("SELECT s3_key FROM items WHERE id=$1 AND kind='video'")
+    // 视频或音频都收(音频没有单独的 kind,按 mime 认;见 http::media::analyzable)。
+    let key: String = sqlx::query_scalar(
+        "SELECT s3_key FROM items WHERE id=$1 AND (kind='video' OR mime LIKE 'audio/%')")
         .bind(item_id).fetch_optional(&state.pool).await?
-        .flatten().ok_or_else(|| anyhow!("这不是一个已上传完成的视频"))?;
+        .flatten().ok_or_else(|| anyhow!("这不是一个已上传完成的视频/音频"))?;
     let video = workdir.join("input.bin");
     download_to(state, &key, &video).await.context("从对象存储取录屏")?;
 
-    // 2) 抽音轨:16k 单声道,**opus 24kbps**(体积 ≈ WAV 的 1/10,服务端 ffmpeg 照收)
+    // 2) 抽音轨:16k 单声道,**opus 24kbps**(体积 ≈ WAV 的 1/10,服务端 ffmpeg 照收)。
+    //    音频文件走同一条:-vn 对没有视频流的输入是 no-op,转码顺带把 mp3/m4a/wav 统一成 opus。
     stage(&state.pool, job_id, "抽取音轨", 15).await;
     let audio = workdir.join("audio.opus");
     run_ffmpeg(&["-i", video.to_str().unwrap(), "-vn", "-ac", "1", "-ar", "16000",
