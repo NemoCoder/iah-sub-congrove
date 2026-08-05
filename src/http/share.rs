@@ -124,6 +124,36 @@ pub async fn list(
     })).collect()))
 }
 
+/// GET /api/shares/mine —— **我发出去的全部分享**(跨空间)。
+/// 2026-08-05 用户:分享链接要有个独立的地方统一看,而不是散在每个文件的对话框里。
+/// 只回我自己创建的(别人的分享与我无关);带上内容名、空间名、访问次数与状态。
+pub async fn mine(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> AppResult<Json<Vec<serde_json::Value>>> {
+    let me = id.require_username()?;
+    let rows: Vec<(String, i64, String, String, Option<String>, String,
+                   Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool,
+                   chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
+                   Option<chrono::DateTime<chrono::Utc>>, bool, i64)> = sqlx::query_as(
+        "SELECT l.token, i.id, i.kind, i.name, i.mime, s.name,
+                l.expires_at, l.max_visits, l.visits, l.allow_download, l.created_at,
+                l.revoked_at, l.last_visit_at, (l.code_hash IS NOT NULL),
+                (SELECT count(*) FROM share_items si WHERE si.token = l.token)
+           FROM share_links l
+           JOIN items  i ON i.id = l.item_id
+           JOIN spaces s ON s.id = i.space_id
+          WHERE l.created_by = $1
+          ORDER BY l.created_at DESC LIMIT 500",
+    ).bind(me).fetch_all(&state.pool).await?;
+    Ok(Json(rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt)| json!({
+        "token": token, "item_id": iid, "kind": kind, "name": name, "mime": mime, "space": space,
+        "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
+        "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
+        "item_count": if cnt > 0 { cnt } else { 1 },
+    })).collect()))
+}
+
 /// DELETE /api/shares/{token} —— 撤销(创建者或空间 admin)。保留行,便于事后审计与统计。
 pub async fn revoke(
     State(state): State<AppState>,

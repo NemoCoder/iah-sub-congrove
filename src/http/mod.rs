@@ -61,6 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))
         // 公开分享的**管理面**(建/列/撤销;建与列要 ≥editor,见 share.rs 头注)
         .route("/items/{id}/shares", get(share::list).post(share::create))
+        .route("/shares/mine", get(share::mine))
         .route("/shares/{token}", axum::routing::delete(share::revoke))
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))

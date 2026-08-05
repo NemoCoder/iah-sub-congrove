@@ -461,6 +461,9 @@ export function SpacesView({ me }: { me: Me | null }) {
                     </AntSpace>
                   ) : (
                     <AntSpace size={10}>
+                      {/* ★行内分享★:文件与文件夹都能分享(公开链接,可设提取码/有效期/次数)。
+                          ⚠ 这一行 v0.3.48 加过,后来清理旧的 copyShare 时被连带删掉了(2026-08-05 用户三次提醒)。 */}
+                      {canEdit && <Tooltip title="分享"><a onClick={() => setShareFor([it])}><ShareAltOutlined /></a></Tooltip>}
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
@@ -914,7 +917,6 @@ function AudioPanel({ item }: { item: Item }) {
 function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) {
   const item = items[0]  // 主项:标题与「已有链接」列表按它查(多选时其余项登记在 share_items)
   const { message } = AntdApp.useApp()
-  const [links, setLinks] = useState<ShareLink[]>([])
   const [code, setCode] = useState(randomCode())
   const [useCode, setUseCode] = useState(true)
   const [days, setDays] = useState<number | null>(7)
@@ -922,10 +924,6 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
   const [allowDownload, setAllowDownload] = useState(true)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
-    try { setLinks(await api<ShareLink[]>(`/api/items/${item.id}/shares`)) } catch { setLinks([]) }
-  }, [item.id])
-  useEffect(() => { void load() }, [load])
 
   const create = async () => {
     setBusy(true)
@@ -941,8 +939,7 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
       const url = `${window.location.origin}/s/${r.token}`
       const text = r.code ? `${url}\n提取码:${r.code}` : url
       try { await navigator.clipboard.writeText(text); message.success('链接已复制' + (r.code ? '(含提取码)' : '')) }
-      catch { message.info('链接已生成,见下方列表') }
-      await load()
+      catch { message.info('链接已生成,可在「我的分享」页复制') }
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
 
@@ -981,40 +978,12 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
         <Button type="primary" loading={busy} onClick={create}>生成链接并复制</Button>
       </AntSpace>
 
-      <Typography.Text strong style={{ display: 'block', margin: '16px 0 6px' }}>已有链接</Typography.Text>
-      <Table size="small" rowKey="token" dataSource={links} pagination={false}
-        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有分享过" /> }}
-        columns={[
-          { title: '链接', dataIndex: 'token', ellipsis: true,
-            render: (t: string, r) => (
-              <a onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/s/${t}`); message.success('已复制') }}>
-                /s/{t.slice(0, 8)}… {r.has_code && <Tag>有提取码</Tag>}
-              </a>) },
-          { title: '访问', width: 78, render: (_, r) => `${r.visits}${r.max_visits ? ` / ${r.max_visits}` : ''}` },
-          { title: '状态', width: 96, render: (_, r) => (
-              r.revoked_at ? <Tag color="red">已撤销</Tag>
-                : r.expires_at && new Date(r.expires_at) < new Date() ? <Tag>已过期</Tag>
-                : r.max_visits != null && r.visits >= r.max_visits ? <Tag>次数用尽</Tag>
-                : <Tag color="green">有效</Tag>) },
-          { title: '到期', width: 118, render: (_, r) => (r.expires_at ? fmtTime(r.expires_at) : '永久') },
-          { title: '', width: 52, render: (_, r) => (r.revoked_at ? null : (
-              <Popconfirm title="撤销这条链接?" description="撤销后立刻失效,已发出去的链接也打不开。"
-                onConfirm={async () => {
-                  try { await api(`/api/shares/${r.token}`, { method: 'DELETE' }); message.success('已撤销'); await load() }
-                  catch (e) { message.error((e as Error).message) }
-                }}>
-                <a style={{ color: '#ff4d4f' }}>撤销</a>
-              </Popconfirm>)) },
-        ]} />
+      {/* 「已有链接」不在这里列了(2026-08-05 用户):生成链接的对话框就该只管生成,
+          管理散落在每个文件里没法用。全部分享集中在顶部「🔗 我的分享」页。 */}
     </Modal>
   )
 }
 
-type ShareLink = {
-  token: string; expires_at: string | null; max_visits: number | null; visits: number
-  allow_download: boolean; created_by: string; created_at: string
-  revoked_at: string | null; last_visit_at: string | null; has_code: boolean
-}
 
 /// 4 位提取码(去掉易混的 0/O/1/l/I)。只是默认值,用户可改。
 function randomCode(): string {

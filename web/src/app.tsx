@@ -8,6 +8,7 @@ import { ViewerPage } from './viewer-page'
 import { GroupsView } from './groups-view'
 import { SpacesView } from './spaces-view'
 import { SharePage } from './share-page'
+import { SharesView } from './shares-view'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -34,7 +35,7 @@ export function App() {
 
   const [me, setMe] = useState<Me | null>(null)
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
-  const [view, setView] = useState<'spaces' | 'groups'>('spaces')
+  const [view, setView] = useState<'spaces' | 'groups' | 'shares'>('spaces')
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -64,11 +65,15 @@ export function App() {
       <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
         <Segmented
           value={view}
-          onChange={(v) => setView(v as 'spaces' | 'groups')}
-          options={[{ value: 'spaces', label: '🌳 空间' }, { value: 'groups', label: '👥 小组' }]}
+          onChange={(v) => setView(v as 'spaces' | 'groups' | 'shares')}
+          options={[
+            { value: 'spaces', label: '🌳 空间' },
+            { value: 'groups', label: '👥 小组' },
+            { value: 'shares', label: '🔗 我的分享' },
+          ]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView me={me} /> : <GroupsView />}
+        {view === 'spaces' ? <SpacesView me={me} /> : view === 'groups' ? <GroupsView /> : <SharesView />}
       </div>
     </div>
   )

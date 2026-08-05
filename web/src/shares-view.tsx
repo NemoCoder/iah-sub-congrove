@@ -1,0 +1,83 @@
+// 「我的分享」——把发出去的公开链接集中在一处(2026-08-05 用户:别散在每个文件的对话框里)。
+// 只列**我自己创建的**:别人的分享与我无关,也不该让我看见。
+import { App as AntdApp, Card, Empty, Popconfirm, Space as AntSpace, Table, Tag, Typography } from 'antd'
+import { CopyOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useState } from 'react'
+import { ItemIcon } from './preview'
+import { api, type Item } from './api'
+
+type Row = {
+  token: string; item_id: number; kind: Item['kind']; name: string; mime: string | null; space: string
+  expires_at: string | null; max_visits: number | null; visits: number; allow_download: boolean
+  created_at: string; revoked_at: string | null; last_visit_at: string | null
+  has_code: boolean; item_count: number
+}
+
+function fmt(s: string | null) {
+  if (!s) return '—'
+  const d = new Date(s); const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/// 状态是**算出来的**,不是存的:过期/次数用尽都会随时间自然发生,存一个字段就得有人去刷新它。
+function status(r: Row) {
+  if (r.revoked_at) return <Tag color="red">已撤销</Tag>
+  if (r.expires_at && new Date(r.expires_at) < new Date()) return <Tag>已过期</Tag>
+  if (r.max_visits != null && r.visits >= r.max_visits) return <Tag>次数用尽</Tag>
+  return <Tag color="green">有效</Tag>
+}
+
+export function SharesView() {
+  const { message } = AntdApp.useApp()
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try { setRows(await api<Row[]>('/api/shares/mine')) } catch { setRows([]) } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const copy = async (t: string) => {
+    const url = `${window.location.origin}/s/${t}`
+    try { await navigator.clipboard.writeText(url); message.success('链接已复制') }
+    catch { message.info(url) }
+  }
+
+  return (
+    <Card>
+      <Typography.Text strong style={{ fontSize: 15 }}>我发出去的分享</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 12px' }}>
+        公开链接:拿到的人不需要是空间成员。撤销后立刻失效,已发出去的也打不开。
+      </Typography.Paragraph>
+      <Table size="small" rowKey="token" dataSource={rows} loading={loading} pagination={{ pageSize: 20, hideOnSinglePage: true }}
+        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有发出过分享链接" /> }}
+        columns={[
+          { title: '内容', dataIndex: 'name', ellipsis: true,
+            render: (_, r) => (
+              <span><ItemIcon it={r} />{r.name}
+                {r.item_count > 1 && <Tag style={{ marginLeft: 6 }}>共 {r.item_count} 项</Tag>}</span>) },
+          { title: '空间', dataIndex: 'space', width: 130, ellipsis: true },
+          { title: '链接', width: 150, render: (_, r) => (
+            <a onClick={() => copy(r.token)}><CopyOutlined /> /s/{r.token.slice(0, 8)}…</a>) },
+          { title: '提取码', width: 74, render: (_, r) => (r.has_code ? <Tag>有</Tag> : <Tag color="orange">无</Tag>) },
+          { title: '下载', width: 64, render: (_, r) => (r.allow_download ? '允许' : '禁止') },
+          { title: '访问', width: 74, render: (_, r) => `${r.visits}${r.max_visits ? ` / ${r.max_visits}` : ''}` },
+          { title: '最近访问', dataIndex: 'last_visit_at', width: 132, render: (v) => fmt(v) },
+          { title: '到期', width: 132, render: (_, r) => (r.expires_at ? fmt(r.expires_at) : '永久') },
+          { title: '状态', width: 92, render: (_, r) => status(r) },
+          { title: '', width: 52, render: (_, r) => (r.revoked_at ? null : (
+            <Popconfirm title="撤销这条链接?" description="撤销后立刻失效,已发出去的链接也打不开。"
+              onConfirm={async () => {
+                try { await api(`/api/shares/${r.token}`, { method: 'DELETE' }); message.success('已撤销'); await load() }
+                catch (e) { message.error((e as Error).message) }
+              }}>
+              <a style={{ color: '#ff4d4f' }}>撤销</a>
+            </Popconfirm>)) },
+        ]} />
+      <AntSpace style={{ marginTop: 10 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 条</Typography.Text>
+      </AntSpace>
+    </Card>
+  )
+}
