@@ -4,7 +4,10 @@ import {
   Alert, App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
-import { DeleteOutlined, DownloadOutlined, EditOutlined, ShareAltOutlined, SwapOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
+  ShareAltOutlined, SwapOutlined, UploadOutlined,
+} from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MarkdownView, FilePreview, ItemIcon, fmtSize } from './preview'
@@ -374,10 +377,17 @@ export function SpacesView({ me }: { me: Me | null }) {
             <AntSpace style={{ marginBottom: 10 }} wrap>
               <Upload showUploadList={false} multiple
                 customRequest={({ file, onSuccess }) => { uploadFiles([file as File]).then(() => onSuccess?.({})) }}>
-                <Button type="primary" size="small">⬆ 上传文件</Button>
+                <Button type="primary" size="small" icon={<UploadOutlined />}>上传文件</Button>
               </Upload>
-              <Button size="small" onClick={() => newItem('folder')}>📁 新建文件夹</Button>
-              <Button size="small" onClick={() => newItem('doc')}>📝 新建文档</Button>
+              {/* ★只给图标★(2026-08-05 用户:文字太占地方,参考 VSCode)。
+                  FolderAddOutlined / FileAddOutlined 就是 VSCode 资源管理器那两个
+                  「新建文件夹 / 新建文件」的形态(容器 + 加号),hover 出文字补足语义。 */}
+              <Tooltip title="新建文件夹">
+                <Button size="small" icon={<FolderAddOutlined />} onClick={() => newItem('folder')} />
+              </Tooltip>
+              <Tooltip title="新建文档">
+                <Button size="small" icon={<FileAddOutlined />} onClick={() => newItem('doc')} />
+              </Tooltip>
               <Button size="small" icon={<DeleteOutlined />} onClick={() => setTrashOpen(true)}>回收站</Button>
               {checkedItems.length > 0 && (
                 <>
