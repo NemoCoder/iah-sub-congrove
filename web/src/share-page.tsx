@@ -36,9 +36,17 @@ export function SharePage({ token }: { token: string }) {
   const [count, setCount] = useState(1)
 
   useEffect(() => {
+    // 链接里带 ?pwd= 就自动填上(百度那套「免输码链接」)。分享者若想把链接与码分开发,
+    // 复制的是不带 pwd 的那份 —— 两种文案在生成对话框里都给了。
+    const fromUrl = new URLSearchParams(window.location.search).get('pwd')
     pub<{ needs_code: boolean }>(`/pub/share/${token}`)
-      .then((m) => setPhase(m.needs_code ? 'code' : 'open'))
+      .then((m) => {
+        if (!m.needs_code) { setPhase('open'); return }
+        if (fromUrl) { setCode(fromUrl); setPhase('code'); void open(fromUrl); return }
+        setPhase('code')
+      })
       .catch(() => setPhase('gone'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
   // 无提取码的分享:拿到 meta 就直接开

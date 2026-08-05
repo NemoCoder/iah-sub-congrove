@@ -923,6 +923,9 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
   const [maxVisits, setMaxVisits] = useState<number | null>(null)
   const [allowDownload, setAllowDownload] = useState(true)
   const [busy, setBusy] = useState(false)
+  // 刚生成的这条:提取码**只在此刻拿得到**(库里存的是加盐哈希,事后取不回),
+  // 所以留在对话框里让用户能再复制一次。
+  const [lastLink, setLastLink] = useState<{ url: string; code: string | null; text: string } | null>(null)
 
 
   const create = async () => {
@@ -936,10 +939,20 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
           items: items.map((i) => i.id),   // 多选分享:一条链接带这些内容
         }),
       })
+      // ★复制文案带内容名★(2026-08-05 用户:不然对方不知道分享的是啥;百度网盘也是
+      //   「通过网盘分享的文件:xxx」开头)。多项时给第一个名字 + 「等 N 项」。
       const url = `${window.location.origin}/s/${r.token}`
-      const text = r.code ? `${url}\n提取码:${r.code}` : url
-      try { await navigator.clipboard.writeText(text); message.success('链接已复制' + (r.code ? '(含提取码)' : '')) }
-      catch { message.info('链接已生成,可在「我的分享」页复制') }
+      const what = items.length > 1 ? `${item.name} 等 ${items.length} 项` : item.name
+      const life = days ? `${days} 天内有效` : '长期有效'
+      const text = [
+        `通过汇流分享:${what}`,
+        `链接:${url}`,
+        ...(r.code ? [`提取码:${r.code}`] : []),
+        life,
+      ].join('\n')
+      setLastLink({ url, code: r.code, text })
+      try { await navigator.clipboard.writeText(text); message.success('分享文案已复制' + (r.code ? '(含提取码)' : '')) }
+      catch { message.info('链接已生成,见下方') }
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
 
@@ -980,6 +993,32 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
 
       {/* 「已有链接」不在这里列了(2026-08-05 用户):生成链接的对话框就该只管生成,
           管理散落在每个文件里没法用。全部分享集中在顶部「🔗 我的分享」页。 */}
+      {lastLink && (
+        <Alert type="success" showIcon style={{ marginTop: 14 }}
+          message="已生成(文案已复制到剪贴板)"
+          description={
+            <AntSpace direction="vertical" size={6} style={{ width: '100%' }}>
+              <Input.TextArea readOnly value={lastLink.text} autoSize style={{ fontSize: 12 }}
+                onFocus={(e) => e.target.select()} />
+              <AntSpace wrap>
+                <Button size="small" onClick={() => { void navigator.clipboard.writeText(lastLink.text); message.success('已复制') }}>
+                  复制文案
+                </Button>
+                {lastLink.code && (
+                  // ?pwd= 是百度那套「提取码自动填充」的做法:一步直达,代价是**链接即等于码**。
+                  // 两种都给,让用户按场景选:要分开发就用上面的文案,图省事就用这个。
+                  <Button size="small" onClick={() => {
+                    void navigator.clipboard.writeText(`${lastLink.url}?pwd=${lastLink.code}`)
+                    message.success('已复制(链接自带提取码,打开即免输)')
+                  }}>复制免输码链接</Button>
+                )}
+              </AntSpace>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                ⚠ 提取码只在这里能看到一次(库里存的是哈希,事后取不回)。
+              </Typography.Text>
+            </AntSpace>
+          } />
+      )}
     </Modal>
   )
 }

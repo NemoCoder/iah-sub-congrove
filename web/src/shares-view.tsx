@@ -38,9 +38,13 @@ export function SharesView() {
   }, [])
   useEffect(() => { void load() }, [load])
 
-  const copy = async (t: string) => {
-    const url = `${window.location.origin}/s/${t}`
-    try { await navigator.clipboard.writeText(url); message.success('链接已复制') }
+  /// 复制带内容名的文案。⚠ **提取码这里给不出**——库里存的是加盐哈希,只有生成那一刻能看到;
+  /// 所以这条文案只带链接,提取码要分享者自己记着(UI 上已说明)。
+  const copy = async (r: Row) => {
+    const url = `${window.location.origin}/s/${r.token}`
+    const what = r.item_count > 1 ? `${r.name} 等 ${r.item_count} 项` : r.name
+    const text = `通过汇流分享:${what}\n链接:${url}${r.has_code ? '\n(需要提取码)' : ''}`
+    try { await navigator.clipboard.writeText(text); message.success('已复制') }
     catch { message.info(url) }
   }
 
@@ -49,6 +53,7 @@ export function SharesView() {
       <Typography.Text strong style={{ fontSize: 15 }}>我发出去的分享</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 12px' }}>
         公开链接:拿到的人不需要是空间成员。撤销后立刻失效,已发出去的也打不开。
+        提取码只在生成时显示一次(库里存的是哈希),这里复制的文案只带链接。
       </Typography.Paragraph>
       <Table size="small" rowKey="token" dataSource={rows} loading={loading} pagination={{ pageSize: 20, hideOnSinglePage: true }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有发出过分享链接" /> }}
@@ -59,7 +64,7 @@ export function SharesView() {
                 {r.item_count > 1 && <Tag style={{ marginLeft: 6 }}>共 {r.item_count} 项</Tag>}</span>) },
           { title: '空间', dataIndex: 'space', width: 130, ellipsis: true },
           { title: '链接', width: 150, render: (_, r) => (
-            <a onClick={() => copy(r.token)}><CopyOutlined /> /s/{r.token.slice(0, 8)}…</a>) },
+            <a onClick={() => copy(r)}><CopyOutlined /> /s/{r.token.slice(0, 8)}…</a>) },
           { title: '提取码', width: 74, render: (_, r) => (r.has_code ? <Tag>有</Tag> : <Tag color="orange">无</Tag>) },
           { title: '下载', width: 64, render: (_, r) => (r.allow_download ? '允许' : '禁止') },
           { title: '访问', width: 74, render: (_, r) => `${r.visits}${r.max_visits ? ` / ${r.max_visits}` : ''}` },
