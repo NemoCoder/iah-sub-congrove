@@ -43,6 +43,11 @@ pub struct BeginIn {
     pub size: i64,
     pub mime: Option<String>,
     pub parent_id: Option<i64>,
+    /// 文件内容的 sha256(前端算完预检时顺手带来)。有它就走**内容寻址** blobs/<sha>:
+    /// 同样内容全库一份。⚠ 客户端申报的哈希**不可信**——所以只在 blobs/<sha> **不存在**时才用它;
+    /// 已存在说明别人先传过同名内容,这时另起一个 key(否则申报个假哈希就能覆盖别人的对象 = 内容投毒)。
+    #[serde(default)]
+    pub sha256: Option<String>,
     /// 文件指纹(前端给:大小+修改时间+文件名)。带上它就能**断点续传**:
     /// 同一个人、同一空间、24h 内、指纹相同且没传完的那一行会被复用,已传的片不再重传。
     #[serde(default)]
@@ -138,7 +143,22 @@ pub async fn begin(
             (iid, None)
         }
     };
-    let key = format!("spaces/{sid}/{iid}/blob");
+    // ★内容寻址★(2026-08-05 去重):有可信形状的 sha 就用 blobs/<sha>,同内容全库一份。
+    // 已存在则另起 `blobs/<sha>-<rand>`:客户端申报的哈希不可信,覆盖已有对象 = 内容投毒。
+    // 续传时沿用原 key(断点是按那个 key 建的)。
+    let key = match &existing {
+        Some(_) => format!("spaces/{sid}/{iid}/blob"),
+        None => match input.sha256.as_deref().map(str::trim).filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())) {
+            Some(sha) => {
+                let k = crate::http::items::blob_key(sha);
+                if state.storage.exists(&k).await { format!("{k}-{}", &rand_suffix()) } else { k }
+            }
+            None => format!("spaces/{sid}/{iid}/blob"),
+        },
+    };
+    // key 记进行里:complete/part/abort 都要用同一个(内容寻址之后不能再按 sid/iid 现拼)。
+    sqlx::query("UPDATE items SET upload_key = $2, sha256 = $3 WHERE id = $1")
+        .bind(iid).bind(&key).bind(input.sha256.as_deref()).execute(&state.pool).await?;
 
     let run = async {
         // 续传复用旧 upload_id;新上传才 create。
@@ -209,7 +229,7 @@ pub async fn part(
     if body.is_empty() {
         return Err(AppError::BadRequest("空分片".into()));
     }
-    let key = format!("spaces/{sid}/{iid}/blob");
+    let key = upload_key_of(&state, sid, iid).await?;
     let p = state
         .storage
         .multipart_part(&key, &q.upload_id, q.part_number, body.to_vec())
@@ -246,7 +266,7 @@ pub async fn complete(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
-    let key = format!("spaces/{sid}/{iid}/blob");
+    let key = upload_key_of(&state, sid, iid).await?;
     // ★分片清单以 S3 为准★(断点续传后必须这样):续传时前端手里只有**本次**传的那几片的 ETag,
     // 上一轮传好的它根本没有。ListParts 是权威来源,拿它组装;前端交回的 parts 只用来对数量、
     // 对不上就把两边的数字写进日志(不拦——以服务端看到的为准更安全)。
@@ -289,12 +309,16 @@ pub async fn complete(
         return Err(AppError::BadRequest("实际大小超出空间配额,已回滚本次上传".into()));
     }
     // 落 s3_key 的同时清掉续传痕迹:这一行已经完成,不该再被当成断点认领。
-    sqlx::query("UPDATE items SET s3_key = $1, size = $2, upload_id = NULL, upload_fp = NULL, updated_at = now() WHERE id = $3")
+    sqlx::query("UPDATE items SET s3_key = $1, size = $2, upload_id = NULL, upload_fp = NULL, upload_key = NULL, updated_at = now() WHERE id = $3")
         .bind(&key)
         .bind(size)
         .bind(iid)
         .execute(&state.pool)
         .await?;
+    // ★后台核验哈希★(迁移 0005):直传的字节没经过我们,sha256 只是客户端申报的,
+    // 不核验就当秒传源会造成静默数据损坏。这里从对象存储**内部**读一遍算真值(不占用户带宽),
+    // 算完置 sha_verified;与申报不符就以真值为准(那条假记录自然再也命中不了秒传)。
+    tokio::spawn(verify_sha(state.clone(), iid, key.clone()));
     // 录屏/录音传完即自动排队生成纪要(2026-08-05):后台队列串行跑,用户不用再点一次。
     enqueue_analysis(&state, iid, id.require_username()?).await;
     Ok(Json(json!({ "ok": true, "size": size })))
@@ -314,7 +338,7 @@ pub async fn abort(
 ) -> AppResult<Json<serde_json::Value>> {
     let sid = crate::http::items::space_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, sid, Role::Editor).await?;
-    let key = format!("spaces/{sid}/{iid}/blob");
+    let key = upload_key_of(&state, sid, iid).await?;
     state.storage.multipart_abort(&key, &input.upload_id).await;
     // 只删还没完成的行(s3_key 仍 NULL);已完成的 abort 无意义也不该误删。
     sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await?;
@@ -354,6 +378,51 @@ pub async fn play(
         .header(header::CACHE_CONTROL, "no-store") // 预签名短时效,别被缓存住过期 URL
         .body(axum::body::Body::empty())
         .map_err(|e| AppError::Other(e.into()))?)
+}
+
+/// 直传期间该用哪个 key:begin 时记在 items.upload_key(内容寻址后不能再按 sid/iid 现拼)。
+/// 老行没有这一列就退回旧规则,不至于把历史上传搞挂。
+async fn upload_key_of(state: &AppState, sid: i64, iid: i64) -> AppResult<String> {
+    let k: Option<String> = sqlx::query_scalar("SELECT upload_key FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    Ok(k.unwrap_or_else(|| format!("spaces/{sid}/{iid}/blob")))
+}
+
+/// 后台核验对象的真实 sha256(从集群内部流式读,不占用户带宽)。
+async fn verify_sha(state: AppState, iid: i64, key: String) {
+    use sha2::{Digest, Sha256};
+    // ⚠ 别 `use futures_util::TryStreamExt`:try_next 是 ByteStream 的**固有方法**,
+    //   加了那个 import 反而是 unused(v0.3.27 因此删过这个依赖)。
+    let mut hasher = Sha256::new();
+    let stream = match state.storage.get_stream(&key).await {
+        Ok((s, _)) => s,
+        Err(e) => { tracing::warn!(error = %e, item = iid, "核验哈希:读对象失败"); return }
+    };
+    let mut body = stream;
+    loop {
+        match body.try_next().await {
+            Ok(Some(chunk)) => hasher.update(&chunk),
+            Ok(None) => break,
+            Err(e) => { tracing::warn!(error = %e, item = iid, "核验哈希:读流中断"); return }
+        }
+    }
+    let real = hex::encode(hasher.finalize());
+    let declared: Option<String> = sqlx::query_scalar("SELECT sha256 FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await.ok().flatten().flatten();
+    if declared.as_deref() != Some(real.as_str()) {
+        tracing::warn!(item = iid, declared = ?declared, real = %&real[..8], "核验哈希:与客户端申报不符,以真值为准");
+    }
+    let _ = sqlx::query("UPDATE items SET sha256 = $2, sha_verified = true WHERE id = $1")
+        .bind(iid).bind(&real).execute(&state.pool).await;
+    tracing::info!(item = iid, sha = %&real[..8], "核验哈希:完成,可作秒传源");
+}
+
+/// 撞名时的随机后缀(短即可,只为避免覆盖已有对象)。
+fn rand_suffix() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 4];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("/dev/urandom");
+    hex::encode(b)
 }
 
 // ── 录屏分析(转写 + 纪要),docs/VIDEO-SUMMARY.md P1 ────────────────────────

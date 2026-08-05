@@ -172,12 +172,12 @@ export function SpacesView({ me }: { me: Me | null }) {
         if (big) {
           const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl, resumed)
+            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl, resumed, sha)
           } catch (de) {
             if (!direct || t.ctl.canceled) throw de
             sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
-            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl, resumed)
+            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl, resumed, sha)
           }
         }
         if (!done) await xhrUpload(`/api/spaces/${sid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)

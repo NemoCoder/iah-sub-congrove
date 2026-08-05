@@ -45,15 +45,18 @@ function fingerprint(f: File): string {
 export async function directUpload(
   sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
   mode: 'presigned' | 'proxy', ctl: UploadCtl = newCtl(),
+  /// 内容的 sha256(调用方在秒传预检时已经算过,顺手带来):有它服务端就按内容寻址落对象,
+  /// 同内容全库一份。没有也能传,只是不去重。
   /// 命中断点时回调一次(跳过的片数、已有的字节数),调用方用来提示「从断点继续」。
   onResume?: (skippedParts: number, skippedBytes: number) => void,
+  sha256?: string,
 ): Promise<boolean> {
   const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
-      parent_id: parentId, fp: fingerprint(file),
+      parent_id: parentId, fp: fingerprint(file), sha256: sha256 || null,
     }),
   })
   if (begin.status === 501) return false

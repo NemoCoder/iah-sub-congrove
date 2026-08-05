@@ -43,8 +43,10 @@ pub(crate) fn blob_key(sha: &str) -> String {
 ///   - **省时间(秒传)有条件**:只有当调用者本来就能读到同 sha 的内容时才免传。
 pub(crate) async fn readable_blob(state: &AppState, id: &Identity, sha: &str) -> AppResult<Option<(String, Option<i64>, Option<String>)>> {
     let rows: Vec<(i64, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        // ★只认 sha_verified★(迁移 0005):客户端申报的哈希不能当秒传源,
+        // 否则「申报别人文件的哈希、传自己的内容」会让真正拥有那份文件的人秒传到错误字节。
         "SELECT space_id, s3_key, size, mime FROM items
-          WHERE sha256 = $1 AND s3_key IS NOT NULL AND deleted_at IS NULL LIMIT 50",
+          WHERE sha256 = $1 AND sha_verified AND s3_key IS NOT NULL AND deleted_at IS NULL LIMIT 50",
     ).bind(sha).fetch_all(&state.pool).await?;
     for (sid, key, size, mime) in rows {
         if crate::perm::effective_role(&state.pool, id, sid).await?.is_some() {
@@ -90,8 +92,8 @@ pub async fn precheck(
     let mime = input.mime.or(mime).unwrap_or_else(|| "application/octet-stream".into());
     let kind = if mime.starts_with("video/") { "video" } else { "file" };
     let iid: i64 = sqlx::query_scalar(
-        "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
+        "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256, sha_verified)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true) RETURNING id",
     )
     .bind(sid).bind(input.parent_id).bind(kind).bind(name).bind(&mime)
     .bind(id.require_username()?).bind(&key).bind(size.unwrap_or(input.size)).bind(&sha)
@@ -429,15 +431,21 @@ pub async fn undelete(
          UPDATE items SET deleted_at = NULL, deleted_by = NULL
           WHERE id IN (SELECT id FROM sub) AND deleted_at IS NOT NULL",
     ).bind(iid).execute(&mut *tx).await?.rows_affected();
-    // 父还在回收站 → 挪到根,免得还原了却在树上看不见。
-    sqlx::query(
-        "UPDATE items SET parent_id = NULL, updated_at = now()
-          WHERE id = $1 AND parent_id IS NOT NULL
-            AND EXISTS (SELECT 1 FROM items p WHERE p.id = items.parent_id AND p.deleted_at IS NOT NULL)",
-    ).bind(iid).execute(&mut *tx).await?;
+    // ★父目录一起还原★(2026-08-05 用户纠正:原来是挪到空间根)。
+    // 还原一份材料却把它从原来的目录里拽出来,等于"还原了但路径没了" —— 用户要找回的是
+    // 「东西回到它原来在的地方」。所以沿 parent 链往上,把还在回收站里的祖先一并还原。
+    let n2 = sqlx::query(
+        "WITH RECURSIVE up AS (
+           SELECT id, parent_id FROM items WHERE id = $1
+           UNION ALL SELECT i.id, i.parent_id FROM items i JOIN up ON i.id = up.parent_id
+         )
+         UPDATE items SET deleted_at = NULL, deleted_by = NULL
+          WHERE id IN (SELECT id FROM up) AND deleted_at IS NOT NULL",
+    ).bind(iid).execute(&mut *tx).await?.rows_affected();
     tx.commit().await?;
-    audit::record(&state.pool, actor, "item.undelete", &iid.to_string(), &format!("space={sid} 还原 {n} 项")).await;
-    Ok(Json(json!({ "ok": true, "restored": n })))
+    audit::record(&state.pool, actor, "item.undelete", &iid.to_string(),
+        &format!("space={sid} 还原 {n} 项(含连带还原的上级目录 {n2} 层)")).await;
+    Ok(Json(json!({ "ok": true, "restored": n + n2 })))
 }
 
 /// DELETE /api/items/{id}/purge —— **彻底删除**(空间 **admin**)。行删掉、对象按引用计数清。
@@ -726,7 +734,7 @@ pub async fn upload(
                     let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
                     return Err(AppError::BadRequest("空间配额已被并发上传占满,本次已回滚".into()));
                 }
-                sqlx::query("UPDATE items SET s3_key = $1, size = $2, sha256 = $3 WHERE id = $4")
+                sqlx::query("UPDATE items SET s3_key = $1, size = $2, sha256 = $3, sha_verified = true WHERE id = $4")
                     .bind(&key).bind(total).bind(&sha).bind(iid)
                     .execute(&state.pool)
                     .await?;
