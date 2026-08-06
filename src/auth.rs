@@ -412,6 +412,39 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
             return Ok(next.run(req).await);
         }
     }
+    // 3) ★dev E2E 免登通道(平台 registry v1.3.80,群 #128/#131)★
+    //
+    // 平台的 dev 网关在**校验过 per-子系统的 X-IAH-E2E-Key 之后**,才会给下游注入
+    // `X-Forwarded-Preferred-Username: e2e`。key 不对的请求根本走不到这里(403/302,已用
+    // unit_tests/congrove/e2e/gate.spec.ts 钉死)。所以这个头**本身就是网关校验通过的凭证**。
+    //
+    // ★双重门闩,缺一不可★(2026-08-07 用户拍板走这条,权衡见 docs/E2E-CHANNEL.md):
+    //   ① `is_dev_channel()` —— 判据是平台按通道注入的 `PUBLIC_URL`,**不是**编译期常量、
+    //      也不是 iah.yaml 里的值(那些两个通道共用同一份,会跟着 promote 到 prod);
+    //   ② 请求确实带着这个头。
+    //
+    // ⚠ 这条分支**推翻了架构决策①的后半句**(「平台不注入身份头」)——那句话写于平台确实不注入的时候,
+    //   现在 dev 通道会注入,所以前提变了。但它只在 dev 成立:prod 的 IngressRoute **根本没有**
+    //   这条 E2E 路由,加上 ① 的门闩,prod 上这段代码永远不会执行。
+    //
+    // ⚠ 放在 cookie 与 Bearer **之后**:真人带着自己的会话来测时,身份应当是他本人而不是 `e2e`。
+    if state.config.is_dev_channel() {
+        if let Some(u) = req.headers().get("X-Forwarded-Preferred-Username")
+            .and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty())
+        {
+            let u = u.to_string();
+            // 与 Bearer 路径同一条 upsert:E2E 身份也要在 app_user 里落一行,
+            // 否则它建的项目、发的邀请都挂在一个「不存在的人」名下。
+            let is_super = ensure_app_user(&state.pool, &u, None, Some(&u), None, &state.config.super_users)
+                .await
+                .map_err(AppError::Other)?;
+            tracing::debug!(user = %u, "E2E 通道身份(仅 dev)");
+            req.extensions_mut().insert(Identity {
+                sub: None, username: Some(u.clone()), name: Some(u), email: None, is_super,
+            });
+            return Ok(next.run(req).await);
+        }
+    }
     Err(AppError::Unauthorized)
 }
 

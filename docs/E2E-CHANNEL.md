@@ -1,7 +1,9 @@
 # dev E2E 免登通道 —— 规格与「第二层怎么接」的决策
 
-> 平台侧 2026-08-07 上线(registry v1.3.80,群消息 #128)。congrove 侧**尚未实现**,
-> 第二层的接法是**待拍板的设计决策**,别想当然就动 `auth.rs`。
+> 平台侧 2026-08-07 上线(registry v1.3.80/81,群消息 #128/#131)。
+> **第二层已于 2026-08-07 由用户拍板走「选项 A + 双重门闩」并实现**(v0.3.60),
+> 落点:`config.rs::is_dev_channel()` + `auth.rs::require_auth` 的第三条分支 + 启动 WARN。
+> 下面的权衡记录保留,**推翻这个决定前先把它读完**。
 
 ## 为什么会有这份文档
 
@@ -84,10 +86,20 @@ promote 复用同一个镜像时它**会跟着变**——所以它不是编译�
 启动时若判定为 dev 且 e2e 已开,**打一条 WARN**:这条通道是真实的身份旁路,
 日志里必须看得见它开着。
 
-## 待办
+## 落地记录(2026-08-07)
 
-- [ ] 用户拍板选 A(双重门闩)还是 B
-- [ ] 向平台确认:prod 的网关是否会剥掉客户端伪造的 `X-Forwarded-Preferred-Username`,
-      以及 congrove 的 NetworkPolicy 是否保证流量只能从网关来
-- [ ] 实现 + 启动 WARN
-- [ ] Playwright 接上 `tests/api_cases.rs` 里那 121 条用例
+- [x] 用户拍板:**选 A + 双重门闩**
+- [x] 实现:`config.rs::is_dev_channel()`(唯一推导,纯函数 `is_dev_url` + 3 条单测)、
+      `auth.rs::require_auth` 第三条分支(**排在 cookie 与 Bearer 之后**——真人带着自己会话来测时,
+      身份应当是他本人而不是 `e2e`)、`lib.rs` 启动 WARN。
+- [x] 平台侧两个 bug 已修(registry v1.3.81):取 key 端点不认令牌(#129)、
+      ★Traefik v3 规则名写成了 v2 的 `HeadersRegexp`,导致整条 E2E 路由被丢弃★(#130)。
+- [x] 网关行为已被 `unit_tests/congrove/e2e/gate.spec.ts` 钉死(6 条):
+      不带 key 被拦 / 伪造 key 被拦 / **congrove 的 key 进不了别的子系统** /
+      `/healthz` 也在门禁后 / 带真 key 直达 / 第二层现状。
+- [ ] ⏳ **等平台答复一个安全前提**(群消息 #133):prod 的网关是否会剥掉客户端伪造的
+      `X-Forwarded-Preferred-Username`,以及 subsystems ns 的 NetworkPolicy 是否保证流量只能从网关来。
+      ★这两条对 registry-svc 成立,对子系统是否同样成立没有确认过★。
+      **当前实现不依赖它们**(`is_dev_channel()` 已经把 prod 完全排除在外),
+      但如果将来有人想把这条分支放宽到 prod,**必须先拿到这两条的确认**。
+- [ ] 把 `tests/api_cases.rs` 里那 153 条用例翻成 Playwright spec

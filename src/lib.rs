@@ -57,6 +57,17 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
+    // ★dev E2E 免登通道是一条真实的身份旁路,开着就要在日志里看得见★(2026-08-07)。
+    // 它不需要本地开关:平台的 dev 网关校验过 X-IAH-E2E-Key 才注入身份头,
+    // 而 prod 压根没有那条路由 + is_dev_channel() 门闩 —— 但「无声生效的旁路」本身就是隐患,
+    // 所以每次启动都喊一句,免得哪天有人在日志里看到 `e2e` 这个用户名却不知道它从哪来。
+    if cfg.is_dev_channel() {
+        tracing::warn!(
+            "dev E2E 免登通道生效中:带平台注入身份头的请求将以该用户名直接通过鉴权(仅 dev 通道)。\
+             prod 无此路由,详见 docs/E2E-CHANNEL.md"
+        );
+    }
+
     // 平台 registry 客户端:REGISTRY_URL + 机密客户端齐了才建(缺任一 = 本地 dev,降级)。
     let registry = match (&cfg.registry_url, &cfg.oidc) {
         (Some(base), Some(o)) => match (&o.client_id, &o.client_secret) {
