@@ -57,6 +57,8 @@ function fmtTime(s: string) {
 export function ProjectsView({ me }: { me: Me | null }) {
   const { message, modal } = AntdApp.useApp()
   const [projects, setProjects] = useState<Project[]>([])
+  /// 左栏搜索关键词(只过滤已加载的列表,不打接口)
+  const [kw, setKw] = useState('')
   const [cur, setCur] = useState<Project | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 项目根)
@@ -319,23 +321,41 @@ export function ProjectsView({ me }: { me: Me | null }) {
 
   const checkedItems = rows.filter((r) => checked.includes(r.id))
 
+  /// 左栏过滤后的项目。★大小写不敏感★:项目名常混中英文,记不住原始大小写。
+  const shown = kw.trim()
+    ? projects.filter((p) => p.name.toLowerCase().includes(kw.trim().toLowerCase()))
+    : projects
+
   return (
     <>
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       {/* 左栏:项目列表。项目级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
       <Card
-        size="small" title="项目" style={{ width: 260, flex: '0 0 auto' }}
+        // ★320 而不是 260★(2026-08-07 用户反馈「项目名称被挡住」):
+        // 260 减去角色标签(~56px)与 ⋯ 按钮(~30px),留给名称的只剩 ~150px,
+        // 「课题组·计量经济学」这种正常长度的名字就已经被截断了。
+        size="small" title="项目" style={{ width: 320, flex: '0 0 auto' }}
         extra={<Button size="small" type="primary" onClick={newSpace}>新建</Button>}
       >
+        {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
+            只过滤本地已加载的列表(项目列表本来就是一次拉全),不打接口。 */}
+        {projects.length > 6 && (
+          <Input
+            size="small" allowClear placeholder={`在 ${projects.length} 个项目里找…`}
+            value={kw} onChange={(e) => setKw(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+        )}
         <List
-          size="small" dataSource={projects}
-          locale={{ emptyText: <Empty description="还没有可见的项目" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          size="small" dataSource={shown}
+          locale={{ emptyText: <Empty description={kw ? '没有匹配的项目' : '还没有可见的项目'} image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           renderItem={(s) => (
             <List.Item
               onClick={() => setCur(s)}
               style={{ cursor: 'pointer', background: cur?.id === s.id ? '#e6fffb' : undefined, borderRadius: 6, padding: '6px 8px' }}
             >
-              <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }}>{s.name}</Typography.Text>
+              {/* title:名字再长也能悬停看全 —— 截断是布局的妥协,不该让信息真的丢掉 */}
+              <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }} title={s.name}>{s.name}</Typography.Text>
               {s.my_role && ROLE_TAG[s.my_role]}
               {s.my_role === 'admin' && (
                 <Dropdown menu={spaceMenu(s)} trigger={['click']}>

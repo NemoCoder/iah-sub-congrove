@@ -13,6 +13,10 @@ const KEY = process.env.IAH_E2E_KEY ?? ''
 
 export default defineConfig({
   testDir: './specs',
+  // ★跑完必清测试数据★:不加这个,dev 的项目列表会被历次 E2E 造的项目淹没
+  // (2026-08-07 实测堆到 80+ 个,真实项目根本找不到)。
+  // teardown 用**前缀扫描**而不是记账 —— 崩溃/超时/中断时记账会漏,而漏的正是失败那轮。
+  globalTeardown: './teardown.ts',
   // 内网 + 单机跑,并发开小一点;失败重跑一次(网关偶发抖动不该算 red)
   workers: 2,
   retries: 1,

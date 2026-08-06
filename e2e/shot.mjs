@@ -36,12 +36,18 @@ for (const m of Array.isArray(old) ? old : []) {
     await call(`/api/meetings/${m.id}`, { method: 'DELETE' }); n++
   }
 }
-console.log(`清掉 ${n} 场旧会议`)
+// 项目同样要清:每跑一次截图就多两个,不清照样会淹没列表
+const ps = await call('/api/projects')
+let np = 0
+for (const p of Array.isArray(ps) ? ps : []) {
+  if (/^(E2E-|演示·|课题组·计量经济 |私下组队 )/.test(p.name)) { await call(`/api/projects/${p.id}`, { method: 'DELETE' }); np++ }
+}
+console.log(`清掉 ${n} 场旧会议、${np} 个旧项目`)
 
 // ── 造一批看得出布局的演示数据 ──
 const stamp = Date.now()
-const pub = (await call('/api/projects', { method: 'POST', data: { name: `课题组·计量经济 ${stamp % 10000}`, visibility: 'public' } })).id
-const priv = (await call('/api/projects', { method: 'POST', data: { name: `私下组队 ${stamp % 10000}`, visibility: 'private' } })).id
+const pub = (await call('/api/projects', { method: 'POST', data: { name: `演示·课题组计量经济 ${stamp % 10000}`, visibility: 'public' } })).id
+const priv = (await call('/api/projects', { method: 'POST', data: { name: `演示·私下组队 ${stamp % 10000}`, visibility: 'private' } })).id
 
 const weekStart = new Date(); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(weekStart.getDate() - weekStart.getDay())
 const at = (d, h, min = 0, durH = 1) => {
