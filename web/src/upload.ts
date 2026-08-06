@@ -43,7 +43,7 @@ function fingerprint(f: File): string {
 }
 
 export async function directUpload(
-  sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
+  pid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
   mode: 'presigned' | 'proxy', ctl: UploadCtl = newCtl(),
   /// 内容的 sha256(调用方在秒传预检时已经算过,顺手带来):有它服务端就按内容寻址落对象,
   /// 同内容全库一份。没有也能传,只是不去重。
@@ -51,7 +51,7 @@ export async function directUpload(
   onResume?: (skippedParts: number, skippedBytes: number) => void,
   sha256?: string,
 ): Promise<boolean> {
-  const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
+  const begin = await fetch(`/api/projects/${pid}/media/begin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

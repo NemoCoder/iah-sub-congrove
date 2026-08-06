@@ -1,7 +1,7 @@
-// 空间视图:左列空间列表,右侧选中空间的文件树 + 内容面板。
+// 项目视图:左列项目列表,右侧选中项目的文件树 + 内容面板。
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
-  Alert, App as AntdApp, AutoComplete, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
+  Alert, App as AntdApp, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
   Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
 import {
@@ -29,20 +29,18 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
-import { api, type Diagnose, type Grant, type Item, type Me, type Role, type Space, type UserOpt, type Version } from './api'
+import { api, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
 /// 「无权限」是**没有任何授权**的第四态,库里不存它——`effective = null` 即是。
 /// 库里存的仍是 viewer/editor/admin:迁移只增不改,换值要重写 space_grants 全表并同步 perm.rs,
 /// 收益只是换个字面。所以只在这里做**唯一一处**「存储值 → 用词」映射,别在别处再写第二套。
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', editor: '可编辑', viewer: '只读' }
-const NO_ACCESS = '无权限'
 const ROLE_TAG: Record<Role, ReactNode> = {
   admin: <Tag color="purple">{ROLE_LABEL.admin}</Tag>,
   editor: <Tag color="green">{ROLE_LABEL.editor}</Tag>,
   viewer: <Tag>{ROLE_LABEL.viewer}</Tag>,
 }
-const ROLE_OPTIONS = (['viewer', 'editor', 'admin'] as Role[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))
 
 function fmtTime(s: string) {
   const d = new Date(s)
@@ -50,18 +48,18 @@ function fmtTime(s: string) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/// 网盘式空间视图(2026-08-03 重做)。**两套操作严格分开**:
-/// - 空间所有者的事(授权管理 / 安全设置 / 重命名空间 / 删除空间)→ 只在左栏空间行的
+/// 网盘式项目视图(2026-08-03 重做)。**两套操作严格分开**:
+/// - 项目所有者的事(授权管理 / 安全设置 / 重命名项目 / 删除项目)→ 只在左栏项目行的
 ///   「⋯」菜单里,且仅 space admin 可见;
-/// - 空间里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
+/// - 项目里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function SpacesView({ me }: { me: Me | null }) {
+export function ProjectsView({ me }: { me: Me | null }) {
   const { message, modal } = AntdApp.useApp()
-  const [spaces, setSpaces] = useState<Space[]>([])
-  const [cur, setCur] = useState<Space | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [cur, setCur] = useState<Project | null>(null)
   const [items, setItems] = useState<Item[]>([])
-  const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 空间根)
+  const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 项目根)
   const [checked, setChecked] = useState<number[]>([]) // 批量选中
   const [preview, setPreview] = useState<Item | null>(null)
   const [grantsOpen, setGrantsOpen] = useState(false)
@@ -72,17 +70,17 @@ export function SpacesView({ me }: { me: Me | null }) {
   const [shareFor, setShareFor] = useState<Item[] | null>(null) // 正在设置公开分享的那些项(可多选)
   const [trashOpen, setTrashOpen] = useState(false)             // 回收站抽屉
 
-  const loadSpaces = useCallback(async () => {
-    const s = await api<Space[]>('/api/spaces')
-    setSpaces(s)
-    setCur((c) => (c ? s.find((x) => x.id === c.id) || null : null))
+  const loadProjects = useCallback(async () => {
+    const s = await api<Project[]>('/api/projects')
+    setProjects(s)
+    setCur((c) => (c ? s.find((x: Project) => x.id === c.id) || null : null))
   }, [])
-  const loadItems = useCallback(async (sid: number) => {
-    setItems(await api<Item[]>(`/api/spaces/${sid}/items`))
+  const loadItems = useCallback(async (pid: number) => {
+    setItems(await api<Item[]>(`/api/projects/${pid}/items`))
   }, [])
   useEffect(() => {
-    loadSpaces().catch((e) => message.error(e.message))
-  }, [loadSpaces, message])
+    loadProjects().catch((e) => message.error(e.message))
+  }, [loadProjects, message])
   useEffect(() => {
     setCwd(null); setChecked([]); setPreview(null)
     if (cur) loadItems(cur.id).catch((e) => message.error(e.message))
@@ -137,7 +135,7 @@ export function SpacesView({ me }: { me: Me | null }) {
 
   const uploadFiles = async (files: File[]) => {
     if (!cur || !canEdit || !files.length) return
-    const sid = cur.id, dir = cwd
+    const pid = cur.id, dir = cwd
     const stamp = Date.now()
     const tasks: UpTask[] = files.map((f, i) => ({ key: `${stamp}-${i}-${f.name}`, file: f, percent: 0, running: false, ctl: newCtl() }))
     setUploads((u) => [...u, ...tasks])
@@ -162,7 +160,7 @@ export function SpacesView({ me }: { me: Me | null }) {
         if (t.ctl.canceled) throw new Error(CANCELED)
         if (sha) {
           try {
-            const pre = await api<{ instant: boolean }>(`/api/spaces/${sid}/precheck`, {
+            const pre = await api<{ instant: boolean }>(`/api/projects/${pid}/precheck`, {
               method: 'POST',
               body: JSON.stringify({ sha256: sha, size: f.size, name: f.name, mime: f.type || null, parent_id: dir }),
             })
@@ -175,15 +173,15 @@ export function SpacesView({ me }: { me: Me | null }) {
         if (big) {
           const direct = await probeDirect(me?.direct_upload_endpoint ?? null)
           try {
-            done = await directUpload(sid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl, resumed, sha)
+            done = await directUpload(pid, f, dir, report, direct ? 'presigned' : 'proxy', t.ctl, resumed, sha)
           } catch (de) {
             if (!direct || t.ctl.canceled) throw de
             sessionStorage.setItem('cg_direct_ok', '0')
             report(0)
-            done = await directUpload(sid, f, dir, report, 'proxy', t.ctl, resumed, sha)
+            done = await directUpload(pid, f, dir, report, 'proxy', t.ctl, resumed, sha)
           }
         }
-        if (!done) await xhrUpload(`/api/spaces/${sid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)
+        if (!done) await xhrUpload(`/api/projects/${pid}/upload${dir != null ? `?parent_id=${dir}` : ''}`, f, report, t.ctl)
         // 录屏/录音传完后端会自动排队生成纪要(v0.3.49),这里说一声,免得用户以为要手动点。
         const auto = f.type.startsWith('video/') || f.type.startsWith('audio/')
         message.success(`${f.name} 上传完成${auto ? '——已自动排队生成纪要' : ''}`)
@@ -201,7 +199,7 @@ export function SpacesView({ me }: { me: Me | null }) {
     await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, tasks.length) }, async () => {
       for (let t = queue.shift(); t; t = queue.shift()) await runOne(t)
     }))
-    await Promise.all([loadItems(sid), loadSpaces()])
+    await Promise.all([loadItems(pid), loadProjects()])
   }
 
   /// 取消:中断在传的 xhr(排队中的只置标记,worker 取到时跳过),行立刻消失。
@@ -210,7 +208,7 @@ export function SpacesView({ me }: { me: Me | null }) {
   const refresh = async () => {
     if (!cur) return
     setChecked([])
-    await Promise.all([loadItems(cur.id), loadSpaces()])
+    await Promise.all([loadItems(cur.id), loadProjects()])
   }
 
   // ── 内容操作(editor+)────────────────────────────────────────────────────
@@ -221,7 +219,7 @@ export function SpacesView({ me }: { me: Me | null }) {
       content: <Input placeholder="名称" onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
-          await api(`/api/spaces/${cur!.id}/items`, { method: 'POST', body: JSON.stringify({ kind, name, parent_id: cwd }) })
+          await api(`/api/projects/${cur!.id}/items`, { method: 'POST', body: JSON.stringify({ kind, name, parent_id: cwd }) })
           await refresh()
         } catch (e) { message.error((e as Error).message); throw e }
       },
@@ -267,37 +265,37 @@ export function SpacesView({ me }: { me: Me | null }) {
     await refresh()
   }
 
-  // ── 空间所有者操作(admin;只在左栏空间「⋯」里)────────────────────────────
-  const spaceMenu = (s: Space) => ({
+  // ── 项目所有者操作(admin;只在左栏项目「⋯」里)────────────────────────────
+  const spaceMenu = (s: Project) => ({
     items: [
-      { key: 'grants', label: '🔑 授权与安全设置' },
-      { key: 'rename', label: '✏️ 重命名空间' },
+      { key: 'members', label: '成员与设置' },
+      { key: 'rename', label: '✏️ 重命名项目' },
       { type: 'divider' as const },
-      { key: 'delete', label: <span style={{ color: '#ff4d4f' }}>🗑 删除空间</span> },
+      { key: 'delete', label: <span style={{ color: '#ff4d4f' }}>🗑 删除项目</span> },
     ],
     onClick: ({ key }: { key: string }) => {
       setCur(s)
-      if (key === 'grants') setGrantsOpen(true)
+      if (key === 'members') setGrantsOpen(true)
       if (key === 'rename') {
         let name = s.name
         modal.confirm({
-          title: '重命名空间',
+          title: '重命名项目',
           content: <Input defaultValue={s.name} onChange={(e) => (name = e.target.value)} />,
           onOk: async () => {
-            await api(`/api/spaces/${s.id}`, { method: 'PUT', body: JSON.stringify({ name, description: s.description }) })
-            await loadSpaces()
+            await api(`/api/projects/${s.id}`, { method: 'PUT', body: JSON.stringify({ name, description: s.description }) })
+            await loadProjects()
           },
         })
       }
       if (key === 'delete') {
         modal.confirm({
-          title: `删除空间「${s.name}」?`,
-          content: '空间内全部内容与文件将一并删除,不可撤销。',
+          title: `删除项目「${s.name}」?`,
+          content: '项目内全部内容与文件将一并删除,不可撤销。',
           okButtonProps: { danger: true },
           onOk: async () => {
             try {
-              await api(`/api/spaces/${s.id}`, { method: 'DELETE' })
-              setCur(null); await loadSpaces()
+              await api(`/api/projects/${s.id}`, { method: 'DELETE' })
+              setCur(null); await loadProjects()
             } catch (e) { message.error((e as Error).message); throw e }
           },
         })
@@ -308,12 +306,12 @@ export function SpacesView({ me }: { me: Me | null }) {
   const newSpace = () => {
     let name = ''
     modal.confirm({
-      title: '新建空间',
-      content: <Input placeholder="空间名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
+      title: '新建项目',
+      content: <Input placeholder="项目名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
-          await api('/api/spaces', { method: 'POST', body: JSON.stringify({ name }) })
-          await loadSpaces()
+          await api('/api/projects', { method: 'POST', body: JSON.stringify({ name }) })
+          await loadProjects()
         } catch (e) { message.error((e as Error).message); throw e }
       },
     })
@@ -324,14 +322,14 @@ export function SpacesView({ me }: { me: Me | null }) {
   return (
     <>
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-      {/* 左栏:空间列表。空间级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
+      {/* 左栏:项目列表。项目级操作(授权/重命名/删除)只在这里的 ⋯ 菜单,且仅 admin 可见。 */}
       <Card
-        size="small" title="空间" style={{ width: 260, flex: '0 0 auto' }}
+        size="small" title="项目" style={{ width: 260, flex: '0 0 auto' }}
         extra={<Button size="small" type="primary" onClick={newSpace}>新建</Button>}
       >
         <List
-          size="small" dataSource={spaces}
-          locale={{ emptyText: <Empty description="还没有可见的空间" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          size="small" dataSource={projects}
+          locale={{ emptyText: <Empty description="还没有可见的项目" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           renderItem={(s) => (
             <List.Item
               onClick={() => setCur(s)}
@@ -372,7 +370,7 @@ export function SpacesView({ me }: { me: Me | null }) {
             </Tooltip>
           }
         >
-          {/* 内容操作工具栏(editor+):只有「在空间里干活」的动作,没有空间管理项。 */}
+          {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。 */}
           {canEdit && (
             <AntSpace style={{ marginBottom: 10 }} wrap>
               <Upload showUploadList={false} multiple
@@ -464,7 +462,7 @@ export function SpacesView({ me }: { me: Me | null }) {
                     // 它还没发任何请求,取消 = 直接出队。
                     // ★别给进度条写死宽度★(v0.3.56):原先 width:120 + 「取消」28 + 间距,
                     // 超过操作列 158 的可用宽度(还要扣单元格 padding),「取消」被挤到第二行。
-                    // 改成 flex:进度条吃掉剩余空间(minWidth:0 才允许它被压缩),
+                    // 改成 flex:进度条吃掉剩余项目(minWidth:0 才允许它被压缩),
                     // 「取消」flexShrink:0 + nowrap 永不换行。列宽以后怎么调都不会再断行。
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       {up(it)!.running
@@ -479,7 +477,7 @@ export function SpacesView({ me }: { me: Me | null }) {
                       {/* ★行内分享★:文件与文件夹都能分享(公开链接,可设提取码/有效期/次数)。
                           ⚠ 这一行 v0.3.48 加过,后来清理旧的 copyShare 时被连带删掉了(2026-08-05 用户三次提醒)。 */}
                       {canEdit && <Tooltip title="分享"><a onClick={() => setShareFor([it])}><ShareAltOutlined /></a></Tooltip>}
-                      {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.viewer_no_download) && (
+                      {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.no_download) && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
                       {canEdit && <Tooltip title="重命名"><a onClick={() => rename(it)}><EditOutlined /></a></Tooltip>}
@@ -511,13 +509,13 @@ export function SpacesView({ me }: { me: Me | null }) {
             {preview && (
               <ItemPanel
                 key={preview.id} item={preview} canEdit={canEdit}
-                noDownload={cur.my_role === 'viewer' && cur.viewer_no_download}
+                noDownload={cur.my_role === 'viewer' && cur.no_download}
                 onChanged={refresh}
               />
             )}
           </Drawer>
 
-          {/* 移动目标选择:只列本空间的文件夹 */}
+          {/* 移动目标选择:只列本项目的文件夹 */}
           <Modal
             open={!!moving} title={`移动 ${moving?.length ?? 0} 项到…`} okText="移动"
             onCancel={() => setMoving(null)}
@@ -532,16 +530,16 @@ export function SpacesView({ me }: { me: Me | null }) {
               }]}
             />
           </Modal>
-          {/* key 按空间:这个面板是常驻挂载的(不是 open 才渲染),不给 key 的话切到别的空间时
-              术语表输入框、诊断结果这些内部 state 会留着上一个空间的值——保存就把 A 的词写进 B
+          {/* key 按项目:这个面板是常驻挂载的(不是 open 才渲染),不给 key 的话切到别的项目时
+              术语表输入框、诊断结果这些内部 state 会留着上一个项目的值——保存就把 A 的词写进 B
               (2026-08-04 审计发现,v0.3.29 引入)。 */}
-          <GrantsModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadSpaces} />
+          <MembersModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadProjects} />
           {shareFor && <ShareModal key={shareFor.map((i) => i.id).join('-')} items={shareFor} onClose={() => setShareFor(null)} />}
           <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
-          <Empty description="选择或新建一个空间" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description="选择或新建一个项目" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </Card>
       )}
     </div>
@@ -602,7 +600,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           </Button>
         )}
         {item.kind !== 'doc' && (noDownload
-          ? <Tag>本空间「只读」不能下载</Tag>
+          ? <Tag>本项目「只读」不能下载</Tag>
           : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
@@ -672,213 +670,181 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
 }
 
 
-/// 授权管理(空间管理员):user/group × 只读/可编辑/管理员。
-function GrantsModal({ space, open, onClose, onChanged }: { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
+/// 成员管理(项目管理员)。★只有人,没有组(D12)★——权限只到具体的人。
+///
+/// 删组之后「他为什么能看到这个」永远只有一个答案:**他在这张表里**。
+/// 代价是加人变成一个个加,所以★批量添加是必做的★:第一次拉 20 人不能让人点 20 次。
+function MembersModal({ space, open, onClose, onChanged }:
+  { space: Project; open: boolean; onClose: () => void; onChanged: () => void }) {
   const { message } = AntdApp.useApp()
-  const [grants, setGrants] = useState<Grant[]>([])
-  // 默认选「小组」:调研结论(docs/PERMISSIONS.md),按组授权是主战场——整组人(含未来入组者)
-  // 动态获得权限,人员流动只改组;按个人授权是例外通道。
-  const [gtype, setGtype] = useState<'user' | 'group'>('group')
-  const [gid, setGid] = useState('')
-  const [role, setRole] = useState<Role>('viewer')
-  const [myGroups, setMyGroups] = useState<{ id: number; name: string }[]>([])
+  const [owner, setOwner] = useState<string | null>(null)
+  const [members, setMembers] = useState<Member[]>([])
+  const [picked, setPicked] = useState<string[]>([])
+  const [role, setRole] = useState<Role>('editor')
   const [users, setUsers] = useState<UserOpt[]>([])
-  /// 按输入的前缀查人(后端只回 20 条、且必须带 q)。原来是进页面就把全所名单拉下来,
-  /// 任何登录用户都能拿到完整人员表——2026-08-04 审计收紧,前端跟着改成按需查。
-  const searchUsers = useCallback(async (q: string) => {
-    const t = q.trim()
+  const [diagName, setDiagName] = useState('')
+  const [diag, setDiag] = useState<Diagnose | null>(null)
+  const [hot, setHot] = useState(space.hotwords ?? '')
+
+  const load = useCallback(async () => {
+    const r = await api<MemberList>(`/api/projects/${space.id}/members`)
+    setOwner(r.owner); setMembers(r.members)
+  }, [space.id])
+  useEffect(() => { if (open) load().catch((e) => message.error(e.message)) }, [open, load, message])
+
+  // 名单不整表下发(审计收紧):输前缀才查
+  const searchUsers = useCallback(async (t: string) => {
     if (!t) { setUsers([]); return }
     try { setUsers(await api<UserOpt[]>(`/api/users?q=${encodeURIComponent(t)}`)) } catch { setUsers([]) }
   }, [])
-  const [diagName, setDiagName] = useState('')
-  const [diag, setDiag] = useState<Diagnose | null>(null)
-  const [hot, setHot] = useState(space.hotwords ?? '') // 术语表编辑框(受控;保存后由 onChanged 拉新值)
 
-  const load = useCallback(async () => {
-    setGrants(await api<Grant[]>(`/api/spaces/${space.id}/grants`))
-    setMyGroups(await api<{ id: number; name: string }[]>('/api/groups'))
-    setUsers([]) // 名单不再整表下发(审计收紧):改成输入前缀时才查,见 searchUsers
-  }, [space.id])
-  useEffect(() => {
-    if (open) load().catch((e) => message.error(e.message))
-  }, [open, load, message])
-
-  const add = async () => {
-    if (!gid.trim()) return message.warning('填用户名或选组')
+  const addBatch = async () => {
+    if (!picked.length) return message.warning('先选人')
     try {
-      await api(`/api/spaces/${space.id}/grants`, {
+      await api(`/api/projects/${space.id}/members`, {
         method: 'PUT',
-        body: JSON.stringify({ grantee_type: gtype, grantee_id: gid.trim(), role }),
+        body: JSON.stringify({ usernames: picked, role }),
       })
-      message.success('已授权')
-      setGid('')
-      await load()
-    } catch (e) {
-      message.error((e as Error).message) // 假名/降级最后一个 admin 都要让用户看见
-    }
+      message.success(`已添加 ${picked.length} 人`)
+      setPicked([]); await load(); onChanged()
+    } catch (e) { message.error((e as Error).message) }
   }
-  const changeRole = async (g: Grant, r: Role) => {
+
+  const changeRole = async (m: Member, r: Role) => {
     try {
-      await api(`/api/spaces/${space.id}/grants`, {
-        method: 'PUT',
-        body: JSON.stringify({ grantee_type: g.grantee_type, grantee_id: g.grantee_id, role: r }),
+      await api(`/api/projects/${space.id}/members`, {
+        method: 'PUT', body: JSON.stringify({ usernames: [m.username], role: r }),
       })
-      message.success('角色已更新')
-      await load()
-    } catch (e) {
-      message.error((e as Error).message)
-      await load()
-    }
+      message.success('角色已更新'); await load(); onChanged()
+    } catch (e) { message.error((e as Error).message); await load() }
   }
 
   return (
-    <Modal title={`授权管理 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={640}>
-      {/* D4 空间安全开关:只拦「下载原件」;在线阅读/播放不拦(能播就能录屏,拦了只会逼 viewer 什么都干不了)。 */}
-      <AntSpace style={{ marginBottom: 12 }}>
-        <Switch
-          size="small"
-          checked={space.viewer_no_download}
-          onChange={async (v) => {
-            try {
-              await api(`/api/spaces/${space.id}`, {
-                method: 'PUT',
-                body: JSON.stringify({ name: space.name, description: space.description, viewer_no_download: v }),
-              })
-              message.success(v ? '已开启:「只读」成员不能下载原件(阅读/播放不受影响)' : '已关闭下载限制')
-              onChanged()
-            } catch (e) {
-              message.error((e as Error).message)
-            }
-          }}
-        />
-        <Typography.Text>「只读」成员禁止下载原件</Typography.Text>
-      </AntSpace>
+    <Modal title={`成员与设置 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={680}>
+      <Typography.Text strong>成员（{members.length}）</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 10px' }}>
+        进了项目就能看到<b>本项目全部资料</b>，包括他加入之前的历史；移出即失去全部。
+      </Typography.Paragraph>
 
-      {/* ★转写术语表★(v0.3.29):落到空间而不是全局——人名/专业词天然按组不同,
-          思想史组的「柯老师」和 CS 组的「benchmark」互不相干,也只有空间管理员知道自己组的词。
-          填错的代价是真的:平台侧是拼音模糊匹配的确定性替换,词表乱填会把正常的字改坏,
-          所以文案里明说「宁少勿滥」。改完只对**之后**的转写生效,老视频要重新生成。 */}
-      <Typography.Text strong style={{ fontSize: 13 }}>录屏转写术语表</Typography.Text>
-      {/* 长说明按用户要求删了(2026-08-04):「宁少勿滥、拼音匹配会改坏字」这条压进 placeholder,
-          完整背景在 docs/PERMISSIONS.md 与 media_ai.rs 的注释里,别再往界面上堆。 */}
-      <Input.TextArea
-        rows={3} value={hot} onChange={(e) => setHot(e.target.value)} style={{ marginBottom: 6 }}
-        placeholder="人名、专业词,空格或换行分隔;宁少勿滥(按拼音匹配,乱填会把正常的字改坏)"
-      />
-      <AntSpace style={{ marginBottom: 14 }}>
-        <Button size="small" type="primary" disabled={hot === (space.hotwords ?? '')} onClick={async () => {
-          try {
-            await api(`/api/spaces/${space.id}`, {
-              method: 'PUT',
-              body: JSON.stringify({ name: space.name, description: space.description, hotwords: hot }),
-            })
-            message.success('术语表已保存(对之后的转写生效)')
-            onChanged()
-          } catch (e) { message.error((e as Error).message) }
-        }}>保存术语表</Button>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {hot.trim() ? `${hot.trim().split(/\s+/).length} 个词` : '未设置'}
-        </Typography.Text>
-      </AntSpace>
-      <AntSpace style={{ marginBottom: 12 }} wrap>
-        <Select value={gtype} onChange={(v) => { setGtype(v); setGid('') }} options={[{ value: 'user', label: '用户' }, { value: 'group', label: '小组' }]} style={{ width: 90 }} />
-        {gtype === 'user' ? (
-          // 下拉 = 用过汇流的人;也可直接输平台账号(后端 users/exists 向 Keycloak 校验——AI_Talks 0094)。
-          <AutoComplete
-            placeholder="用户名(平台账号)" value={gid} onChange={setGid} style={{ width: 200 }}
-            onSearch={searchUsers}
-          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
-            filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
-          />
-        ) : (
-          <Select
-            placeholder="选组" value={gid || undefined} onChange={setGid} style={{ width: 200 }}
-            options={myGroups.map((g) => ({ value: String(g.id), label: g.name }))}
-          />
-        )}
-        <Select value={role} onChange={setRole} style={{ width: 110 }}
-          options={ROLE_OPTIONS} />
-        <Button type="primary" onClick={add}>授权</Button>
-      </AntSpace>
-      <Table
-        size="small" rowKey={(g) => `${g.grantee_type}:${g.grantee_id}`} dataSource={grants} pagination={false}
+      <AntSpace.Compact style={{ width: '100%', marginBottom: 10 }}>
+        <Select mode="multiple" value={picked} onChange={setPicked} onSearch={searchUsers}
+          filterOption={false} placeholder="输入用户名搜索，可多选" style={{ flex: 1 }}
+          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}（${u.name}）` : u.username }))} />
+        <Select value={role} onChange={setRole} style={{ width: 120 }}
+          options={[
+            { value: 'viewer', label: '只读成员' },
+            { value: 'editor', label: '成员' },
+            { value: 'admin', label: '管理员' },
+          ]} />
+        <Button type="primary" onClick={addBatch}>批量添加</Button>
+      </AntSpace.Compact>
+
+      <Table size="small" rowKey="username" dataSource={members} pagination={false}
         columns={[
-          { title: '类型', dataIndex: 'grantee_type', render: (t) => (t === 'group' ? <Tag color="cyan">组</Tag> : <Tag>用户</Tag>) },
-          { title: '对象', render: (_, g) => g.grantee_name || g.grantee_id },
           {
-            title: '角色', dataIndex: 'role',
-            // 就地改角色(后端 upsert;最后一个 admin 降级会被 400 挡回)。
-            render: (r: Role, g) => (
-              <Select size="small" value={r} style={{ width: 120 }} onChange={(v) => changeRole(g, v as Role)}
-                options={ROLE_OPTIONS} />
-            ),
+            title: '成员', dataIndex: 'username',
+            render: (u: string) => (
+              <span>{u}{u === owner && <Tag color="cyan" style={{ marginLeft: 6 }}>主持人</Tag>}</span>),
           },
           {
-            title: '', render: (_, g) => (
-              <Popconfirm title="撤销此授权?" onConfirm={async () => {
-                await api(`/api/spaces/${space.id}/grants`, { method: 'DELETE', body: JSON.stringify({ grantee_type: g.grantee_type, grantee_id: g.grantee_id }) })
-                await load()
-              }}><a>撤销</a></Popconfirm>
-            ),
+            title: '角色', width: 140,
+            render: (_, m) => (
+              <Select size="small" value={m.role} style={{ width: 118 }}
+                disabled={m.username === owner}
+                onChange={(r) => changeRole(m, r as Role)}
+                options={[
+                  { value: 'viewer', label: '只读成员' },
+                  { value: 'editor', label: '成员' },
+                  { value: 'admin', label: '管理员' },
+                ]} />),
           },
-        ]}
-      />
+          { title: '加入', dataIndex: 'added_at', width: 110, render: (t: string) => t?.slice(0, 10) },
+          {
+            title: '', width: 60,
+            render: (_, m) => (m.username === owner ? null : (
+              <Popconfirm
+                title={`把 ${m.username} 移出项目？`}
+                description={<div style={{ maxWidth: 320, fontSize: 12 }}>
+                  · 他将立刻看不到本项目全部资料，包括他自己参与过的会议<br />
+                  · 他上传的材料<b>全部留下</b>，署名保留<br />
+                  · <b>他创建的、指向本项目的公开链接会被一并撤销</b>
+                </div>}
+                onConfirm={async () => {
+                  try {
+                    const r = await api<{ revoked_links: number }>(
+                      `/api/projects/${space.id}/members?username=${encodeURIComponent(m.username)}`,
+                      { method: 'DELETE' })
+                    message.success(r.revoked_links > 0
+                      ? `已移出；连带撤销公开链接 ${r.revoked_links} 条`
+                      : '已移出')
+                    await load(); onChanged()
+                  } catch (e) { message.error((e as Error).message) }
+                }}>
+                <a style={{ color: '#ff4d4f' }}>移出</a>
+              </Popconfirm>)),
+          },
+        ]} />
 
-      {/* 权限诊断:「为什么他能/不能看」——三家共同痛点,Confluence 的付费卖点,我们白送(docs/PERMISSIONS.md 共识 6)。 */}
-      <Typography.Title level={5} style={{ marginTop: 18 }}>权限诊断</Typography.Title>
-      <AntSpace style={{ marginBottom: 8 }}>
-        <AutoComplete
-          placeholder="输用户名,看 ta 为什么能/不能访问本空间" value={diagName} onChange={setDiagName} style={{ width: 280 }}
-          onSearch={searchUsers}
-          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}(${u.name})` : u.username }))}
-          filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
-        />
+      <Typography.Text strong style={{ display: 'block', marginTop: 18 }}>权限诊断</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+        判定链只有两段：是不是超管、成员表里是什么角色。
+      </Typography.Paragraph>
+      <AntSpace.Compact style={{ width: '100%', marginBottom: 8 }}>
+        <Input value={diagName} onChange={(e) => setDiagName(e.target.value)} placeholder="用户名" />
         <Button onClick={async () => {
           if (!diagName.trim()) return
           try {
-            setDiag(await api<Diagnose>(`/api/spaces/${space.id}/diagnose?username=${encodeURIComponent(diagName.trim())}`))
-          } catch (e) {
-            message.error((e as Error).message)
-          }
-        }}>诊断</Button>
-      </AntSpace>
-      {/* ★只给结论★(2026-08-03 用户定):原来把「超管→直接授权→组授权→有效角色」整条判定链摊开,
-          看的人要自己在脑子里做一次合并。现在直接是「谁 = 什么角色」,来源压成一句灰字小注
-          (要的就是「他凭什么」这一句,再多就又变成判定链了)。 */}
+            setDiag(await api<Diagnose>(
+              `/api/projects/${space.id}/diagnose?username=${encodeURIComponent(diagName.trim())}`))
+          } catch (e) { message.error((e as Error).message) }
+        }}>查询</Button>
+      </AntSpace.Compact>
       {diag && (
-        <div style={{ fontSize: 14, background: '#f6ffed', padding: '10px 12px', borderRadius: 6 }}>
-          <b>{diag.username}</b> ：{diag.effective
-            ? <Tag color="green">{ROLE_LABEL[diag.effective]}</Tag>
-            : <Tag color="red">{NO_ACCESS}</Tag>}
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {diag.is_super ? '（超级管理员）'
-              : diag.direct ? '（直接授权）'
-              : diag.via_groups.length ? `（来自小组：${diag.via_groups.map((g) => g.group).join('、')}）`
-              : '（没有任何授权）'}
-          </Typography.Text>
-        </div>
+        <Alert type={diag.effective ? 'success' : 'warning'} showIcon
+          message={<span>
+            <b>{diag.username}</b>：{diag.effective ? ROLE_LABEL[diag.effective] : '无权限'}
+            {diag.is_super && <Tag color="purple" style={{ marginLeft: 8 }}>超管</Tag>}
+            {diag.is_owner && <Tag color="cyan" style={{ marginLeft: 4 }}>主持人</Tag>}
+          </span>} />
       )}
+
+      <Typography.Text strong style={{ display: 'block', marginTop: 18 }}>转写术语表</Typography.Text>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+        空格分隔。人名与专业词按项目不同，只有本项目的人知道自己的词。
+      </Typography.Paragraph>
+      <AntSpace.Compact style={{ width: '100%' }}>
+        <Input value={hot} onChange={(e) => setHot(e.target.value)} placeholder="如：廖睿黎 汇流 向量检索" />
+        <Button onClick={async () => {
+          try {
+            await api(`/api/projects/${space.id}`, {
+              method: 'PUT',
+              body: JSON.stringify({ name: space.name, description: space.description, hotwords: hot }),
+            })
+            message.success('已保存'); onChanged()
+          } catch (e) { message.error((e as Error).message) }
+        }}>保存</Button>
+      </AntSpace.Compact>
     </Modal>
   )
 }
 
-/// 回收站(2026-08-05 软删除):列被删的东西,可还原;空间 admin 还能彻底删。
+/// 回收站(2026-08-05 软删除):列被删的东西,可还原;项目 admin 还能彻底删。
 /// ★彻底删除才真正动对象★,而且按引用计数——同样内容被别处引用着就只删行不删对象。
 function TrashDrawer({ space, open, onClose, onChanged }:
-  { space: Space; open: boolean; onClose: () => void; onChanged: () => void }) {
+  { space: Project; open: boolean; onClose: () => void; onChanged: () => void }) {
   const { message, modal } = AntdApp.useApp()
   const [rows, setRows] = useState<TrashRow[]>([])
   const [loading, setLoading] = useState(false)
   const load = useCallback(async () => {
     setLoading(true)
-    try { setRows(await api<TrashRow[]>(`/api/spaces/${space.id}/trash`)) } catch { setRows([]) } finally { setLoading(false) }
+    try { setRows(await api<TrashRow[]>(`/api/projects/${space.id}/trash`)) } catch { setRows([]) } finally { setLoading(false) }
   }, [space.id])
   useEffect(() => { if (open) void load() }, [open, load])
 
   return (
     <Drawer title="🗑 回收站" open={open} onClose={onClose} width={640}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用空间配额</b>。
+        删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用项目配额</b>。
       </Typography.Paragraph>
       <Table size="small" rowKey="id" dataSource={rows} loading={loading} pagination={false}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="回收站是空的" /> }}
@@ -928,7 +894,7 @@ function AudioPanel({ item }: { item: Item }) {
 
 /// 公开分享对话框(2026-08-05,对标百度网盘)。
 /// ★这是把内容送出墙外的入口,所以文案要把边界说清楚★:链接一旦发出去,拿到的人**不需要**是
-/// 本空间成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
+/// 本项目成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
 function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) {
   const item = items[0]  // 主项:标题与「已有链接」列表按它查(多选时其余项登记在 share_items)
   const { message } = AntdApp.useApp()
@@ -976,7 +942,7 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
       title={<span><ItemIcon it={item} />
         {items.length > 1 ? `分享 ${items.length} 项(${item.name} 等)` : `分享「${item.name}」`}</span>}>
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="这是公开链接:拿到链接的人不需要是本空间成员"
+        message="这是公开链接:拿到链接的人不需要是本项目成员"
         description="提取码、有效期、访问次数是仅有的三道闸;发出去之后唯一的后悔药是撤销。" />
       <AntSpace direction="vertical" style={{ width: '100%' }} size={10}>
         <AntSpace wrap>

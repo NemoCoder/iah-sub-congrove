@@ -30,21 +30,25 @@ export type Me = {
   direct_upload_endpoint: string | null
 }
 export type Role = 'viewer' | 'editor' | 'admin'
-export type Space = {
+/// 项目(原「项目」)。visibility ★只影响忙闲★:public 的会议让成员显示「忙」,
+/// private 完全不占忙闲(可多人私下组队)。两者的**资料**都只有成员能看。
+export type Project = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
-  quota_bytes: number; used_bytes: number; viewer_no_download: boolean
-  /// 本空间的转写术语表(空格分隔;迁移 0007),空间管理员在授权与安全设置里维护
+  quota_bytes: number; used_bytes: number; no_download: boolean
+  /// 本项目的转写术语表(空格分隔),项目管理员维护
   hotwords: string
 }
+/// 权限诊断:★判定链只剩两段★(超管? 成员表里什么角色?)。
+/// 删掉「组」之后不再有 via_groups —— 这正是删组的好处:从一条推导链变成一次查表。
 export type Diagnose = {
-  username: string; is_super: boolean; direct: Role | null
-  via_groups: { group_id: number; group: string; role: Role }[]; effective: Role | null
+  username: string; is_super: boolean; is_owner: boolean
+  member_role: Role | null; effective: Role | null
 }
 export type UserOpt = { username: string; name: string | null }
 export type Item = {
   id: number
-  /// 只有 GET /api/items/{id} 会带(列表接口不带):分享链接 /i/{id} 靠它定位空间
-  space_id?: number
+  /// 只有 GET /api/items/{id} 会带(列表接口不带):分享链接靠它定位项目
+  project_id?: number
   parent_id: number | null
   kind: 'folder' | 'doc' | 'file' | 'video'
   name: string
@@ -54,7 +58,7 @@ export type Item = {
   created_at: string
   updated_at: string
 }
-export type Grant = { grantee_type: 'user' | 'group'; grantee_id: string; role: Role; grantee_name: string | null }
-export type Group = { id: number; name: string; description: string; member_count: number; my_role: string | null }
-export type Member = { username: string; role: string; name: string | null }
+/// 项目成员。★只有人,没有组★——权限只到具体的人。
+export type Member = { username: string; role: Role; added_by: string; added_at: string }
+export type MemberList = { owner: string | null; members: Member[] }
 export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }

@@ -3,6 +3,7 @@
 //! 超管面用 require_super 叠内层(403 不是 401),SPA 由后端同源托管。
 
 mod admin;
+mod apidoc;
 pub(crate) mod items;
 mod media;
 mod share;
@@ -37,12 +38,15 @@ pub fn build_router(state: AppState) -> Router {
     let fast = Router::new()
         .route("/me", get(auth::me))
         .route("/users", get(admin::user_options))
-        // 空间 + 授权
+        // 项目与成员
         .route("/projects", get(projects::list).post(projects::create))
         .route("/projects/{id}", get(projects::detail).put(projects::update).delete(projects::remove))
         .route("/projects/{id}/members", get(projects::members).put(projects::member_put).delete(projects::member_delete))
         .route("/projects/{id}/transfer", post(projects::transfer))
         .route("/projects/{id}/diagnose", get(projects::diagnose))
+        // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
+        // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★
+        .route("/_dev/apis", get(apidoc::list))
         // 小组
 
 

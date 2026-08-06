@@ -54,7 +54,7 @@ export function SharesView() {
     <Card>
       <Typography.Text strong style={{ fontSize: 15 }}>我发出去的分享</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 12px' }}>
-        公开链接:拿到的人不需要是空间成员。撤销后立刻失效,已发出去的也打不开。
+        公开链接:拿到的人不需要是项目成员。撤销后立刻失效,已发出去的也打不开。
         提取码只在生成时显示一次(库里存的是哈希),这里复制的文案只带链接。
       </Typography.Paragraph>
       {/* 10 列,窄屏放不下 —— 给横向滚动而不是让它们互相挤扁(v0.3.55)。 */}
@@ -66,7 +66,7 @@ export function SharesView() {
             render: (_, r) => (
               <span><ItemIcon it={r} />{r.name}
                 {r.item_count > 1 && <Tag style={{ marginLeft: 6 }}>共 {r.item_count} 项</Tag>}</span>) },
-          { title: '空间', dataIndex: 'space', width: 130, ellipsis: true },
+          { title: '项目', dataIndex: 'space', width: 130, ellipsis: true },
           { title: '链接', width: 150, render: (_, r) => (
             <a onClick={() => copy(r)}><CopyOutlined /> /s/{r.token.slice(0, 8)}…</a>) },
           { title: '提取码', width: 74, render: (_, r) => (r.has_code ? <Tag>有</Tag> : <Tag color="orange">无</Tag>) },

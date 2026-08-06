@@ -1,14 +1,16 @@
-// 根组件:登录态(/api/me)+ 顶部页眉 + 「空间 / 小组」两个视图切换。
+// 根组件:登录态(/api/me)+ 顶部页眉 + 顶层视图切换。
 // 身份纪律:SPA 永远不碰 token——会话是 HttpOnly cookie,401 就整页跳 /auth/login(api.ts 统一处理)。
 import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
+
+type View = 'projects' | 'shares' | 'apis'
 import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
-import { GroupsView } from './groups-view'
-import { SpacesView } from './spaces-view'
+import { ProjectsView } from './projects-view'
 import { SharePage } from './share-page'
 import { SharesView } from './shares-view'
+import { ApiDocView } from './apidoc-view'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -35,7 +37,7 @@ export function App() {
 
   const [me, setMe] = useState<Me | null>(null)
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
-  const [view, setView] = useState<'spaces' | 'groups' | 'shares'>('spaces')
+  const [view, setView] = useState<View>('projects')
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -65,15 +67,17 @@ export function App() {
       <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
         <Segmented
           value={view}
-          onChange={(v) => setView(v as 'spaces' | 'groups' | 'shares')}
+          onChange={(v) => setView(v as View)}
           options={[
-            { value: 'spaces', label: '🌳 空间' },
-            { value: 'groups', label: '👥 小组' },
-            { value: 'shares', label: '🔗 我的分享' },
+            { value: 'projects', label: '项目' },
+            { value: 'shares', label: '我的分享' },
+            // 开发者页面:只给超管。清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,
+            // 所以它永远不会跟实际接口漂移。
+            ...(me?.is_super ? [{ value: 'apis', label: '开发者' }] : []),
           ]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'spaces' ? <SpacesView me={me} /> : view === 'groups' ? <GroupsView /> : <SharesView />}
+        {view === 'projects' ? <ProjectsView me={me} /> : view === 'apis' ? <ApiDocView /> : <SharesView />}
       </div>
     </div>
   )
