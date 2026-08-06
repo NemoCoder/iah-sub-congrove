@@ -300,6 +300,9 @@ pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<V
     //   (按分段文本切出的 token 数 = 16792,**逐个吻合**)。
     //   必须拿**分段文本**切:全文里英文之间没有空格(evaluation+function 粘成 evaluationfunction),
     //   只有分段文本保留了空格。对上之后最后一个实字落在 3670.2s = 音频真实结尾(此前 3624s 就用完)。
+    // ★走了哪条路必须可见★(v0.3.57):这三条分支的差别就是「时间轴准」与「时间轴漂移」,
+    // 而原先三条都不打日志 —— 掉到最后那条(只能按分段插值)是**静默降级**,
+    // 线上只会表现为「字幕又对不上了」,没有任何信号指向这里。
     if char_ts.len() == tokens.len() {
         for (&(st, ln), t) in tokens.iter().zip(char_ts.iter()) {
             // 一个 token 里的多个字符(英文单词)按字数均分它的时间跨度。
@@ -309,17 +312,31 @@ pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<V
                 chars[st + k].2 = a + (b - a) * ((k + 1) as f64) / (ln as f64);
             }
         }
+        tracing::info!(tokens = tokens.len(), chars = chars.len(), "对齐:按 token 用字级时间戳(正常路径)");
     } else if char_ts.len() == chars.len() {
         // 万一哪天服务端改成按字给,也直接能用。
         for (c, t) in chars.iter_mut().zip(char_ts.iter()) { c.1 = t.0; c.2 = t.1 }
+        tracing::info!(chars = chars.len(), "对齐:按字符用字级时间戳(服务端改成按字给了)");
+    } else if !char_ts.is_empty() {
+        // ⚠ 有字级时间戳却哪条都对不上 —— 多半是 FunASR 换了分词/切法。退回分段插值 = 漂移回归。
+        tracing::warn!(char_ts = char_ts.len(), tokens = tokens.len(), chars = chars.len(),
+            "对齐:字级时间戳条数与 token/字符数都对不上,退回分段插值(时间轴会漂移,查 ASR 端是否换了分词)");
     }
     // 全文侧:实字必须与分段侧逐字相同,否则说明两边不是同一次响应(或热词替换只改了一边)。
     let full: Vec<char> = text.chars().collect();
     // ⚠ 比对**忽略大小写**:全文里句首英文会被大写(「……都没有听清Ok就是」),分段里是原样小写
     //   (「听清ok就是」)。实测 17338 个实字里只有这一类差异,不放过就会整段退回原分段(白修)。
-    if full.iter().filter(|c| !is_skippable(**c)).count() != chars.len() { return None }
+    let n_full = full.iter().filter(|c| !is_skippable(**c)).count();
+    if n_full != chars.len() {
+        tracing::warn!(full_chars = n_full, seg_chars = chars.len(),
+            "对齐:全文与分段的实字数不一致,放弃重对齐、退回原分段(时间轴仍按 sentence_info,会漂移)");
+        return None;
+    }
     if full.iter().filter(|c| !is_skippable(**c)).zip(chars.iter())
-        .any(|(a, b)| !a.eq_ignore_ascii_case(&b.0)) { return None }
+        .any(|(a, b)| !a.eq_ignore_ascii_case(&b.0)) {
+        tracing::warn!("对齐:全文与分段的实字**内容**不一致,放弃重对齐、退回原分段(热词替换只改了一边?)");
+        return None;
+    }
 
     // 按标点把全文切成细单元(与 sentence_info 本该给的粒度一致),再交给既有的两套合并阈值。
     let mut out: Vec<Segment> = Vec::new();
@@ -557,11 +574,16 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, h
             .map(|s| Segment { start: s.start.unwrap_or(0.0), end: s.end.unwrap_or(0.0), text: s.text, speaker: s.speaker })
             .filter(|s| !s.text.trim().is_empty())
             .collect();
-        // ★这条日志就是 0137 要我验的那点★:字级时间戳条数 vs 全文实字数。
-        // 相等 = 「第 i 实字配第 i 时间戳」成立,时间轴根治;不等 = 仍是单元错配,得上 fa-zh 强制对齐。
+        // ★这条日志的判据一度过时,别再照 `aligned` 下结论★(v0.3.57 修正):
+        // 它原先叫 aligned,判的是「char_ts 条数 == 全文实字数」—— 那是 0137 时期的假设
+        // (以为字级时间戳按**字**给)。后来实测确认是**按 token 给的**(英文/数字连写整串算一条),
+        // 于是 realign 早就改走 token 分支了,而这条日志还在按老判据输出 `aligned: false` ——
+        // 一切正常时它也报 false,看日志的人(2026-08-06 我自己)会误判成「对齐失败」。
+        // 现在只报**原始数字**,真正的对齐结果由 realign 里那三条日志给。
         let n_chars = full.chars().filter(|c| !is_skippable(*c)).count();
         tracing::info!(char_ts = char_ts.len(), content_chars = n_chars, segs = v.len(),
-            aligned = (!char_ts.is_empty() && char_ts.len() == n_chars), "ASR 字级时间戳对齐自检");
+            diff = n_chars as i64 - char_ts.len() as i64,
+            "ASR 响应自检(char_ts 是 **token** 数,比实字数少属正常,差额=英文/数字连写)");
         if !v.is_empty() { return Ok(Asr { segments: v, text: full, char_ts }) }
     }
     if full.trim().is_empty() { return Ok(Asr { segments: vec![], text: full, char_ts }) }
