@@ -224,3 +224,76 @@ test.describe('会议可见性(D9)', () => {
     expect(r.status()).toBe(404)
   })
 })
+
+test.describe('项目归档(D17)', () => {
+  /// 归档一个项目并返回它的 id
+  const archive = async (req: APIRequestContext, pid: number, on = true) =>
+    req.post(`/api/projects/${pid}/archive`, { data: { archived: on } })
+
+  test('★归档后写操作 409、读操作仍 200★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-归档-${Date.now()}`)
+    // 归档前:能写
+    expect((await request.post(`/api/projects/${pid}/items`,
+      { data: { name: '归档前建的', kind: 'folder' } })).status()).toBe(200)
+
+    expect((await archive(request, pid)).status()).toBe(200)
+
+    // ★写:409 而不是 403★ —— 语义是「项目结束了」不是「你没权限」
+    const w = await request.post(`/api/projects/${pid}/items`, { data: { name: '归档后', kind: 'folder' } })
+    expect(w.status(), '归档后还能往里写 = 只读没生效').toBe(409)
+    // 建会议同样被挡(它也走 require_role(Editor))
+    const m = await newMeeting(request, [pid])
+    expect(m.status(), '归档项目还能建会议').toBe(409)
+
+    // ★读:仍然 200★ —— 归档就是为了以后还能查,查不到就等于删了
+    expect((await request.get(`/api/projects/${pid}/items`)).status(), '归档后读不到了 = 存档失去意义').toBe(200)
+    expect((await request.get(`/api/projects/${pid}`)).status()).toBe(200)
+  })
+
+  test('恢复为进行中之后,同一个写请求由 409 变 200', async ({ request }) => {
+    const pid = await newProject(request, `E2E-归档恢复-${Date.now()}`)
+    await archive(request, pid)
+    expect((await request.post(`/api/projects/${pid}/items`, { data: { name: 'x', kind: 'folder' } })).status()).toBe(409)
+    // ★恢复走 require_owner 不走 require_role★:后者对归档项目拒绝一切写操作,
+    // 那样归档之后就再也解不开了(自锁)。这条用例就是守这个。
+    expect((await archive(request, pid, false)).status(), '★解不开了 = 自锁★').toBe(200)
+    expect((await request.post(`/api/projects/${pid}/items`, { data: { name: 'y', kind: 'folder' } })).status()).toBe(200)
+  })
+
+  test('★归档项目的会不进日历、不产生忙闲★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-归档日历-${Date.now()}`, 'public')
+    const { id: mid } = await (await newMeeting(request, [pid])).json()
+    const from = new Date(Date.now() - 3600_000).toISOString()
+    const to = new Date(Date.now() + 86400_000).toISOString()
+
+    // 归档前:会在日历里,也产生忙闲
+    const before = await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()
+    expect(before.some((x: { id: number }) => x.id === mid)).toBe(true)
+    const fbBefore = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
+    expect(fbBefore.busy.e2e.length).toBeGreaterThan(0)
+
+    await archive(request, pid)
+
+    // 归档后:日历里没有了 —— 日历回答「接下来要做什么」,不是考古现场
+    const after = await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()
+    expect(after.some((x: { id: number }) => x.id === mid), '归档项目的会仍占着日历').toBe(false)
+    // 忙闲也没有了 —— 否则历史会议会让人永远约不到你
+    const fbAfter = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
+    expect(fbAfter.busy.e2e.length, '归档项目仍在产生忙闲').toBeLessThan(fbBefore.busy.e2e.length)
+
+    // ★但会议本身还查得到★:历史归历史,进项目页/直接开 id 都能看
+    expect((await request.get(`/api/meetings/${mid}`)).status(), '归档后历史会议查不到了').toBe(200)
+  })
+
+  test('项目列表带出归档状态,且归档的排在后面', async ({ request }) => {
+    const act = await newProject(request, `E2E-归档排序A-${Date.now()}`)
+    const arc = await newProject(request, `E2E-归档排序B-${Date.now()}`)
+    await archive(request, arc)
+    const ps = await (await request.get('/api/projects')).json()
+    const iAct = ps.findIndex((p: { id: number }) => p.id === act)
+    const iArc = ps.findIndex((p: { id: number }) => p.id === arc)
+    expect(ps[iArc].archived_at, '列表没带出 archived_at,前端无从区分').toBeTruthy()
+    expect(ps[iAct].archived_at).toBeFalsy()
+    expect(iArc, '归档项目没有沉到后面').toBeGreaterThan(iAct)
+  })
+})

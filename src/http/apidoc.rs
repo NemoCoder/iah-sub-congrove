@@ -57,7 +57,9 @@ pub const APIS: &[Api] = &[
     api!("PUT", "/api/projects/{id}", "项目", "admin;改 visibility 需 owner",
          "改名/描述/禁下载/术语表/可见性/禁分享。★开启禁分享会连带撤销已有公开链接★",
          "name, description, no_download, hotwords, visibility, no_share"),
-    api!("DELETE", "/api/projects/{id}", "项目", "admin", "删项目", ""),
+    api!("DELETE", "/api/projects/{id}", "项目", "owner",
+         "删项目(软删除)。★owner 专属(D0)★,不是 admin;★归档的项目也能直接删★\
+          (走 require_owner,不受归档写闸约束)", ""),
     api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", ""),
     api!("PUT", "/api/projects/{id}/members", "项目", "admin;给 admin 需 owner",
          "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),

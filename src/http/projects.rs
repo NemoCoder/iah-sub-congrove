@@ -274,7 +274,13 @@ pub async fn remove(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_role(&state.pool, &id, pid, Role::Admin).await?;
+    // ★删项目是主持人专属(D0)★,不是 admin —— perm.rs 头注一直这么写,
+    // 但这里长期用的是 require_role(Admin),两处不一致(2026-08-07 归档功能顺带发现)。
+    //
+    // 改用 require_owner 还顺手解决了一个回归:归档的写闸挡 `need >= Editor`,
+    // 而 Admin >= Editor,于是**归档的项目连删都删不掉**,必须先恢复再删 —— 反直觉
+    // (「结题归档了,后来发现是废的想清理掉」是很自然的诉求)。require_owner 不受那道闸约束。
+    crate::perm::require_owner(&state.pool, &id, pid).await?;
     let keys: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k FROM (
            SELECT s3_key k FROM items WHERE project_id = $1 AND s3_key IS NOT NULL

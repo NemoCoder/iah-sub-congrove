@@ -19,12 +19,18 @@ test.describe('发起会议表单', () => {
     await page.goto('/')
     await page.getByRole('button', { name: /发起会议/ }).click()
 
+    // ★定位靠表单字段 id,断言靠可见文本 —— 都不碰组件内部类名★。
+    // 2026-08-07 教训:第一版写的是 `.ant-select-selection-item`,那是 **AntD 5** 的类名,
+    // 而本项目用 AntD 6(实际是 `.ant-select-content`)。结果测试红了,
+    // 但**产品完全正常** —— 差点被自己的测试误导去改没坏的代码。
+    // 组件库的内部类名是实现细节,升个大版本就变;id 和用户看得见的文本才是契约。
+    const item = page.locator('.ant-form-item').filter({ has: page.locator('#recorder') })
+
     // 记录员默认填当前用户 —— 「记录员也可以是发起人本身」是最常见的情形(用户 2026-08-07 指出)
-    const recorder = page.locator('.ant-form-item').filter({ hasText: '记录员' }).locator('.ant-select-selection-item')
-    await expect(recorder, '记录员没有默认值,每次都要手动选一次').toHaveText(/e2e/)
+    await expect(item, '记录员没有默认值,每次都要手动选一次').toContainText('e2e')
 
     // 展开下拉:★不输入任何关键词也要有候选★(这就是那个 bug:原来是「暂无数据」)
-    await page.locator('.ant-form-item').filter({ hasText: '记录员' }).locator('.ant-select').click()
+    await item.click()
     const options = page.locator('.ant-select-dropdown:visible .ant-select-item-option')
     await expect(options.first(), '下拉框「暂无数据」= 必填项选不了 = 建不了会议').toBeVisible()
     await expect(options.filter({ hasText: 'e2e' }).first()).toBeVisible()

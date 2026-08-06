@@ -90,7 +90,13 @@ export function ProjectsView({ me }: { me: Me | null }) {
     if (cur) loadItems(cur.id).catch((e) => message.error(e.message))
   }, [cur?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canEdit = cur?.my_role === 'editor' || cur?.my_role === 'admin'
+  /// ★归档项目是只读的(D17)★:后端会 409 拒绝一切写操作,前端就不该把按钮亮着 ——
+  /// 横幅写着「不能再上传」、按钮却还能点,等于在骗人点一次才告诉他不行。
+  /// ⚠ 这不是安全边界(真闸在后端 require_role),只是别让界面说谎。
+  const readOnly = !!cur?.archived_at
+  const canEdit = (cur?.my_role === 'editor' || cur?.my_role === 'admin') && !readOnly
+  /// 只读时仍然显示的工具栏(回收站是**读**,归档项目照样该能查看已删内容)
+  const showToolbar = cur?.my_role === 'editor' || cur?.my_role === 'admin'
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
 
   /// 排序(2026-08-04 用户要求)。**文件夹恒在前**,排序只在同类之间比——网盘/资源管理器都是这个惯例,
@@ -439,24 +445,34 @@ export function ProjectsView({ me }: { me: Me | null }) {
               message={`这个项目已归档（${new Date(cur.archived_at).toLocaleDateString('zh-CN')}），是只读的`}
               description="材料、会议与纪要都保留着，可以查看和下载；但不能再上传、建会议或修改。主持人可在左侧 ⋯ 菜单里恢复为进行中。" />
           )}
-          {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。 */}
-          {canEdit && (
+          {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。
+              ★归档时只留「回收站」★——它是读操作,存档项目照样该能查看已删内容。 */}
+          {showToolbar && (
             <AntSpace style={{ marginBottom: 10 }} wrap>
+              {!readOnly && (
               <Upload showUploadList={false} multiple
                 customRequest={({ file, onSuccess }) => { uploadFiles([file as File]).then(() => onSuccess?.({})) }}>
                 <Button type="primary" size="small" icon={<UploadOutlined />}>上传文件</Button>
               </Upload>
+              )}
               {/* ★只给图标★(2026-08-05 用户:文字太占地方,参考 VSCode)。
                   FolderAddOutlined / FileAddOutlined 就是 VSCode 资源管理器那两个
                   「新建文件夹 / 新建文件」的形态(容器 + 加号),hover 出文字补足语义。 */}
-              <Tooltip title="新建文件夹">
-                <Button size="small" icon={<FolderAddOutlined />} onClick={() => newItem('folder')} />
-              </Tooltip>
-              <Tooltip title="新建文档">
-                <Button size="small" icon={<FileAddOutlined />} onClick={() => newItem('doc')} />
-              </Tooltip>
+              {!readOnly && (
+                <Tooltip title="新建文件夹">
+                  <Button size="small" icon={<FolderAddOutlined />} onClick={() => newItem('folder')} />
+                </Tooltip>
+              )}
+              {!readOnly && (
+                <Tooltip title="新建文档">
+                  <Button size="small" icon={<FileAddOutlined />} onClick={() => newItem('doc')} />
+                </Tooltip>
+              )}
               <Button size="small" icon={<DeleteOutlined />} onClick={() => setTrashOpen(true)}>回收站</Button>
-              {checkedItems.length > 0 && (
+              {/* 批量操作三个都是写(建分享链接/移动/删除),归档时整块不出现。
+                  ⚠ ★已经发出去的分享链接仍然有效★——归档是「只读」不是「封存」,
+                  读得到才是归档的意义;要断链接请用「禁止分享」开关或撤销。 */}
+              {!readOnly && checkedItems.length > 0 && (
                 <>
                   <span style={{ color: '#8c8c8c', fontSize: 12 }}>已选 {checkedItems.length} 项</span>
                   {/* 多选分享(2026-08-05):一条链接带多份内容,和单项分享同一套闸(提取码/有效期/次数) */}

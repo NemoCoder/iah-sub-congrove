@@ -85,8 +85,14 @@ const CASES: &[Case] = &[
        "PUT {no_share:true}", "200;★那 2 条链接立刻 404★(只改开关不撤旧链接 = 开关是假的)", "R1"),
     c!("PUT", "/api/projects/{id}", "禁下载只拦 viewer 的原件下载", "项目 no_download=true",
        "viewer 调 download / 调 content / 调 play", "download 403,content 与 play 仍 200(阅读播放不拦)", "P3"),
-    c!("DELETE", "/api/projects/{id}", "admin 删项目", "我是 admin", "DELETE /api/projects/{id}", "200", ""),
-    c!(deny "DELETE", "/api/projects/{id}", "editor 不能删项目", "我是 editor", "DELETE", "403", ""),
+    c!("DELETE", "/api/projects/{id}", "owner 删项目", "我是 owner", "DELETE /api/projects/{id}", "200,项目进回收站", "D0"),
+    c!("DELETE", "/api/projects/{id}", "★归档的项目也能直接删★", "项目已归档,我是 owner",
+       "DELETE /api/projects/{id}",
+       "200 —— 走 require_owner 不受归档写闸约束。否则「结题归档了,后来发现是废的想清理」\
+        就得先恢复再删,反直觉", "D17"),
+    c!(deny "DELETE", "/api/projects/{id}", "admin 不能删项目", "我是 admin 但不是 owner",
+       "DELETE", "403;★删项目是主持人专属(D0)★——此前实现用的是 admin,与 perm.rs 头注不一致,\
+        2026-08-07 做归档时发现并对齐", "D0"),
     c!("GET", "/api/projects/{id}/members", "成员列表只有人没有组", "项目有 3 个成员", "GET .../members",
        "200,3 条,每条是具体用户名;★响应里不得出现任何「组」字段★(D12 已删掉这个概念)", "D12"),
     c!("PUT", "/api/projects/{id}/members", "批量加成员", "我是 admin", "PUT {usernames:['a','b','c'],role:'viewer'}",
