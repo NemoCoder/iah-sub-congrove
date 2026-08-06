@@ -12,14 +12,13 @@
 import { App as AntdApp, Badge, Button, Card, Empty, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Meeting } from './api'
+import { HOUR_PX, layout } from './schedule-layout'
 
-/// 一天在日历里的高度:24 小时 × 30px。★改这个值要同时改 HOUR_PX★
-const HOUR_PX = 30
 const DAY_PX = HOUR_PX * 24
 
-/// 本地日期工具。★不引 dayjs 之类的库★:只需要「周的起止」和「格式化」两件事,
-/// 而 AntD 已经带了 dayjs —— 但这里刻意只用原生 Date,免得把时区处理散到两套 API 里。
-/// ⚠ 全部按**浏览器本地时区**渲染;后端存的是 timestamptz,ISO 串带偏移,Date 会自己转对。
+/// 本地日期工具。★不引 dayjs★:只需要「周的起止」和格式化,原生 Date 够用,
+/// 也免得把时区处理散到两套 API 里。全部按**浏览器本地时区**渲染;
+/// 后端存 timestamptz、ISO 串带偏移,Date 会自己转对。
 function startOfWeek(d: Date): Date {
   const x = new Date(d)
   x.setHours(0, 0, 0, 0)
@@ -38,44 +37,9 @@ const WEEK_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', 
 const pad = (n: number) => String(n).padStart(2, '0')
 const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 
-/// 会议在某一天的纵向位置。跨天会议按当天可见的那段裁剪。
-function slot(m: Meeting, day: Date): { top: number; height: number } | null {
-  const s = new Date(m.starts_at)
-  const e = new Date(m.ends_at)
-  const dayStart = new Date(day)
-  dayStart.setHours(0, 0, 0, 0)
-  const dayEnd = addDays(dayStart, 1)
-  if (e <= dayStart || s >= dayEnd) return null
-  const from = Math.max(s.getTime(), dayStart.getTime())
-  const to = Math.min(e.getTime(), dayEnd.getTime())
-  const top = ((from - dayStart.getTime()) / 3600_000) * HOUR_PX
-  // ★最小高度 18px★:15 分钟的会只有 7.5px,连标题都放不下,点都点不中
-  const height = Math.max(18, ((to - from) / 3600_000) * HOUR_PX)
-  return { top, height }
-}
-
-/// 同一天里时间重叠的会并排放,避免完全盖住。
-/// ★只做两列★(原型也是 half-l / half-r):三个以上重叠属于极端情况,
-/// 再细分就窄到看不清了,那种情况本来就该去看列表。
-function layout(items: Meeting[], day: Date) {
-  const placed = items
-    .map((m) => ({ m, pos: slot(m, day) }))
-    .filter((x): x is { m: Meeting; pos: { top: number; height: number } } => x.pos !== null)
-    .sort((a, b) => a.pos.top - b.pos.top)
-  const out: { m: Meeting; top: number; height: number; left: string; width: string }[] = []
-  for (const cur of placed) {
-    const overlap = out.find((o) => cur.pos.top < o.top + o.height && o.top < cur.pos.top + cur.pos.height)
-    if (overlap && overlap.width === '100%') {
-      // 前一个让出右半边,自己占右半 —— 两个并排,都还看得见标题
-      overlap.width = '50%'
-      out.push({ m: cur.m, top: cur.pos.top, height: cur.pos.height, left: '50%', width: '50%' })
-    } else {
-      out.push({ m: cur.m, top: cur.pos.top, height: cur.pos.height, left: '0', width: '100%' })
-    }
-  }
-  return out
-}
-
+/// ★布局与位置计算已抽到 schedule-layout.ts 并有单测覆盖★——
+/// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让会议在界面上凭空消失。
+/// 这里只留渲染,别把算法抄回来(抄回来就是第二个真相源,也就没人再跑那 9 条测试了)。
 /// 会议在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
 function evStyle(m: Meeting): React.CSSProperties {
   if (m.my_status === 'pending') return { background: '#fff1f0', border: '1px solid #ff4d4f', color: '#a8071a' }
@@ -176,7 +140,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
                     // 每小时一条横线:用 repeating gradient,省掉 24 个 DOM 节点 × 7 列
                     backgroundImage: `repeating-linear-gradient(#f5f5f5 0 1px, transparent 1px ${HOUR_PX}px)`,
                   }}>
-                    {layout(items, d).map(({ m, top, height, left, width }) => (
+                    {layout(items, d).map(({ item: m, top, height, left, width }) => (
                       <div
                         key={m.id}
                         onClick={() => onOpenMeeting(m.id)}

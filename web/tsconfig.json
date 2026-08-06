@@ -6,13 +6,15 @@
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
     "strict": true,
+    // 测试文件用 node --test 直接跑 TS,import 时要带 .ts 后缀
+    "allowImportingTsExtensions": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"]
   },
   "include": ["src"]
 }
