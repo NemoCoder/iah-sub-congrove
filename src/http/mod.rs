@@ -3,7 +3,8 @@
 //! 超管面用 require_super 叠内层(403 不是 401),SPA 由后端同源托管。
 
 mod admin;
-mod apidoc;
+/// ★pub 是给集成测试用的★:`tests/api_cases.rs` 要读 `APIS` 逐条核对「每个接口都有测试用例」。
+pub mod apidoc;
 pub(crate) mod items;
 mod media;
 mod share;

@@ -3,7 +3,7 @@
 
 port: 8030                    # 单镜像单端口,与 Dockerfile 的 BIND_ADDR / EXPOSE 一致
 display_name: 汇流 Congrove
-description: 团队知识库:空间 + 小组分权共享,会议记录 / 会议录屏 / 论文资料
+description: 团队协作:项目资料 + 会议与日程,会议纪要 / 录屏转写 / 论文资料
 
 want_db: true                 # 共享 iah-pg(PG18)→ 平台注入 DATABASE_URL
 want_oss: true                # Garage S3 → 平台注入 AWS_* / S3_ENDPOINT / S3_BUCKET
@@ -14,8 +14,9 @@ env:
   CONGROVE_SUPER_USERS: liaoruili
   # 非 dev 值 → telemetry.rs 输出 JSON 结构化日志(平台 Loki 规范);本地 cargo run 缺省 dev = 人读格式。
   APP_ENV: cluster
-  # 建空间白名单(D2,docs/PERMISSIONS.md):不配/空 = 全员可建;要收紧填逗号分隔用户名(超管恒可建)。
-  # CONGROVE_SPACE_CREATORS: liaoruili
+  # 建项目白名单(D2,docs/PERMISSIONS.md):不配/空 = 全员可建;要收紧填逗号分隔用户名(超管恒可建)。
+  # ★变量名跟着 0.4.0 的「空间→项目」改过★,别再写 CONGROVE_SPACE_CREATORS(config.rs 已不认)。
+  # CONGROVE_PROJECT_CREATORS: liaoruili
   # 预签名专用外部端点(§7.4b-2):未配则录屏走后端流式代理回退。
   # ⚠ 配它之前必须先让平台给桶配 CORS(ExposeHeaders:ETag,pod 的 key 无 owner 位自己配不了,§7.4b-1)。
   S3_PUBLIC_ENDPOINT: https://s3api.ruciah.com
