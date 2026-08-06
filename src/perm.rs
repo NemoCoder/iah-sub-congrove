@@ -127,6 +127,70 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
     }
 }
 
+/// 我能以什么身份看这场会议。★这是会议模块的唯一推导★,别在 handler 里各自拼 SQL。
+///
+/// ⚠ **它只管「会议元信息」,不管材料**。材料权限一律走 [`require_role`](项目成员身份,D3),
+/// 与「是不是参会人」完全无关 —— 这正是 D8(临时参会人能参会、看不到材料)与
+/// D9(公开会议旁听者能看议程、材料一律 404)成立的原因。把两者混在一起,
+/// 「参会即获得资料权限」就会把权限模型退回历史累积,而 R1 要的是**当前状态的函数**。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeetingView {
+    /// 参会人 / 关联项目的成员 / 超管:元信息 + 参与者名单 + 讨论区。
+    Inside,
+    /// 旁听者:仅因为这场会 `visibility='public'` 而看得见。
+    /// ★只给标题/议程/时间/地点/线上链接★——名单与讨论区都不给(D9)。
+    Observer,
+}
+
+/// 判我对这场会议的可见档位。看不到 → 404(与 require_role 同口径:不泄露存在性)。
+///
+/// 四条来源一次查完(与 effective_role 同样的 UNION 手法,零额外往返):
+/// 参会人(含 guest)/ 关联项目成员 / 超管 / 会议本身是 public。
+pub async fn meeting_view(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppResult<MeetingView> {
+    let username = id.require_username()?;
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT 'inside'::text FROM meeting_participants
+           WHERE meeting_id = $1 AND username = $2
+         UNION ALL
+         SELECT 'inside' FROM meeting_projects mp
+           JOIN project_members pm ON pm.project_id = mp.project_id
+           WHERE mp.meeting_id = $1 AND pm.username = $2
+         UNION ALL
+         SELECT 'inside' FROM app_user WHERE username = $2 AND is_super
+         UNION ALL
+         SELECT 'observer' FROM meetings WHERE id = $1 AND visibility = 'public'",
+    )
+    .bind(meeting_id)
+    .bind(username)
+    .fetch_all(pool)
+    .await?;
+    if rows.iter().any(|r| r == "inside") { return Ok(MeetingView::Inside) }
+    if rows.iter().any(|r| r == "observer") { return Ok(MeetingView::Observer) }
+    Err(AppError::NotFound)
+}
+
+/// 谁能改这场会:发起人、记录员(要整理纪要)、超管。
+/// ★不是「关联项目的 admin」★——一场会可关联多个项目,让任一项目的管理员都能改别人的会太宽。
+pub async fn require_meeting_host(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppResult<()> {
+    if is_super_now(pool, id).await? { return Ok(()) }
+    let username = id.require_username()?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT organizer, recorder FROM meetings WHERE id = $1",
+    )
+    .bind(meeting_id)
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some((org, rec)) if org == username || rec == username => Ok(()),
+        // 看得见但不是主人 → 403;完全看不见 → 404(同 require_role 的两档口径)
+        Some(_) => match meeting_view(pool, id, meeting_id).await {
+            Ok(_) => Err(AppError::Forbidden),
+            Err(e) => Err(e),
+        },
+        None => Err(AppError::NotFound),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

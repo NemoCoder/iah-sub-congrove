@@ -7,8 +7,9 @@ mod admin;
 pub mod apidoc;
 pub(crate) mod items;
 mod media;
+mod meetings;
 mod share;
-mod projects;
+pub(crate) mod projects;
 
 use std::time::Duration;
 
@@ -48,8 +49,15 @@ pub fn build_router(state: AppState) -> Router {
         // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
         // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★
         .route("/_dev/apis", get(apidoc::list))
-        // 小组
-
+        // 会议与日程(M1)。★会议参与 ≠ 资料权限★:这些接口只管会议元信息,
+        // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 meetings.rs 头注)。
+        .route("/meetings", get(meetings::list).post(meetings::create))
+        .route("/meetings/{id}", get(meetings::detail).put(meetings::update).delete(meetings::cancel))
+        .route("/meetings/{id}/participants", put(meetings::invite).delete(meetings::uninvite))
+        .route("/meetings/{id}/respond", post(meetings::respond))
+        .route("/meetings/{id}/messages", get(meetings::messages).post(meetings::send_message))
+        // 忙闲(D1):只回时间段不回内容;私密项目的会完全隐形。
+        .route("/freebusy", get(meetings::freebusy))
 
 
         // 内容树(文档正文小,留在快路由)
