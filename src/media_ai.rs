@@ -570,8 +570,20 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, h
         if char_ts.is_empty() {
             char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(|v| ms2s(v)).collect();
         }
+        // ★2026-08-07 平台 asr-funasr v7 把响应单位全统一成整数毫秒★(群 #122,是我 #114 提的单位问题
+        // 的修法):`segments.start/end` 与 `duration` 由**秒**改成**毫秒**,`timestamp` 本就是毫秒不变。
+        // 我方全程按**秒**算(Segment.start/end 是 f64 秒),所以这里必须换算。
+        // ★但不硬编码「就是毫秒」★——理由是这个错**静默且灾难**:差 1000× 会让 [mm:ss] 前缀、字幕 cue、
+        // timeline_drift 全部崩掉,却不抛任何错;而集群上跑的到底是 v6 还是 v7,我这边看不出来。
+        // 所以用 char_ts 当**标尺自校准**:两者描述同一段音频,末值应当接近,哪种解释更接近就用哪种。
+        let raw_end_max = segs.iter().filter_map(|s| s.end).fold(0.0_f64, f64::max);
+        let ms = segs_are_ms(raw_end_max, char_ts.last().map(|(_, b)| *b));
+        let k = if ms { 1000.0 } else { 1.0 };
+        tracing::info!(unit = if ms { "毫秒" } else { "秒" }, raw_end_max,
+            ruler_sec = char_ts.last().map(|(_, b)| *b),
+            "ASR segments 单位判定(平台 v7 起=毫秒;拿 char_ts 当标尺校准)");
         let v: Vec<Segment> = segs.into_iter()
-            .map(|s| Segment { start: s.start.unwrap_or(0.0), end: s.end.unwrap_or(0.0), text: s.text, speaker: s.speaker })
+            .map(|s| Segment { start: s.start.unwrap_or(0.0) / k, end: s.end.unwrap_or(0.0) / k, text: s.text, speaker: s.speaker })
             .filter(|s| !s.text.trim().is_empty())
             .collect();
         // ★这条日志的判据一度过时,别再照 `aligned` 下结论★(v0.3.57 修正):
@@ -588,6 +600,18 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, h
     }
     if full.trim().is_empty() { return Ok(Asr { segments: vec![], text: full, char_ts }) }
     Ok(Asr { segments: vec![Segment { start: 0.0, end: 0.0, text: full.clone(), speaker: None }], text: full, char_ts })
+}
+
+/// segments 的 start/end 是**毫秒**还是**秒**?返回 true = 毫秒(要除 1000)。
+///
+/// 平台 asr-funasr v7 起契约是毫秒(群 #122),但**不把它写死**:单位判错是静默的 1000× 错,
+/// 而 char_ts(顶层 `timestamp`,一直是毫秒、这里传进来的已换算成**秒**)描述的是同一段音频,
+/// 天然就是一把免费的标尺——两种解释里哪个离标尺近就是哪个。
+/// 标尺缺失(没有字级时间戳)时按平台**当前**契约取毫秒。
+fn segs_are_ms(seg_end_max: f64, ruler_sec: Option<f64>) -> bool {
+    let Some(ts) = ruler_sec else { return true };
+    if seg_end_max <= 0.0 || ts <= 0.0 { return true }
+    (seg_end_max / 1000.0 - ts).abs() < (seg_end_max - ts).abs()
 }
 
 /// 长转写压缩:超过阈值就 map-reduce(分块摘要再合并),避免把 10 万字硬塞进上下文。
@@ -696,6 +720,32 @@ mod tests {
 
     fn seg(start: f64, end: f64, text: &str, spk: &str) -> Segment {
         Segment { start, end, text: text.into(), speaker: Some(spk.into()) }
+    }
+
+    /// 一小时的会:v7 给 3_600_000(毫秒),标尺 3600 秒 → 判毫秒。
+    #[test]
+    fn 单位判定_v7毫秒() {
+        assert!(segs_are_ms(3_600_000.0, Some(3600.0)));
+    }
+
+    /// 同一场会若跑在旧版 v6 上,segments 给的是 3600(秒),标尺仍是 3600 秒 → 判秒,不能瞎除 1000。
+    #[test]
+    fn 单位判定_旧版秒制不误除() {
+        assert!(!segs_are_ms(3600.0, Some(3600.0)));
+    }
+
+    /// 短音频(12 秒)也要判对:毫秒 12000 vs 标尺 12。
+    #[test]
+    fn 单位判定_短音频() {
+        assert!(segs_are_ms(12_000.0, Some(12.0)));
+        assert!(!segs_are_ms(12.0, Some(12.0)));
+    }
+
+    /// 没有字级时间戳(标尺缺失)时,按平台**当前**契约取毫秒。
+    #[test]
+    fn 单位判定_无标尺时按当前契约() {
+        assert!(segs_are_ms(3_600_000.0, None));
+        assert!(segs_are_ms(0.0, Some(0.0)));   // 退化输入不 panic、不除零
     }
 
     /// 样本取自 2026-08-04 线上真实转写(item 20,30 分钟处):句界右移一字、
