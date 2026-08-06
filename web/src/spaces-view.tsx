@@ -462,13 +462,18 @@ export function SpacesView({ me }: { me: Me | null }) {
                   render: (_, it) => (it.id === PARENT_ROW_ID ? null : up(it) ? (
                     // ★上传中的行:进度条 + 取消★(2026-08-03 用户要求)。排队中的显示「排队中」,
                     // 它还没发任何请求,取消 = 直接出队。
-                    <AntSpace size={6} style={{ width: '100%' }}>
+                    // ★别给进度条写死宽度★(v0.3.56):原先 width:120 + 「取消」28 + 间距,
+                    // 超过操作列 158 的可用宽度(还要扣单元格 padding),「取消」被挤到第二行。
+                    // 改成 flex:进度条吃掉剩余空间(minWidth:0 才允许它被压缩),
+                    // 「取消」flexShrink:0 + nowrap 永不换行。列宽以后怎么调都不会再断行。
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       {up(it)!.running
-                        ? <Progress percent={up(it)!.percent} size="small" style={{ width: 120 }}
+                        ? <Progress percent={up(it)!.percent} size="small" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
                             format={(p) => (up(it)!.hashing ? '校验中' : `${p}%`)} />
-                        : <Typography.Text type="secondary" style={{ fontSize: 12, width: 120 }}>排队中…</Typography.Text>}
-                      <a style={{ color: '#ff4d4f' }} onClick={() => cancelOne(up(it)!)}>取消</a>
-                    </AntSpace>
+                        : <Typography.Text type="secondary" style={{ fontSize: 12, flex: 1, minWidth: 0 }}>排队中…</Typography.Text>}
+                      <a style={{ color: '#ff4d4f', flexShrink: 0, whiteSpace: 'nowrap' }}
+                         onClick={() => cancelOne(up(it)!)}>取消</a>
+                    </div>
                   ) : (
                     <AntSpace size={10}>
                       {/* ★行内分享★:文件与文件夹都能分享(公开链接,可设提取码/有效期/次数)。
