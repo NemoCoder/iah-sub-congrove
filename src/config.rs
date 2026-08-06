@@ -30,9 +30,9 @@ pub struct Config {
     /// 登录时命中即置 is_super=true。之后超管可在 UI 提别人(只置不清,白名单是种子)。
     pub super_users: Vec<String>,
 
-    /// 建空间白名单(D2 决策,docs/PERMISSIONS.md):CONGROVE_SPACE_CREATORS 逗号分隔用户名。
+    /// 建空间白名单(D2 决策,docs/PERMISSIONS.md):CONGROVE_PROJECT_CREATORS 逗号分隔用户名。
     /// **空 = 全员可建**(默认);非空 = 仅名单内 + 超管可建——空间泛滥时随时收紧,不用改码。
-    pub space_creators: Vec<String>,
+    pub project_creators: Vec<String>,
 
     /// LLM 网关(平台总注入 IAH_BASE_URL / IAH_API_KEY):摘要与将来的 VLM 旁路都走它。
     pub llm_base_url: Option<String>,
@@ -118,7 +118,7 @@ impl Config {
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default(),
 
-            space_creators: opt("CONGROVE_SPACE_CREATORS")
+            project_creators: opt("CONGROVE_PROJECT_CREATORS")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default(),
 

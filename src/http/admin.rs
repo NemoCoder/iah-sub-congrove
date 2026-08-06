@@ -107,22 +107,22 @@ pub struct QuotaIn {
 pub async fn set_quota(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-    Path(sid): Path<i64>,
+    Path(pid): Path<i64>,
     Json(input): Json<QuotaIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     if input.quota_bytes < 0 {
         return Err(AppError::BadRequest("配额不能为负".into()));
     }
-    let n = sqlx::query("UPDATE spaces SET quota_bytes = $1 WHERE id = $2")
+    let n = sqlx::query("UPDATE projects SET quota_bytes = $1 WHERE id = $2")
         .bind(input.quota_bytes)
-        .bind(sid)
+        .bind(pid)
         .execute(&state.pool)
         .await?
         .rows_affected();
     if n == 0 {
         return Err(AppError::NotFound);
     }
-    audit::record(&state.pool, id.require_username()?, "admin.quota", &sid.to_string(), &input.quota_bytes.to_string()).await;
+    audit::record(&state.pool, id.require_username()?, "admin.quota", &pid.to_string(), &input.quota_bytes.to_string()).await;
     Ok(Json(json!({ "ok": true })))
 }
 

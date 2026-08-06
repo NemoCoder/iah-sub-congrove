@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::audit;
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::http::items::space_of;
+use crate::http::items::project_of;
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
@@ -60,9 +60,9 @@ pub async fn create(
     Path(iid): Path<i64>,
     Json(input): Json<CreateIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = space_of(&state.pool, iid).await?;
+    let pid = project_of(&state.pool, iid).await?;
     // ★editor 而不是 viewer★:公开分享是把内容送出墙外,不是「看」的延伸。
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
     let actor = id.require_username()?;
 
     let code = input.code.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
@@ -82,7 +82,7 @@ pub async fn create(
     // 实际上生成了一条**只含主项**的可用链接(静默的多余暴露)。校验前置 + 整体事务,要么全成要么全不成。
     let mut all: Vec<i64> = vec![iid];
     for extra in input.items.iter().copied().filter(|x| *x != iid) {
-        if space_of(&state.pool, extra).await? != sid {
+        if project_of(&state.pool, extra).await? != pid {
             return Err(AppError::BadRequest("只能把同一空间的内容放进同一条分享".into()));
         }
         all.push(extra);
@@ -113,8 +113,8 @@ pub async fn list(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
-    let sid = space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let pid = project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
     let rows: Vec<(String, Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool, String,
                    chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
                    Option<chrono::DateTime<chrono::Utc>>, bool)> = sqlx::query_as(
@@ -151,7 +151,7 @@ pub async fn mine(
                 (i.deleted_at IS NOT NULL)
            FROM share_links l
            JOIN items  i ON i.id = l.item_id
-           JOIN spaces s ON s.id = i.space_id
+           JOIN projects s ON s.id = i.project_id
           WHERE l.created_by = $1
           ORDER BY l.created_at DESC LIMIT 500",
     ).bind(me).fetch_all(&state.pool).await?;
@@ -172,13 +172,13 @@ pub async fn revoke(
     let row: Option<(i64, String)> = sqlx::query_as("SELECT item_id, created_by FROM share_links WHERE token = $1")
         .bind(&token).fetch_optional(&state.pool).await?;
     let Some((iid, creator)) = row else { return Err(AppError::NotFound) };
-    let sid = space_of(&state.pool, iid).await?;
+    let pid = project_of(&state.pool, iid).await?;
     let me = id.require_username()?;
     // 创建者本人**无条件**可撤销;别人要空间 admin。
     // ★创建者这一路不再要求 ≥editor★(v0.3.55 审计):撤销是「减少暴露」的动作,
     // 越权风险为零,却曾被权限拦住 —— 把人降级成 viewer 或移出空间之后,
     // 他先前发出去的公开链接**依然生效而他自己撤不掉**,只能等 admin 发现。
-    if creator != me { require_role(&state.pool, &id, sid, Role::Admin).await?; }
+    if creator != me { require_role(&state.pool, &id, pid, Role::Admin).await?; }
     sqlx::query("UPDATE share_links SET revoked_at = now() WHERE token = $1 AND revoked_at IS NULL")
         .bind(&token).execute(&state.pool).await?;
     audit::record(&state.pool, me, "share.revoke", &iid.to_string(), &token[..8]).await;

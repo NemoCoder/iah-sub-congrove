@@ -3,11 +3,10 @@
 //! 超管面用 require_super 叠内层(403 不是 401),SPA 由后端同源托管。
 
 mod admin;
-mod groups;
 pub(crate) mod items;
 mod media;
 mod share;
-mod spaces;
+mod projects;
 
 use std::time::Duration;
 
@@ -29,7 +28,7 @@ pub fn build_router(state: AppState) -> Router {
     let admin = Router::new()
         .route("/admin/users", get(admin::users))
         .route("/admin/users/{username}/super", put(admin::set_super))
-        .route("/admin/spaces/{id}/quota", put(admin::set_quota))
+        .route("/admin/projects/{id}/quota", put(admin::set_quota))
         .route("/admin/audit", get(admin::audit_list))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_super));
 
@@ -39,21 +38,21 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me", get(auth::me))
         .route("/users", get(admin::user_options))
         // 空间 + 授权
-        .route("/spaces", get(spaces::list).post(spaces::create))
-        .route("/spaces/{id}", get(spaces::detail).put(spaces::update).delete(spaces::remove))
-        .route("/spaces/{id}/grants", get(spaces::grants).put(spaces::grant_put).delete(spaces::grant_delete))
-        .route("/spaces/{id}/diagnose", get(spaces::diagnose))
+        .route("/projects", get(projects::list).post(projects::create))
+        .route("/projects/{id}", get(projects::detail).put(projects::update).delete(projects::remove))
+        .route("/projects/{id}/members", get(projects::members).put(projects::member_put).delete(projects::member_delete))
+        .route("/projects/{id}/transfer", post(projects::transfer))
+        .route("/projects/{id}/diagnose", get(projects::diagnose))
         // 小组
-        .route("/groups", get(groups::list).post(groups::create))
-        .route("/groups/{id}", put(groups::update).delete(groups::remove))
-        .route("/groups/{id}/members", get(groups::members).post(groups::member_put))
-        .route("/groups/{id}/members/{username}", axum::routing::delete(groups::member_delete))
+
+
+
         // 内容树(文档正文小,留在快路由)
-        .route("/spaces/{id}/items", get(items::list).post(items::create))
+        .route("/projects/{id}/items", get(items::list).post(items::create))
         // 秒传预检(内容寻址去重):命中且**我本来就能读到**才免传,见 items::readable_blob
-        .route("/spaces/{id}/precheck", post(items::precheck))
+        .route("/projects/{id}/precheck", post(items::precheck))
         // 回收站:软删除的东西在这里还原 / 彻底删除(purge 要空间 admin)
-        .route("/spaces/{id}/trash", get(items::trash))
+        .route("/projects/{id}/trash", get(items::trash))
         .route("/items/{id}/undelete", post(items::undelete))
         .route("/items/{id}/purge", axum::routing::delete(items::purge))
         .route("/items/{id}", get(items::detail).put(items::update).delete(items::remove))
@@ -66,7 +65,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
         // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod);play 判权后 302 预签名 GET。
-        .route("/spaces/{id}/media/begin", post(media::begin))
+        .route("/projects/{id}/media/begin", post(media::begin))
         .route("/items/{id}/media/complete", post(media::complete))
         .route("/items/{id}/media/abort", post(media::abort))
         .route("/items/{id}/play", get(media::play))
@@ -79,7 +78,7 @@ pub fn build_router(state: AppState) -> Router {
 
     // 慢路由:流式上传/下载 + 代理分片。body limit 整个解除(单文件不限大小,真闸是空间配额),超时 2h。
     let slow = Router::new()
-        .route("/spaces/{id}/upload", post(items::upload).layer(DefaultBodyLimit::disable()))
+        .route("/projects/{id}/upload", post(items::upload).layer(DefaultBodyLimit::disable()))
         // 代理分片:单片 8MiB,上限给 32MiB 余量(防前端换算/编码开销顶格)。
         .route(
             "/items/{id}/media/part",

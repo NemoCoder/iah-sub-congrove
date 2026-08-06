@@ -510,7 +510,7 @@ pub struct Asr { pub segments: Vec<Segment>, pub text: String, pub char_ts: Vec<
 /// 查不到空间(视频已删等)也不让转写失败——最多是没热词。
 async fn load_hotwords(pool: &PgPool, item_id: i64) -> String {
     let space: Option<String> = sqlx::query_scalar(
-        "SELECT s.hotwords FROM items i JOIN spaces s ON s.id = i.space_id WHERE i.id = $1",
+        "SELECT s.hotwords FROM items i JOIN projects s ON s.id = i.project_id WHERE i.id = $1",
     ).bind(item_id).fetch_optional(pool).await.ok().flatten();
     let env = std::env::var("CONGROVE_ASR_HOTWORDS").unwrap_or_default();
     let mut out: Vec<String> = Vec::new();
