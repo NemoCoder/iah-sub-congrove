@@ -37,6 +37,9 @@ export type Project = {
   quota_bytes: number; used_bytes: number; no_download: boolean
   /// 本项目的转写术语表(空格分隔),项目管理员维护
   hotwords: string
+  /// 归档时间;非空 = ★只读存档★(D17)。归档 ≠ 删除:材料全保留、可读可下载,
+  /// 只是不能再往里加东西;它的会议也不再进日历、不产生忙闲。
+  archived_at?: string | null
 }
 /// 权限诊断:★判定链只剩两段★(超管? 成员表里什么角色?)。
 /// 删掉「组」之后不再有 via_groups —— 这正是删组的好处:从一条推导链变成一次查表。

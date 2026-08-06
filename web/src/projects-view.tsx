@@ -59,6 +59,8 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const [projects, setProjects] = useState<Project[]>([])
   /// 左栏搜索关键词(只过滤已加载的列表,不打接口)
   const [kw, setKw] = useState('')
+  /// 归档筛选(D17):默认只看进行中 —— 列表是「我手头的活」,结题的不该抢视线
+  const [scope, setScope] = useState<'active' | 'archived'>('active')
   const [cur, setCur] = useState<Project | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 项目根)
@@ -271,8 +273,11 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const spaceMenu = (s: Project) => ({
     items: [
       { key: 'members', label: '成员与设置' },
-      { key: 'rename', label: '✏️ 重命名项目' },
+      { key: 'rename', label: '✏️ 重命名项目', disabled: !!s.archived_at },
       { type: 'divider' as const },
+      // ★归档与删除是两件事,菜单里也要分开★:归档=做完了留着查,删除=不要了。
+      // 放在分隔线之后、删除之前,让「结题」有个比「删掉」轻的出口。
+      { key: 'archive', label: s.archived_at ? '↩ 恢复为进行中' : '📦 归档项目' },
       { key: 'delete', label: <span style={{ color: '#ff4d4f' }}>🗑 删除项目</span> },
     ],
     onClick: ({ key }: { key: string }) => {
@@ -285,6 +290,28 @@ export function ProjectsView({ me }: { me: Me | null }) {
           content: <Input defaultValue={s.name} onChange={(e) => (name = e.target.value)} />,
           onOk: async () => {
             await api(`/api/projects/${s.id}`, { method: 'PUT', body: JSON.stringify({ name, description: s.description }) })
+            await loadProjects()
+          },
+        })
+      }
+      if (key === 'archive') {
+        const on = !s.archived_at
+        modal.confirm({
+          title: on ? '归档这个项目？' : '恢复为进行中？',
+          content: on ? (
+            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
+              归档后它变成<b>只读存档</b>：
+              <div style={{ color: '#389e0d' }}>· 材料、会议、纪要全部保留，照样能看、能下载、能搜到</div>
+              <div style={{ color: '#cf1322' }}>· 不能再上传、建会议、改内容</div>
+              <div style={{ color: '#8c8c8c' }}>· 它的会议不再出现在日历上，也不再让成员显示「忙」</div>
+              <div style={{ color: '#8c8c8c' }}>· 占用的空间仍然计入配额（东西还在）</div>
+              <div style={{ marginTop: 6 }}>随时可以恢复。<b>这不是删除</b>——要清理空间请用「删除项目」。</div>
+            </div>
+          ) : '恢复后就能继续往里加东西了。',
+          okText: on ? '归档' : '恢复',
+          onOk: async () => {
+            await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: on }) })
+            message.success(on ? '已归档' : '已恢复为进行中')
             await loadProjects()
           },
         })
@@ -322,9 +349,10 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const checkedItems = rows.filter((r) => checked.includes(r.id))
 
   /// 左栏过滤后的项目。★大小写不敏感★:项目名常混中英文,记不住原始大小写。
-  const shown = kw.trim()
-    ? projects.filter((p) => p.name.toLowerCase().includes(kw.trim().toLowerCase()))
-    : projects
+  const archivedCount = projects.filter((p) => p.archived_at).length
+  const shown = projects
+    .filter((p) => (scope === 'archived' ? !!p.archived_at : !p.archived_at))
+    .filter((p) => !kw.trim() || p.name.toLowerCase().includes(kw.trim().toLowerCase()))
 
   return (
     <>
@@ -339,6 +367,17 @@ export function ProjectsView({ me }: { me: Me | null }) {
       >
         {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
             只过滤本地已加载的列表(项目列表本来就是一次拉全),不打接口。 */}
+        {/* ★有归档项目才显示切换★:一个都没有时,多一个开关只是噪音 */}
+        {archivedCount > 0 && (
+          <Segmented
+            size="small" block value={scope} onChange={(v) => { setScope(v as 'active' | 'archived'); setCur(null) }}
+            options={[
+              { value: 'active', label: `进行中 ${projects.length - archivedCount}` },
+              { value: 'archived', label: `已归档 ${archivedCount}` },
+            ]}
+            style={{ marginBottom: 8 }}
+          />
+        )}
         {projects.length > 6 && (
           <Input
             size="small" allowClear placeholder={`在 ${projects.length} 个项目里找…`}
@@ -372,12 +411,15 @@ export function ProjectsView({ me }: { me: Me | null }) {
           size="small" style={{ flex: 1, minWidth: 0 }}
           styles={{ body: { paddingTop: 8 } }}
           title={
-            <Breadcrumb
-              items={[
-                { title: <a onClick={() => setCwd(null)}>{cur.name}</a> },
-                ...trail.map((t) => ({ title: <a onClick={() => setCwd(t.id)}>{t.name}</a> })),
-              ]}
-            />
+            <AntSpace>
+              <Breadcrumb
+                items={[
+                  { title: <a onClick={() => setCwd(null)}>{cur.name}</a> },
+                  ...trail.map((t) => ({ title: <a onClick={() => setCwd(t.id)}>{t.name}</a> })),
+                ]}
+              />
+              {cur.archived_at && <Tag color="default">已归档 · 只读</Tag>}
+            </AntSpace>
           }
           extra={
             <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}`}>
@@ -390,6 +432,13 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </Tooltip>
           }
         >
+          {/* ★只读横幅★:归档项目里所有写入按钮都会失效(后端 409),
+              不解释的话人只会以为「坏了」。说清三件事:为什么、还能做什么、怎么解开。 */}
+          {cur.archived_at && (
+            <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+              message={`这个项目已归档（${new Date(cur.archived_at).toLocaleDateString('zh-CN')}），是只读的`}
+              description="材料、会议与纪要都保留着，可以查看和下载；但不能再上传、建会议或修改。主持人可在左侧 ⋯ 菜单里恢复为进行中。" />
+          )}
           {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。 */}
           {canEdit && (
             <AntSpace style={{ marginBottom: 10 }} wrap>

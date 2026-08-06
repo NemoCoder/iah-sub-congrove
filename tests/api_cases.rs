@@ -104,6 +104,22 @@ const CASES: &[Case] = &[
     c!(deny "POST", "/api/projects/{id}/transfer", "不能转给非成员", "我是 owner,目标不是成员",
        "POST {to:'外人'}", "400/422 拒绝且 owner 不变;★否则项目会落到一个看不见它的人手里★", "D0"),
     c!(deny "POST", "/api/projects/{id}/transfer", "admin 不能转移主持人", "我是 admin 非 owner", "POST {to:'x'}", "403", "D0"),
+    c!("POST", "/api/projects/{id}/archive", "归档后变只读", "我是 owner,项目里有材料",
+       "POST {} 归档,再试上传/建会议/改名",
+       "归档 200;之后写操作一律 ★409★(不是 403)——语义是「项目结束了」不是「你没权限」,\
+        同一个人换个项目就能做", "D17"),
+    c!("POST", "/api/projects/{id}/archive", "★归档后仍能读和下载★", "项目已归档",
+       "GET items / content / download",
+       "全部 200 —— ★归档就是为了以后还能查★,查得到却拿不走等于没存", "D17"),
+    c!("POST", "/api/projects/{id}/archive", "恢复为进行中", "项目已归档,我是 owner",
+       "POST {archived:false}", "200,archived_at 置空;之后同一个上传请求由 409 变 200。\
+        ★这条接口走 require_owner 不走 require_role★——后者对归档项目拒绝一切写操作,\
+        那样归档之后就再也解不开了(自锁)", "D17"),
+    c!("POST", "/api/projects/{id}/archive", "归档项目的会不进日历、不产生忙闲", "归档一个有会议的公开项目",
+       "GET /api/meetings 与 /api/freebusy",
+       "两者都不含它的会;★但项目页里仍查得到★——日历回答「接下来做什么」,历史归历史", "D17"),
+    c!(deny "POST", "/api/projects/{id}/archive", "admin 不能归档", "我是 admin 但不是 owner",
+       "POST {}", "403;归档影响所有成员能否继续写,与删项目同档", "D17"),
     c!("GET", "/api/projects/{id}/diagnose", "诊断判定链与 perm.rs 同源", "查某成员", "GET .../diagnose?username=x",
        "200,回「超管?」「成员表里什么角色?」两段;★结论必须与实际判权一致★(两处推导分家就是骗人)", "D12"),
 

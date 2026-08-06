@@ -29,6 +29,9 @@ pub struct ProjectRow {
     /// 已用字节(单独聚合查询回填,见 usage_map)。
     #[sqlx(skip)]
     pub used_bytes: i64,
+    /// 归档时间;非空 = ★只读存档★(D17)。前端据此隐藏写入入口并显示只读横幅。
+    #[sqlx(default)]
+    pub archived_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 校验 username 是平台注册用户(加成员时用):
@@ -81,7 +84,8 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<ProjectRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, no_download, hotwords FROM projects ORDER BY id")
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, no_download, hotwords, archived_at \
+                            FROM projects WHERE deleted_at IS NULL ORDER BY archived_at NULLS FIRST, id")
                 .fetch_all(&state.pool)
                 .await?;
         rows.iter_mut().for_each(|r| {
@@ -92,20 +96,24 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     }
     let username = id.require_username()?;
     // ★权限只到人(D12)★:一条 JOIN 就够,不再有「我属于哪些组、那些组有什么授权」这一层。
-    let rows: Vec<(i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String, String)> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.no_download, s.hotwords, g.role
+    // ★排序:进行中在前,归档的沉到后面★(D17)——列表默认是「我手头的活」,
+    // 归档的还在同一份数据里(前端可切换筛选),但不该抢占视线。
+    type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String, String,
+                Option<chrono::DateTime<chrono::Utc>>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.no_download, s.hotwords, g.role, s.archived_at
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
           WHERE s.deleted_at IS NULL
-          ORDER BY s.id",
+          ORDER BY s.archived_at NULLS FIRST, s.id",
     )
     .bind(username)
     .fetch_all(&state.pool)
     .await?;
     // 一个人在一个项目里只有一行,不再需要跨行合并取 max。
     Ok(Json(rows.into_iter()
-        .map(|(pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords, role)| ProjectRow {
+        .map(|(pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords, role, archived_at)| ProjectRow {
             id: pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords,
-            my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0),
+            my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0), archived_at,
         }).collect()))
 }
 
@@ -461,3 +469,34 @@ pub async fn transfer(
     Ok(Json(json!({ "ok": true })))
 }
 
+
+/// POST /api/projects/{id}/archive —— 归档 / 取消归档(D17,2026-08-07)。
+///
+/// ★归档 = 「做完了,留着备查」,不是「不要了」★:材料/会议/纪要全保留、可读可下载,
+/// 只是不能再往里加东西。配额仍然占着 —— 东西还在盘上,不算数就成了绕过配额的口子。
+///
+/// **只有主持人能做**(与删项目同档):它影响所有成员能不能继续写,不是某个 admin 的日常操作。
+/// ⚠ 走 `require_owner` 而不是 `require_role` —— 后者对归档项目会拒绝一切写操作,
+///   那样归档之后就再也解不开了。
+pub async fn archive(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::perm::require_owner(&state.pool, &id, pid).await?;
+    // 不带 archived 字段 = 归档;显式传 false = 恢复为进行中
+    let want = body.get("archived").and_then(|v| v.as_bool()).unwrap_or(true);
+    let username = id.require_username()?;
+    let n = sqlx::query(
+        "UPDATE projects SET archived_at = CASE WHEN $2 THEN now() END,
+                             archived_by = CASE WHEN $2 THEN $3 END
+          WHERE id = $1 AND deleted_at IS NULL")
+        .bind(pid).bind(want).bind(username)
+        .execute(&state.pool).await?
+        .rows_affected();
+    if n == 0 { return Err(AppError::NotFound) }
+    audit::record(&state.pool, username, if want { "project.archive" } else { "project.unarchive" },
+                  &pid.to_string(), "").await;
+    Ok(Json(json!({ "ok": true, "archived": want })))
+}

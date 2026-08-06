@@ -45,6 +45,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/projects/{id}", get(projects::detail).put(projects::update).delete(projects::remove))
         .route("/projects/{id}/members", get(projects::members).put(projects::member_put).delete(projects::member_delete))
         .route("/projects/{id}/transfer", post(projects::transfer))
+        // 归档/恢复(D17):★走 require_owner 不走 require_role★——
+        // 后者对归档项目拒绝一切写操作,那样归档之后就再也解不开了
+        .route("/projects/{id}/archive", post(projects::archive))
         .route("/projects/{id}/diagnose", get(projects::diagnose))
         // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
         // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★

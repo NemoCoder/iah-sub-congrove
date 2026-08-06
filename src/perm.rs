@@ -120,11 +120,39 @@ pub async fn is_super_now(pool: &PgPool, id: &Identity) -> AppResult<bool> {
 /// - **有授权但档位不够 → 403**(如 viewer 想删):这种情况下他本来就在列表里看得见这个东西,
 ///   回 404 只会让人以为「文件没了」,反而误导。
 pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: Role) -> AppResult<Role> {
-    match effective_role(pool, id, project_id).await? {
-        Some(r) if r >= need => Ok(r),
-        Some(_) => Err(AppError::Forbidden),
-        None => Err(AppError::NotFound),
+    let role = match effective_role(pool, id, project_id).await? {
+        Some(r) if r >= need => r,
+        Some(_) => return Err(AppError::Forbidden),
+        None => return Err(AppError::NotFound),
+    };
+    // ★归档项目只读:写闸收口在这一处★(D17,2026-08-07)
+    //
+    // 判据是 `need >= Editor` —— 本系统里**所有写操作都要求 ≥editor**,读只要 viewer,
+    // 所以这一个判断就覆盖了全部写入路径:上传、建文档、建会议、改名、删除、建分享…
+    //
+    // ★为什么不在每个写 handler 里各加一句★:软删除那次就是这么漏的 ——
+    // `deleted_at IS NULL` 当初只在两处补了,结果 download/content/play/整个公开分享面
+    // 全漏,「删进回收站的材料墙外照样下得到」(v0.3.55 一次补齐 11 处)。
+    // 同一个教训不该踩第二次:**能收口的闸就别散开**。
+    //
+    // ⚠ 不受这道闸约束的三条,都是刻意的:
+    //   · `require_owner`(取消归档、删项目、转移主持人)—— 否则归档后就再也解不开了;
+    //   · `require_super`(超管面:配额等)—— 平台资源治理不该被项目状态挡住;
+    //   · 一切只读路径(need = Viewer)—— 归档就是为了以后还能查。
+    if need >= Role::Editor {
+        let archived: Option<bool> = sqlx::query_scalar(
+            "SELECT archived_at IS NOT NULL FROM projects WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(project_id)
+        .fetch_optional(pool)
+        .await?;
+        if archived == Some(true) {
+            return Err(AppError::Archived(
+                "这个项目已归档,是只读的。要继续往里加东西,先让主持人把它恢复为进行中。".into(),
+            ));
+        }
     }
+    Ok(role)
 }
 
 /// 我能以什么身份看这场会议。★这是会议模块的唯一推导★,别在 handler 里各自拼 SQL。

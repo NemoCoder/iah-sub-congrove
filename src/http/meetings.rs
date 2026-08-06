@@ -105,7 +105,15 @@ pub async fn list(
             AND (mp.username IS NOT NULL
                  OR EXISTS (SELECT 1 FROM meeting_projects mpj
                               JOIN project_members pm ON pm.project_id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id AND pm.username = $1)
+                             WHERE mpj.meeting_id = m.id AND pm.username = $1))
+            -- ★归档项目的会不进日历★(D17,用户拍板):日历回答的是「我接下来要做什么」,
+            -- 塞满已结题项目的历史会议会把它变成考古现场。历史仍可在项目页里查、搜索也搜得到。
+            AND NOT EXISTS (SELECT 1 FROM meeting_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL
+                               AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
+                                                 JOIN projects p2 ON p2.id = m2.project_id
+                                                WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
           ORDER BY m.starts_at",
     )
@@ -436,7 +444,10 @@ pub async fn freebusy(
             AND EXISTS (SELECT 1 FROM meeting_projects mpj
                           JOIN projects p ON p.id = mpj.project_id
                          WHERE mpj.meeting_id = m.id
-                           AND p.visibility = 'public' AND p.deleted_at IS NULL)
+                           AND p.visibility = 'public' AND p.deleted_at IS NULL
+                           -- ★归档项目不再产生忙闲★(D17):项目结题了,它的历史会议
+                           -- 不该继续把人显示成「忙」——那会让别人永远约不到你。
+                           AND p.archived_at IS NULL)
           ORDER BY mp.username, m.starts_at")
         .bind(&users).bind(q.from).bind(q.to)
         .fetch_all(&state.pool).await?;

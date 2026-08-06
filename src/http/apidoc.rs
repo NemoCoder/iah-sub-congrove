@@ -64,6 +64,11 @@ pub const APIS: &[Api] = &[
     api!("DELETE", "/api/projects/{id}/members", "项目", "admin",
          "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username"),
     api!("POST", "/api/projects/{id}/transfer", "项目", "owner", "转移主持人(只能转给本项目成员)", "to"),
+    api!("POST", "/api/projects/{id}/archive", "项目", "owner",
+         "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,\
+          但不能再上传/建会议/改内容;配额仍占;归档项目的会不进日历、不产生忙闲。\
+          传 {archived:false} 恢复为进行中",
+         "archived"),
     api!("GET", "/api/projects/{id}/diagnose", "项目", "admin",
          "权限诊断:他为什么能/不能看(超管? 成员表里什么角色?)", "username"),
 
