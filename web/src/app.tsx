@@ -93,7 +93,7 @@ export function App() {
           minutesOf != null ? (
             <MeetingMinutesView meetingId={minutesOf} onBack={() => setMinutesOf(null)} />
           ) : meetingId === 'new' ? (
-            <MeetingNewView onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
+            <MeetingNewView me={me} onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
           ) : meetingId != null ? (
             <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
           ) : (
