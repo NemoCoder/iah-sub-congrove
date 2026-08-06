@@ -1,0 +1,30 @@
+// congrove 的 Playwright 配置。★凭证一律走 env,不写进这个文件★(它在仓库容器里)。
+//
+// 两个环境前提,缺一个就跑不起来:
+//   1. ★内网自签 CA★:*.ruciah.com 全是内网 CA 签的,不装 CA 会 TLS 失败。
+//      走 NODE_EXTRA_CA_CERTS 指到 CA 文件(见 run.sh),★不要用 ignoreHTTPSErrors 图省事★——
+//      那会把「证书错了」和「证书是内网 CA 签的」一起吞掉,真出问题时看不见。
+//   2. ★E2E key★:env IAH_E2E_KEY。带上它,dev 网关跳过 SSO 三道(平台 registry v1.3.80)。
+//      没有它,所有请求会 302 到 Keycloak —— 下面的 gate.spec 专门验这件事,所以它**不该**依赖 key。
+import { defineConfig } from '@playwright/test'
+
+const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
+const KEY = process.env.IAH_E2E_KEY ?? ''
+
+export default defineConfig({
+  testDir: './specs',
+  // 内网 + 单机跑,并发开小一点;失败重跑一次(网关偶发抖动不该算 red)
+  workers: 2,
+  retries: 1,
+  reporter: [['list'], ['html', { outputFolder: '.artifacts/report', open: 'never' }]],
+  use: {
+    baseURL: BASE,
+    // ★key 为空时不要注入空 header★:Traefik 的路由规则按 `HeadersRegexp(X-IAH-E2E-Key, .+)` 匹配,
+    // 空值匹配不上等于没带,但显式发一个空头容易让人误判「带了却没生效」。
+    extraHTTPHeaders: KEY ? { 'X-IAH-E2E-Key': KEY } : {},
+    screenshot: 'only-on-failure',
+    video: 'off',
+    trace: 'retain-on-failure',
+  },
+  outputDir: './.artifacts/run',
+})

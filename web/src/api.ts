@@ -62,3 +62,41 @@ export type Item = {
 export type Member = { username: string; role: Role; added_by: string; added_at: string }
 export type MemberList = { owner: string | null; members: Member[] }
 export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }
+
+// ── 会议与日程(M1)────────────────────────────────────────────────────────
+/// 答复状态。★counter=建议改期★:私密项目的日程对发起人完全隐形,他不知道我忙,
+/// 所以这是私事冲突**唯一的结构化出口**(D2),不是可有可无的便利功能。
+export type RespondStatus = 'pending' | 'accepted' | 'declined' | 'tentative' | 'counter'
+export type Meeting = {
+  id: number; title: string; agenda: string
+  organizer: string; recorder: string
+  starts_at: string; ends_at: string; timezone: string
+  location: string; online_url: string
+  visibility: 'private' | 'public'
+  status: 'active' | 'canceled'
+  created_at: string
+  /// 我的答复;不在名单里则 null
+  my_status: RespondStatus | null
+  /// ★只关联私密项目★——日历据此上色。判据与忙闲分流一致(D1):
+  /// 只要关联了任一公开项目就算「公开的会」,它已经会让别人看到你在忙。
+  is_private: boolean
+}
+export type Participant = {
+  username: string; kind: 'attendee' | 'guest' | 'observer'; status: RespondStatus
+  counter_starts_at: string | null; counter_ends_at: string | null; counter_reason: string | null
+  responded_at: string | null
+}
+export type MeetingDetail = {
+  meeting: Meeting
+  participants: Participant[]
+  projects: { id: number; name: string }[]
+  can_edit: boolean
+  /// 旁听者拿到的是裁剪版(无名单、无材料入口),后端会带这个标记
+  observer?: boolean
+}
+export type MeetingMessage = {
+  id: number; sender: string; channel: 'public' | 'private'
+  peer: string | null; body: string; created_at: string
+}
+/// 忙闲:★只有时间段,没有任何内容★(D1)。私密项目的会完全不在里面。
+export type FreeBusy = { busy: Record<string, { start: string; end: string }[]> }

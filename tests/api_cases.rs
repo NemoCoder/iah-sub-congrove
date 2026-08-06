@@ -306,6 +306,11 @@ const CASES: &[Case] = &[
        "200,count 与 apis 一致;★与实际路由表逐条相符★(由 apidoc.rs 的测试保证)", ""),
     c!(deny "GET", "/api/_dev/apis", "非超管看不到接口清单", "我已登录但非超管", "GET /api/_dev/apis",
        "403;清单本身暴露系统结构", ""),
+    c!("GET", "/api/_dev/openapi.json", "契约由 APIS 生成,不会漂", "我是超管", "GET /api/_dev/openapi.json",
+       "200,openapi=3.1.0;★paths 数量与去重后的 APIS 路径数一致★——它是生成的不是手写的,\
+        所以「契约落后于实现」这件事在结构上不可能发生", "IAH 规范相位4"),
+    c!(deny "GET", "/api/_dev/openapi.json", "非超管拿不到契约", "我已登录但非超管",
+       "GET /api/_dev/openapi.json", "403;契约等同系统结构图", ""),
 
     // ══════════ 越权用例(档位不够)══════════
     // 上面各组里的 deny 用例测的是**业务规则**(purge 不在回收站、play 只对 video、移人连带撤链接…);

@@ -49,6 +49,8 @@ pub fn build_router(state: AppState) -> Router {
         // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
         // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★
         .route("/_dev/apis", get(apidoc::list))
+        // OpenAPI 3.1 契约:★从 APIS 生成★,继承「路由改了不同步就 cargo test 红」那条保证
+        .route("/_dev/openapi.json", get(apidoc::openapi))
         // 会议与日程(M1)。★会议参与 ≠ 资料权限★:这些接口只管会议元信息,
         // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 meetings.rs 头注)。
         .route("/meetings", get(meetings::list).post(meetings::create))

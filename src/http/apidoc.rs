@@ -159,7 +159,100 @@ pub const APIS: &[Api] = &[
 
     // ── 开发者 ──
     api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", ""),
+    api!("GET", "/api/_dev/openapi.json", "开发者", "超管",
+         "OpenAPI 3.1 契约。★从 APIS 生成,不是手写的★——手写的契约一定会漂", ""),
 ];
+
+/// GET /api/_dev/openapi.json —— OpenAPI 3.1 契约。
+///
+/// ★为什么是生成而不是手写★(IAH 开发规范相位 4 要求「每个 API 必有 OpenAPI 文档」):
+/// 手写一份 yaml 意味着**第三个真相源**(路由表 / APIS / yaml),而前两个已经由测试焊死了。
+/// 从 `APIS` 生成,契约就自动继承那条保证:**路由改了不同步,`cargo test` 先红**,
+/// 契约不可能偷偷落后于实现。
+///
+/// ⚠ 当前只到**路径级**(方法/路径/说明/所需身份/路径参数与 query 名)。
+/// request/response 的字段级 schema 还没进 `APIS`,所以契约里没有 —— 这是**已知欠账**,
+/// 别当成「接口没有出入参」。要补的话:给 `Api` 加 schema 字段,前后端都从这里取。
+pub async fn openapi(
+    State(state): State<AppState>,
+    axum::Extension(id): axum::Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !crate::perm::is_super_now(&state.pool, &id).await? {
+        return Err(crate::error::AppError::Forbidden);
+    }
+    Ok(Json(build_openapi()))
+}
+
+/// 生成本体(纯函数,好单测)。
+fn build_openapi() -> serde_json::Value {
+    use serde_json::json;
+    let mut paths = serde_json::Map::new();
+    for a in APIS {
+        // 路径参数:`/api/items/{id}/restore/{version_id}` → 两个 path 参数,OpenAPI 要求必填。
+        let params: Vec<serde_json::Value> = path_params(a.path)
+            .into_iter()
+            .map(|p| json!({
+                "name": p, "in": "path", "required": true,
+                "schema": { "type": if p.ends_with("id") { "integer" } else { "string" } },
+            }))
+            .chain(query_params(a.params).into_iter().map(|q| json!({
+                "name": q, "in": "query", "required": false, "schema": { "type": "string" },
+            })))
+            .collect();
+        let op = json!({
+            "summary": a.summary,
+            "tags": [a.group],
+            // ★把「需要什么身份」放进契约★:它是评审接口规范性时最该看的一列,
+            // 藏在代码里等于没有。用 x- 扩展字段,标准 security 表达不了「≥editor」这种档位。
+            "x-iah-auth": a.auth,
+            "parameters": params,
+            "responses": {
+                "200": { "description": "成功" },
+                "401": { "description": "未登录" },
+                "403": { "description": "已登录但档位不够" },
+                "404": { "description": "不存在,或**完全没有授权**(刻意与不存在同一回应,防存在性探测)" },
+            },
+        });
+        let entry = paths.entry(a.path.to_string()).or_insert_with(|| json!({}));
+        entry[a.method.to_lowercase()] = op;
+    }
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "congrove(汇流)",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "★本文件由 src/http/apidoc.rs 的 APIS 生成,不要手改★。\
+                            路由与 APIS 的一致性由 cargo test 逐条比对保证。\
+                            当前只到路径级,字段级 schema 是已知欠账。",
+        },
+        "paths": paths,
+    })
+}
+
+/// 抽出 `{name}` 形式的路径参数。
+fn path_params(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = path;
+    while let Some(i) = rest.find('{') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('}') else { break };
+        out.push(&after[..j]);
+        rest = &after[j + 1..];
+    }
+    out
+}
+
+/// 从 `params` 那列的自由文本里抽 query 名。
+/// 写法是「`q 关键词, limit, actor`」这种,取每段第一个词;含中文说明的段落跳过。
+/// ⚠ 这是**尽力而为**的解析,不是契约的权威来源——权威在 handler 的 `Query<T>` 结构体。
+fn query_params(params: &str) -> Vec<&str> {
+    params
+        .split(',')
+        .filter_map(|seg| seg.trim().split_whitespace().next())
+        .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.ends_with("[]") && *w != "multipart")
+        .collect()
+}
 
 /// GET /api/_dev/apis —— 给开发者页面用。超管可见:清单本身暴露了系统结构。
 pub async fn list(
@@ -203,6 +296,50 @@ mod tests {
             out.insert(full);
         }
         out
+    }
+
+    #[test]
+    fn openapi_每条路由都进了契约() {
+        let doc = build_openapi();
+        let paths = doc["paths"].as_object().expect("paths 必须是对象");
+        // 去重后的路径数应当一致(同一路径的多个方法合并成一个条目)
+        let want: BTreeSet<&str> = APIS.iter().map(|a| a.path).collect();
+        assert_eq!(paths.len(), want.len(), "契约里的路径数与 APIS 对不上");
+        for a in APIS {
+            let op = &paths[a.path][a.method.to_lowercase()];
+            assert!(!op.is_null(), "契约里缺 {} {}", a.method, a.path);
+            // ★「需要什么身份」必须进契约★:它是评审接口规范性最该看的一列,藏在代码里等于没有
+            assert_eq!(op["x-iah-auth"], a.auth, "{} {} 的所需身份没进契约", a.method, a.path);
+        }
+    }
+
+    #[test]
+    fn openapi_路径参数都被声明为必填() {
+        let doc = build_openapi();
+        // 两个路径参数的那条最容易漏
+        let op = &doc["paths"]["/api/items/{id}/restore/{version_id}"]["post"];
+        let names: Vec<&str> = op["parameters"].as_array().unwrap().iter()
+            .filter(|p| p["in"] == "path")
+            .map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["id", "version_id"]);
+        assert!(op["parameters"][0]["required"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn path_params_只抽花括号里的() {
+        assert_eq!(path_params("/api/projects"), Vec::<&str>::new());
+        assert_eq!(path_params("/api/items/{id}/media/part"), vec!["id"]);
+        assert_eq!(path_params("/pub/share/{token}/file/{item_id}"), vec!["token", "item_id"]);
+    }
+
+    #[test]
+    fn query_params_跳过中文说明只留标识符() {
+        // params 那列是给人看的自由文本,解析必须**宁可少抽也别抽出垃圾**
+        assert_eq!(query_params("q 关键词"), vec!["q"]);
+        assert_eq!(query_params("users(逗号分隔), from, to"), vec!["from", "to"]);
+        assert_eq!(query_params(""), Vec::<&str>::new());
+        assert_eq!(query_params("multipart file"), Vec::<&str>::new());
+        assert_eq!(query_params("usernames[], role"), vec!["role"]);
     }
 
     /// ★文档漂移在这里被挡住★:注册了却没写文档、或写了文档却没注册,都会红。

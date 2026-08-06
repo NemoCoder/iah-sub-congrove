@@ -41,6 +41,13 @@ pub struct MeetingRow {
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
+    /// 这场会**只**关联私密项目吗?日历按它上色(私密=紫色虚框,公开=青色实框)。
+    ///
+    /// ★判据与忙闲分流保持一致★(D1):只要关联了**任一**公开项目就算「公开的会」——
+    /// 它已经是公开协作的一部分,会产生忙闲、别人看得到你在忙。
+    /// 两处若各写各的,就会出现「日历显示私密、别人却看到你忙」这种自相矛盾的展示。
+    #[sqlx(default)]
+    pub is_private: bool,
 }
 
 #[derive(Deserialize)]
@@ -83,7 +90,13 @@ pub async fn list(
     // ⚠ public 会议**不进这个列表**:列表是「我的日程」,不是全平台公告板;
     //    旁听要靠拿到具体会议 id 去看详情(D9 给的是「可访问」,不是「推给你」)。
     let rows: Vec<MeetingRow> = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status
+        // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
+        // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
+        "SELECT m.*, mp.status AS my_status,
+                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.meeting_id = m.id
+                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private
            FROM meetings m
            LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
@@ -161,7 +174,12 @@ pub async fn detail(
 ) -> AppResult<Json<serde_json::Value>> {
     let view = meeting_view(&state.pool, &id, mid).await?;
     let m: MeetingRow = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status FROM meetings m
+        "SELECT m.*, mp.status AS my_status,
+                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.meeting_id = m.id
+                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private
+           FROM meetings m
            LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $2
           WHERE m.id = $1")
         .bind(mid).bind(id.require_username()?)

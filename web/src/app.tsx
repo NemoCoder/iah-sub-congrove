@@ -4,13 +4,16 @@ import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type View = 'projects' | 'shares' | 'apis'
+type View = 'schedule' | 'projects' | 'shares' | 'apis'
 import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
 import { ProjectsView } from './projects-view'
 import { SharePage } from './share-page'
 import { SharesView } from './shares-view'
 import { ApiDocView } from './apidoc-view'
+import { ScheduleView } from './schedule-view'
+import { MeetingDetailView } from './meeting-detail'
+import { MeetingNewView } from './meeting-new'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -37,7 +40,12 @@ export function App() {
 
   const [me, setMe] = useState<Me | null>(null)
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
-  const [view, setView] = useState<View>('projects')
+  // ★默认落在日程★:产品从「文档存储」转向「项目+会议协同」之后,
+  // 打开先看到的应该是「我今天要做什么」,而不是文件柜。
+  const [view, setView] = useState<View>('schedule')
+  // 会议子视图:null=日历 / 数字=看某场会 / 'new'=发起会议。
+  // ★不引路由库★:与 /viewer/{id} 一样,这层用状态足够(app.tsx 头注的既有约定)。
+  const [meetingId, setMeetingId] = useState<number | 'new' | null>(null)
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -67,8 +75,9 @@ export function App() {
       <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
         <Segmented
           value={view}
-          onChange={(v) => setView(v as View)}
+          onChange={(v) => { setView(v as View); setMeetingId(null) }}
           options={[
+            { value: 'schedule', label: '日程' },
             { value: 'projects', label: '项目' },
             { value: 'shares', label: '我的分享' },
             // 开发者页面:只给超管。清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,
@@ -77,7 +86,15 @@ export function App() {
           ]}
           style={{ marginBottom: 16 }}
         />
-        {view === 'projects' ? <ProjectsView me={me} /> : view === 'apis' ? <ApiDocView /> : <SharesView />}
+        {view === 'schedule' ? (
+          meetingId === 'new' ? (
+            <MeetingNewView onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
+          ) : meetingId != null ? (
+            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} />
+          ) : (
+            <ScheduleView onOpenMeeting={setMeetingId} onNewMeeting={() => setMeetingId('new')} />
+          )
+        ) : view === 'projects' ? <ProjectsView me={me} /> : view === 'apis' ? <ApiDocView /> : <SharesView />}
       </div>
     </div>
   )
