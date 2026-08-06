@@ -531,3 +531,99 @@ pub async fn send_message(
         .fetch_one(&state.pool).await?;
     Ok(Json(json!({ "id": id_ })))
 }
+
+// ── 会议纪要(D14)────────────────────────────────────────────────────────
+// ★AI 只是原材料,记录员才是作者★:`/api/items/{id}/analysis` 出的转写与摘要是**给他看的**,
+// 这里存的是**他整理过的正式纪要**。两者刻意不打通——一键把 AI 稿写进纪要,
+// 等于让「记录员按模板整理」这条决策名存实亡(D14 反复确认过)。
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Minutes {
+    pub meeting_id: i64,
+    pub status: String,
+    /// 到场/列席/缺席:★会后补录的**事实**★(D11),不是邀请时的名单——
+    /// 谁接受了邀请和谁真的来了是两件事,统计口径按这个。
+    pub attendees: String,
+    pub observers: String,
+    pub absentees: String,
+    pub agenda_text: String,
+    /// 正文 Markdown。出 PDF 时转 LaTeX(走平台共享 latex-svc,congrove 镜像不装 TeX)。
+    pub content_md: String,
+    pub resolutions: String,
+    pub todos: String,
+    pub pdf_item_id: Option<i64>,
+    pub completed_at: Option<Ts>,
+    pub updated_at: Ts,
+}
+
+/// GET /api/meetings/{id}/minutes —— 取纪要(没有则回一份空的,前端不用判 404)。
+pub async fn minutes_get(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    // ★纪要是会议内容,旁听者不给★(与讨论区同档):D9 给旁听者的是「知道有这个会」。
+    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+        return Err(AppError::Forbidden);
+    }
+    let m: Option<Minutes> = sqlx::query_as("SELECT * FROM meeting_minutes WHERE meeting_id = $1")
+        .bind(mid).fetch_optional(&state.pool).await?;
+    // 谁能编辑:记录员(本职)或发起人。★不是「参会人都能改」★——纪要要有唯一作者,
+    // 否则「按固定模板整理」会变成谁都能覆盖一遍的公共草稿。
+    let can_edit = require_meeting_host(&state.pool, &id, mid).await.is_ok();
+    Ok(Json(json!({ "minutes": m, "can_edit": can_edit })))
+}
+
+#[derive(Deserialize)]
+pub struct MinutesIn {
+    pub attendees: Option<String>,
+    pub observers: Option<String>,
+    pub absentees: Option<String>,
+    pub agenda_text: Option<String>,
+    pub content_md: Option<String>,
+    pub resolutions: Option<String>,
+    pub todos: Option<String>,
+    /// 置 done = 定稿。★定稿后仍可改★(会后补录到场情况是常事),只是记一个 completed_at。
+    pub status: Option<String>,
+}
+
+/// PUT /api/meetings/{id}/minutes —— 记录员保存纪要(upsert)。
+pub async fn minutes_put(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+    Json(p): Json<MinutesIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_meeting_host(&state.pool, &id, mid).await?;
+    let status = match p.status.as_deref() {
+        Some("done") => "done",
+        Some("draft") | None => "draft",
+        _ => return Err(AppError::BadRequest("状态须为 draft/done".into())),
+    };
+    sqlx::query(
+        "INSERT INTO meeting_minutes
+           (meeting_id, status, attendees, observers, absentees, agenda_text, content_md, resolutions, todos,
+            completed_at, updated_at)
+         VALUES ($1,$2,COALESCE($3,''),COALESCE($4,''),COALESCE($5,''),COALESCE($6,''),
+                 COALESCE($7,''),COALESCE($8,''),COALESCE($9,''),
+                 CASE WHEN $2='done' THEN now() END, now())
+         ON CONFLICT (meeting_id) DO UPDATE SET
+           status=EXCLUDED.status,
+           attendees=COALESCE($3, meeting_minutes.attendees),
+           observers=COALESCE($4, meeting_minutes.observers),
+           absentees=COALESCE($5, meeting_minutes.absentees),
+           agenda_text=COALESCE($6, meeting_minutes.agenda_text),
+           content_md=COALESCE($7, meeting_minutes.content_md),
+           resolutions=COALESCE($8, meeting_minutes.resolutions),
+           todos=COALESCE($9, meeting_minutes.todos),
+           -- ★定稿时间只记第一次★:之后补录到场情况不该把「什么时候定的稿」冲掉
+           completed_at=CASE WHEN $2='done' THEN COALESCE(meeting_minutes.completed_at, now()) ELSE NULL END,
+           updated_at=now()")
+        .bind(mid).bind(status)
+        .bind(p.attendees.as_deref()).bind(p.observers.as_deref()).bind(p.absentees.as_deref())
+        .bind(p.agenda_text.as_deref()).bind(p.content_md.as_deref())
+        .bind(p.resolutions.as_deref()).bind(p.todos.as_deref())
+        .execute(&state.pool).await?;
+    audit::record(&state.pool, id.require_username()?, "minutes.save", &mid.to_string(), status).await;
+    Ok(Json(json!({ "ok": true, "status": status })))
+}

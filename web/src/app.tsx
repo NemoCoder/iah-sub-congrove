@@ -14,6 +14,7 @@ import { ApiDocView } from './apidoc-view'
 import { ScheduleView } from './schedule-view'
 import { MeetingDetailView } from './meeting-detail'
 import { MeetingNewView } from './meeting-new'
+import { MeetingMinutesView } from './meeting-minutes'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -46,6 +47,8 @@ export function App() {
   // 会议子视图:null=日历 / 数字=看某场会 / 'new'=发起会议。
   // ★不引路由库★:与 /viewer/{id} 一样,这层用状态足够(app.tsx 头注的既有约定)。
   const [meetingId, setMeetingId] = useState<number | 'new' | null>(null)
+  // 纪要是会议的子页:非空时盖在详情之上(返回回到详情,不是回日历)
+  const [minutesOf, setMinutesOf] = useState<number | null>(null)
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -75,7 +78,7 @@ export function App() {
       <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
         <Segmented
           value={view}
-          onChange={(v) => { setView(v as View); setMeetingId(null) }}
+          onChange={(v) => { setView(v as View); setMeetingId(null); setMinutesOf(null) }}
           options={[
             { value: 'schedule', label: '日程' },
             { value: 'projects', label: '项目' },
@@ -87,10 +90,12 @@ export function App() {
           style={{ marginBottom: 16 }}
         />
         {view === 'schedule' ? (
-          meetingId === 'new' ? (
+          minutesOf != null ? (
+            <MeetingMinutesView meetingId={minutesOf} onBack={() => setMinutesOf(null)} />
+          ) : meetingId === 'new' ? (
             <MeetingNewView onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
           ) : meetingId != null ? (
-            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} />
+            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
           ) : (
             <ScheduleView onOpenMeeting={setMeetingId} onNewMeeting={() => setMeetingId('new')} />
           )

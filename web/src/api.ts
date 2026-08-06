@@ -100,3 +100,17 @@ export type MeetingMessage = {
 }
 /// 忙闲:★只有时间段,没有任何内容★(D1)。私密项目的会完全不在里面。
 export type FreeBusy = { busy: Record<string, { start: string; end: string }[]> }
+
+/// 会议纪要(D14):★AI 转写只是原材料,记录员才是作者★。
+/// 字段就是「固定模板」本身 —— 到场/列席/缺席是**会后补录的事实**(D11),
+/// 与邀请时的答复是两回事(答复了不等于真来了)。
+export type Minutes = {
+  meeting_id: number
+  status: 'draft' | 'done'
+  attendees: string; observers: string; absentees: string
+  agenda_text: string; content_md: string
+  resolutions: string; todos: string
+  pdf_item_id: number | null
+  completed_at: string | null
+  updated_at: string
+}

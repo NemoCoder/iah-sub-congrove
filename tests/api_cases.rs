@@ -175,6 +175,18 @@ const CASES: &[Case] = &[
        "不含该时段——他明确说了不来", "D1"),
     c!(deny "GET", "/api/freebusy", "未登录查不了忙闲", "无会话", "GET /api/freebusy?users=x", "401", ""),
 
+    c!("GET", "/api/meetings/{id}/minutes", "没有纪要时回空而不是 404", "会议刚建,还没写纪要",
+       "GET .../minutes", "200,minutes=null,can_edit 按身份给;★前端不用为「还没写」判 404★", "D14"),
+    c!(deny "GET", "/api/meetings/{id}/minutes", "旁听者看不到纪要", "会议 public,我不是参会人",
+       "GET .../minutes", "403;纪要是会议内容,与讨论区同档(D9 给旁听者的只是「知道有这个会」)", "D9"),
+    c!("PUT", "/api/meetings/{id}/minutes", "记录员按固定模板保存", "我是记录员",
+       "PUT {attendees,agenda_text,content_md,resolutions,todos}", "200;字段对应表里的固定模板", "D14"),
+    c!("PUT", "/api/meetings/{id}/minutes", "★定稿时间只记第一次★", "已 status=done 定稿过",
+       "再 PUT 一次 {status:'done', attendees:'补录到场'}",
+       "200 且 completed_at ★不变★——会后补录到场情况是常事,不该把「什么时候定的稿」冲掉", "D11"),
+    c!(deny "PUT", "/api/meetings/{id}/minutes", "普通参会人改不了纪要", "我是参会人,不是记录员也不是发起人",
+       "PUT {content_md:'我改的'}", "403;★纪要要有唯一作者★,否则「按模板整理」会变成谁都能覆盖的公共草稿", "D14"),
+
     // ══════════ 内容 ══════════
     c!("GET", "/api/projects/{id}/items", "内容树不含回收站", "项目里有 5 项,其中 2 项已删", "GET .../items",
        "200,只回 3 项;★deleted_at IS NULL★", "v0.3.55"),

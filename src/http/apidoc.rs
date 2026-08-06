@@ -93,6 +93,12 @@ pub const APIS: &[Api] = &[
          "会议讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer"),
     api!("POST", "/api/meetings/{id}/messages", "会议", "参会人/关联项目成员",
          "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer"),
+    api!("GET", "/api/meetings/{id}/minutes", "会议", "参会人/关联项目成员(★旁听者不给★)",
+         "取会议纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
+    api!("PUT", "/api/meetings/{id}/minutes", "会议", "发起人 / 记录员",
+         "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
+          ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
+         "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
     api!("GET", "/api/freebusy", "会议", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),

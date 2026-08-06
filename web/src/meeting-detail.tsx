@@ -32,7 +32,9 @@ const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
   counter: { label: '建议改期', color: 'purple' },
 }
 
-export function MeetingDetailView({ id, onBack }: { id: number; onBack: () => void }) {
+export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
+  id: number; onBack: () => void; onOpenMinutes: (id: number) => void
+}) {
   const [d, setD] = useState<MeetingDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
@@ -67,6 +69,12 @@ export function MeetingDetailView({ id, onBack }: { id: number; onBack: () => vo
         {m.visibility === 'public' && <Tag color="blue">公开会议</Tag>}
         {m.is_private && <Tag color="purple">私密项目</Tag>}
         {d.observer && <Tag>旁听</Tag>}
+        <span style={{ flex: 1 }} />
+        {/* ★纪要入口★(原型评审时用户问「整理会议纪要的入口是不是还没有」)。
+            旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
+        {d.participants && (
+          <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>会议纪要</Button>
+        )}
       </Space>
 
       {canceled && (
