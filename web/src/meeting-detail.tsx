@@ -317,14 +317,20 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
   return (
     <Card size="small" title="我的答复" style={{ marginBottom: 12 }}
       extra={<Tag color={meta.color}>{meta.label}</Tag>}>
+      {/* ★当前状态的那个按钮禁用★:已经接受了还能再点「接受」是无意义的重复请求
+          (2026-08-07 用户:「可以一直点接受」)。busy 时全部禁用,防连点打出多个请求。
+          ⚠ 其余按钮保持可点 —— 改主意是正当操作,不能因为答过一次就锁死。 */}
       <Space wrap style={{ marginBottom: showCounter ? 12 : 0 }}>
         <Button size="small" type={mine === 'accepted' ? 'primary' : 'default'} loading={busy}
+          disabled={busy || mine === 'accepted'}
           onClick={() => send('accepted')}>接受</Button>
         <Button size="small" type={mine === 'tentative' ? 'primary' : 'default'} loading={busy}
+          disabled={busy || mine === 'tentative'}
           onClick={() => send('tentative')}>待定</Button>
         <Button size="small" danger={mine === 'declined'} loading={busy}
+          disabled={busy || mine === 'declined'}
           onClick={() => send('declined')}>拒绝</Button>
-        <Button size="small" type={showCounter ? 'primary' : 'dashed'}
+        <Button size="small" type={showCounter ? 'primary' : 'dashed'} disabled={busy}
           onClick={() => setShowCounter((v) => !v)}>建议改期</Button>
       </Space>
 

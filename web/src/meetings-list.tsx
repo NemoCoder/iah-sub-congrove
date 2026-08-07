@@ -236,12 +236,15 @@ function PendingRow({ m, clash, onOpen, onDone }: {
           ⚠ 撞「{clash.title}」{fmtHM(new Date(clash.starts_at))}–{fmtHM(new Date(clash.ends_at))}
         </div>
       )}
+      {/* ★busy 时四个按钮全禁★:只给被点的那个加 loading 的话,
+          连点会打出多个请求(2026-08-07 用户提)。这一栏里的会都是 pending,
+          所以不必再按当前状态禁某一个。 */}
       <Space size={4} style={{ marginTop: 6 }} wrap>
-        <Button size="small" type="primary" loading={busy} onClick={() => reply('accepted')}>接受</Button>
-        <Button size="small" loading={busy} onClick={() => reply('tentative')}>待定</Button>
-        <Button size="small" loading={busy} onClick={() => reply('declined')}>拒绝</Button>
+        <Button size="small" type="primary" loading={busy} disabled={busy} onClick={() => reply('accepted')}>接受</Button>
+        <Button size="small" loading={busy} disabled={busy} onClick={() => reply('tentative')}>待定</Button>
+        <Button size="small" loading={busy} disabled={busy} onClick={() => reply('declined')}>拒绝</Button>
         {/* 改期要填具体时间,去详情页做 —— 这里只做一跳,不在窄栏里塞时间选择器 */}
-        <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash}
+        <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash} disabled={busy}
           onClick={() => onOpen(m.id)}>改期</Button>
       </Space>
     </div>
