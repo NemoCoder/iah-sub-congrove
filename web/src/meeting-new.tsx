@@ -6,7 +6,7 @@
 //
 // 参会人用 chips-combobox(输入即过滤、选中清空、★空输入时 Backspace 删最后一个 chip★),
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
-import { App as AntdApp, Alert, Button, Card, DatePicker, Form, Input, Select, Space, Switch, Typography } from 'antd'
+import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Switch, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type Me, type Project, type UserOpt } from './api'
 
@@ -22,6 +22,9 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
   const [busy, setBusy] = useState(false)
   const [pub, setPub] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /// 当前输入的关键词。★候选只覆盖登录过汇流的人★(/api/users 查本地 app_user),
+  /// 而后端能拉任何平台用户 —— 所以搜不到时要允许直接用输入的用户名。
+  const [typed, setTyped] = useState('')
 
   useEffect(() => {
     // ★只列我能建会的项目★:后端要求每个关联项目 ≥editor,前端先过滤掉 viewer 的,
@@ -38,6 +41,7 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
   const search = useCallback((kw: string) => {
     if (timer.current) clearTimeout(timer.current)
     const q = kw.trim()
+    setTyped(q)          // 记住当前输入:候选搜不到时把它本身当一个可选项(见 userOpts)
     if (!q) { setFound([]); return }
     timer.current = setTimeout(() => {
       api<UserOpt[]>(`/api/users?q=${encodeURIComponent(q)}`).then(setFound).catch(() => setFound([]))
@@ -57,8 +61,11 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
     }
     if (me?.username) push(me.username, me.name ? `${me.name}· 我` : '我')
     for (const u of found) push(u.username, u.name)
+    // 搜不到就把输入本身给出来:平台没有用户搜索接口,候选只有登录过的人,
+    // 但后端 ensure_platform_user 能校验并拉任何平台用户(真伪由它判)。
+    if (typed && !seen.has(typed)) out.push({ value: typed, label: `使用「${typed}」` })
     return out
-  }, [me, found])
+  }, [me, found, typed])
 
   const submit = async (v: {
     title: string; agenda?: string; recorder: string
@@ -103,7 +110,7 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
         <Form.Item
           name="project_ids" label="关联项目"
           rules={[{ required: true, message: '至少关联一个项目' }]}
-          extra="材料权限来自项目成员身份 —— 没有项目，这场会的材料就没人管得了。只列出你有编辑权的项目。"
+          extra="只列出你有编辑权的项目"
         >
           <Select mode="multiple" placeholder="选一个或多个项目" optionFilterProp="label"
             options={projects.map((p) => ({ value: p.id, label: p.name }))} />
@@ -112,15 +119,15 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
         <Form.Item
           name="recorder" label="记录员"
           rules={[{ required: true, message: '必须指定记录员' }]}
-          extra="正式纪要由记录员按固定模板整理；AI 转写与摘要只是给他的原材料，不是成品。"
+          extra="纪要由他按模板整理"
         >
           <Select showSearch placeholder="谁来整理纪要（默认是你自己）" options={userOpts}
             onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
         </Form.Item>
 
-        <Form.Item name="participants" label="参会人" extra="之后还能再加。临时参会人可以在详情页里单独设。">
-          <Select mode="multiple" showSearch placeholder="输入用户名或姓名搜索" options={userOpts}
-            onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
+        <Form.Item name="participants" label="参会人" extra="之后还能再加">
+          <Select mode="tags" showSearch placeholder="输入用户名（没搜到也能直接输入）" options={userOpts}
+            onSearch={search} filterOption={false} notFoundContent={null} />
         </Form.Item>
 
         <Space size={16} style={{ display: 'flex' }}>
@@ -136,15 +143,16 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
           <Space align="start">
             <Switch checked={pub} onChange={setPub} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              打开后，全平台的人都能看到这场会的**标题、议程、时间、地点、链接**并旁听。
+              全平台可见并旁听（仅会议信息）
             </Typography.Text>
           </Space>
         </Form.Item>
         {pub && (
-          // ★「公开」这个词有歧义,必须消歧★:PRD 里专门为此加过一条(有人以为资料也公开了)
-          <Alert type="info" showIcon style={{ marginBottom: 16 }}
-            message="公开的只是会议信息，不是材料"
-            description="旁听的人看得到议程、时间、地点和线上链接，但拿不到任何会议材料 —— 材料始终只有关联项目的成员能看。" />
+          // ★这句不能删★:PRD 专门为「公开」这个词的歧义加过一条要求(有人以为资料也跟着公开了)。
+          // 但降成一行小字,不用 Alert 那么重。
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
+            公开的只是会议信息；<b>材料仍然只有关联项目的成员能看</b>。
+          </Typography.Text>
         )}
 
         <Space>

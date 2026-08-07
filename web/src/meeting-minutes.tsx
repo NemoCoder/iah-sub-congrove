@@ -8,7 +8,7 @@
 //   · **一开始不是可编辑的**——先呈现成读稿的样子,**双击**某一块才进编辑
 //     (「这是来自于AI整理吗?一开始不要是这种可编辑的」);
 //   · **一次性展示太长,划分为两块**——「会议信息 + 正文」与「决议 + 待办」分开。
-import { App as AntdApp, Alert, Button, Card, Empty, Input, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Input, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Minutes } from './api'
 
@@ -124,16 +124,6 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
         )}
       </Space>
 
-      {!canEdit && (
-        <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="只有记录员和发起人能编辑这份纪要"
-          description="纪要要有唯一作者 —— 否则「按固定模板整理」会变成谁都能覆盖一遍的公共草稿。" />
-      )}
-      {canEdit && (
-        <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="双击任意一块开始编辑，点到别处即保存"
-          description="录屏的 AI 转写与摘要在会议材料里，是给你参考的原材料 —— 要用哪段自己挑，系统不会替你写进来。" />
-      )}
 
       {/* ★分成两块★:一次性展示太长(原型评审) */}
       <Card size="small" title="会议信息与正文" style={{ marginBottom: 12 }}>

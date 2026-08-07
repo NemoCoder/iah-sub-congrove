@@ -304,16 +304,12 @@ export function ProjectsView({ me }: { me: Me | null }) {
         const on = !s.archived_at
         modal.confirm({
           title: on ? '归档这个项目？' : '恢复为进行中？',
-          content: on ? (
-            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
-              归档后它变成<b>只读存档</b>：
-              <div style={{ color: '#389e0d' }}>· 材料、会议、纪要全部保留，照样能看、能下载、能搜到</div>
-              <div style={{ color: '#cf1322' }}>· 不能再上传、建会议、改内容</div>
-              <div style={{ color: '#8c8c8c' }}>· 它的会议不再出现在日历上，也不再让成员显示「忙」</div>
-              <div style={{ color: '#8c8c8c' }}>· 占用的空间仍然计入配额（东西还在）</div>
-              <div style={{ marginTop: 6 }}>随时可以恢复。<b>这不是删除</b>——要清理空间请用「删除项目」。</div>
-            </div>
-          ) : '恢复后就能继续往里加东西了。',
+          // ★确认框的说明不能删★:它是决策点,删了就是让人盲选。但压到两行 ——
+          // 「变成什么」和「不是什么」,其余(配额/日历/忙闲)在文档里,不在这个弹窗里。
+          content: on
+            ? <span>变成<b>只读存档</b>：内容全部保留、可查可下载，但不能再上传或建会议。随时可恢复。<br />
+                <b>这不是删除</b>——要清理空间请用「删除项目」。</span>
+            : '恢复后就能继续往里加东西了。',
           okText: on ? '归档' : '恢复',
           onOk: async () => {
             await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: on }) })
@@ -438,13 +434,8 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </Tooltip>
           }
         >
-          {/* ★只读横幅★:归档项目里所有写入按钮都会失效(后端 409),
-              不解释的话人只会以为「坏了」。说清三件事:为什么、还能做什么、怎么解开。 */}
-          {cur.archived_at && (
-            <Alert type="warning" showIcon style={{ marginBottom: 10 }}
-              message={`这个项目已归档（${new Date(cur.archived_at).toLocaleDateString('zh-CN')}），是只读的`}
-              description="材料、会议与纪要都保留着，可以查看和下载；但不能再上传、建会议或修改。主持人可在左侧 ⋯ 菜单里恢复为进行中。" />
-          )}
+          {/* 归档状态由标题旁的「已归档 · 只读」标签表达,写入按钮同时隐藏 ——
+              状态清楚、入口没了,不必再写一段话解释(2026-08-07 用户:这种啰嗦的说明删掉)。 */}
           {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。
               ★归档时只留「回收站」★——它是读操作,存档项目照样该能查看已删内容。 */}
           {showToolbar && (
@@ -777,7 +768,11 @@ function MembersModal({ space, open, onClose, onChanged }:
   }, [space.id])
   useEffect(() => { if (open) load().catch((e) => message.error(e.message)) }, [open, load, message])
 
-  // 名单不整表下发(审计收紧):输前缀才查
+  // 名单不整表下发(审计收紧):输前缀才查。
+  // ⚠ ★这个接口查的是**本地 app_user**,只有登录过汇流的人才在里面★(admin.rs user_options)。
+  // 平台目前只有 users/exists(校验单个用户名),没有用户搜索接口 —— 已在群里提。
+  // 所以候选搜不到 ≠ 这个人不存在:后端加人走 ensure_platform_user → 平台 users/exists,
+  // **能拉从没登录过汇流的同事**。前端因此必须允许**手输用户名**,否则等于把后端支持的路堵死。
   const searchUsers = useCallback(async (t: string) => {
     if (!t) { setUsers([]); return }
     try { setUsers(await api<UserOpt[]>(`/api/users?q=${encodeURIComponent(t)}`)) } catch { setUsers([]) }
@@ -812,8 +807,12 @@ function MembersModal({ space, open, onClose, onChanged }:
       </Typography.Paragraph>
 
       <AntSpace.Compact style={{ width: '100%', marginBottom: 10 }}>
-        <Select mode="multiple" value={picked} onChange={setPicked} onSearch={searchUsers}
-          filterOption={false} placeholder="输入用户名搜索，可多选" style={{ flex: 1 }}
+        {/* ★mode="tags" 而不是 "multiple"★:允许把没搜到的用户名直接敲进去 ——
+            候选只覆盖登录过汇流的人,而后端能拉任何平台用户(见 searchUsers 上面的注释)。
+            用 multiple 的话,新同事永远加不进来。真伪由后端 ensure_platform_user 判,加错了会被拒。 */}
+        <Select mode="tags" value={picked} onChange={setPicked} onSearch={searchUsers}
+          filterOption={false} placeholder="输入用户名，可多选（没搜到也能直接输入）" style={{ flex: 1 }}
+          notFoundContent={null}
           options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}（${u.name}）` : u.username }))} />
         <Select value={role} onChange={setRole} style={{ width: 120 }}
           options={[
