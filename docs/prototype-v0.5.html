@@ -1,0 +1,587 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>汇流 Congrove · v0.5 原型（活动模型）</title>
+<!-- 汇流 Congrove · v0.5 界面原型 —— 相位 3
+     ★只画新东西★：类型决定表单、自建类型、不关联项目的活动、我的活动材料、
+     日历的身份图标与凌晨压缩、设置里的时区与提醒。
+     改名部分（会议→活动、参会人→参与人）沿用现有界面，不重画。
+     依据：docs/PRD-v0.5.md（A–L）与 docs/STORY-MAP-v0.5.md（M0/M1）。 -->
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#262626;background:#f0f2f5}
+  a{color:#0d9488;text-decoration:none;cursor:pointer}
+  .top{background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;gap:8px;
+       position:sticky;top:0;z-index:20;padding:0 calc(50vw - 660px)}
+  @media(max-width:1400px){.top{padding:0 22px}}
+  .brand{font-weight:700;color:#0d9488;padding:13px 18px 13px 0;font-size:15px}
+  .nav{display:flex}
+  .nav button{border:0;background:none;padding:17px 16px;cursor:pointer;font-size:14px;color:#595959;
+              border-bottom:2px solid transparent}
+  .nav button.on{color:#0d9488;border-bottom-color:#0d9488;font-weight:600}
+  .right{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:13px;color:#595959}
+  .avatar{width:24px;height:24px;border-radius:50%;background:#0d9488;color:#fff;font-size:12px;
+          line-height:24px;text-align:center;font-weight:600}
+  .wrap{max-width:1320px;margin:18px auto;padding:0 22px;display:none}
+  .wrap.on{display:block}
+  .card{background:#fff;border:1px solid #e8e8e8;border-radius:6px;padding:16px 18px;margin-bottom:14px}
+  .card h3{margin:0 0 12px;font-size:15px}
+  .row{display:flex;gap:14px;align-items:flex-start}
+  .col{flex:1;min-width:0}
+  .muted{color:#8c8c8c;font-size:12px}
+  label.f{display:block;margin-bottom:13px}
+  label.f>span{display:block;font-size:13px;margin-bottom:5px;color:#595959}
+  label.f>span i{color:#ff4d4f;font-style:normal;margin-right:3px}
+  input[type=text],input[type=datetime-local],select,textarea{width:100%;padding:6px 10px;
+    border:1px solid #d9d9d9;border-radius:4px;font:inherit;font-size:13px;background:#fff}
+  textarea{min-height:88px;resize:vertical}
+  .btn{border:1px solid #d9d9d9;background:#fff;border-radius:4px;padding:5px 14px;cursor:pointer;
+       font:inherit;font-size:13px}
+  .btn.primary{background:#0d9488;border-color:#0d9488;color:#fff}
+  .btn.sm{padding:2px 10px;font-size:12px}
+  .btn:hover{border-color:#0d9488;color:#0d9488}
+  .btn.primary:hover{color:#fff;opacity:.9}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0f0f0}
+  th{color:#8c8c8c;font-weight:500;font-size:12px}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:3px;border:1px solid #d9d9d9;
+       color:#595959;background:#fafafa}
+  .tag.teal{color:#0d9488;border-color:#87e8de;background:#e6fffb}
+  .tag.purple{color:#722ed1;border-color:#d3adf7;background:#f9f0ff}
+  .tag.gold{color:#d48806;border-color:#ffe58f;background:#fffbe6}
+  .tag.grey{color:#8c8c8c}
+  .hint{background:#f6ffed;border:1px solid #b7eb8f;border-radius:4px;padding:8px 12px;font-size:12px;
+        color:#389e0d;margin-bottom:12px}
+  .warn{background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;padding:8px 12px;font-size:12px;
+        color:#d48806;margin-bottom:12px}
+  .note{border-left:3px solid #0d9488;background:#f6ffed;padding:9px 12px;font-size:12px;color:#389e0d;
+        margin:10px 0;line-height:1.8}
+  .note b{color:#0d9488}
+  /* ── 日历 ── */
+  .cal{display:grid;grid-template-columns:92px repeat(7,minmax(88px,1fr));border:1px solid #e8e8e8;
+       border-radius:6px;overflow:hidden;background:#fff}
+  .cal .hd{background:#fafafa;border-bottom:1px solid #e8e8e8;padding:7px 4px;text-align:center;
+           font-size:12px;color:#8c8c8c}
+  .cal .hd.today{color:#0d9488;font-weight:600;background:#e6fffb}
+  .axis,.daycol{position:relative;border-right:1px solid #f0f0f0}
+  .daycol:last-child{border-right:0}
+  .tick{position:absolute;right:6px;font-size:11px;color:#bfbfbf;transform:translateY(-6px)}
+  .tick.seg{color:#595959;font-weight:600}
+  .segname{position:absolute;left:6px;font-size:10px;color:#8c8c8c;font-weight:600;transform:translateY(-6px)}
+  .ln{position:absolute;left:0;right:0;border-top:1px solid #f5f5f5}
+  .ln.seg{border-top-color:#d9d9d9}
+  .dim{position:absolute;left:0;right:0;background:rgba(0,0,0,.02)}
+  /* 活动块 */
+  .ev{position:absolute;left:3px;right:3px;border-radius:3px;padding:2px 4px;font-size:11px;
+      line-height:1.35;overflow:hidden;cursor:pointer;border:1px solid;min-height:18px}
+  .ev.pub{background:#e6fffb;border-color:#5eead4;color:#0f766e}
+  .ev.pri{background:#f9f0ff;border-color:#d3adf7;color:#531dab;border-style:dashed}
+  .ev.todo{background:#fff1f0;border-color:#ff4d4f;color:#cf1322}
+  .ev.arch{background:#fafafa;border-color:#e8e8e8;color:#bfbfbf}
+  .ev .ic{font-weight:700;margin-right:2px}
+  /* tooltip */
+  .tip{position:absolute;z-index:30;background:#1f1f1f;color:#fff;border-radius:5px;padding:8px 11px;
+       font-size:12px;line-height:1.75;width:230px;box-shadow:0 6px 20px rgba(0,0,0,.2);display:none}
+  .ev:hover .tip{display:block;left:100%;top:0;margin-left:6px}
+  .tip .t{font-weight:600;margin-bottom:2px}
+  .tip .m{color:#bfbfbf}
+  .legend{display:flex;gap:16px;align-items:center;font-size:12px;color:#8c8c8c;margin-top:10px;flex-wrap:wrap}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:2px;border:1px solid;margin-right:5px;
+      vertical-align:-1px}
+  /* 能力位表 */
+  .caps{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .cap{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid #d9d9d9;color:#8c8c8c;background:#fafafa}
+  .cap.on{color:#0d9488;border-color:#87e8de;background:#e6fffb}
+  .cap.off{text-decoration:line-through;opacity:.55}
+  /* 文件夹分组 */
+  .grp{border:1px solid #f0f0f0;border-radius:5px;margin-bottom:10px;overflow:hidden}
+  .grp .gh{background:#fafafa;padding:7px 12px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .grp .gh b{font-weight:600}
+  .grp table{margin:0}
+  .quota{height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin:6px 0 4px}
+  .quota i{display:block;height:100%;background:#0d9488}
+  h2.sec{font-size:14px;color:#0d9488;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid #e8e8e8}
+</style>
+
+<div class="top">
+  <div class="brand">◆ 汇流 Congrove <span style="font-weight:400;color:#bfbfbf;font-size:12px">v0.5 原型</span></div>
+  <div class="nav">
+    <button class="on" onclick="go('cal',this)">日程</button>
+    <button onclick="go('proj',this)">项目</button>
+    <button onclick="go('act',this)">活动</button>
+  </div>
+  <div class="right">
+    <a onclick="go('new1',null)">新建活动</a>
+    <span class="avatar">L</span> liaoruili
+  </div>
+</div>
+
+<!-- ══════════ ① 日程 ══════════ -->
+<div class="wrap on" id="cal">
+  <div class="note">
+    <b>这一页要看的四件事</b>：① 凌晨 0–8 点压成 <b>2 小时一格</b>（D0）；
+    ② 活动块上的<b>身份图标</b> ★发起 / ✎记录员 / ○旁听（C1，普通参与人不标）；
+    ③ <b>hover</b> 出完整标题 + 时间 + 项目 + 我的身份（C3，鼠标停在活动块上试试）；
+    ④ 归档项目的活动<b>淡化 + 标记</b>，图例只分<b>公开 / 不公开</b>（B1、J4）。
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <h3 style="margin:0">2026 年 8 月 3 – 9 日</h3>
+      <button class="btn sm">‹</button><button class="btn sm">今天</button><button class="btn sm">›</button>
+      <span style="flex:1"></span>
+      <button class="btn sm">日</button><button class="btn sm" style="border-color:#0d9488;color:#0d9488">周</button>
+      <button class="btn sm">月</button><button class="btn sm">列表</button>
+      <button class="btn primary sm" onclick="go('new1',null)">+ 新建活动</button>
+    </div>
+
+    <div class="cal" id="grid">
+      <div class="hd"></div>
+      <div class="hd">周日 3</div><div class="hd">周一 4</div><div class="hd">周二 5</div>
+      <div class="hd">周三 6</div><div class="hd">周四 7</div><div class="hd today">周五 8 · 今天</div>
+      <div class="hd">周六 9</div>
+      <div class="axis" id="axis"></div>
+      <div class="daycol" id="d0"></div><div class="daycol" id="d1"></div><div class="daycol" id="d2"></div>
+      <div class="daycol" id="d3"></div><div class="daycol" id="d4"></div><div class="daycol" id="d5"></div>
+      <div class="daycol" id="d6"></div>
+    </div>
+
+    <div class="legend">
+      <span><i class="sw" style="background:#e6fffb;border-color:#5eead4"></i>公开</span>
+      <span><i class="sw" style="background:#f9f0ff;border-color:#d3adf7;border-style:dashed"></i>不公开</span>
+      <span><i class="sw" style="background:#fff1f0;border-color:#ff4d4f"></i>待你应答</span>
+      <span><i class="sw" style="background:#fafafa;border-color:#e8e8e8"></i>已归档项目</span>
+      <span style="margin-left:8px">★ 我发起　✎ 我是记录员　○ 我旁听</span>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      ⚠ 凌晨 0–8 点为 <b>2 小时一格</b>；落在这段的活动块会变矮，最小保底 18px（D1）。
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ ② 新建活动 · 类型=会议 ══════════ -->
+<div class="wrap" id="new1">
+  <div class="note">
+    <b>这一页要看的是「类型决定表单」（A1）</b>——同一个页面，选不同类型长得完全不同。
+    这里是<b>会议</b>（全能力）。切到
+    <a onclick="go('new2',null)">「读文献」那一版 →</a> 对比。
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="card">
+        <h3>新建活动</h3>
+
+        <label class="f"><span><i>*</i>类型</span>
+          <select onchange="if(this.value==='p')go('new2',null)">
+            <option value="m">会议（系统预置）</option>
+            <option value="p">读文献（我的）</option>
+            <option>个人日程（系统预置）</option>
+            <option>跑数据（我的）</option>
+            <option value="new">＋ 新建类型…</option>
+          </select>
+        </label>
+        <div class="caps" style="margin:-6px 0 14px">
+          <span class="cap on">纪要</span><span class="cap on">须关联项目</span>
+          <span class="cap on">占忙闲</span>
+        </div>
+
+        <label class="f"><span><i>*</i>标题</span><input type="text" placeholder="如：8 月第二次组会"></label>
+
+        <label class="f"><span><i>*</i>时间</span></label>
+        <div class="row" style="margin:-8px 0 13px;gap:8px;align-items:center">
+          <input type="text" value="2026-08-08 15:45" style="flex:1.4">
+          <span class="muted">持续</span>
+          <select style="width:120px">
+            <option>15 分钟</option><option>30 分钟</option><option selected>1 小时</option>
+            <option>1.5 小时</option><option>2 小时</option><option>3 小时</option><option>自定义</option>
+          </select>
+          <span class="muted">→ 16:45</span>
+        </div>
+        <div class="muted" style="margin:-8px 0 14px">
+          开始时间默认<b>当前时间向上取整到 15 分钟</b>（现在 15:37 → 15:45）——没人约 15:37 开始的会（G0）
+        </div>
+
+        <label class="f"><span>时区</span>
+          <select><option>Asia/Shanghai（跟我的设置）</option><option>America/New_York</option></select>
+        </label>
+
+        <label class="f"><span><i>*</i>关联项目</span>
+          <select><option>选一个或多个项目…</option></select>
+        </label>
+
+        <label class="f"><span><i>*</i>记录员</span>
+          <select><option>liaoruili · 我</option></select>
+        </label>
+
+        <label class="f"><span>议题与议程</span><textarea placeholder="一行一条"></textarea></label>
+
+        <div class="row" style="gap:14px">
+          <label class="f col"><span>线下地点</span><input type="text" placeholder="如：明德主楼 1016"></label>
+          <label class="f col"><span>线上链接</span><input type="text" placeholder="腾讯会议 / Zoom"></label>
+        </div>
+
+        <label class="f"><span>提醒</span>
+          <select><option>提前 15 分钟（我的默认）</option><option>不提醒</option><option>提前 1 小时</option>
+            <option>提前 1 天</option><option>自定义</option></select>
+        </label>
+
+        <button class="btn primary">创建活动</button>
+        <button class="btn">取消</button>
+      </div>
+    </div>
+
+    <div class="col" style="max-width:400px">
+      <div class="card">
+        <h3>参与人（3）</h3>
+        <select style="margin-bottom:8px"><option>输入用户名（没搜到也能直接输入）</option></select>
+        <table>
+          <tr><td>liaoruili（廖睿黎）<span class="tag teal">发起人</span></td><td style="width:70px"></td></tr>
+          <tr><td>zhangsan（张三）</td><td><span class="tag">必参</span></td></tr>
+          <tr><td>lisi（李四）</td><td><span class="tag grey">选参</span></td></tr>
+        </table>
+        <div class="muted" style="margin-top:8px">
+          ★只有<b>必参</b>人的冲突算「有冲突」★——10 人的会总有人撞车，每个都标红那个红色就成了背景噪音
+        </div>
+      </div>
+      <div class="card">
+        <h3>忙闲</h3>
+        <div class="muted">选好时间与参与人后，这里显示他们那天的忙闲条。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ ③ 新建活动 · 类型=读文献 ══════════ -->
+<div class="wrap" id="new2">
+  <div class="note">
+    同一个页面，类型换成<b>「读文献」</b>（我自建的）。
+    ★<b>记录员、议程、关联项目、线上链接消失</b>★——那是「会议」才有的能力位（A1）。
+    ⚠ 但<b>参与人和材料还在</b>：它们对所有类型统一开放，用不用是用户的事。
+    <a onclick="go('new1',null)">← 切回「会议」那一版</a>
+  </div>
+  <div class="row">
+    <div class="col" style="max-width:640px">
+      <div class="card">
+        <h3>新建活动</h3>
+
+        <label class="f"><span><i>*</i>类型</span>
+          <select onchange="if(this.value==='m')go('new1',null)">
+            <option value="m">会议（系统预置）</option>
+            <option value="p" selected>读文献（我的）</option>
+            <option>个人日程（系统预置）</option>
+            <option>跑数据（我的）</option>
+            <option value="new">＋ 新建类型…</option>
+          </select>
+        </label>
+        <div class="caps" style="margin:-6px 0 14px">
+          <span class="cap off">纪要</span><span class="cap off">须关联项目</span>
+          <span class="cap on">占忙闲</span>
+        </div>
+
+        <label class="f"><span><i>*</i>标题</span><input type="text" value="读 Acemoglu 2024"></label>
+
+        <label class="f"><span><i>*</i>时间</span></label>
+        <div class="row" style="margin:-8px 0 6px;gap:8px;align-items:center">
+          <input type="text" value="2026-08-07 14:20" style="flex:1.4">
+          <span class="muted">持续</span>
+          <select style="width:120px"><option>1 小时</option><option selected>2 小时</option></select>
+          <span class="muted">→ 16:20</span>
+        </div>
+        <div class="muted" style="margin:0 0 13px">
+          ★个人记录<b>不取整</b>★：14:20 就是「我刚做完，现在记」的真实时刻（G0）
+        </div>
+
+        <div class="warn">
+          这条记录的是 <b>8 月 7 日</b>（昨天）的事 —— 补录不发提醒、不占别人的忙闲。
+          <span class="muted">（超过 7 天时会弹确认：「这是 7 月 28 日的，确认吗？」F1）</span>
+        </div>
+
+        <label class="f"><span>备注</span><textarea placeholder="随手记两句"></textarea></label>
+
+        <label class="f"><span>参与人 <span class="muted">（选填）</span></span>
+          <select><option>输入用户名…</option></select>
+        </label>
+        <div class="warn" style="margin-top:-6px">
+          ★<b>参与人就是参与人，一套机制</b>★——判据只有一条：<b>时间过没过</b>（L0）。
+          这条是昨天的，所以<b>不发通知</b>、对方不用应答；
+          换成未来的时间，同一个字段就会照常发邀请。
+        </div>
+
+        <label class="f"><span>可见性</span>
+          <select><option>仅自己（默认）</option><option>公开（全平台可见）</option></select>
+        </label>
+
+        <button class="btn primary">创建活动</button>
+        <button class="btn">取消</button>
+      </div>
+    </div>
+
+    <div class="col" style="max-width:400px">
+      <div class="card">
+        <h3>材料</h3>
+        <div class="muted" style="margin-bottom:10px">
+          建完之后在活动详情页传。<b>不关联项目</b>的活动，材料落进
+          <a onclick="go('mat',null)">「我的活动材料」</a>（J0）。
+        </div>
+        <button class="btn sm" disabled style="opacity:.5">上传（建完活动后可用）</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ ④ 我的活动类型 ══════════ -->
+<div class="wrap" id="act">
+  <div class="note">
+    <b>自建类型 = 输一个名字 + 一个开关</b>（A3）。
+    ★能力位只剩三个★（2026-08-07 精简）：纪要 / 须关联项目 / 占忙闲 ——
+    <b>参与人与材料对所有类型统一开放</b>，一个字段用不用是用户的事，不是类型替他决定的。
+  </div>
+
+  <div class="card">
+    <h3>我的活动类型</h3>
+    <table>
+      <tr><th style="width:180px">类型</th><th style="width:130px">占忙闲</th><th>能力</th><th style="width:90px"></th></tr>
+      <tr>
+        <td><b>会议</b> <span class="tag">系统</span></td>
+        <td>✅ 固定</td>
+        <td><span class="cap on">纪要</span> <span class="cap on">须关联项目</span></td>
+        <td class="muted">不可改</td>
+      </tr>
+      <tr>
+        <td><b>个人日程</b> <span class="tag">系统</span></td>
+        <td><input type="checkbox" checked> 占</td>
+        <td class="muted">简单型</td>
+        <td class="muted">不可删</td>
+      </tr>
+      <tr>
+        <td><b>读文献</b></td>
+        <td><input type="checkbox" checked> 占</td>
+        <td class="muted">简单型</td>
+        <td><a>改名</a> · <a style="color:#ff4d4f">删除</a></td>
+      </tr>
+      <tr>
+        <td><b>跑数据</b></td>
+        <td><input type="checkbox"> 不占</td>
+        <td class="muted">简单型</td>
+        <td><a>改名</a> · <a style="color:#ff4d4f">删除</a></td>
+      </tr>
+    </table>
+
+    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+      <input type="text" placeholder="新类型的名字，如「写作」" style="max-width:260px">
+      <label class="muted"><input type="checkbox" checked> 占忙闲</label>
+      <button class="btn primary sm">新建</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      ★「占忙闲」是唯一的开关★——它是<b>唯一真正影响别人</b>的属性：决定别人约你时看不看得到你这段时间是忙的。
+    </div>
+
+    <div class="warn" style="margin-top:14px">
+      <b>删除一个类型</b>：用过它的历史活动<b>照常显示这个类型名</b>（统计不断档），
+      只是新建时不再出现在下拉里（L1，软删除）。<br>
+      <b>没有「改类型」这个功能</b>——改类型相当于删除重建，
+      与其提供一个会悄悄吃掉参与人和纪要的按钮，不如诚实地不给（L2）。
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ ⑤ 我的活动材料 ══════════ -->
+<div class="wrap" id="mat">
+  <div class="note">
+    <b>这不是一个项目</b>（J1）：不能拉人、不能建文件夹、不能在线编辑。
+    那些「文件夹」是<b>按活动虚拟分组</b>的（J0b）——活动改名它就跟着变，因为它本来就没有独立的名字。
+    <b>唯一的出口是「复制到项目」</b>。
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px">
+      <h3 style="margin:0">我的活动材料</h3>
+      <span class="tag">系统 · 只读</span>
+      <span style="flex:1"></span>
+      <span class="muted">已用 3.2 GB / 10 GB</span>
+    </div>
+    <div class="quota"><i style="width:32%"></i></div>
+    <div class="muted" style="margin-bottom:14px">
+      ★配额按<b>人</b>算不按项目算★（L3）：你传的所有东西——不管落在哪个项目——都算在这 10 GB 里。
+      这一栏放在这里是因为<b>这个区不出现在项目列表</b>，别处看不到用量。
+    </div>
+
+    <div class="grp">
+      <div class="gh">📁 <b>2026-08-07 读 Acemoglu 2024</b> <span class="muted">· 读文献</span>
+        <span style="flex:1"></span><a class="muted">去这条活动 →</a></div>
+      <table>
+        <tr><td>acemoglu-2024.pdf</td><td style="width:90px" class="muted">4.2 MB</td>
+            <td style="width:150px"><a>复制到项目</a> · <a>下载</a></td></tr>
+        <tr><td>我的批注.md</td><td class="muted">3 KB</td>
+            <td><a>复制到项目</a> · <a>下载</a></td></tr>
+      </table>
+    </div>
+
+    <div class="grp">
+      <div class="gh">📁 <b>2026-08-05 田野访谈</b> <span class="muted">· 个人日程</span>
+        <span style="flex:1"></span><a class="muted">去这条活动 →</a></div>
+      <table>
+        <tr><td>录音.m4a</td><td style="width:90px" class="muted">86 MB</td>
+            <td style="width:150px"><a>复制到项目</a> · <a>下载</a></td></tr>
+      </table>
+    </div>
+
+    <div class="warn">
+      <b>这里没有「删除」按钮</b>——要删就去删那条活动，它的材料跟着走（L1b）。<br>
+      ★已经复制到别的项目的副本<b>不受影响</b>★：副本是独立的，引用计数保证底层文件不被误删。
+      （不说这句的话，没人敢删任何东西。）
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>复制到项目</h3>
+    <div class="muted" style="margin-bottom:10px">把 <b>acemoglu-2024.pdf</b> 复制到：</div>
+    <select style="max-width:340px"><option>AI 模型（我是成员）</option><option>数据治理</option></select>
+    <button class="btn primary sm" style="margin-left:8px">复制</button>
+    <div class="muted" style="margin-top:10px">
+      · 只列<b>我有编辑权</b>的项目（复制是往目标项目里写）<br>
+      · 复制后是<b>独立副本</b>：改名、删除互不影响<br>
+      · 实现上几乎免费：内容寻址去重，<b>存储一个字节都不增加</b>；但按逻辑大小计入<b>复制者</b>的配额
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ ⑥ 设置 ══════════ -->
+<div class="wrap" id="proj">
+  <div class="note">
+    这一页只画<b>新增的设置项</b>（M3 的落点）。项目页本身沿用现有界面，
+    只有一处要改：★项目不再有配额★，那一栏去掉（L3）。
+  </div>
+  <div class="row">
+    <div class="col" style="max-width:520px">
+      <div class="card">
+        <h3>设置</h3>
+        <label class="f"><span>我的时区</span>
+          <select><option>Asia/Shanghai（北京时间）</option><option>America/New_York</option>
+            <option>Europe/London</option></select>
+        </label>
+        <div class="muted" style="margin:-8px 0 14px">
+          不设默认<b>北京时间</b>（E0）。所有活动按这个时区显示。
+        </div>
+
+        <label class="f"><span>默认提醒</span>
+          <select><option>提前 15 分钟</option><option>不提醒</option><option>提前 5 分钟</option>
+            <option>提前 30 分钟</option><option>提前 1 小时</option><option>提前 1 天</option></select>
+        </label>
+        <div class="muted" style="margin:-8px 0 14px">
+          新建活动时的默认值，<b>单个活动可以改</b>（F3，和手机日历一样）。
+        </div>
+
+        <div style="border-top:1px solid #f0f0f0;padding-top:12px">
+          <div class="muted">我的存储配额</div>
+          <div class="quota"><i style="width:32%"></i></div>
+          <div class="muted">已用 3.2 GB / 10 GB　·　需要更多请找管理员</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col" style="max-width:520px">
+      <div class="card">
+        <h3>时区不一致时的提示条（E0 的缓解）</h3>
+        <div class="warn" style="margin:0">
+          你的设备时区是 <b>America/New_York</b>，当前按 <b>Asia/Shanghai</b> 显示时间。
+          <a>切换到设备时区</a> · <a class="muted">不再提示</a>
+        </div>
+        <div class="muted" style="margin-top:10px">
+          ★这不违背「手动设」这个决定★——只是让人知道有这回事，
+          而不是默默看错时间。可关闭。
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>跨时区的活动怎么显示（E2）</h3>
+        <table>
+          <tr><th>我的时区</th><th>日历上显示</th></tr>
+          <tr><td>Asia/Shanghai</td><td>周三 15:00–16:30　组会</td></tr>
+          <tr><td>America/New_York</td><td>周三 03:00–04:30　组会<br><span class="muted">（北京 15:00）</span></td></tr>
+        </table>
+        <div class="muted" style="margin-top:8px">
+          ★一致时不标★（国内用户看不到任何多余的字）；
+          跨时区时那个「凌晨 3:00」<b>必须有个解释</b>，否则不知道是对方的下午还是真要自己爬起来。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function go(id, el){
+  document.querySelectorAll('.wrap').forEach(w=>w.classList.toggle('on', w.id===id))
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('on'))
+  if(el) el.classList.add('on')
+  window.scrollTo(0,0)
+}
+
+/* ── 日历：★凌晨 0–8 压成 2 小时一格★（D0）──
+   坐标不再是「小时 × 固定行高」，而是一张查找表：
+   0–8 点每 2 小时占 30px，8–24 点每小时占 30px。 */
+const H=30, EARLY_END=8, EARLY_STEP=2
+function y(hour){                      // 小时 → 像素
+  if(hour<=EARLY_END) return hour/EARLY_STEP*H
+  return EARLY_END/EARLY_STEP*H + (hour-EARLY_END)*H
+}
+const TOTAL=y(24)
+
+const axis=document.getElementById('axis')
+axis.style.height=TOTAL+'px'
+const SEG={8:'上午',12:'下午',18:'晚上'}
+for(let h=0;h<24;h++){
+  if(h<=EARLY_END && h%EARLY_STEP!==0) continue        // 压缩区只画偶数点
+  const d=document.createElement('div')
+  d.className='tick'+(SEG[h]?' seg':'')
+  d.style.top=y(h)+'px'
+  d.textContent = h===0?'':h+':00'
+  axis.appendChild(d)
+  if(SEG[h]){
+    const s=document.createElement('div')
+    s.className='segname'; s.style.top=y(h)+'px'; s.textContent=SEG[h]
+    axis.appendChild(s)
+  }
+}
+/* 凌晨那一段单独标一下，否则没人看得出它被压过 */
+const early=document.createElement('div')
+early.className='segname'; early.style.top=y(2)+'px'; early.textContent='凌晨'
+early.style.color='#bfbfbf'
+axis.appendChild(early)
+
+for(let i=0;i<7;i++){
+  const col=document.getElementById('d'+i)
+  col.style.height=TOTAL+'px'
+  for(let h=0;h<24;h++){
+    if(h<=EARLY_END && h%EARLY_STEP!==0) continue
+    const l=document.createElement('div')
+    l.className='ln'+(SEG[h]?' seg':'')
+    l.style.top=y(h)+'px'
+    col.appendChild(l)
+  }
+  /* 压缩区 + 晚间压暗 */
+  const a=document.createElement('div'); a.className='dim'
+  a.style.top='0px'; a.style.height=y(EARLY_END)+'px'; col.appendChild(a)
+  const b=document.createElement('div'); b.className='dim'
+  b.style.top=y(18)+'px'; b.style.height=(TOTAL-y(18))+'px'; col.appendChild(b)
+}
+
+/* 活动块。ic：★=我发起 ✎=我是记录员 ○=我旁听（普通参与人不标） */
+function ev(day, from, to, cls, ic, title, meta, mine){
+  const col=document.getElementById('d'+day)
+  const e=document.createElement('div')
+  e.className='ev '+cls
+  e.style.top=y(from)+'px'
+  e.style.height=Math.max(y(to)-y(from)-2, 18)+'px'   // ★最小 18px 保底★（D1）
+  e.innerHTML=(ic?'<span class="ic">'+ic+'</span>':'')+title+
+    '<div class="tip"><div class="t">'+title+'</div>'+meta+
+    '<div class="m">'+mine+'</div></div>'
+  col.appendChild(e)
+}
+ev(5, 3, 4.5, 'pri', '○', '跨时区讨论', '8/8 周五 03:00–04:30<br>AI 模型（北京 15:00）', '我旁听')
+ev(3, 9, 10.5,'pub', '★', '模型评审会', '8/6 周三 09:00–10:30<br>AI 模型 · 数据治理', '我发起的')
+ev(5, 10, 12, 'pub', '✎', '组会',       '8/8 周五 10:00–12:00<br>AI 模型',        '我是记录员')
+ev(5, 14, 16, 'todo','',  '数据治理周会','8/8 周五 14:00–16:00<br>数据治理',       '待你应答')
+ev(4, 14, 16, 'pri', '',  '读 Acemoglu','8/7 周四 14:20–16:20<br>（不关联项目）',  '仅自己可见')
+ev(2, 15, 17, 'arch','★', '中期汇报',   '8/5 周二 15:00–17:00<br>2025 结题项目 · 已归档', '我发起的')
+ev(6, 19, 20.5,'pri','',  '健身',       '8/9 周六 19:00–20:30<br>（不关联项目）',  '仅自己可见')
+</script>
