@@ -475,3 +475,14 @@ fn 用例字段不能留空() {
         assert!(!c.when.trim().is_empty(), "用例「{}」缺动作", c.name);
     }
 }
+
+/// rule 条款号写了就得写对格式——顺带**读一下 `rule` 字段**(否则它是死代码,clippy 门禁会红)。
+/// 只校验格式(`D` 后必须跟数字,可带 `/R1` 这类附注),★不校验范围★:决策条数随 PRD 会增(现已到 D17),
+/// 「D 到几」交给 PRD 评审,这里只挡「D」后没跟数字的手抖,别拿测试替产品负责人拍范围。
+#[test]
+fn 条款号格式写对() {
+    let bad: Vec<&str> = CASES.iter().map(|c| c.rule)
+        .filter(|r| r.starts_with('D') && !r.trim_start_matches('D').chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+        .collect();
+    assert!(bad.is_empty(), "这些 rule 条款号格式不对(应为 D<数字>):{bad:?}");
+}

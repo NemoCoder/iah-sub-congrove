@@ -8,6 +8,7 @@
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
 import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Switch, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import dayjs from 'dayjs'
 import { api, type Me, type Project, type UserOpt } from './api'
 
 export function MeetingNewView({ me, onCreated, onCancel }: {
@@ -104,7 +105,19 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
         </Form.Item>
 
         <Form.Item name="range" label="时间" rules={[{ required: true, message: '选时间' }]}>
-          <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+          {/* ★不让选过去的时间★(2026-08-07 用户):日期粒度禁掉今天以前,
+              时间粒度在「今天」这一天里禁掉已过去的小时/分钟。后端另有 5 分钟容差的真闸。 */}
+          <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }}
+            disabledDate={(d) => !!d && d.isBefore(dayjs().startOf('day'))}
+            disabledTime={(d) => {
+              if (!d || !d.isSame(dayjs(), 'day')) return {}
+              const now = dayjs()
+              return {
+                disabledHours: () => Array.from({ length: now.hour() }, (_, i) => i),
+                disabledMinutes: (h: number) => h === now.hour()
+                  ? Array.from({ length: now.minute() }, (_, i) => i) : [],
+              }
+            }} />
         </Form.Item>
 
         <Form.Item

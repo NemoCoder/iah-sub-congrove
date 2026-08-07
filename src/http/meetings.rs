@@ -157,6 +157,12 @@ pub async fn create(
     if title.is_empty() { return Err(AppError::BadRequest("会议标题不能为空".into())) }
     if input.recorder.trim().is_empty() { return Err(AppError::BadRequest("必须指定记录员(D14:纪要由他整理)".into())) }
     if input.ends_at <= input.starts_at { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
+    // ★不能发起已经过去的会★(2026-08-07 用户)。
+    // ⚠ 留 5 分钟容差:填表本身要花时间,选了「最近的整点」再慢慢填完议程,提交时那个点可能刚过 ——
+    // 卡死到秒会让人白填一轮。容差只对**创建**放,改期(update)不限,那是修正历史记录的正当场景。
+    if input.starts_at < chrono::Utc::now() - chrono::Duration::minutes(5) {
+        return Err(AppError::BadRequest("会议开始时间不能早于现在".into()));
+    }
     if input.project_ids.is_empty() {
         return Err(AppError::BadRequest("会议必须关联至少一个项目(材料权限来自项目成员身份)".into()));
     }
