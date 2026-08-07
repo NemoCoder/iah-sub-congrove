@@ -919,3 +919,98 @@ pub async fn observe(
         .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
     Ok(Json(json!({ "ok": true, "observing": false, "removed": n })))
 }
+
+// ── 个人面板:我的投入(原型 me 视图)────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct StatsQ {
+    /// month | quarter | year。★白名单校验★:这个值要进 date_trunc 的第一参,
+    /// 虽然是绑定参数注不进 SQL,但传个乱字符串会让 PG 直接报错 500,不如在门口挡掉。
+    pub range: Option<String>,
+}
+
+/// GET /api/me/stats —— 「我的投入」统计。
+///
+/// ★口径写在这里,别在前端各算各的★:
+///   · **只算已经开完的会**(`ends_at <= now`)——「投入」是回顾,把还没发生的会算进去
+///     等于让人在月初就看到一个虚高的数字;
+///   · **拒绝了的会不算**——人没去,不该计入他的时长;
+///   · 发起人即使不在参会名单里也算(他在开会);
+///   · **待写纪要 = 我是记录员且会已开完且纪要不是 done**(D14:记录员是纪要的作者)。
+///
+/// ⚠ 分项目那张表的次数之和 **≥ 总次数**:一场会可以同时关联多个项目(设计如此),
+///   分项目按关联展开就会重复计。这不是 bug,但前端别拿它去反推总数。
+pub async fn my_stats(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<StatsQ>,
+) -> AppResult<Json<serde_json::Value>> {
+    let who = id.require_username()?;
+    let range = match q.range.as_deref().unwrap_or("month") {
+        "month" => "month", "quarter" => "quarter", "year" => "year",
+        _ => return Err(AppError::BadRequest("range 只能是 month / quarter / year".into())),
+    };
+
+    // 「我参与过的、已开完的会」——两条统计共用这段口径。
+    // ★写成 macro 而不是 String 拼接★:sqlx 的查询要求 `&'static str`,
+    // format! 出来的 String 活不到 await 结束(E0597)。macro 展开即字面量,拼完还是 'static。
+    macro_rules! mine_cte { () => { "WITH mine AS (
+        SELECT m.id, m.recorder, EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0 AS hours
+        FROM meetings m
+        WHERE m.status = 'active' AND m.ends_at <= now()
+          AND m.starts_at >= date_trunc($2, now())
+          AND (m.organizer = $1
+               OR EXISTS (SELECT 1 FROM meeting_participants p
+                          WHERE p.meeting_id = m.id AND p.username = $1
+                            AND p.kind = 'attendee' AND p.status <> 'declined')))" } }
+
+    let (cnt, hours, projects, todo): (i64, f64, i64, i64) = sqlx::query_as(concat!(mine_cte!(), "
+         SELECT count(*)::bigint,
+                COALESCE(SUM(hours), 0)::float8,
+                (SELECT count(DISTINCT mp.project_id) FROM meeting_projects mp
+                   WHERE mp.meeting_id IN (SELECT id FROM mine))::bigint,
+                (SELECT count(*) FROM mine x WHERE x.recorder = $1
+                   AND NOT EXISTS (SELECT 1 FROM meeting_minutes mm
+                                   WHERE mm.meeting_id = x.id AND mm.status = 'done'))::bigint
+         FROM mine"))
+        .bind(who).bind(range).fetch_one(&state.pool).await?;
+
+    let by_project: Vec<(i64, String, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
+         SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+                count(*)::bigint, COALESCE(SUM(x.hours), 0)::float8,
+                count(*) FILTER (WHERE mm.status = 'done')::bigint
+         FROM mine x
+         JOIN meeting_projects mp ON mp.meeting_id = x.id
+         JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
+         LEFT JOIN meeting_minutes mm ON mm.meeting_id = x.id
+         GROUP BY p.id, p.name, p.visibility, p.archived_at
+         ORDER BY count(*) DESC, p.name"))
+        .bind(who).bind(range).fetch_all(&state.pool).await?;
+
+    // 我主持的项目(原型下半张卡)。「N 份纪要待整理」是**项目视角**的:
+    // 只要这项目里有开完却没完成纪要的会就算,不论记录员是谁 —— 主持人要的是「我这摊子有没有欠账」。
+    let hosting: Vec<(i64, String, String, bool, i64, i64)> = sqlx::query_as(
+        "SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+                (SELECT count(*) FROM project_members pm WHERE pm.project_id = p.id)::bigint,
+                (SELECT count(*) FROM meetings m
+                   JOIN meeting_projects mp ON mp.meeting_id = m.id
+                  WHERE mp.project_id = p.id AND m.status = 'active' AND m.ends_at <= now()
+                    AND NOT EXISTS (SELECT 1 FROM meeting_minutes mm
+                                    WHERE mm.meeting_id = m.id AND mm.status = 'done'))::bigint
+         FROM projects p WHERE p.owner = $1 AND p.deleted_at IS NULL
+         ORDER BY p.archived_at IS NOT NULL, p.name")
+        .bind(who).fetch_all(&state.pool).await?;
+
+    Ok(Json(json!({
+        "range": range,
+        "totals": { "meetings": cnt, "hours": (hours * 10.0).round() / 10.0, "projects": projects, "minutes_todo": todo },
+        "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
+            "id": id, "name": name, "visibility": vis, "archived": arch,
+            "count": c, "hours": (h * 10.0).round() / 10.0, "minutes_done": done,
+        })).collect::<Vec<_>>(),
+        "hosting": hosting.iter().map(|(id, name, vis, arch, mem, pend)| json!({
+            "id": id, "name": name, "visibility": vis, "archived": arch,
+            "members": mem, "minutes_pending": pend,
+        })).collect::<Vec<_>>(),
+    })))
+}

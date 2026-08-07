@@ -74,6 +74,8 @@ pub fn build_router(state: AppState) -> Router {
         // ★公开会议广场 + 自助旁听(D9)★:公开会议没有列表页的话,「全平台可旁听」就是空话
         .route("/meetings/public", get(meetings::public_list))
         .route("/meetings/{id}/observe", post(meetings::observe))
+        // 个人面板「我的投入」(原型 me 视图):口径写在 handler 注释里,前端不自己算
+        .route("/me/stats", get(meetings::my_stats))
 
 
         // 内容树(文档正文小,留在快路由)

@@ -235,6 +235,25 @@ const CASES: &[Case] = &[
        "不含该时段——他明确说了不来", "D1"),
     c!(deny "GET", "/api/freebusy", "未登录查不了忙闲", "无会话", "GET /api/freebusy?users=x", "401", ""),
 
+    // 「我的投入」——这几条钉的全是**口径**。统计一旦口径漂了没人看得出来:
+    // 数字照样长得很像那么回事,只是不对。
+    c!("GET", "/api/me/stats", "★还没开的会不计入★", "本月有一场明天才开的会",
+       "GET /api/me/stats?range=month", "totals.meetings 不含它——「投入」是回顾,\
+        把未来的会算进去等于月初就看到一个虚高的数字", ""),
+    c!("GET", "/api/me/stats", "★拒绝的会不计入★", "我对一场已开完的会 declined",
+       "GET /api/me/stats", "不计次数也不计时长——人没去,不该算他的投入", ""),
+    c!("GET", "/api/me/stats", "发起人不在参会名单里也算", "我发起了会但没把自己加进 participants",
+       "GET /api/me/stats", "计入——他在开会,只是没给自己发邀请", ""),
+    c!("GET", "/api/me/stats", "待写纪要按记录员算", "我是记录员,会已开完,纪要 status=draft",
+       "GET /api/me/stats", "minutes_todo 含它;若纪要 done 则不含。★记录员是纪要的作者★", "D14"),
+    c!("GET", "/api/me/stats", "一场会关联两个项目会在分项目表里各计一次",
+       "会 M 同时关联 P1、P2", "GET /api/me/stats",
+       "by_project 两行各 1 次,而 totals.meetings 只 +1 —— ★分项目之和 ≥ 总数是设计如此★,\
+        前端别拿它反推总数", ""),
+    c!(deny "GET", "/api/me/stats", "range 只认三个值", "登录", "GET /api/me/stats?range=drop",
+       "400 —— 这个值要进 date_trunc 第一参,乱字符串会让 PG 直接报错 500", ""),
+    c!(deny "GET", "/api/me/stats", "未登录看不了统计", "无会话", "GET /api/me/stats", "401", ""),
+
     c!("GET", "/api/meetings/{id}/minutes", "没有纪要时回空而不是 404", "会议刚建,还没写纪要",
        "GET .../minutes", "200,minutes=null,can_edit 按身份给;★前端不用为「还没写」判 404★", "D14"),
     c!(deny "GET", "/api/meetings/{id}/minutes", "旁听者看不到纪要", "会议 public,我不是参会人",
