@@ -220,6 +220,22 @@ const CASES: &[Case] = &[
        "400 拒绝;★不做任意点对点,否则这里会长成一个 IM★", "D13"),
     c!("GET", "/api/meetings/{id}/items", "会议材料与录制分开", "会议下有 2 份材料 1 个录屏",
        "GET .../items", "200,3 条;录屏的 is_recording=true —— ★只有它会被转写、并作为会议时长依据★", "D5"),
+    // ── 会议粒度的材料策略(PRD 6.3.2)──★与项目级叠加不是覆盖★
+    c!(deny "GET", "/api/items/{id}/download", "★会议设了禁下载,连 editor 也下不了★",
+       "会议 no_download=true,我是项目 editor", "GET /api/items/{id}/download",
+       "400 —— 这一条**对所有角色生效**,不像项目那条只拦 viewer:\
+        发起人说「这次不许下载」是对全体说的,把 editor 排除在外这开关基本不起作用\
+        (会议材料多半就是 editor 传的)。★在线预览/播放不拦★", ""),
+    c!(deny "POST", "/api/items/{id}/shares", "★会议设了禁分享,后端拒绝★",
+       "会议 no_share=true,我是 editor", "POST /api/items/{id}/shares",
+       "400 —— PRD 6.3.2 验收标准原话「前端隐藏不是安全边界」。\
+        分享是全系统**唯一绕过项目授权**的出口,这道闸尤其不能只画在界面上", ""),
+    c!("PUT", "/api/meetings/{id}", "会议策略与项目策略叠加", "项目禁下载、会议放开",
+       "PUT {no_download:false}", "★仍然下不了★——取两者的严格值。反过来做就成了\
+        「在会议上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝", ""),
+    c!("PUT", "/api/meetings/{id}/participants", "标为选参", "邀请时 required=false",
+       "PUT {usernames:['x'], required:false}", "200;他的冲突不计入「N 人时间冲突」的红色提示", ""),
+
     c!(deny "GET", "/api/meetings/{id}/items", "★参会但不是项目成员 → 拿不到材料★",
        "我被邀请参会,但不是任何关联项目的成员",
        "GET .../items", "403 —— 他看得见这场会(能参会),但材料按★项目成员身份★判权(D3)。\
@@ -316,6 +332,9 @@ const CASES: &[Case] = &[
     c!("POST", "/api/meetings/{id}/respond", "★建议改期必须通知发起人★", "我提了 counter",
        "POST {status:'counter',...}", "发起人收到「有人建议改期」含提议时间与理由——\
         私密项目的日程对他完全隐形,这是他能收到的**唯一**信号;躺在库里没人看 = 这个出口不存在", "D2"),
+    c!(deny "POST", "/api/meetings/{id}/respond", "★会议开始后不能再建议改期★", "会已经在开了",
+       "POST {status:'counter'}", "400 —— 会都开了,改期这个动作没有意义:要么是误点,\
+        要么是想说「我没去」而那该用拒绝。⚠ **其余三态照常允许**:会后补一个「我其实没去」是正当的", ""),
     c!("POST", "/api/meetings/{id}/respond", "接受/拒绝/待定不发信", "我点了接受",
        "POST {status:'accepted'}", "★不发★——发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的改期建议", ""),
 
@@ -334,6 +353,35 @@ const CASES: &[Case] = &[
         而它还在会议页里躺着不会丢", ""),
     c!(deny "POST", "/api/me/unread/read", "未登录标不了已读", "无会话", "POST /api/me/unread/read", "401", ""),
     c!(deny "GET", "/api/me/unread", "未登录看不了未读", "无会话", "GET /api/me/unread", "401", ""),
+
+    // ── 项目统计(6.5.2 + D6)──
+    c!("GET", "/api/projects/{id}/stats", "★分组展开:一个会挂两个项目,两边各算 1 次★",
+       "会 M 同时关联 P1、P2", "分别 GET 两个项目的 stats",
+       "P1 与 P2 的 meetings 各为 1 —— ★这是 D6 的「分组展开」★;\
+        跨项目求总数必须按会议去重(响应里的 dedup_note 就是提醒这一句)", "D6"),
+    c!("GET", "/api/projects/{id}/stats", "取消的场次不计入", "项目里有一场 canceled 的会",
+       "GET .../stats", "不计 —— 它没发生过", ""),
+    c!("GET", "/api/projects/{id}/stats", "参会率分母不含旁听者", "5 人受邀 3 人接受,另有 4 个旁听者",
+       "GET .../stats", "accept_rate=0.6 —— ★旁听者不是被邀请的★,计进分母会把这个比例稀释成 0.33", "D9"),
+    c!("GET", "/api/projects/{id}/stats", "时长口径与个人统计一致", "会有录制 1.2h,排程 2h",
+       "GET .../stats", "算 1.2h(D5 三级回退)——★两处口径若各写一套,同一场会在个人页和项目页\
+        会显示不同时长,而没人说得清该信哪个★", "D5"),
+    c!(deny "GET", "/api/projects/{id}/stats", "非成员看不到项目统计", "我不是本项目成员",
+       "GET .../stats", "403/404 —— 会议次数与时长本身也是信息(D3)", "D3"),
+
+    // ── D5 时长口径:★三级回退,不是三选一★ ──
+    // 这几条钉的是「哪个数字被采信」。错了不会报错,只会让季度汇报的数字悄悄偏高。
+    c!("GET", "/api/me/stats", "★有录制就用录制时长★", "会排了 2h,录屏实际 1.2h",
+       "GET /api/me/stats", "算 1.2h 且 hours_by_source.recording=1.2 —— 录制是真测出来的,最可信", "D5"),
+    c!("GET", "/api/me/stats", "多份录制取 max 不是 sum", "两个人各录了一份 1.2h",
+       "GET /api/me/stats", "★算 1.2h 不是 2.4h★——两份是同一场会,累加会翻倍", "D5"),
+    c!("GET", "/api/me/stats", "没录制则用手工补录", "没录屏,发起人填了 actual_minutes=40",
+       "GET /api/me/stats", "算 0.7h 且计入 hours_by_source.manual", "D5"),
+    c!("GET", "/api/me/stats", "都没有才退到排程时长", "既没录制也没手工",
+       "GET /api/me/stats", "按 ends_at-starts_at 算,计入 hours_by_source.scheduled ——\
+        ★这部分最不可信★(排 2 小时、20 分钟散会是常事),前端单独标黄", "D5"),
+    c!("PUT", "/api/meetings/{id}", "补录实际时长", "会已结束,我是发起人",
+       "PUT {actual_minutes:40}", "200;统计随即改用这个数。★超过 24 小时或 ≤0 被库里的 CHECK 挡★", "D5"),
 
     c!("GET", "/api/me/stats", "★还没开的会不计入★", "本月有一场明天才开的会",
        "GET /api/me/stats?range=month", "totals.meetings 不含它——「投入」是回顾,\

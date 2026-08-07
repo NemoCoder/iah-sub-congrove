@@ -924,6 +924,19 @@ pub async fn download(
             return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
         }
     }
+    // ★会议粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
+    // 说的是**这一次会**,不是把整个项目锁上(项目级那个太钝,会连带影响无关材料)。
+    //
+    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(会议放开能盖过项目)
+    // 就成了「在会议上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
+    // ⚠ 这一条**对所有角色生效**,不像项目那条只拦 viewer —— 发起人说「这次不许下载」
+    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(会议材料多半是 editor 传的)。
+    let meeting_blocked: Option<bool> = sqlx::query_scalar(
+        "SELECT m.no_download FROM items i JOIN meetings m ON m.id = i.meeting_id WHERE i.id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?;
+    if meeting_blocked == Some(true) {
+        return Err(AppError::BadRequest("这场会议的材料已设为禁止下载原件(可在线预览/播放)".into()));
+    }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =
         sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1 AND deleted_at IS NULL")

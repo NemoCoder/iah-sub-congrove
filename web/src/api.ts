@@ -79,6 +79,12 @@ export type Meeting = {
   id: number; title: string; agenda: string
   organizer: string; recorder: string
   starts_at: string; ends_at: string; timezone: string
+  /// 会后补录的实际时长(分钟)。★D5 三级回退的第 2 级★:录制 > **手工** > 排程。
+  /// null = 没填过 —— 统计会退到排程时长,而排程常常离谱(排 2 小时、20 分钟散会)。
+  actual_minutes?: number | null
+  /// 会议粒度的材料策略(PRD 6.3.2)。★与项目级叠加不是覆盖★:两处任一禁了就禁。
+  no_download?: boolean
+  no_share?: boolean
   location: string; online_url: string
   visibility: 'private' | 'public'
   status: 'active' | 'canceled'
@@ -95,6 +101,8 @@ export type Meeting = {
   minutes_status?: 'draft' | 'done' | null
 }
 export type Participant = {
+  /// 必参 / 选参 —— ★只有必参人的冲突算「有冲突」★(PRD 6.1.2)
+  required?: boolean
   username: string
   /// 真实姓名;拉进来还没登录过的人为空
   name?: string | null
@@ -137,4 +145,5 @@ export type MeetingItem = {
   mime: string | null; is_recording: boolean; created_by: string; created_at: string
 }
 /// 线上会议链接的改动历史
+/// 会后补录的实际时长(分钟)。D5 三级回退的第 2 级:录制 > **手工** > 排程。
 export type LinkChange = { old_url: string; new_url: string; changed_by: string; changed_at: string }
