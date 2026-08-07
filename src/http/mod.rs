@@ -63,6 +63,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/meetings/{id}/messages", get(meetings::messages).post(meetings::send_message))
         // 纪要(D14):★AI 转写只是原材料,记录员才是作者★,两者刻意不打通
         .route("/meetings/{id}/minutes", get(meetings::minutes_get).put(meetings::minutes_put))
+        // 会议详情页要的几块(docs/UI-GAP.md):材料与录制 / 线上链接改动历史 / 催办 / 采纳改期
+        .route("/meetings/{id}/items", get(meetings::meeting_items))
+        .route("/meetings/{id}/link-history", get(meetings::link_history))
+        .route("/meetings/{id}/remind", post(meetings::remind))
+        .route("/meetings/{id}/accept-counter", post(meetings::accept_counter))
         // 忙闲(D1):只回时间段不回内容;私密项目的会完全隐形。
         .route("/freebusy", get(meetings::freebusy))
 

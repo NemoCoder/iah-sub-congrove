@@ -130,3 +130,11 @@ export type Minutes = {
   completed_at: string | null
   updated_at: string
 }
+
+/// 会议材料 / 录制。★录制 ≠ 材料★(D5):只有 is_recording 的会被转写、并作为会议时长依据。
+export type MeetingItem = {
+  id: number; name: string; kind: Item['kind']; size: number | null
+  mime: string | null; is_recording: boolean; created_by: string; created_at: string
+}
+/// 线上会议链接的改动历史
+export type LinkChange = { old_url: string; new_url: string; changed_by: string; changed_at: string }

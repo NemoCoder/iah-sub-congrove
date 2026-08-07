@@ -106,6 +106,17 @@ pub const APIS: &[Api] = &[
          "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
           ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
          "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
+    api!("GET", "/api/meetings/{id}/items", "会议", "★关联项目的成员★(不是参会人)",
+         "会议的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到会议、看不到材料);\
+          is_recording 区分录制与材料 —— 只有录制会被转写、并作为会议时长依据(D5)", ""),
+    api!("GET", "/api/meetings/{id}/link-history", "会议", "参会人/关联项目成员",
+         "线上会议链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
+    api!("POST", "/api/meetings/{id}/remind", "会议", "发起人 / 记录员",
+         "催办。★只催还没答复的人★,已接受/已拒绝的不该再被打扰;走平台站内信,发不出去不报错",
+         "username(可选,不给则催全部待答复的)"),
+    api!("POST", "/api/meetings/{id}/accept-counter", "会议", "发起人 / 记录员",
+         "采纳某人的改期建议 = 把会议时间改成他提议的时间。★随后所有人答复清回 pending★\
+          (含提议者本人:他提的是时间,不等于他一定能来)", "username"),
     api!("GET", "/api/freebusy", "会议", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),
@@ -130,7 +141,10 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/items/{id}/restore/{version_id}", "内容", "≥editor", "恢复到某个历史版本(恢复前自动快照)", ""),
     api!("GET", "/api/items/{id}/progress", "内容", "≥viewer", "我上次看到哪", ""),
     api!("PUT", "/api/items/{id}/progress", "内容", "≥viewer", "记录播放进度", "position_sec, duration_sec"),
-    api!("POST", "/api/projects/{id}/upload", "内容", "≥editor", "流式上传(单文件不限大小,闸是项目配额)", "multipart file"),
+    api!("POST", "/api/projects/{id}/upload", "内容", "≥editor",
+         "流式上传(单文件不限大小,闸是项目配额)。★带 meeting_id 即为会议材料★(D10 的写入口),\
+          is_recording=true 标记为录制 —— 只有录制会被转写、并作为会议时长依据(D5)",
+         "multipart file; parent_id, meeting_id, is_recording"),
     api!("GET", "/api/items/{id}/download", "内容", "≥viewer", "下载原件;viewer 受项目禁下载开关约束", "inline"),
 
     // ── 大文件直传 ──

@@ -671,3 +671,141 @@ pub async fn minutes_put(
     audit::record(&state.pool, id.require_username()?, "minutes.save", &mid.to_string(), status).await;
     Ok(Json(json!({ "ok": true, "status": status })))
 }
+
+// ── 会议材料 / 改动历史 / 催办 / 采纳改期 ──────────────────────────────────
+// 对应原型 meet 视图右侧与中部的几块(docs/UI-GAP.md)。
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct MeetingItem {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+    pub size: Option<i64>,
+    pub mime: Option<String>,
+    /// ★录制 ≠ 材料★(D5):只有 is_recording 的文件会被转写、并作为会议时长依据。
+    pub is_recording: bool,
+    pub created_by: String,
+    pub created_at: Ts,
+}
+
+/// GET /api/meetings/{id}/items —— 会议的材料与录制。
+/// 前端分两个 tab 显示;★这是会议的「只读区」★(D10):唯一写入口是会议详情页,
+/// 在项目树里不允许对它改名/移动/删除。
+pub async fn meeting_items(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+) -> AppResult<Json<Vec<MeetingItem>>> {
+    // ★材料按项目成员身份判权,不是按参会身份★(D8):临时参会人看得到会议,看不到材料。
+    // 所以这里不能只用 meeting_view —— 要求他在**任一关联项目**里至少是 viewer。
+    let username = id.require_username()?;
+    let ok: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM meeting_projects mp
+           JOIN project_members pm ON pm.project_id = mp.project_id
+          WHERE mp.meeting_id = $1 AND pm.username = $2
+          UNION ALL SELECT 1 FROM app_user WHERE username = $2 AND is_super
+          LIMIT 1")
+        .bind(mid).bind(username).fetch_optional(&state.pool).await?;
+    if ok.is_none() {
+        // 看得见会议但不是项目成员 → 403(他知道有这场会,只是拿不到材料);完全看不见 → 404
+        meeting_view(&state.pool, &id, mid).await?;
+        return Err(AppError::Forbidden);
+    }
+    let rows: Vec<MeetingItem> = sqlx::query_as(
+        "SELECT id, name, kind, size, mime, coalesce(is_recording,false) AS is_recording, created_by, created_at
+           FROM items WHERE meeting_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
+          ORDER BY is_recording, created_at")
+        .bind(mid).fetch_all(&state.pool).await?;
+    Ok(Json(rows))
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct LinkChange {
+    pub old_url: String,
+    pub new_url: String,
+    pub changed_by: String,
+    pub changed_at: Ts,
+}
+
+/// GET /api/meetings/{id}/link-history —— 线上会议链接的改动历史。
+/// 开会前十分钟改链接是真实场景,事后要能追溯「谁何时改成什么」。
+pub async fn link_history(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+) -> AppResult<Json<Vec<LinkChange>>> {
+    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+        return Err(AppError::Forbidden);
+    }
+    let rows: Vec<LinkChange> = sqlx::query_as(
+        "SELECT old_url, new_url, changed_by, changed_at FROM meeting_link_history
+          WHERE meeting_id = $1 ORDER BY changed_at DESC")
+        .bind(mid).fetch_all(&state.pool).await?;
+    Ok(Json(rows))
+}
+
+/// POST /api/meetings/{id}/remind —— 催办未应答的人(发起人/记录员)。
+/// ★只催「还没答复」的★:已接受/已拒绝的人不该再被打扰。
+pub async fn remind(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_meeting_host(&state.pool, &id, mid).await?;
+    let only = body.get("username").and_then(|v| v.as_str()).map(str::to_string);
+    let targets: Vec<String> = sqlx::query_scalar(
+        "SELECT username FROM meeting_participants
+          WHERE meeting_id = $1 AND status = 'pending' AND ($2::text IS NULL OR username = $2)")
+        .bind(mid).bind(only.as_deref()).fetch_all(&state.pool).await?;
+    if targets.is_empty() {
+        return Err(AppError::BadRequest("没有需要催的人(都已答复)".into()));
+    }
+    let (title, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    // 站内信走平台 registry;不可达时降级为「只记审计不发信」——催办失败不该让接口报错。
+    let mut sent = 0;
+    if let Some(reg) = &state.registry {
+        for u in &targets {
+            let body = format!("「{title}」将于 {} 开始,你还没有答复。", starts.format("%m-%d %H:%M"));
+            // notify 是 best-effort(不返回 Result):站内信发不出去不该让催办接口失败
+            reg.notify(u, "会议待你答复", &body, None, Some(&format!("meeting:{mid}"))).await;
+            sent += 1;
+        }
+    }
+    audit::record(&state.pool, id.require_username()?, "meeting.remind", &mid.to_string(),
+                  &format!("{} 人", targets.len())).await;
+    Ok(Json(json!({ "ok": true, "targets": targets.len(), "sent": sent })))
+}
+
+/// POST /api/meetings/{id}/accept-counter —— 采纳某人的改期建议。
+/// ★采纳 = 把会议时间改成他提议的时间★,随后所有人的答复清回 pending(与改时间同一套语义)。
+pub async fn accept_counter(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_meeting_host(&state.pool, &id, mid).await?;
+    let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
+    let row: Option<(Option<Ts>, Option<Ts>)> = sqlx::query_as(
+        "SELECT counter_starts_at, counter_ends_at FROM meeting_participants
+          WHERE meeting_id=$1 AND username=$2 AND status='counter'")
+        .bind(mid).bind(&who).fetch_optional(&state.pool).await?;
+    let Some((Some(s), Some(e))) = row else {
+        return Err(AppError::BadRequest("这个人没有提出改期建议".into()));
+    };
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE meetings SET starts_at=$2, ends_at=$3, updated_at=now() WHERE id=$1")
+        .bind(mid).bind(s).bind(e).execute(&mut *tx).await?;
+    // 时间变了,所有人的答复都得重来 —— 包括提议者本人:他提的是时间,不等于他一定能来。
+    sqlx::query(
+        "UPDATE meeting_participants SET status='pending', responded_at=NULL,
+                counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
+          WHERE meeting_id=$1 AND username <> $2")
+        .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record(&state.pool, id.require_username()?, "meeting.accept-counter", &mid.to_string(), &who).await;
+    Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
+}

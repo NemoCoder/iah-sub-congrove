@@ -695,6 +695,14 @@ pub struct UploadQuery {
     /// 空串按 None 收(浏览器拼 `?parent_id=` 是常见形态,直接 400 太脆——2026-08-03 线上踩过)。
     #[serde(default, deserialize_with = "empty_as_none")]
     pub parent_id: Option<i64>,
+    /// ★会议材料★(D10):非空表示这份材料属于某次会议的只读区。
+    /// 上传落在**关联项目之一**(前端传 projects[0]),但靠 meeting_id 让**所有**关联项目的成员都看得到
+    /// —— 这就是 D4「一次会议多个项目、材料整份进所有关联项目」的实现方式(不复制文件)。
+    #[serde(default, deserialize_with = "empty_as_none")]
+    pub meeting_id: Option<i64>,
+    /// ★录制 ≠ 材料★(D5):只有它为真的文件会被转写、并作为会议时长依据。
+    #[serde(default)]
+    pub is_recording: bool,
 }
 
 fn empty_as_none<'de, D>(de: D) -> Result<Option<i64>, D::Error>
@@ -742,9 +750,13 @@ pub async fn upload(
         // 先插行拿 item_id(key 要用);kind 按 mime 粗分,失败路径统一删行。
         let kind = if mime.starts_with("video/") { "video" } else { "file" };
         let iid: i64 = sqlx::query_scalar(
-            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            // meeting_id / is_recording:会议材料走同一条上传路径(D10 说会议材料是只读区,
+            // 唯一写入口是会议详情页 —— 那指的是**入口**,不必为它另写一套 79 行的流式上传)。
+            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, meeting_id, is_recording)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
         )
         .bind(pid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
+        .bind(q.meeting_id).bind(q.is_recording)
         .fetch_one(&state.pool)
         .await?;
         // ★先落临时 key,算完真实 sha 再按内容寻址归位★:边收边算哈希,收完才知道内容的 key。

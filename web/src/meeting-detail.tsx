@@ -7,15 +7,17 @@
 //
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
-import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Popconfirm, Space, Spin, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, showUser, type MeetingDetail, type MeetingMessage, type Participant, type RespondStatus } from './api'
+import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
+import { fmtSize, ItemIcon } from './preview'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
   const d = new Date(s)
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 const fmtRange = (a: string, b: string) => {
   const s = new Date(a), e = new Date(b)
   const sameDay = s.toDateString() === e.toDateString()
@@ -38,6 +40,9 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
   const [d, setD] = useState<MeetingDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  /// ★与我已接受的会撞了吗★:D1 决定了发起人看不见我私密项目里的安排,
+  /// 所以冲突只能在**我这边**算、在**我这边**提醒。用我自己的会议列表本地比,不必新接口。
+  const [clash, setClash] = useState<{ title: string; starts_at: string; ends_at: string } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -46,6 +51,19 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
     finally { setLoading(false) }
   }, [id])
   useEffect(() => { void load() }, [load])
+
+  // 冲突检测:拉这场会前后一天的会议,找时间重叠且我已接受的
+  useEffect(() => {
+    if (!d?.meeting || d.meeting.my_status !== 'pending') { setClash(null); return }
+    const mm = d.meeting
+    const from = new Date(new Date(mm.starts_at).getTime() - 864e5).toISOString()
+    const to = new Date(new Date(mm.ends_at).getTime() + 864e5).toISOString()
+    api<{ id: number; title: string; starts_at: string; ends_at: string; my_status: string | null }[]>(
+      `/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+      .then((all) => setClash(all.find((x) => x.id !== mm.id && x.my_status === 'accepted'
+        && new Date(x.starts_at) < new Date(mm.ends_at) && new Date(mm.starts_at) < new Date(x.ends_at)) ?? null))
+      .catch(() => setClash(null))
+  }, [d])
 
   if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>
   if (err || !d)
@@ -75,6 +93,14 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
         {d.participants && (
           <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>会议纪要</Button>
         )}
+        {d.can_edit && !canceled && (
+          <Popconfirm title="取消这场会议？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
+            onConfirm={async () => {
+              try { await api(`/api/meetings/${id}`, { method: 'DELETE' }); await load() } catch (e) { /* 失败由下方错误区呈现 */ }
+            }}>
+            <Button size="small" danger>取消会议</Button>
+          </Popconfirm>
+        )}
       </Space>
 
       {canceled && (
@@ -82,8 +108,16 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
           message="这场会已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
       )}
 
+      {/* ★冲突提示条★(原型位置:信息卡之前,红底,抢注意力)。
+          D1 定了私密项目的日程对发起人完全隐形 —— 他不知道你这个时段忙,
+          所以必须在**你自己**打开这场会时把话挑明,并把四个动作放在手边。 */}
+      {!canceled && m.my_status === 'pending' && clash && (
+        <Alert type="error" showIcon style={{ marginBottom: 12 }}
+          message={<span>此时段你有个人安排「{clash.title}」{fmtHM(new Date(clash.starts_at))}–{fmtHM(new Date(clash.ends_at))}</span>} />
+      )}
+
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        {/* 左:会议信息 + 议程 + 参会人 */}
+        {/* 左:会议信息 + 议程 + 材料 + 参会人 */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
@@ -116,11 +150,22 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
             )}
           </Card>
 
+          {/* ★线上会议区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
+          {m.online_url && d.participants && <OnlineCard id={id} url={m.online_url} />}
+
+          {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为会议时长依据) */}
+          {d.participants && (
+            <MaterialsCard id={id} projectId={d.projects?.[0]?.id ?? null}
+              canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes} />
+          )}
+
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <Card size="small" title={`参会人（${d.participants.length}）`}>
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                {d.participants.map((p) => <ParticipantRow key={p.username} p={p} />)}
+                {d.participants.map((p) => (
+                  <ParticipantRow key={p.username} p={p} mid={id} canHost={!!d.can_edit && !canceled} onDone={load} />
+                ))}
               </Space>
             </Card>
           )}
@@ -136,21 +181,48 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
   )
 }
 
-function ParticipantRow({ p }: { p: Participant }) {
+function ParticipantRow({ p, mid, canHost, onDone }: {
+  p: Participant; mid: number; canHost: boolean; onDone: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [busy, setBusy] = useState(false)
   const meta = STATUS_META[p.status]
+  const act = async (path: string, ok: string) => {
+    setBusy(true)
+    try {
+      await api(`/api/meetings/${mid}/${path}`, { method: 'POST', body: JSON.stringify({ username: p.username }) })
+      message.success(ok); onDone()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+  }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-      <span style={{ flex: 1 }}>
-        {showUser(p.username, p.name)}
-        {/* ★临时参会人能参会但看不到材料(D8)★——名单里要标出来,否则发起人以为他能看 */}
-        {p.kind === 'guest' && <Tag style={{ marginLeft: 6 }}>临时</Tag>}
-        {p.kind === 'observer' && <Tag style={{ marginLeft: 6 }}>旁听</Tag>}
-      </span>
-      <Tag color={meta.color}>{meta.label}</Tag>
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+        <span style={{ flex: 1 }}>
+          {showUser(p.username, p.name)}
+          {/* ★临时参会人能参会但看不到材料(D8)★——名单里要标出来,否则发起人以为他能看 */}
+          {p.kind === 'guest' && <Tag style={{ marginLeft: 6 }}>临时</Tag>}
+          {p.kind === 'observer' && <Tag style={{ marginLeft: 6 }}>旁听</Tag>}
+        </span>
+        <Tag color={meta.color}>{meta.label}</Tag>
+        {/* ★催办只对还没答复的人出现★:已接受/已拒绝的人不该再被打扰 */}
+        {canHost && p.status === 'pending' && (
+          <Button size="small" loading={busy} onClick={() => act('remind', '已催办')}>催办</Button>
+        )}
+      </div>
+      {/* ★建议改期要能一键采纳★(D2):他给了具体时间,发起人却只能手动重填一遍的话,
+          这条「私事冲突唯一的结构化出口」就断在最后一步。 */}
       {p.status === 'counter' && p.counter_starts_at && (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          提议 {fmtTime(p.counter_starts_at)}
-        </Typography.Text>
+        <div style={{ margin: '4px 0 6px 8px', padding: '6px 10px', background: '#f9f0ff', borderRadius: 4 }}>
+          <div style={{ fontSize: 12 }}>建议改到 <b>{fmtTime(p.counter_starts_at)}</b></div>
+          {p.counter_reason && <div style={{ fontSize: 12, color: '#8c8c8c' }}>理由：{p.counter_reason}</div>}
+          {canHost && (
+            <Popconfirm title="采纳这个时间？"
+              description="会议时间会改成他提议的时间，所有人的答复都会清回「待应答」——包括他本人。"
+              onConfirm={() => act('accept-counter', '已改期')}>
+              <Button size="small" type="primary" loading={busy} style={{ marginTop: 6 }}>采纳并改期</Button>
+            </Popconfirm>
+          )}
+        </div>
       )}
     </div>
   )
@@ -263,6 +335,108 @@ function DiscussionCard({ id }: { id: number }) {
         onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void send() } }} />
       <Button size="small" type="primary" block style={{ marginTop: 8 }} loading={busy}
         disabled={!text.trim()} onClick={send}>发送</Button>
+    </Card>
+  )
+}
+
+/// 线上会议:链接 + 复制 + 改动历史。
+/// ★改动历史不是装饰★:临开会前换链接很常见,事后「我进的是旧链接」要能查清是谁什么时候改的。
+function OnlineCard({ id, url }: { id: number; url: string }) {
+  const { message } = AntdApp.useApp()
+  const [hist, setHist] = useState<LinkChange[]>([])
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    api<LinkChange[]>(`/api/meetings/${id}/link-history`).then(setHist).catch(() => setHist([]))
+  }, [id])
+  return (
+    <Card size="small" title="线上会议" style={{ marginBottom: 12 }}>
+      <Space wrap>
+        <a href={url} target="_blank" rel="noreferrer">{url}</a>
+        <Button size="small" onClick={async () => {
+          try { await navigator.clipboard.writeText(url); message.success('已复制') }
+          catch { message.info(url) }
+        }}>复制</Button>
+        {hist.length > 0 && (
+          <Button size="small" type="link" onClick={() => setOpen((v) => !v)}>
+            改动历史 {hist.length}
+          </Button>
+        )}
+      </Space>
+      {open && (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#8c8c8c' }}>
+          {hist.map((h, i) => (
+            <div key={i} style={{ marginBottom: 4 }}>
+              {fmtTime(h.changed_at)} · {h.changed_by} 改成 <code>{h.new_url || '(清空)'}</code>
+              {h.old_url && <span>（原 <code>{h.old_url}</code>）</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/// 材料 / 录制 两个 tab(原型还有第三个「纪要」,这里做成跳转按钮 —— 纪要有自己一整页)。
+/// ★录制单独一个 tab★:它不是普通材料,是**会被转写、并决定会议时长**的东西(D5),
+/// 混在材料里会让人不知道该传哪儿。
+function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
+  id: number; projectId: number | null; canEdit: boolean; onOpenMinutes: (id: number) => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [items, setItems] = useState<MeetingItem[]>([])
+  const [tab, setTab] = useState('mat')
+  const load = useCallback(async () => {
+    try { setItems(await api<MeetingItem[]>(`/api/meetings/${id}/items`)) } catch { setItems([]) }
+  }, [id])
+  useEffect(() => { void load() }, [load])
+
+  const mats = items.filter((i) => !i.is_recording)
+  const recs = items.filter((i) => i.is_recording)
+
+  const table = (rows: MeetingItem[], empty: string) => (
+    <Table<MeetingItem> size="small" rowKey="id" dataSource={rows} pagination={false}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} /> }}
+      columns={[
+        { title: '名称', render: (_, it) => <span><ItemIcon it={it} />{it.name}</span> },
+        { title: '大小', dataIndex: 'size', width: 90, render: (v) => fmtSize(v) },
+        { title: '上传', width: 150, render: (_, it) => `${it.created_by} · ${fmtTime(it.created_at).slice(5, 16)}` },
+        {
+          title: '', width: 70,
+          render: (_, it) => <a href={`/api/items/${it.id}/download`}>下载</a>,
+        },
+      ]} />
+  )
+
+  return (
+    <Card size="small" style={{ marginBottom: 12 }}
+      styles={{ body: { paddingTop: 4 } }}>
+      <Tabs size="small" activeKey={tab} onChange={setTab}
+        items={[
+          { key: 'mat', label: `材料 ${mats.length}`, children: table(mats, '还没有材料') },
+          { key: 'rec', label: `录制 ${recs.length}`, children: table(recs, '还没有录屏或录音') },
+        ]}
+        tabBarExtraContent={canEdit && (
+          <Space size={6}>
+            {/* ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
+                因为它决定「会不会被转写」,和传一份参考资料完全是两件事。 */}
+            <Upload showUploadList={false} multiple
+              customRequest={({ file, onSuccess, onError }) => {
+                // ★走项目上传接口 + meeting_id★:会议材料是「只读区」指的是**入口唯一**(D10),
+                // 不必为它另写一套流式上传。落在关联项目之一,靠 meeting_id 让所有关联项目都看得到(D4)。
+                const fd = new FormData()
+                fd.append('file', file as File)
+                const qs = `meeting_id=${id}&is_recording=${tab === 'rec'}`
+                fetch(`/api/projects/${projectId}/upload?${qs}`, { method: 'POST', body: fd })
+                  .then((r) => r.ok ? (onSuccess?.({}), load()) : r.text().then((t) => { message.error(t); onError?.(new Error(t)) }))
+                  .catch((e) => { message.error(String(e)); onError?.(e as Error) })
+              }}>
+              <Button size="small" type={tab === 'rec' ? 'primary' : 'default'}>
+                {tab === 'rec' ? '上传录屏 / 录音' : '上传材料'}
+              </Button>
+            </Upload>
+            <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
+          </Space>
+        )} />
     </Card>
   )
 }
