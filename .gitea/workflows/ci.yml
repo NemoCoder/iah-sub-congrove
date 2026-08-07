@@ -40,3 +40,35 @@ jobs:
           echo "::group::③④ 前端 pnpm typecheck + test"; ( cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test ) || fail=1; echo "::endgroup::"
           if [ "$fail" != 0 ]; then echo "❌ CI 门禁未过 —— 上面哪一段红看哪段"; exit 1; fi
           echo "✅ CI 门禁全过"
+
+  # ★部署必须被门禁挡住★(2026-08-07,平台 msg 157/158,liaoruili 拍板的方案 B)。
+  #
+  # 原来的路子是 Gitea push webhook → 平台 autobuild,它**和 CI 并行、根本不看 CI 绿不绿** ——
+  # 于是出现过「CI 还在跑,部署已经在构建」:门禁形同虚设。把部署挪进 CI 管道之后,
+  # `needs: gate` 让这件事变成结构上的不可能:gate 红则本 job 压根不执行。
+  #
+  # ⚠ cutover 前会**短暂双构建**(push-autobuild 一次 + 这里一次):冗余不出错,
+  #   等这条跑通、群里说一声,平台再关掉 push-autobuild webhook。
+  deploy:
+    needs: gate
+    # 只在**合并进 dev 之后**部署;PR 事件不部署(PR 还没进 dev,部了就是拿未合并的码上 dev 环境),
+    # 手动 workflow_dispatch 也不部署(event_name 不是 push)。
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+    runs-on: iah-host
+    steps:
+      - name: 触发平台构建部署(dev 通道)
+        env:
+          KEY: ${{ secrets.IAH_DEPLOY_KEY }}   # 仓库 Actions secret,由 liaoruili 设;不落命令行(走 env)
+        run: |
+          set -eu
+          # ★缺 key 直接红,不静默跳过★:静默跳过的表现是「CI 全绿但线上还是旧版本」,
+          # 那比红一次难查得多(我们已经因为「仓库领先线上没部署」踩过)。
+          test -n "$KEY" || { echo "缺 secret IAH_DEPLOY_KEY"; exit 1; }
+          echo "== 门禁已过,触发 dev 构建部署 =="
+          # 内网直连 registry 的 svc(runner 没装内网 CA,不走 registry.ruciah.com)
+          code=$(curl -sS -o /tmp/cd.json -w "%{http_code}" -X POST -H "X-Deploy-Key: $KEY" \
+            "http://subsystem-registry.platform.svc:8000/api/subsystems/congrove/ci-deploy?channel=dev")
+          cat /tmp/cd.json; echo
+          [ "$code" = 200 ] || { echo "❌ 部署触发失败 HTTP $code"; exit 1; }
+          # ★触发是异步的:这一步绿只代表「构建已排队」,不代表已经上线★。构建日志见门户「日志」页。
+          echo "✅ 已触发构建部署(异步,构建日志见门户「日志」页)"
