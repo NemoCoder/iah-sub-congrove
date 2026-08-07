@@ -354,6 +354,21 @@ const CASES: &[Case] = &[
     c!(deny "POST", "/api/me/unread/read", "未登录标不了已读", "无会话", "POST /api/me/unread/read", "401", ""),
     c!(deny "GET", "/api/me/unread", "未登录看不了未读", "无会话", "GET /api/me/unread", "401", ""),
 
+    // ── 项目统计(6.5.2 + D6)──
+    c!("GET", "/api/projects/{id}/stats", "★分组展开:一个会挂两个项目,两边各算 1 次★",
+       "会 M 同时关联 P1、P2", "分别 GET 两个项目的 stats",
+       "P1 与 P2 的 meetings 各为 1 —— ★这是 D6 的「分组展开」★;\
+        跨项目求总数必须按会议去重(响应里的 dedup_note 就是提醒这一句)", "D6"),
+    c!("GET", "/api/projects/{id}/stats", "取消的场次不计入", "项目里有一场 canceled 的会",
+       "GET .../stats", "不计 —— 它没发生过", ""),
+    c!("GET", "/api/projects/{id}/stats", "参会率分母不含旁听者", "5 人受邀 3 人接受,另有 4 个旁听者",
+       "GET .../stats", "accept_rate=0.6 —— ★旁听者不是被邀请的★,计进分母会把这个比例稀释成 0.33", "D9"),
+    c!("GET", "/api/projects/{id}/stats", "时长口径与个人统计一致", "会有录制 1.2h,排程 2h",
+       "GET .../stats", "算 1.2h(D5 三级回退)——★两处口径若各写一套,同一场会在个人页和项目页\
+        会显示不同时长,而没人说得清该信哪个★", "D5"),
+    c!(deny "GET", "/api/projects/{id}/stats", "非成员看不到项目统计", "我不是本项目成员",
+       "GET .../stats", "403/404 —— 会议次数与时长本身也是信息(D3)", "D3"),
+
     // ── D5 时长口径:★三级回退,不是三选一★ ──
     // 这几条钉的是「哪个数字被采信」。错了不会报错,只会让季度汇报的数字悄悄偏高。
     c!("GET", "/api/me/stats", "★有录制就用录制时长★", "会排了 2h,录屏实际 1.2h",

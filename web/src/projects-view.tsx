@@ -1058,9 +1058,22 @@ function AudioPanel({ item }: { item: Item }) {
 /// 项目的会议(原型 proj 视图的「会议」tab)。
 /// ★D7 说材料有两个入口:项目 与 时间线★——会议同理:在项目里就该看得到「这个项目开过哪些会」,
 /// 而不是只能去日程/会议页按项目筛。后端 `/api/meetings?project_id=` 早就支持,只是没有入口。
+type ProjStats = {
+  range: string; meetings: number; hours: number
+  hours_by_source: { recording: number; manual: number; scheduled: number }
+  invited: number; accepted: number; accept_rate: number
+  avg_hours_per_person: number | null; minutes_done: number
+}
+
 function ProjectMeetings({ projectId }: { projectId: number }) {
   const [rows, setRows] = useState<Meeting[]>([])
   const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState<ProjStats | null>(null)
+  const [range, setRange] = useState('quarter')
+  useEffect(() => {
+    api<ProjStats>(`/api/projects/${projectId}/stats?range=${range}`)
+      .then(setStats).catch(() => setStats(null))
+  }, [projectId, range])
   useEffect(() => {
     setLoading(true)
     // 前后各半年:项目页看的是「这个项目开过/要开哪些会」,不是当周日程
@@ -1072,6 +1085,36 @@ function ProjectMeetings({ projectId }: { projectId: number }) {
 
   const now = Date.now()
   return (
+    <>
+    {/* ★项目统计★(PRD 6.5.2):「作为组负责人,我想知道 AI 组这季度开了多少会」。
+        放在会议 tab 顶上而不是单开一页 —— 看统计的人下一步多半就是想看是哪些会。 */}
+    {stats && (
+      <div style={{ background: '#fafafa', borderRadius: 6, padding: '10px 14px', marginBottom: 12 }}>
+        <AntSpace size={16} wrap align="center">
+          <Segmented size="small" value={range} onChange={(v) => setRange(v as string)}
+            options={[{ value: 'month', label: '本月' }, { value: 'quarter', label: '本季度' }, { value: 'year', label: '本年' }]} />
+          <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.meetings}</b> 次会议</span>
+          <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.hours}</b> 小时</span>
+          <span>参会率 <b>{Math.round(stats.accept_rate * 100)}%</b>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{stats.accepted}/{stats.invited}）</Typography.Text></span>
+          {stats.avg_hours_per_person != null && <span>人均 <b>{stats.avg_hours_per_person}</b> h</span>}
+          <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.meetings}</span>
+        </AntSpace>
+        {stats.hours > 0 && (
+          <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 6 }}>
+            {/* D5:口径来源要透明,「按排程估算」的那部分最不可信,标出来 */}
+            时长来源：
+            {stats.hours_by_source.recording > 0 && `${stats.hours_by_source.recording} h 录制　`}
+            {stats.hours_by_source.manual > 0 && `${stats.hours_by_source.manual} h 手工　`}
+            {stats.hours_by_source.scheduled > 0 && (
+              <Typography.Text type="warning" style={{ fontSize: 12 }}>{stats.hours_by_source.scheduled} h 按排程估算</Typography.Text>
+            )}
+            {/* ★D6★:不说这句,有人会把几个项目的数字相加当总数 */}
+            <span style={{ marginLeft: 12 }}>· 一场会可关联多个项目，跨项目求总数需按会议去重</span>
+          </div>
+        )}
+      </div>
+    )}
     <Table<Meeting> size="small" rowKey="id" dataSource={rows} loading={loading}
       pagination={{ pageSize: 15, hideOnSinglePage: true }}
       locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个项目还没有会议" /> }}
@@ -1095,6 +1138,7 @@ function ProjectMeetings({ projectId }: { projectId: number }) {
             : <Tag color="blue">未开始</Tag>,
         },
       ]} />
+    </>
   )
 }
 

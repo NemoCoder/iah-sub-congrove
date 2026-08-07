@@ -1282,6 +1282,108 @@ pub async fn mark_read(
     Ok(Json(json!({ "marked": n })))
 }
 
+// ── 项目统计(PRD 6.5.2 + D6)────────────────────────────────────────────
+
+/// GET /api/projects/{id}/stats —— 项目视角的会议统计。
+///
+/// ★与个人统计(`/api/me/stats`)的口径差别写在这里,别各算各的★:
+///   · 个人统计问的是「**我**花了多少时间开会」→ 只算我参与且没拒绝的;
+///   · 项目统计问的是「**这个项目**开了多少会」→ 算项目的全部会议,与我参没参加无关。
+///
+/// D6 的去重规则在这一层体现为:本接口返回的就是**单个项目**的数字(分组展开的那一份),
+/// 「总计按会议去重」发生在把多个项目的数字加起来的时候 —— ★所以这里给的 count
+/// 不能被前端直接相加当总数★,响应里带 `dedup_note` 把这句话说出来。
+///
+/// 参会率 = 接受人数 / 邀请人数(旁听者不算 —— 他不是被邀请的,把他计进分母会稀释这个比例)。
+pub async fn project_stats(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+    Query(q): Query<StatsQ>,
+) -> AppResult<Json<serde_json::Value>> {
+    // ★要 viewer 就够★:统计是「这个项目开了多少会」,属于项目内的公开事实;
+    // 但它**只对成员**开放 —— 会议次数与时长本身也是信息(D3:权限来自当前成员身份)。
+    perm::require_role(&state.pool, &id, pid, perm::Role::Viewer).await?;
+    let range = match q.range.as_deref().unwrap_or("quarter") {
+        "month" => "month", "quarter" => "quarter", "year" => "year",
+        _ => return Err(AppError::BadRequest("range 只能是 month / quarter / year".into())),
+    };
+
+    // 时长口径与个人统计**完全一致**(D5 三级回退) —— 两处若各写一套,
+    // 同一场会在个人页和项目页会显示不同的时长,而没人说得清该信哪个。
+    let sql = "WITH mtg AS (
+        SELECT m.id,
+               COALESCE(
+                 (SELECT max(t.duration_sec)/3600.0
+                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                   WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                 m.actual_minutes/60.0,
+                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
+               ) AS hours,
+               CASE
+                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                               WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
+                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
+                 ELSE 'scheduled'
+               END AS src,
+               (SELECT count(*) FROM meeting_participants p
+                 WHERE p.meeting_id = m.id AND p.kind = 'attendee') AS invited,
+               (SELECT count(*) FROM meeting_participants p
+                 WHERE p.meeting_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted') AS accepted,
+               EXISTS (SELECT 1 FROM meeting_minutes mm
+                        WHERE mm.meeting_id = m.id AND mm.status = 'done') AS minutes_done
+        FROM meetings m
+        JOIN meeting_projects mp ON mp.meeting_id = m.id AND mp.project_id = $1
+        -- ★取消的场次不计入★(PRD 6.5.2 验收标准):它没发生过
+        WHERE m.status = 'active' AND m.ends_at <= now()
+          AND m.starts_at >= date_trunc($2, now()))
+      SELECT count(*)::bigint,
+             COALESCE(SUM(hours), 0)::float8,
+             COALESCE(SUM(hours) FILTER (WHERE src = 'recording'), 0)::float8,
+             COALESCE(SUM(hours) FILTER (WHERE src = 'manual'), 0)::float8,
+             COALESCE(SUM(hours) FILTER (WHERE src = 'scheduled'), 0)::float8,
+             COALESCE(SUM(invited), 0)::bigint,
+             COALESCE(SUM(accepted), 0)::bigint,
+             count(*) FILTER (WHERE minutes_done)::bigint
+        FROM mtg";
+    let (cnt, hours, h_rec, h_man, h_sch, invited, accepted, done):
+        (i64, f64, f64, f64, f64, i64, i64, i64) =
+        sqlx::query_as(sql).bind(pid).bind(range).fetch_one(&state.pool).await?;
+
+    // 人均时长:总时长 × 接受人数 / 会议数……不对。★人均 = Σ(每场时长 × 该场接受人数) / 人次★
+    // 简化成「总时长 / 会议数 × 参会率」会在各场人数差异大时明显失真,所以直接按人次算。
+    let per_person: Option<f64> = sqlx::query_scalar(
+        "SELECT SUM(h * acc) / NULLIF(SUM(acc), 0) FROM (
+           SELECT COALESCE(
+                    (SELECT max(t.duration_sec)/3600.0 FROM items i JOIN transcripts t ON t.item_id = i.id
+                      WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                    m.actual_minutes/60.0,
+                    EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
+                  (SELECT count(*) FROM meeting_participants p
+                    WHERE p.meeting_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
+             FROM meetings m JOIN meeting_projects mp ON mp.meeting_id = m.id AND mp.project_id = $1
+            WHERE m.status = 'active' AND m.ends_at <= now() AND m.starts_at >= date_trunc($2, now())
+         ) x")
+        .bind(pid).bind(range).fetch_one(&state.pool).await?;
+
+    Ok(Json(json!({
+        "range": range,
+        "meetings": cnt,
+        "hours": r1(hours),
+        "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
+        "invited": invited,
+        "accepted": accepted,
+        // 参会率 = 接受 / 邀请。⚠ 分母不含旁听者:他不是被邀请的,计进去会稀释这个比例
+        "accept_rate": if invited > 0 { r1(accepted as f64 * 1000.0 / invited as f64) / 100.0 } else { 0.0 },
+        "avg_hours_per_person": per_person.map(r1),
+        "minutes_done": done,
+        // ★D6★:这是「分组展开」的数字,把多个项目的加起来 ≠ 总数
+        "dedup_note": "一场会可关联多个项目,本数字按「会议 × 项目」展开;跨项目求总数须按会议去重(D6)",
+    })))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

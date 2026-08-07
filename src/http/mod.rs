@@ -52,6 +52,9 @@ pub fn build_router(state: AppState) -> Router {
         // 后者对归档项目拒绝一切写操作,那样归档之后就再也解不开了
         .route("/projects/{id}/archive", post(projects::archive))
         .route("/projects/{id}/diagnose", get(projects::diagnose))
+        // 项目统计(PRD 6.5.2 + D6)。★时长口径与个人统计同一套★(D5 三级回退):
+        // 两处各写一套的话,同一场会在个人页和项目页会显示不同时长,而没人说得清该信哪个
+        .route("/projects/{id}/stats", get(meetings::project_stats))
         // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
         // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★
         .route("/_dev/apis", get(apidoc::list))
