@@ -8,63 +8,25 @@
 //   · **一开始不是可编辑的**——先呈现成读稿的样子,**双击**某一块才进编辑
 //     (「这是来自于AI整理吗?一开始不要是这种可编辑的」);
 //   · **一次性展示太长,划分为两块**——「会议信息 + 正文」与「决议 + 待办」分开。
-import { App as AntdApp, Button, Card, Empty, Input, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Minutes } from './api'
+import { InlineEdit } from './inline-edit'
 
-/// 一块可双击进入编辑的字段。★默认是「读」的样子★:没有边框、没有输入框感,
-/// 双击才变成 textarea;失焦即保存(不再要求点一次「保存」——记录员边听边记,
-/// 每块都点一次会打断节奏)。
+/// 纪要里的一块:标签 + 就地编辑。★编辑交互走全站统一的 InlineEdit★
+/// (此前这里自己实现了一份,和会议详情页的「编辑按钮+弹窗」是两套 —— 2026-08-07 统一)。
 function Block({ label, value, hint, rows = 3, canEdit, onSave }: {
-  label: string
-  value: string
-  hint?: string
-  rows?: number
-  canEdit: boolean
-  onSave: (v: string) => Promise<void>
+  label: string; value: string; hint?: string; rows?: number
+  canEdit: boolean; onSave: (v: string) => Promise<void>
 }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => { setDraft(value) }, [value])
-
-  const commit = async () => {
-    setEditing(false)
-    if (draft === value) return          // 没改就不发请求
-    setBusy(true)
-    try { await onSave(draft) } finally { setBusy(false) }
-  }
-
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
         <Typography.Text strong style={{ fontSize: 13 }}>{label}</Typography.Text>
         {hint && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{hint}</Typography.Text>}
-        {busy && <Spin size="small" />}
       </div>
-      {editing ? (
-        <Input.TextArea
-          autoFocus rows={rows} value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          // Esc 放弃本次编辑(不保存)——误双击的退路
-          onKeyDown={(e) => { if (e.key === 'Escape') { setDraft(value); setEditing(false) } }}
-        />
-      ) : (
-        <div
-          onDoubleClick={() => canEdit && setEditing(true)}
-          title={canEdit ? '双击编辑' : undefined}
-          style={{
-            minHeight: rows * 22, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8,
-            padding: '6px 8px', borderRadius: 4,
-            background: value ? 'transparent' : '#fafafa',
-            cursor: canEdit ? 'text' : 'default',
-            color: value ? undefined : '#bfbfbf',
-          }}
-        >
-          {value || (canEdit ? '（双击填写）' : '（空）')}
-        </div>
-      )}
+      <InlineEdit value={value} canEdit={canEdit} multiline rows={rows} onSave={onSave}
+        style={{ fontSize: 13, lineHeight: 1.8 }} />
     </div>
   )
 }

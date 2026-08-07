@@ -9,6 +9,7 @@
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { InlineEdit } from './inline-edit'
 import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
 
@@ -48,8 +49,12 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
   /// ★与我已接受的会撞了吗★:D1 决定了发起人看不见我私密项目里的安排,
   /// 所以冲突只能在**我这边**算、在**我这边**提醒。用我自己的会议列表本地比,不必新接口。
   const [clash, setClash] = useState<{ title: string; starts_at: string; ends_at: string } | null>(null)
-  /// 编辑弹窗。★线上会议区的「修改」也开它★——两个入口一个实现,免得改链接和改会议是两套逻辑。
-  const [editing, setEditing] = useState(false)
+
+  /// ★所有字段走同一个 PUT★:就地编辑的统一保存口,省得每个字段各写一份请求。
+  const patch = async (body: Record<string, unknown>) => {
+    await api(`/api/meetings/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    await load()
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -89,7 +94,9 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
     <div>
       <Space style={{ marginBottom: 12 }} wrap>
         <Button size="small" onClick={onBack}>‹ {backLabel}</Button>
-        <Typography.Text strong style={{ fontSize: 16 }}>{m.title}</Typography.Text>
+        <Typography.Text strong style={{ fontSize: 16 }}>
+          <InlineEdit value={m.title} canEdit={!!d.can_edit && !canceled} onSave={(v) => patch({ title: v })} />
+        </Typography.Text>
         {canceled && <Tag color="default">已取消</Tag>}
         {m.visibility === 'public' && <Tag color="blue">公开会议</Tag>}
         {m.is_private && <Tag color="purple">私密项目</Tag>}
@@ -99,9 +106,6 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
             旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
         {d.participants && (
           <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>会议纪要</Button>
-        )}
-        {d.can_edit && !canceled && (
-          <Button size="small" onClick={() => setEditing(true)}>编辑</Button>
         )}
         {d.can_edit && !canceled && (
           <Popconfirm title="取消这场会议？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
@@ -132,12 +136,16 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
               { key: 't', label: '时间', children: fmtRange(m.starts_at, m.ends_at) },
-              { key: 'l', label: '地点', children: m.location || <Typography.Text type="secondary">未填</Typography.Text> },
+              {
+                key: 'l', label: '地点',
+                children: <InlineEdit value={m.location} canEdit={!!d.can_edit && !canceled}
+                  placeholder="（双击填写，如：3 号楼 401）" onSave={(v) => patch({ location: v })} />,
+              },
               {
                 key: 'u', label: '线上',
-                children: m.online_url
-                  ? <a href={m.online_url} target="_blank" rel="noreferrer">{m.online_url}</a>
-                  : <Typography.Text type="secondary">未填</Typography.Text>,
+                children: <InlineEdit value={m.online_url} canEdit={!!d.can_edit && !canceled}
+                  placeholder="（双击填写腾讯会议 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
+                  renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
@@ -150,9 +158,10 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
 
           {/* ★议程区要留足高度★(原型评审:内容高度太矮) */}
           <Card size="small" title="议题与议程" style={{ marginBottom: 12 }}>
-            <div style={{ minHeight: 160, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }}>
-              {m.agenda || <Typography.Text type="secondary">还没写议程。</Typography.Text>}
-            </div>
+            <InlineEdit value={m.agenda} canEdit={!!d.can_edit && !canceled} multiline rows={7}
+              placeholder="（双击填写议题与议程，一行一条）"
+              style={{ minHeight: 160, fontSize: 13, lineHeight: 1.8 }}
+              onSave={(v) => patch({ agenda: v })} />
             {m.visibility === 'public' && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 这是公开会议,议程对全平台可见 —— ★但材料不公开★,只有关联项目的成员能看。
@@ -162,7 +171,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
 
           {/* ★线上会议区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
           {m.online_url && d.participants && (
-            <OnlineCard id={id} url={m.online_url} canEdit={!!d.can_edit && !canceled} onEdit={() => setEditing(true)} />
+            <OnlineCard id={id} url={m.online_url} />
           )}
 
           {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为会议时长依据) */}
@@ -185,56 +194,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
         </div>
       </div>
 
-      {editing && <EditModal m={m} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); void load() }} />}
     </div>
-  )
-}
-
-/// 会议编辑弹窗。★线上会议区的「修改」也开它★——两个入口一个实现,
-/// 免得「改链接」和「改会议」变成两套逻辑。不改关联项目:换项目等于换材料归属与判权范围,
-/// 那是另一件事(M1 不做)。
-function EditModal({ m, onClose, onSaved }: {
-  m: MeetingDetail['meeting']; onClose: () => void; onSaved: () => void
-}) {
-  const { message } = AntdApp.useApp()
-  const [title, setTitle] = useState(m.title)
-  const [agenda, setAgenda] = useState(m.agenda)
-  const [loc, setLoc] = useState(m.location)
-  const [url, setUrl] = useState(m.online_url)
-  const [range, setRange] = useState<[string, string] | null>(null)
-  const [busy, setBusy] = useState(false)
-  const save = async () => {
-    setBusy(true)
-    try {
-      await api(`/api/meetings/${m.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          title, agenda, location: loc, online_url: url,
-          ...(range ? { starts_at: range[0], ends_at: range[1] } : {}),
-        }),
-      })
-      message.success('已保存'); onSaved()
-    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-  }
-  return (
-    <Modal open title="编辑会议" onCancel={onClose} onOk={save} confirmLoading={busy} okText="保存">
-      <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
-        <Input addonBefore="标题" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }}
-          placeholder={['开始（不改就留空）', '结束']}
-          onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
-        {/* ★改时间会把所有人的答复清回待应答★:说在前面,别让人改完才发现大家要重答一遍 */}
-        {range && (
-          <Typography.Text type="warning" style={{ fontSize: 12 }}>
-            改了时间，所有人的答复都会清回「待应答」——他们当初接受的是旧时间。
-          </Typography.Text>
-        )}
-        <Input addonBefore="地点" value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="如：3 号楼 401" />
-        <Input addonBefore="线上" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="腾讯会议 / Zoom 链接" />
-        <Input.TextArea rows={5} value={agenda} onChange={(e) => setAgenda(e.target.value)}
-          placeholder="议题与议程，一行一条" />
-      </Space>
-    </Modal>
   )
 }
 
@@ -539,9 +499,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
 
 /// 线上会议:链接 + 复制 + 改动历史。
 /// ★改动历史不是装饰★:临开会前换链接很常见,事后「我进的是旧链接」要能查清是谁什么时候改的。
-function OnlineCard({ id, url, canEdit, onEdit }: {
-  id: number; url: string; canEdit: boolean; onEdit: () => void
-}) {
+function OnlineCard({ id, url }: { id: number; url: string }) {
   const { message } = AntdApp.useApp()
   const [hist, setHist] = useState<LinkChange[]>([])
   const [open, setOpen] = useState(false)
@@ -556,7 +514,7 @@ function OnlineCard({ id, url, canEdit, onEdit }: {
           try { await navigator.clipboard.writeText(url); message.success('已复制') }
           catch { message.info(url) }
         }}>复制</Button>
-        {canEdit && <Button size="small" onClick={onEdit}>修改</Button>}
+        {/* ★没有「修改」按钮★:改链接在上面「线上」那一行双击即可(全站统一的就地编辑) */}
         {hist.length > 0 && (
           <Button size="small" type="link" onClick={() => setOpen((v) => !v)}>
             改动历史 {hist.length}
