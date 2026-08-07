@@ -180,8 +180,13 @@ pub async fn meeting_view(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppR
         "SELECT 'inside'::text FROM meeting_participants
            WHERE meeting_id = $1 AND username = $2
          UNION ALL
+         -- ⚠★JOIN projects 判 deleted_at★(2026-08-07):项目软删除**不动成员表**,
+         --   所以少了这一句,项目删进回收站之后成员照样能看到它的会议。
+         --   这是 CLAUDE.md 那条硬纪律(「凡是读内容的路径 SQL 都要带 deleted_at IS NULL」)
+         --   在会议模块的又一处遗漏 —— 上一次是 v0.3.55 一口气补了 11 处。
          SELECT 'inside' FROM meeting_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
+           JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
            WHERE mp.meeting_id = $1 AND pm.username = $2
          UNION ALL
          SELECT 'inside' FROM app_user WHERE username = $2 AND is_super

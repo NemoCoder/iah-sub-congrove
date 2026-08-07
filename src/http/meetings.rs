@@ -129,8 +129,16 @@ pub async fn list(
             AND (mp.username IS NOT NULL
                  OR EXISTS (SELECT 1 FROM meeting_projects mpj
                               JOIN project_members pm ON pm.project_id = mpj.project_id
+                              JOIN projects p ON p.id = mpj.project_id AND p.deleted_at IS NULL
                              WHERE mpj.meeting_id = m.id AND pm.username = $1)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
+            -- ★关联项目**全部**被删则这场会不再出现★(2026-08-07,Playwright 截图里肉眼看出来的):
+            -- 项目软删除不动 meeting_projects 也不动成员表,所以删掉项目之后它的会议照样躺在日历上,
+            -- 还因为「找不到未删的公开项目」被误标成**私密**(紫色虚框)。
+            -- 会议必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。
+            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                          JOIN projects pd ON pd.id = mpd.project_id
+                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
             -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
             -- 塞满已结题项目的历史会议会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
             -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
@@ -760,6 +768,7 @@ pub async fn meeting_items(
     let ok: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM meeting_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
+           JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
           WHERE mp.meeting_id = $1 AND pm.username = $2
           UNION ALL SELECT 1 FROM app_user WHERE username = $2 AND is_super
           LIMIT 1")
@@ -941,6 +950,10 @@ pub async fn public_list(
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
             AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
+            -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)
+            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                          JOIN projects pd ON pd.id = mpd.project_id
+                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
             -- 归档项目的会不进广场(与日历同一条口径:它不该再出现在「接下来要做什么」里)
             AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
                                JOIN projects p ON p.id = mpj.project_id
