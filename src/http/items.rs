@@ -943,7 +943,7 @@ pub async fn download(
     if let Some(l) = len {
         resp = resp.header(header::CONTENT_LENGTH, l);
     }
-    Ok(resp.body(body).map_err(|e| AppError::Other(e.into()))?)
+    resp.body(body).map_err(|e| AppError::Other(e.into()))
 }
 
 /// 最小 percent-encode(RFC5987 attr-char 之外全编),够 Content-Disposition 用,不引 crate。

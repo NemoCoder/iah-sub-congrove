@@ -261,7 +261,7 @@ fn path_params(path: &str) -> Vec<&str> {
 fn query_params(params: &str) -> Vec<&str> {
     params
         .split(',')
-        .filter_map(|seg| seg.trim().split_whitespace().next())
+        .filter_map(|seg| seg.split_whitespace().next())
         .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
         .filter(|w| !w.ends_with("[]") && *w != "multipart")
         .collect()

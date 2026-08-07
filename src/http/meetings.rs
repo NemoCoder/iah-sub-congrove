@@ -120,19 +120,25 @@ pub async fn list(
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
             AND ($4::bigint IS NULL OR EXISTS (
                   SELECT 1 FROM meeting_projects x WHERE x.meeting_id = m.id AND x.project_id = $4))
+            -- 可见性:参会人 / 关联项目成员 / 超管,三选一
+            -- ⚠★这三条必须包在同一对括号里★(2026-08-07 事故):加归档过滤时我把括号提前闭合了,
+            --   超管那条掉进了下面 NOT EXISTS 的子查询里 → 对超管而言子查询 WHERE 恒真
+            --   → 只要会议关联了任何项目就被 NOT EXISTS 滤掉 → ★超管一场会都看不到★。
+            --   非超管完全不受影响,所以 24 条 E2E 全绿而用户(超管)的界面是空的。
             AND (mp.username IS NOT NULL
                  OR EXISTS (SELECT 1 FROM meeting_projects mpj
                               JOIN project_members pm ON pm.project_id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id AND pm.username = $1))
-            -- ★归档项目的会不进日历★(D17,用户拍板):日历回答的是「我接下来要做什么」,
-            -- 塞满已结题项目的历史会议会把它变成考古现场。历史仍可在项目页里查、搜索也搜得到。
-            AND NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL
-                               AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
-                                                 JOIN projects p2 ON p2.id = m2.project_id
-                                                WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL)
+                             WHERE mpj.meeting_id = m.id AND pm.username = $1)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
+            -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
+            -- 塞满已结题项目的历史会议会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
+            -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
+            AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
+                               JOIN projects p ON p.id = mpj.project_id
+                              WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL)
+                     AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
+                                       JOIN projects p2 ON p2.id = m2.project_id
+                                      WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL))
           ORDER BY m.starts_at",
     )
     .bind(username).bind(from).bind(to).bind(q.project_id)
@@ -222,8 +228,10 @@ pub async fn detail(
         })));
     }
     let parts: Vec<Participant> = sqlx::query_as(
-        "SELECT username, kind, status, counter_starts_at, counter_ends_at, counter_reason, responded_at
-           FROM meeting_participants WHERE meeting_id = $1 ORDER BY invited_at")
+        "SELECT p.username, u.name, p.kind, p.status, p.counter_starts_at, p.counter_ends_at,
+                p.counter_reason, p.responded_at
+           FROM meeting_participants p LEFT JOIN app_user u ON u.username = p.username
+          WHERE p.meeting_id = $1 ORDER BY p.invited_at")
         .bind(mid).fetch_all(&state.pool).await?;
     let projects: Vec<(i64, String)> = sqlx::query_as(
         "SELECT p.id, p.name FROM meeting_projects mp JOIN projects p ON p.id = mp.project_id
@@ -239,6 +247,9 @@ pub async fn detail(
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Participant {
     pub username: String,
+    /// 真实姓名;没登录过则为空
+    #[sqlx(default)]
+    pub name: Option<String>,
     pub kind: String,
     pub status: String,
     pub counter_starts_at: Option<Ts>,
@@ -293,14 +304,12 @@ pub async fn update(
     }
     // ★改了时间就把所有人的答复清回 pending★:上次的「接受」是对**旧时间**说的,
     // 留着它等于替人答应了一个他没看过的时间。发起人与记录员除外(改的人自己知道)。
-    if p.starts_at.is_some() || p.ends_at.is_some() {
-        if s != cur.0 || e != cur.1 {
-            sqlx::query(
-                "UPDATE meeting_participants SET status='pending', responded_at=NULL,
-                        counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-                  WHERE meeting_id=$1 AND username <> $2")
-                .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
-        }
+    if (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1) {
+        sqlx::query(
+            "UPDATE meeting_participants SET status='pending', responded_at=NULL,
+                    counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
+              WHERE meeting_id=$1 AND username <> $2")
+            .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     audit::record(&state.pool, id.require_username()?, "meeting.update", &mid.to_string(), "").await;

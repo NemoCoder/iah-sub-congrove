@@ -341,6 +341,9 @@ pub async fn diagnose(
 #[derive(Serialize, sqlx::FromRow)]
 pub struct MemberRow {
     pub username: String,
+    /// 真实姓名(app_user.name)。★拉进来但还没登录过的人为空★——正常状态,前端只显示用户名。
+    #[sqlx(default)]
+    pub name: Option<String>,
     pub role: String,
     pub added_by: String,
     pub added_at: chrono::DateTime<chrono::Utc>,
@@ -353,9 +356,13 @@ pub async fn members(
     Path(pid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    // ★带出真实姓名★(2026-08-07 用户:「平台用户应该是有真实姓名的」):
+    // app_user.name 在登录时由 OIDC claims 落库、拉人时由平台 users/exists 回填。
+    // LEFT JOIN:★拉进来但还没登录过的人 name 为空★,前端只显示用户名 —— 这是正常状态不是错误。
     let rows: Vec<MemberRow> = sqlx::query_as(
-        "SELECT username, role, added_by, added_at FROM project_members
-          WHERE project_id = $1 ORDER BY role DESC, added_at",
+        "SELECT m.username, m.role, m.added_by, m.added_at, u.name
+           FROM project_members m LEFT JOIN app_user u ON u.username = m.username
+          WHERE m.project_id = $1 ORDER BY m.role DESC, m.added_at",
     ).bind(pid).fetch_all(&state.pool).await?;
     let owner: Option<String> = sqlx::query_scalar("SELECT owner FROM projects WHERE id = $1")
         .bind(pid).fetch_optional(&state.pool).await?;

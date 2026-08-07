@@ -9,7 +9,7 @@
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, type MeetingDetail, type MeetingMessage, type Participant, type RespondStatus } from './api'
+import { api, showUser, type MeetingDetail, type MeetingMessage, type Participant, type RespondStatus } from './api'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -141,7 +141,7 @@ function ParticipantRow({ p }: { p: Participant }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
       <span style={{ flex: 1 }}>
-        {p.username}
+        {showUser(p.username, p.name)}
         {/* ★临时参会人能参会但看不到材料(D8)★——名单里要标出来,否则发起人以为他能看 */}
         {p.kind === 'guest' && <Tag style={{ marginLeft: 6 }}>临时</Tag>}
         {p.kind === 'observer' && <Tag style={{ marginLeft: 6 }}>旁听</Tag>}

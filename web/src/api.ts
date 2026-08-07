@@ -62,7 +62,12 @@ export type Item = {
   updated_at: string
 }
 /// 项目成员。★只有人,没有组★——权限只到具体的人。
-export type Member = { username: string; role: Role; added_by: string; added_at: string }
+/// 项目成员。★只有人,没有组★——权限只到具体的人。
+/// name = 真实姓名(app_user.name);★拉进来但还没登录过的人为空★,只显示用户名即可。
+export type Member = { username: string; name?: string | null; role: Role; added_by: string; added_at: string }
+/// 「用户名（姓名）」的统一显示。姓名为空时只给用户名 —— 别显示成「zhangsan（）」。
+export const showUser = (username: string, name?: string | null) =>
+  name && name !== username ? `${username}（${name}）` : username
 export type MemberList = { owner: string | null; members: Member[] }
 export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }
 
@@ -90,7 +95,10 @@ export type Meeting = {
   minutes_status?: 'draft' | 'done' | null
 }
 export type Participant = {
-  username: string; kind: 'attendee' | 'guest' | 'observer'; status: RespondStatus
+  username: string
+  /// 真实姓名;拉进来还没登录过的人为空
+  name?: string | null
+  kind: 'attendee' | 'guest' | 'observer'; status: RespondStatus
   counter_starts_at: string | null; counter_ends_at: string | null; counter_reason: string | null
   responded_at: string | null
 }

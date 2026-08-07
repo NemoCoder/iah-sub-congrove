@@ -29,7 +29,7 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
-import { api, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
+import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
 /// 「无权限」是**没有任何授权**的第四态,库里不存它——`effective = null` 即是。
@@ -826,9 +826,13 @@ function MembersModal({ space, open, onClose, onChanged }:
       <Table size="small" rowKey="username" dataSource={members} pagination={false}
         columns={[
           {
-            title: '成员', dataIndex: 'username',
-            render: (u: string) => (
-              <span>{u}{u === owner && <Tag color="cyan" style={{ marginLeft: 6 }}>主持人</Tag>}</span>),
+            // ★显示「用户名（姓名）」★:光有用户名认不出人是谁(2026-08-07 用户提)。
+            // 姓名来自 app_user.name(登录时由 OIDC claims 落库);拉进来还没登录过的人为空,
+            // showUser 会只显示用户名 —— 不会出现「zhangsan（）」这种空括号。
+            title: '成员',
+            render: (_, m) => (
+              <span>{showUser(m.username, m.name)}
+                {m.username === owner && <Tag color="cyan" style={{ marginLeft: 6 }}>主持人</Tag>}</span>),
           },
           {
             title: '角色', width: 140,

@@ -367,7 +367,7 @@ pub async fn pub_file(
         // 公开内容别让中间层缓存(链接可撤销、可过期)。
         .header(header::CACHE_CONTROL, "private, no-store");
     if let Some(l) = len { resp = resp.header(header::CONTENT_LENGTH, l) }
-    Ok(resp.body(body).map_err(|e| AppError::Other(e.into()))?)
+    resp.body(body).map_err(|e| AppError::Other(e.into()))
 }
 
 // ── 内部工具 ────────────────────────────────────────────────────────────────

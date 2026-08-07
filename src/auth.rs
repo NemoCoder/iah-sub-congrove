@@ -271,7 +271,7 @@ impl Auth {
         if let Some(k) = self.keys.read().unwrap().get(kid).cloned() {
             return Some(k); // 别的任务刚拉完
         }
-        let due = last.map_or(true, |t| t.elapsed() >= REFRESH_MIN_GAP);
+        let due = last.is_none_or(|t| t.elapsed() >= REFRESH_MIN_GAP);
         if !due {
             return None;
         }

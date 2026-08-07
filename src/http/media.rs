@@ -169,7 +169,7 @@ pub async fn begin(
         None => match input.sha256.as_deref().map(str::trim).filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())) {
             Some(sha) => {
                 let k = crate::http::items::blob_key(sha);
-                if state.storage.exists(&k).await { format!("{k}-{}", &rand_suffix()) } else { k }
+                if state.storage.exists(&k).await { format!("{k}-{}", rand_suffix()) } else { k }
             }
             None => format!("spaces/{pid}/{iid}/blob"),
         },
@@ -392,12 +392,12 @@ pub async fn play(
         Ok(u) => u,
         Err(_) => format!("/api/items/{iid}/download"),
     };
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, target)
         .header(header::CACHE_CONTROL, "no-store") // 预签名短时效,别被缓存住过期 URL
         .body(axum::body::Body::empty())
-        .map_err(|e| AppError::Other(e.into()))?)
+        .map_err(|e| AppError::Other(e.into()))
 }
 
 /// 直传期间该用哪个 key:begin 时记在 `items.upload_key`(内容寻址后不能再按 项目/条目 现拼)。

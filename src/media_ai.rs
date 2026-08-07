@@ -209,7 +209,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     .bind(&state.config.asr_model).bind(duration)
     .bind((!char_ts.is_empty()).then(|| serde_json::to_value(&char_ts)).transpose()?)
     // 重排结果落库(迁移 0008):读取路径不必每次重算(审计 2026-08-04)。
-    .bind(realign(&full_text, &segments, &char_ts).map(|v| serde_json::to_value(v)).transpose()?)
+    .bind(realign(&full_text, &segments, &char_ts).map(serde_json::to_value).transpose()?)
     .execute(&state.pool).await?;
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)
@@ -243,6 +243,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
 /// - 逐字稿/段落:读的人可以慢慢看,合到 200 字/60 秒,信息密度高;
 /// - 字幕 cue:Netflix 简中规范 **单行 16 字 × 最多 2 行 = 32 字**、时长 1.2~7 秒、
 ///   **≤9 字/秒**;超了就是糊屏,再合并只会更糟(我 v0.3.19 用 120 字喂字幕是错的)。
+///
 /// 共同的硬规则:**说话人一变无条件断开**(优先级高于标点),这是"谁说了什么"的分界。
 /// 眼动实验(PMC7901653):断错位置让回看次数 +48%、主观疲劳显著上升,但理解率不变——
 /// 所以宁可段短,也别在词中间断。
@@ -568,7 +569,7 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, h
     let mut char_ts: Vec<(f64, f64)> = r.timestamp.as_ref().map(ms2s).unwrap_or_default();
     if let Some(segs) = r.segments {
         if char_ts.is_empty() {
-            char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(|v| ms2s(v)).collect();
+            char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(ms2s).collect();
         }
         // ★2026-08-07 平台 asr-funasr v7 把响应单位全统一成整数毫秒★(群 #122,是我 #114 提的单位问题
         // 的修法):`segments.start/end` 与 `duration` 由**秒**改成**毫秒**,`timestamp` 本就是毫秒不变。
