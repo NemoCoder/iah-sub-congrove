@@ -54,6 +54,20 @@ certutil -d sql:$HOME/.pki/nssdb -L    # 应当列出 IAH-Internal-CA
   多项目逐个验权、counter 必须带具体替代时间、取消不是删除、
   私聊只能发给发起人或记录员、看不见的会议回 404 而不是 403。
 
+## 截图
+
+```bash
+NODE_EXTRA_CA_CERTS=~/.config/iah/IAH-Internal-CA-new.crt \
+IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) node shot.mjs
+```
+
+★产物按版本号归档★:`unit_tests/congrove/screenshots/<线上版本>/`。
+版本号**从线上页面实际抓**(页眉那个 `v0.4.x`),不读本地 `version.ts` ——
+本地领先线上几个版本是常态,用本地号会把图归错档。设计稿截图另放 `_prototype/`。
+
+⚠ **别用 `fullPage: true`**:整页常超 2000px,读图工具会拒收。
+要看下半屏就滚动后再截一张(脚本里 `03-上` / `04-下` 就是这么来的)。
+
 ## 写这些测试时踩的坑(别再踩)
 
 - ★别把「被拦住」断言成某个具体状态码★:平台修好路由前伪造 key 是 302(落回 SSO 路由),
