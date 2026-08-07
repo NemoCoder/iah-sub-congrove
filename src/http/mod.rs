@@ -44,7 +44,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/projects", get(projects::list).post(projects::create))
         .route("/projects/{id}", get(projects::detail).put(projects::update).delete(projects::remove))
         .route("/projects/{id}/members", get(projects::members).put(projects::member_put).delete(projects::member_delete))
-        .route("/projects/{id}/transfer", post(projects::transfer))
+        // 转移主持人★需对方接受★(PRD ⑨.5;docs/TECH-DESIGN-M1-owner-transfer.md):
+        // 发起 / 答复 / 撤回三个动作,待接受期间原主持人仍是主持人(否则空档期无主)
+        .route("/projects/{id}/transfer", post(projects::transfer).delete(projects::transfer_cancel))
+        .route("/projects/{id}/transfer/respond", post(projects::transfer_respond))
         // 归档/恢复(D17):★走 require_owner 不走 require_role★——
         // 后者对归档项目拒绝一切写操作,那样归档之后就再也解不开了
         .route("/projects/{id}/archive", post(projects::archive))
@@ -78,6 +81,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me/stats", get(meetings::my_stats))
         // 「待我处理」里的私聊未读(原型 🔔 卡):★只算 private 且 peer 是我的★,
         // 公开讨论区的新消息不进 —— 天天有红点就等于没有红点
+        // 等我答复的主持人转移。★不放项目页里★:被转让人可能压根不打开那个项目,
+        // 只在项目内部可见的请求多半永远不会被答复 —— 归到「待我处理」那张卡
+        .route("/me/transfers", get(projects::my_transfers))
         .route("/me/unread", get(meetings::my_unread))
         .route("/me/unread/read", post(meetings::mark_read))
 

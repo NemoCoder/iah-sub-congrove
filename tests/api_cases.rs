@@ -105,10 +105,36 @@ const CASES: &[Case] = &[
        "DELETE {username:'他'}", "200;★那 2 条立刻 404★——否则人走了链接还在 = R1 后门", "D3/R1"),
     c!("DELETE", "/api/projects/{id}/members", "离开即失去全部含他参与过的会议", "他参加过本项目 3 场会议",
        "移出后以他的身份查这 3 场", "全部不可见;★不得因「他当时参加过」而保留可见性★(那是历史累积模型)", "D3"),
-    c!("POST", "/api/projects/{id}/transfer", "转移主持人", "我是 owner,目标是本项目成员", "POST {to:'他'}",
-       "200,owner 变更;原 owner 保留 admin 成员位(否则转完自己就被踢出去了)", "D0"),
+    // 转移主持人:★发起 ≠ 生效★(PRD ⑨.5,docs/TECH-DESIGN-M1-owner-transfer.md)。
+    // 这一组钉的是「什么时候 owner 才真的变」——早一步变,项目在空档期无主;晚一步变,交接不算数。
+    c!("POST", "/api/projects/{id}/transfer", "★发起后 owner 先不变★", "我是 owner,目标是本项目成员",
+       "POST {to:'他'}", "200 + transfer_id;★projects.owner 仍是我★(T1)——发起即卸任会让项目在\
+        「对方还没点」的整段时间里没人能加人、没人能改设置,而他可能永远不点", ""),
+    c!("POST", "/api/projects/{id}/transfer", "同一项目只能有一条 pending", "已经发起过一条还没答复",
+       "POST {to:'另一个人'}", "400「已有一条待答复的转移」——★由库里的部分唯一索引堵死★,\
+        不是先查后插(那中间有窗口);并发两条会造成两个人都以为自己接手了", ""),
+    c!(deny "POST", "/api/projects/{id}/transfer", "归档项目不能发起转移", "项目已归档",
+       "POST {to:'他'}", "400——归档 = 只读存档(D17)", "D17"),
+    c!("POST", "/api/projects/{id}/transfer/respond", "★接受这一刻 owner 才变★", "我是被转让人",
+       "POST {accept:true}", "200,owner=我;★原主持人保留 admin★(T4:交棒不是逐出,他通常还要继续参与)", ""),
+    c!("POST", "/api/projects/{id}/transfer/respond", "拒绝则 owner 不变且原主持人收到信", "我是被转让人",
+       "POST {accept:false}", "200,owner 不变;发起人收到「转移主持人被拒绝」——\
+        ★不说他不会知道★,请求会静静躺在那里", ""),
+    c!(deny "POST", "/api/projects/{id}/transfer/respond", "★接受前离开项目则接不了★",
+       "转移发起后我被移出了项目", "POST {accept:true}",
+       "400 且 owner 不变 —— 权限是「当前成员身份的函数」(D3),不信发起那一刻的快照(T5)", "D3"),
+    c!(deny "POST", "/api/projects/{id}/transfer/respond", "别人替我答复不行", "我不是被转让人",
+       "POST {accept:true}", "403 —— 接受主持人是本人才能做的决定", ""),
+    c!("POST", "/api/projects/{id}/transfer/respond", "归档项目的 pending 仍可接受", "转移发起后项目被归档",
+       "POST {accept:true}", "200 —— ★否则归档会把请求永久卡死★:发起人已不能撤回(归档只读),\
+        被转让人也接不了(T6)", "D17"),
+    c!("DELETE", "/api/projects/{id}/transfer", "撤回", "我是发起人,对方还没答复",
+       "DELETE .../transfer", "200,该条转为 canceled;对方收到「已撤回」——\
+        ★不通知的话他点进去发现按钮没了,会以为是坏了★", ""),
+    c!(deny "DELETE", "/api/projects/{id}/transfer", "没有待撤回的转移", "从没发起过",
+       "DELETE .../transfer", "400", ""),
     c!(deny "POST", "/api/projects/{id}/transfer", "不能转给非成员", "我是 owner,目标不是成员",
-       "POST {to:'外人'}", "400/422 拒绝且 owner 不变;★否则项目会落到一个看不见它的人手里★", "D0"),
+       "POST {to:'外人'}", "400/422 拒绝;★否则他接受的瞬间成了一个自己都进不去的项目的主持人★(T3)", "D0"),
     c!(deny "POST", "/api/projects/{id}/transfer", "admin 不能转移主持人", "我是 admin 非 owner", "POST {to:'x'}", "403", "D0"),
     c!("POST", "/api/projects/{id}/archive", "归档后变只读", "我是 owner,项目里有材料",
        "POST {} 归档,再试上传/建会议/改名",
@@ -237,6 +263,12 @@ const CASES: &[Case] = &[
 
     // 「我的投入」——这几条钉的全是**口径**。统计一旦口径漂了没人看得出来:
     // 数字照样长得很像那么回事,只是不对。
+    c!("GET", "/api/me/transfers", "只列等我答复的", "有一条转给我的 pending、一条转给别人的",
+       "GET /api/me/transfers", "只回转给我那条;已 accepted/declined/canceled 的都不回", ""),
+    c!("GET", "/api/me/transfers", "项目被删则不回", "转移还 pending 但项目已软删除",
+       "GET /api/me/transfers", "不回 —— 让人去接手一个已经不存在的项目是纯粹的噪音", ""),
+    c!(deny "GET", "/api/me/transfers", "未登录看不了", "无会话", "GET /api/me/transfers", "401", ""),
+
     // ── 站内信(M1 收口)──★钉的是「谁该收到、谁不该收到」★:
     // 该收没收 = 人不知道有会;不该收却收 = 收件箱被淹,真正要紧的那条被埋掉。两种错都致命。
     c!("POST", "/api/meetings", "★建会即通知被约的人★", "我约了 A、B",
