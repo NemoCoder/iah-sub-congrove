@@ -41,6 +41,17 @@ pub struct MeetingRow {
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
+    /// 关联项目(id+名字),会议列表要显示项目标签(原型 meets 视图)。
+    /// ★列表里一并带出,不让前端为每场会再打一次详情★(23 场会 = 23 个请求)。
+    #[sqlx(default)]
+    pub projects: Option<serde_json::Value>,
+    /// 参会人数,列表显示「8 人」。
+    #[sqlx(default)]
+    pub participant_count: i64,
+    /// 纪要状态:null=还没建 / draft=待整理 / done=已完成。
+    /// 列表右侧「我负责的纪要」与状态标签靠它,否则前端要逐场会查一次。
+    #[sqlx(default)]
+    pub minutes_status: Option<String>,
     /// 这场会**只**关联私密项目吗?日历按它上色(私密=紫色虚框,公开=青色实框)。
     ///
     /// ★判据与忙闲分流保持一致★(D1):只要关联了**任一**公开项目就算「公开的会」——
@@ -96,7 +107,14 @@ pub async fn list(
                 NOT EXISTS (SELECT 1 FROM meeting_projects mpj
                               JOIN projects p ON p.id = mpj.project_id
                              WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private
+                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                -- 列表要显示的三样,都在这条 SQL 里一次取全:
+                -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
+                (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
+                   FROM meeting_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
+                  WHERE mp2.meeting_id = m.id AND p2.deleted_at IS NULL) AS projects,
+                (SELECT count(*) FROM meeting_participants x WHERE x.meeting_id = m.id) AS participant_count,
+                (SELECT mm.status FROM meeting_minutes mm WHERE mm.meeting_id = m.id) AS minutes_status
            FROM meetings m
            LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2

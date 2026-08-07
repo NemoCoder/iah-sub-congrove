@@ -4,7 +4,7 @@ import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type View = 'schedule' | 'projects' | 'shares' | 'apis'
+type View = 'schedule' | 'projects' | 'meetings' | 'shares' | 'apis'
 import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
 import { ProjectsView } from './projects-view'
@@ -15,6 +15,7 @@ import { ScheduleView } from './schedule-view'
 import { MeetingDetailView } from './meeting-detail'
 import { MeetingNewView } from './meeting-new'
 import { MeetingMinutesView } from './meeting-minutes'
+import { MeetingsListView } from './meetings-list'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -66,7 +67,16 @@ export function App() {
     <div style={{ minHeight: '100vh', background: '#f4f4f7' }}>
       <IahHeader
         extra={
-          <Dropdown menu={{ items: [{ key: 'logout', label: <a href="/auth/logout">退出登录</a> }] }}>
+          <Dropdown menu={{
+            items: [
+              { key: 'shares', label: '我的分享' },
+              // 开发者页面只给超管:清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,不会漂移
+              ...(me?.is_super ? [{ key: 'apis', label: '开发者' }] : []),
+              { type: 'divider' as const },
+              { key: 'logout', label: <a href="/auth/logout">退出登录</a> },
+            ],
+            onClick: ({ key }) => { if (key === 'shares' || key === 'apis') { setView(key as View); setMeetingId(null); setMinutesOf(null) } },
+          }}>
             <Button type="text" style={{ height: 'auto', padding: '4px 8px' }}>
               <Avatar size="small" style={{ background: '#0d9488', marginRight: 8 }}>{display.slice(0, 1).toUpperCase()}</Avatar>
               {display}
@@ -79,13 +89,12 @@ export function App() {
         <Segmented
           value={view}
           onChange={(v) => { setView(v as View); setMeetingId(null); setMinutesOf(null) }}
+          // ★按原型只放三个主视图★(docs/prototype-m1.html 的导航就是「日程 | 项目 | 会议」)。
+          // 「我的分享」「开发者」是低频入口,收进右上用户菜单 —— 主导航是给天天用的东西的。
           options={[
             { value: 'schedule', label: '日程' },
             { value: 'projects', label: '项目' },
-            { value: 'shares', label: '我的分享' },
-            // 开发者页面:只给超管。清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,
-            // 所以它永远不会跟实际接口漂移。
-            ...(me?.is_super ? [{ value: 'apis', label: '开发者' }] : []),
+            { value: 'meetings', label: '会议' },
           ]}
           style={{ marginBottom: 16 }}
         />
@@ -98,6 +107,16 @@ export function App() {
             <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
           ) : (
             <ScheduleView onOpenMeeting={setMeetingId} onNewMeeting={() => setMeetingId('new')} />
+          )
+        ) : view === 'meetings' ? (
+          minutesOf != null ? (
+            <MeetingMinutesView meetingId={minutesOf} onBack={() => setMinutesOf(null)} />
+          ) : meetingId === 'new' ? (
+            <MeetingNewView me={me} onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
+          ) : meetingId != null ? (
+            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
+          ) : (
+            <MeetingsListView me={me} onOpen={setMeetingId} onNew={() => setMeetingId('new')} />
           )
         ) : view === 'projects' ? <ProjectsView me={me} /> : view === 'apis' ? <ApiDocView /> : <SharesView />}
       </div>

@@ -83,6 +83,11 @@ export type Meeting = {
   /// ★只关联私密项目★——日历据此上色。判据与忙闲分流一致(D1):
   /// 只要关联了任一公开项目就算「公开的会」,它已经会让别人看到你在忙。
   is_private: boolean
+  /// 关联项目(列表页显示标签用),后端在列表 SQL 里一次取全
+  projects?: { id: number; name: string }[] | null
+  participant_count?: number
+  /// null=还没建纪要 / draft=待整理 / done=已完成
+  minutes_status?: 'draft' | 'done' | null
 }
 export type Participant = {
   username: string; kind: 'attendee' | 'guest' | 'observer'; status: RespondStatus

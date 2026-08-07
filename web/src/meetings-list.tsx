@@ -1,0 +1,249 @@
+// 会议页 —— 对应 docs/prototype-m1.html 的 `meets` 视图。
+//
+// ★2026-08-07 补做★:此前整页缺失(导航里连「会议」这个 tab 都没有),
+// 因为我当初只照着原型的日历那一段实现,其余页面凭自己想 —— 用户对着原型一眼看出来了。
+// 现在严格按原型:三 tab + 搜索/筛选 + 即将进行/已结束分组 + 右栏「待我应答」「我负责的纪要」。
+//
+// ★右栏的冲突提示是这一页的灵魂★(D1/D2):私密项目的日程对发起人完全隐形,
+// 他不知道你那个时段忙 —— 所以必须在**你自己**收到邀请时标红提醒,并把「改期」放在手边。
+// 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
+import { App as AntdApp, Badge, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { api, type Meeting, type Me, type RespondStatus } from './api'
+
+const pad = (n: number) => String(n).padStart(2, '0')
+const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
+const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+
+/// 两场会时间是否重叠
+const overlaps = (a: Meeting, b: Meeting) =>
+  new Date(a.starts_at) < new Date(b.ends_at) && new Date(b.starts_at) < new Date(a.ends_at)
+
+export function MeetingsListView({ me, onOpen, onNew }: {
+  me: Me | null
+  onOpen: (id: number) => void
+  onNew: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [all, setAll] = useState<Meeting[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState<'joined' | 'mine' | 'past'>('joined')
+  const [kw, setKw] = useState('')
+  const [proj, setProj] = useState<number | 'all'>('all')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      // ★范围要大★:这一页是「我的全部会议」,不是日历那一屏。前后各半年。
+      const from = new Date(Date.now() - 183 * 864e5).toISOString()
+      const to = new Date(Date.now() + 183 * 864e5).toISOString()
+      setAll(await api<Meeting[]>(`/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
+    } catch (e) { message.error((e as Error).message); setAll([]) } finally { setLoading(false) }
+  }, [message])
+  useEffect(() => { void load() }, [load])
+
+  const now = Date.now()
+  const projectOpts = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const x of all) for (const p of x.projects ?? []) m.set(p.id, p.name)
+    return [...m].map(([id, name]) => ({ value: id, label: name }))
+  }, [all])
+
+  const rows = useMemo(() => {
+    const k = kw.trim().toLowerCase()
+    return all
+      .filter((m) => (tab === 'mine' ? m.organizer === me?.username
+        : tab === 'past' ? new Date(m.ends_at).getTime() < now : true))
+      .filter((m) => proj === 'all' || (m.projects ?? []).some((p) => p.id === proj))
+      .filter((m) => !k || m.title.toLowerCase().includes(k) || m.agenda.toLowerCase().includes(k))
+      .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
+  }, [all, tab, kw, proj, me, now])
+
+  const upcoming = rows.filter((m) => new Date(m.ends_at).getTime() >= now)
+  const past = rows.filter((m) => new Date(m.ends_at).getTime() < now).reverse()
+
+  // 待我应答 + 冲突(本地算:与我**已接受**的会撞了就标出来)
+  const pending = useMemo(() => {
+    const accepted = all.filter((m) => m.my_status === 'accepted')
+    return all
+      .filter((m) => m.my_status === 'pending' && new Date(m.ends_at).getTime() >= now)
+      .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
+      .map((m) => ({ m, clash: accepted.find((x) => x.id !== m.id && overlaps(m, x)) }))
+  }, [all, now])
+
+  // 我负责的纪要:我是记录员、会已结束、纪要还没定稿
+  const myMinutes = useMemo(
+    () => all.filter((m) => m.recorder === me?.username
+      && new Date(m.ends_at).getTime() < now && m.minutes_status !== 'done'),
+    [all, me, now],
+  )
+
+  return (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
+        <Space wrap style={{ marginBottom: 12, width: '100%' }}>
+          <Typography.Text strong style={{ fontSize: 15 }}>会议</Typography.Text>
+          <Button size="small" type="primary" onClick={onNew}>+ 发起会议</Button>
+          <span style={{ flex: 1 }} />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 场</Typography.Text>
+        </Space>
+
+        <Segmented
+          size="small" value={tab} onChange={(v) => setTab(v as typeof tab)}
+          options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' }, { value: 'past', label: '已结束' }]}
+          style={{ marginBottom: 10 }}
+        />
+        <Space wrap style={{ marginBottom: 12, width: '100%' }}>
+          <Input.Search allowClear placeholder="搜索会议标题、议程…" style={{ width: 280 }}
+            onChange={(e) => setKw(e.target.value)} />
+          <Select size="middle" style={{ width: 160 }} value={proj} onChange={setProj}
+            options={[{ value: 'all' as const, label: '全部项目' }, ...projectOpts]} />
+        </Space>
+
+        {loading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : (
+          <>
+            {tab !== 'past' && (
+              <Group title="即将进行" items={upcoming} onOpen={onOpen} me={me} />
+            )}
+            <Group title="已结束" items={past} onOpen={onOpen} me={me} />
+            {rows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有会议" />}
+          </>
+        )}
+      </Card>
+
+      <div style={{ width: 340, flexShrink: 0 }}>
+        {/* ★待我应答 + 冲突提示★:D1 的三条硬要求之一 —— 发起人看不见你的私事,
+            只能在你这边标红。红框是刻意的:它要抢注意力。 */}
+        <Card size="small" style={{ marginBottom: 12, borderColor: pending.length ? '#ffccc7' : undefined }}
+          title={<Space><span style={{ color: pending.length ? '#cf1322' : undefined }}>待我应答</span>
+            <Badge count={pending.length} showZero color={pending.length ? '#ff4d4f' : '#d9d9d9'} /></Space>}>
+          {pending.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待应答的会议" />
+            : pending.map(({ m, clash }) => (
+              <PendingRow key={m.id} m={m} clash={clash} onOpen={onOpen} onDone={load} />
+            ))}
+        </Card>
+
+        <Card size="small" title="我负责的纪要">
+          {myMinutes.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待整理的纪要" />
+            : myMinutes.map((m) => {
+              const days = Math.floor((now - new Date(m.ends_at).getTime()) / 864e5)
+              return (
+                <div key={m.id} onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', marginBottom: 10 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{m.title}</div>
+                  <Space size={6}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {fmtDay(new Date(m.ends_at))}{days > 0 && ` · 已过 ${days} 天`}
+                    </Typography.Text>
+                    <Tag color="orange">待整理</Tag>
+                  </Space>
+                </div>
+              )
+            })}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {myMinutes.length} 份待整理</Typography.Text>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+/// 一组会议(即将进行 / 已结束)
+function Group({ title, items, onOpen, me }: {
+  title: string; items: Meeting[]; onOpen: (id: number) => void; me: Me | null
+}) {
+  if (items.length === 0) return null
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>{title}</Typography.Text>
+      {items.map((m) => <Row key={m.id} m={m} onOpen={onOpen} me={me} />)}
+    </div>
+  )
+}
+
+const STATUS_TAG: Record<RespondStatus, { t: string; c: string }> = {
+  pending: { t: '待你应答', c: 'red' }, accepted: { t: '已接受', c: 'green' },
+  declined: { t: '已拒绝', c: 'default' }, tentative: { t: '待定', c: 'orange' },
+  counter: { t: '已提改期', c: 'purple' },
+}
+
+function Row({ m, onOpen, me }: { m: Meeting; onOpen: (id: number) => void; me: Me | null }) {
+  const s = new Date(m.starts_at), e = new Date(m.ends_at)
+  const ended = e.getTime() < Date.now()
+  const tag = m.my_status ? STATUS_TAG[m.my_status] : null
+  return (
+    <div onClick={() => onOpen(m.id)} style={{
+      display: 'flex', gap: 14, padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+    }}>
+      <div style={{ width: 92, flexShrink: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>{fmtDay(s)}</div>
+        <div style={{ fontSize: 12, color: '#8c8c8c' }}>{fmtHM(s)}–{fmtHM(e)}</div>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, marginBottom: 3 }}>{m.title}</div>
+        <Space size={[6, 2]} wrap style={{ fontSize: 12, color: '#8c8c8c' }}>
+          {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan" style={{ marginInlineEnd: 0 }}>{p.name}</Tag>)}
+          <span>{m.organizer === me?.username ? '我' : m.organizer} 发起</span>
+          <span>· 记录员 {m.recorder}</span>
+          {!!m.participant_count && <span>· {m.participant_count} 人</span>}
+          {m.is_private && <Tag color="purple" style={{ marginInlineEnd: 0 }}>私密</Tag>}
+        </Space>
+        {(m.location || m.online_url || m.agenda) && (
+          <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 3 }}>
+            {m.online_url && '🖥 线上 '}{m.location && `📍 ${m.location} `}
+            {m.agenda && <span>· 议题：{m.agenda.split('\n').filter(Boolean).slice(0, 3).join(' / ')}</span>}
+          </div>
+        )}
+      </div>
+      <div style={{ flexShrink: 0 }}>
+        <Space size={4} wrap>
+          {/* 已结束的会看纪要状态,进行中的看我的答复 —— 两者都是「这条现在要我做什么」 */}
+          {ended
+            ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
+            : tag && <Tag color={tag.c}>{tag.t}</Tag>}
+        </Space>
+      </div>
+    </div>
+  )
+}
+
+/// 待我应答的一条:★带冲突提示与四个动作★
+function PendingRow({ m, clash, onOpen, onDone }: {
+  m: Meeting; clash?: Meeting; onOpen: (id: number) => void; onDone: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [busy, setBusy] = useState(false)
+  const s = new Date(m.starts_at)
+  const reply = async (status: RespondStatus) => {
+    setBusy(true)
+    try {
+      await api(`/api/meetings/${m.id}/respond`, { method: 'POST', body: JSON.stringify({ status }) })
+      message.success('已答复'); onDone()
+    } catch (err) { message.error((err as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>{m.title}</div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {fmtDay(s)} {fmtHM(s)}
+      </Typography.Text>
+      {clash && (
+        // ★这是 D1 的核心补偿★:发起人看不到你私密项目里的安排,系统必须在你这边标红,
+        // 并把「改期」放在手边 —— 不提醒就一定会漏。
+        <div style={{
+          marginTop: 4, padding: '3px 8px', borderRadius: 4, fontSize: 12,
+          background: '#fff1f0', border: '1px solid #ffccc7', color: '#cf1322',
+        }}>
+          ⚠ 撞「{clash.title}」{fmtHM(new Date(clash.starts_at))}–{fmtHM(new Date(clash.ends_at))}
+        </div>
+      )}
+      <Space size={4} style={{ marginTop: 6 }} wrap>
+        <Button size="small" type="primary" loading={busy} onClick={() => reply('accepted')}>接受</Button>
+        <Button size="small" loading={busy} onClick={() => reply('tentative')}>待定</Button>
+        <Button size="small" loading={busy} onClick={() => reply('declined')}>拒绝</Button>
+        {/* 改期要填具体时间,去详情页做 —— 这里只做一跳,不在窄栏里塞时间选择器 */}
+        <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash}
+          onClick={() => onOpen(m.id)}>改期</Button>
+      </Space>
+    </div>
+  )
+}
