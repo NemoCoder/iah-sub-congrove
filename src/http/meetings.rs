@@ -379,7 +379,13 @@ pub async fn cancel(
 #[derive(Deserialize)]
 pub struct InviteIn {
     pub usernames: Vec<String>,
-    /// attendee(默认)/ guest(临时参会人,D8:能参会看不到材料)/ observer。
+    /// ★字段留着但**永远不读**★(2026-08-07 推翻 D8):邀请这个动作本身就意味着「我请你来参会」,
+    /// 「不拿材料的人」现在只有一种 —— 旁听者(observer),而旁听是**自助**的(D9),走 POST .../observe。
+    ///
+    /// 那为什么不直接删掉这个字段?★因为删了会让老前端的请求 400★:serde 默认虽然忽略未知字段,
+    /// 但保留它 + 显式标 dead_code 才能让下一个读代码的人知道「这里曾经有个 guest,是故意不读的」,
+    /// 而不是以为漏了。等确认没有老页面在跑之后再删。
+    #[allow(dead_code)]
     #[serde(default)] pub kind: Option<String>,
 }
 
@@ -391,9 +397,9 @@ pub async fn invite(
     Json(input): Json<InviteIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_meeting_host(&state.pool, &id, mid).await?;
-    let kind = match input.kind.as_deref() {
-        Some("guest") => "guest", Some("observer") => "observer", _ => "attendee",
-    };
+    // ★邀请恒为 attendee★:旁听不是「被邀请」出来的,它是自己跑来听(D9);
+    // 老前端可能还在传 kind,直接忽略 —— 比报错温和,而且语义上确实只有这一种。
+    let kind = "attendee";
     let mut n = 0;
     for u in &input.usernames {
         let u = u.trim();
@@ -409,7 +415,7 @@ pub async fn invite(
     audit::record(&state.pool, actor, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
     // ★只通知这一批新加的人★,不打扰早就在名单里的人(他们什么都没变)。
     // 旁听者也不通知:observer 是自助加进来的(D9),他自己知道。
-    if kind != "observer" {
+    {
         let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
             .bind(mid).fetch_one(&state.pool).await?;
         let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())

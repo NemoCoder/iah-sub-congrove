@@ -147,7 +147,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
       )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        {/* 左:会议信息 + 议程 + 材料 + 参会人 */}
+        {/* 左:会议信息 + 议程 + 线上 + 材料。★参会人不在这里★——按原型它在右栏顶上 */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
@@ -196,15 +196,20 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
               canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes} />
           )}
 
+        </div>
+
+        {/* ★右栏:参会人 → 我的答复 → 讨论★
+            ⚠ 顺序与位置**照 docs/prototype-m1.html 的 meet 视图**(右栏 max-width:320px,
+            里面是「参会人(8)」→「zhaoliu 建议改期」→「讨论(4)」)。
+            2026-08-07 用户第二次指出我没按原型:参会人本该在右上角,我把它放在了左主栏底下 ——
+            ★又是「只验代码不验设计」★(见记忆 verify-against-design-not-just-code)。
+            改期建议目前长在 RespondCard 里(它同时是「我的答复」入口),没有单独一张卡。 */}
+        <div style={{ width: 340, flexShrink: 0 }}>
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
-              canHost={!!d.can_edit && !canceled} onDone={load} />
+              canHost={!!d.can_edit && !canceled} onDone={load} isPublic={m.visibility === 'public'} />
           )}
-        </div>
-
-        {/* ★右:答复 → 建议改期 → 讨论★(顺序是用户定的) */}
-        <div style={{ width: 340, flexShrink: 0 }}>
           {!canceled && m.my_status && <RespondCard id={id} mine={m.my_status} onDone={load} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
         </div>
@@ -234,26 +239,11 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
           {showUser(p.username, p.name)}
           {p.username === organizer && <Tag color="cyan" style={{ marginLeft: 6 }}>发起人</Tag>}
         </span>
-        {/* ★临时参会人能参会但看不到材料(D8)★:可就地改,别让人为了改个身份重新拉一遍。
-            ⚠ 旁听者不给改 —— 他是自助来听的,把他改成参会人等于替他答应「我要参会」。 */}
-        {canHost && p.kind !== 'observer' ? (
-          <Select size="small" value={p.kind} style={{ width: 120 }} disabled={busy}
-            onChange={async (k) => {
-              setBusy(true)
-              try {
-                await api(`/api/meetings/${mid}/participants`, {
-                  method: 'PUT', body: JSON.stringify({ usernames: [p.username], kind: k }),
-                })
-                message.success('已更新'); onDone()
-              } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-            }}
-            options={[{ value: 'attendee', label: '参会人' }, { value: 'guest', label: '临时（无材料）' }]} />
-        ) : (
-          <>
-            {p.kind === 'guest' && <Tag>临时</Tag>}
-            {p.kind === 'observer' && <Tag color="blue">旁听</Tag>}
-          </>
-        )}
+        {/* ★不再有「改参会人类型」这个下拉★(2026-08-07 liaoruili,推翻 D8):
+            删掉「临时参会人」之后类型只剩一种 —— 一个只有一个选项的下拉是纯粹的噪音,
+            还会让人以为这里有什么要决定的。旁听者本来也不给改(他是自助来听的,
+            把他改成参会人等于替他答应「我要参会」)。 */}
+        {p.kind === 'observer' && <Tag color="blue">旁听</Tag>}
         {/* 旁听者不需要答复,显示答复状态只会让人以为他欠一个回复 */}
         {p.kind !== 'observer' && <Tag color={meta.color}>{meta.label}</Tag>}
         {/* ★催办只对还没答复的人出现★:已接受/已拒绝的人不该再被打扰 */}
@@ -425,11 +415,19 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
   )
 }
 
-/// 参会人卡片。★参会人与旁听者分开列★(2026-08-07 用户:「没有显示谁要旁听的人的地方」):
+/// 参会人卡片。★位置在右栏顶上★(照 docs/prototype-m1.html 的 meet 视图)。
+///
+/// ★参会人与旁听者分开列★(2026-08-07 用户:「没有显示谁要旁听的人的地方」):
 /// 两者性质完全不同 —— 参会人是被**邀请**来的、要答复;旁听者是自己**跑来听**的(D9),
 /// 不需要答复、也拿不到材料。混在一张名单里,发起人分不清「谁欠我一个答复」。
-function PeopleCard({ people, mid, organizer, canHost, onDone }: {
+///
+/// ★旁听那一栏**没人时也显示**★(2026-08-07 用户:「加个想要旁听人的显示」):
+/// 只在有人时才出现的区块,发起人根本不知道这个位置存在,也就不会去看 ——
+/// 公开会议开出去之后「有没有人要来听」是他真正关心的事。
+function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
   people: Participant[]; mid: number; organizer: string; canHost: boolean; onDone: () => void
+  /// 私密会议不会有人旁听(D9),空栏的文案要说清是「还没人来」还是「本来就不会有」
+  isPublic: boolean
 }) {
   const joined = people.filter((p) => p.kind !== 'observer')
   const observers = people.filter((p) => p.kind === 'observer')
@@ -441,20 +439,22 @@ function PeopleCard({ people, mid, organizer, canHost, onDone }: {
           <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
         ))}
       </Space>
-      {observers.length > 0 && (
-        <>
-          <div style={{ margin: '12px 0 6px', fontSize: 12, color: '#8c8c8c' }}>
-            旁听（{observers.length}）
-            <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
-              自己来听的，不需要答复，也看不到材料
-            </Typography.Text>
-          </div>
-          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-            {observers.map((p) => (
-              <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
-            ))}
-          </Space>
-        </>
+      <div style={{ margin: '12px 0 6px', fontSize: 12, color: '#8c8c8c', borderTop: '1px solid #f0f0f0', paddingTop: 10 }}>
+        想旁听的人（{observers.length}）
+        <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+          自己来听的，不用答复，也看不到材料
+        </Typography.Text>
+      </div>
+      {observers.length === 0 ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {isPublic ? '还没有人来听' : '这是私密会议，只有公开会议才会有人来旁听'}
+        </Typography.Text>
+      ) : (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          {observers.map((p) => (
+            <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
+          ))}
+        </Space>
       )}
     </Card>
   )

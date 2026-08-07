@@ -97,7 +97,9 @@ pub const APIS: &[Api] = &[
     api!("DELETE", "/api/meetings/{id}", "会议", "发起人 / 记录员",
          "★取消不是删除★:置 canceled 留档(谁邀了谁、谁拒了是协作事实)", ""),
     api!("PUT", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
-         "★批量★邀请;kind=attendee/guest(临时参会人,看不到材料)/observer", "usernames[], kind"),
+         "★批量★邀请(删组之后一场会拉 20 人不能点 20 次)。★恒为 attendee★——\
+          2026-08-07 推翻 D8 删掉了「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的,\
+          走 POST .../observe 不从这里进", "usernames[]"),
     api!("DELETE", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
          "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username"),
     api!("POST", "/api/meetings/{id}/respond", "会议", "名单内的人(旁听者不能答复)",
