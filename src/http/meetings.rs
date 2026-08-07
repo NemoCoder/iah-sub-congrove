@@ -200,6 +200,10 @@ pub async fn create(
     }
     tx.commit().await?;
     audit::record(&state.pool, username, "meeting.create", &mid.to_string(), title).await;
+    // ★约完就通知★:没有这一步,「我约了你」这件事只存在于我的屏幕上
+    let who = notify_targets(&state.pool, mid, username).await;
+    notify_meeting(&state, mid, &who, "有人约你开会",
+        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at))).await;
     Ok(Json(json!({ "id": mid })))
 }
 
@@ -318,7 +322,27 @@ pub async fn update(
             .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.update", &mid.to_string(), "").await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.update", &mid.to_string(), "").await;
+    // 改时间和改链接是**两件不同的急事**,所以分开通知、正文不一样:
+    //   · 改时间 → 所有人的答复已被清回 pending,他们必须重新答复;
+    //   · 改链接 → 不用重新答复,但**到点前必须看到**(开会前十分钟换链接是真实场景)。
+    // 其余改动(标题/议程/地点)不发信:够不上打扰所有人的分量,他们打开会议页就看得到。
+    let time_changed = (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1);
+    let link_changed = p.online_url.as_deref().is_some_and(|n| n != cur.2);
+    if time_changed || link_changed {
+        let who = notify_targets(&state.pool, mid, actor).await;
+        let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
+        if time_changed {
+            notify_meeting(&state, mid, &who, "会议时间已改",
+                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s))).await;
+        }
+        if link_changed {
+            notify_meeting(&state, mid, &who, "线上会议链接已改",
+                &format!("「{mtitle}」({})的线上链接已更换,开会前请从会议页重新点开。", fmt_when(s))).await;
+        }
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -330,9 +354,16 @@ pub async fn cancel(
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_meeting_host(&state.pool, &id, mid).await?;
+    let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+        .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     sqlx::query("UPDATE meetings SET status='canceled', updated_at=now() WHERE id=$1")
         .bind(mid).execute(&state.pool).await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.cancel", &mid.to_string(), "").await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.cancel", &mid.to_string(), "").await;
+    // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
+    let who = notify_targets(&state.pool, mid, actor).await;
+    notify_meeting(&state, mid, &who, "会议已取消",
+        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts))).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -365,7 +396,18 @@ pub async fn invite(
             .bind(mid).bind(u).bind(kind).execute(&state.pool).await?;
         n += 1;
     }
-    audit::record(&state.pool, id.require_username()?, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
+    // ★只通知这一批新加的人★,不打扰早就在名单里的人(他们什么都没变)。
+    // 旁听者也不通知:observer 是自助加进来的(D9),他自己知道。
+    if kind != "observer" {
+        let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
+        let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty() && u != actor).collect();
+        notify_meeting(&state, mid, &fresh, "有人约你开会",
+            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts))).await;
+    }
     Ok(Json(json!({ "ok": true, "invited": n })))
 }
 
@@ -438,6 +480,21 @@ pub async fn respond(
         .bind(mid).bind(username).bind(st)
         .bind(r.counter_starts_at).bind(r.counter_ends_at).bind(r.counter_reason.as_deref())
         .execute(&state.pool).await?;
+    // ★「建议改期」必须通知发起人★(D2):私密项目的日程对他完全隐形,他不知道我为什么忙,
+    // 这条建议就是他能收到的**唯一**信号。它躺在数据库里没人看 = 这个出口不存在。
+    // 其余三态(接受/拒绝/待定)不发信 —— 发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
+    if st == "counter" {
+        let (mtitle, organizer): (String, String) =
+            sqlx::query_as("SELECT title, organizer FROM meetings WHERE id=$1")
+                .bind(mid).fetch_one(&state.pool).await?;
+        if organizer != username {
+            let when = r.counter_starts_at.map(fmt_when).unwrap_or_else(|| "(未给具体时间)".into());
+            let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
+                .map(|x| format!(",理由:{x}")).unwrap_or_default();
+            notify_meeting(&state, mid, &[organizer], "有人建议改期",
+                &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
+        }
+    }
     Ok(Json(json!({ "ok": true, "status": st })))
 }
 
@@ -797,7 +854,13 @@ pub async fn reject_counter(
           WHERE meeting_id=$1 AND username=$2 AND status='counter'")
         .bind(mid).bind(&who).execute(&state.pool).await?.rows_affected();
     if n == 0 { return Err(AppError::BadRequest("这个人没有待处理的改期建议".into())) }
-    audit::record(&state.pool, id.require_username()?, "meeting.reject-counter", &mid.to_string(), &who).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.reject-counter", &mid.to_string(), &who).await;
+    // 提了建议就该知道结果 —— 尤其驳回后他回到 pending、**还欠一次答复**,不说他不会知道
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    notify_meeting(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
+        &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。")).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -829,7 +892,15 @@ pub async fn accept_counter(
           WHERE meeting_id=$1 AND username <> $2")
         .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     tx.commit().await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.accept-counter", &mid.to_string(), &who).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.accept-counter", &mid.to_string(), &who).await;
+    // 采纳 = 会议时间真的变了 → ★通知全员★(和 update 改时间同理:别人的答复已被清回 pending),
+    // 提议人本人也要收到,他要知道自己的建议被采纳了。
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    let all = notify_targets(&state.pool, mid, actor).await;
+    notify_meeting(&state, mid, &all, "会议时间已改",
+        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s))).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
 
@@ -1081,4 +1152,67 @@ pub async fn mark_read(
             .bind(who).execute(&state.pool).await?.rows_affected(),
     };
     Ok(Json(json!({ "marked": n })))
+}
+
+// ── 站内信 ────────────────────────────────────────────────────────────────
+//
+// ★M1 最后一块闭环★:在这之前**只有「催办」一处发信**,于是系统处在一个荒诞的状态 ——
+// 会约好了,被约的人不知道,除非他自己想起来打开系统看一眼。
+// M1 的验收标准是「一个新人能在不问任何人的情况下把一次会约成并如期开上」,
+// 而「被约的人得先知道有人约他」是这句话的前半截。
+//
+// 三条贯穿本节的约定:
+//   · **best-effort**:registry 不可达只 warn,绝不让业务接口失败 —— 发不出信是通知的事故,不是约会的事故;
+//   · **不发给动作发起人自己**:他知道自己干了什么,收到「你约了自己」只会让人觉得系统啰嗦;
+//   · **带 url 直达那场会**:只说「有事发生」而点不进去等于没通知。
+
+/// 一场会该收到通知的人:参会人 + 记录员 + 发起人,减去动作发起人自己。
+/// ★旁听者(observer)不收★:他是自己凑过来听的,会议怎么改不该塞满他的收件箱(D9)。
+async fn notify_targets(pool: &sqlx::PgPool, mid: i64, exclude: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT username FROM meeting_participants
+          WHERE meeting_id = $1 AND username <> $2 AND kind <> 'observer'")
+        .bind(mid).bind(exclude).fetch_all(pool).await.unwrap_or_default()
+}
+
+/// 发一批站内信。`targets` 空则什么都不做(不是错误 —— 一个人的会就是没人要通知)。
+async fn notify_meeting(state: &AppState, mid: i64, targets: &[String], title: &str, body: &str) {
+    let Some(reg) = &state.registry else { return };      // 本地 dev 无 registry:静默跳过
+    // 站内信点进去要能到那场会。前端不用路由库(app.tsx 头注的既有约定),所以用查询参数,
+    // 由 app.tsx 启动时读一次 ?meeting= 直接把人放到那场会上。
+    let url = state.config.public_url.as_ref().map(|b| format!("{b}/?meeting={mid}"));
+    for u in targets {
+        reg.notify(u, title, body, url.as_deref(), Some(&format!("meeting:{mid}"))).await;
+    }
+}
+
+/// 「8-13 周三 10:00」—— 站内信正文里的时间格式。
+/// ★带星期★:纯数字日期读起来要在脑子里换算一次,而「周三」是人真正安排生活用的单位。
+fn fmt_when(t: Ts) -> String {
+    let local = t.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+    const WD: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    let wd = WD[local.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
+    format!("{} {wd} {}", local.format("%m-%d"), local.format("%H:%M"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★时区换算是站内信里最容易静默错的一格★:UTC 存、北京时间显示,
+    /// 差 8 小时不会报错,只会让人在错的时间到场。星期也一起钉住 ——
+    /// 它是从日期算出来的,算错了同样不报错。
+    #[test]
+    fn 站内信时间按北京时间显示并带星期() {
+        let t: Ts = "2026-08-13T02:00:00Z".parse().unwrap();   // UTC 02:00 = 北京 10:00
+        assert_eq!(fmt_when(t), "08-13 周四 10:00");
+    }
+
+    /// 跨日的那一格:UTC 当天 20:00 在北京已经是**第二天**凌晨 4 点。
+    /// 只按 UTC 取日期的写法在这里会给出错的日子和错的星期。
+    #[test]
+    fn 站内信时间跨日不串日期() {
+        let t: Ts = "2026-08-13T20:00:00Z".parse().unwrap();   // 北京 08-14 04:00 周五
+        assert_eq!(fmt_when(t), "08-14 周五 04:00");
+    }
 }
