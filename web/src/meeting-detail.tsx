@@ -8,7 +8,7 @@
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tabs, Tag, Typography, Upload } from 'antd'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
 
@@ -173,13 +173,8 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
 
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
-            <Card size="small" title={`参会人（${d.participants.length}）`}>
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                {d.participants.map((p) => (
-                  <ParticipantRow key={p.username} p={p} mid={id} canHost={!!d.can_edit && !canceled} onDone={load} />
-                ))}
-              </Space>
-            </Card>
+            <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
+              canHost={!!d.can_edit && !canceled} onDone={load} />
           )}
         </div>
 
@@ -243,8 +238,8 @@ function EditModal({ m, onClose, onSaved }: {
   )
 }
 
-function ParticipantRow({ p, mid, canHost, onDone }: {
-  p: Participant; mid: number; canHost: boolean; onDone: () => void
+function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
+  p: Participant; mid: number; organizer: string; canHost: boolean; onDone: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
@@ -261,14 +256,47 @@ function ParticipantRow({ p, mid, canHost, onDone }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
         <span style={{ flex: 1 }}>
           {showUser(p.username, p.name)}
-          {/* ★临时参会人能参会但看不到材料(D8)★——名单里要标出来,否则发起人以为他能看 */}
-          {p.kind === 'guest' && <Tag style={{ marginLeft: 6 }}>临时</Tag>}
-          {p.kind === 'observer' && <Tag style={{ marginLeft: 6 }}>旁听</Tag>}
+          {p.username === organizer && <Tag color="cyan" style={{ marginLeft: 6 }}>发起人</Tag>}
         </span>
-        <Tag color={meta.color}>{meta.label}</Tag>
+        {/* ★临时参会人能参会但看不到材料(D8)★:可就地改,别让人为了改个身份重新拉一遍。
+            ⚠ 旁听者不给改 —— 他是自助来听的,把他改成参会人等于替他答应「我要参会」。 */}
+        {canHost && p.kind !== 'observer' ? (
+          <Select size="small" value={p.kind} style={{ width: 120 }} disabled={busy}
+            onChange={async (k) => {
+              setBusy(true)
+              try {
+                await api(`/api/meetings/${mid}/participants`, {
+                  method: 'PUT', body: JSON.stringify({ usernames: [p.username], kind: k }),
+                })
+                message.success('已更新'); onDone()
+              } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+            }}
+            options={[{ value: 'attendee', label: '参会人' }, { value: 'guest', label: '临时（无材料）' }]} />
+        ) : (
+          <>
+            {p.kind === 'guest' && <Tag>临时</Tag>}
+            {p.kind === 'observer' && <Tag color="blue">旁听</Tag>}
+          </>
+        )}
+        {/* 旁听者不需要答复,显示答复状态只会让人以为他欠一个回复 */}
+        {p.kind !== 'observer' && <Tag color={meta.color}>{meta.label}</Tag>}
         {/* ★催办只对还没答复的人出现★:已接受/已拒绝的人不该再被打扰 */}
         {canHost && p.status === 'pending' && (
           <Button size="small" loading={busy} onClick={() => act('remind', '已催办')}>催办</Button>
+        )}
+        {/* ★发起人不能被移出★(后端也拦):他被移出就没人改得了这场会 */}
+        {canHost && p.username !== organizer && (
+          <Popconfirm title={`把 ${p.username} 移出这场会议？`}
+            onConfirm={async () => {
+              try {
+                await api(`/api/meetings/${mid}/participants`, {
+                  method: 'DELETE', body: JSON.stringify({ username: p.username }),
+                })
+                message.success('已移出'); onDone()
+              } catch (e) { message.error((e as Error).message) }
+            }}>
+            <Button size="small" type="text" danger disabled={busy}>移出</Button>
+          </Popconfirm>
         )}
       </div>
       {/* ★建议改期要能一键采纳★(D2):他给了具体时间,发起人却只能手动重填一遍的话,
@@ -418,6 +446,94 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
       <Button size="small" type="primary" block style={{ marginTop: 8 }} loading={busy}
         disabled={!text.trim()} onClick={send}>发送</Button>
     </Card>
+  )
+}
+
+/// 参会人卡片。★参会人与旁听者分开列★(2026-08-07 用户:「没有显示谁要旁听的人的地方」):
+/// 两者性质完全不同 —— 参会人是被**邀请**来的、要答复;旁听者是自己**跑来听**的(D9),
+/// 不需要答复、也拿不到材料。混在一张名单里,发起人分不清「谁欠我一个答复」。
+function PeopleCard({ people, mid, organizer, canHost, onDone }: {
+  people: Participant[]; mid: number; organizer: string; canHost: boolean; onDone: () => void
+}) {
+  const joined = people.filter((p) => p.kind !== 'observer')
+  const observers = people.filter((p) => p.kind === 'observer')
+  return (
+    <Card size="small" title={`参会人（${joined.length}）`}
+      extra={canHost && <AddParticipants mid={mid} onDone={onDone} />}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        {joined.map((p) => (
+          <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
+        ))}
+      </Space>
+      {observers.length > 0 && (
+        <>
+          <div style={{ margin: '12px 0 6px', fontSize: 12, color: '#8c8c8c' }}>
+            旁听（{observers.length}）
+            <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+              自己来听的，不需要答复，也看不到材料
+            </Typography.Text>
+          </div>
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            {observers.map((p) => (
+              <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
+            ))}
+          </Space>
+        </>
+      )}
+    </Card>
+  )
+}
+
+/// 加参会人。★会前临时拉人是常态★——后端一直有 PUT /participants,
+/// 但详情页没露出入口,等于这个能力不存在(2026-08-07 用户提)。
+///
+/// ★候选允许手输★:/api/users 查的是本地 app_user(只有登录过汇流的人),
+/// 而后端 ensure_platform_user 能拉任何平台用户 —— 用 multiple 会把新同事挡在外面。
+function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
+  const { message } = AntdApp.useApp()
+  const [open, setOpen] = useState(false)
+  const [picked, setPicked] = useState<string[]>([])
+  const [kind, setKind] = useState<'attendee' | 'guest'>('attendee')
+  const [found, setFound] = useState<{ username: string; name: string | null }[]>([])
+  const [busy, setBusy] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const search = (kw: string) => {
+    if (timer.current) clearTimeout(timer.current)
+    const q = kw.trim()
+    if (!q) { setFound([]); return }
+    timer.current = setTimeout(() => {
+      api<{ username: string; name: string | null }[]>(`/api/users?q=${encodeURIComponent(q)}`)
+        .then(setFound).catch(() => setFound([]))
+    }, 250)
+  }
+  const submit = async () => {
+    if (!picked.length) { message.warning('先选人'); return }
+    setBusy(true)
+    try {
+      await api(`/api/meetings/${mid}/participants`, {
+        method: 'PUT', body: JSON.stringify({ usernames: picked, kind }),
+      })
+      message.success(`已添加 ${picked.length} 人`)
+      setPicked([]); setOpen(false); onDone()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+  }
+
+  if (!open) return <Button size="small" onClick={() => setOpen(true)}>+ 添加</Button>
+  return (
+    <Modal open title="添加参会人" onCancel={() => setOpen(false)} onOk={submit} confirmLoading={busy} okText="添加">
+      <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
+        <Select mode="tags" value={picked} onChange={setPicked} onSearch={search} filterOption={false}
+          style={{ width: '100%' }} placeholder="输入用户名（没搜到也能直接输入）" notFoundContent={null}
+          options={found.map((u) => ({ value: u.username, label: showUser(u.username, u.name) }))} />
+        <Select value={kind} onChange={setKind} style={{ width: '100%' }}
+          options={[
+            { value: 'attendee', label: '参会人' },
+            // ★临时参会人能参会、看不到材料★(D8):选项里就把区别说清楚
+            { value: 'guest', label: '临时参会人（能参会，看不到材料）' },
+          ]} />
+      </Space>
+    </Modal>
   )
 }
 
