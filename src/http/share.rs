@@ -87,6 +87,17 @@ pub async fn create(
         }
         all.push(extra);
     }
+    // ★项目级禁分享★(2026-08-08 修:这道闸此前**从来没在建链接时判过**)。
+    // `projects.no_share` 之前只在「打开开关的那一刻」用来撤销存量链接(projects.rs 的 update),
+    // 之后任何 editor 照样能建新的公开链接 —— ★一个开着的开关实际只做了一次性清理★,
+    // 而设置它的人以为项目里的东西出不去了。
+    // 分享是全系统**唯一绕过项目授权**的出口(见本文件头注),这道闸漏了等于项目级封锁形同虚设。
+    let proj_no_share: bool = sqlx::query_scalar("SELECT no_share FROM projects WHERE id = $1")
+        .bind(pid).fetch_optional(&state.pool).await?.unwrap_or(false);
+    if proj_no_share {
+        return Err(AppError::BadRequest("本项目已设置禁止对外分享".into()));
+    }
+
     // ★会议粒度的禁分享★(PRD 6.3.2,迁移 0007):逐项检查,只要有一项属于「禁分享」的会议就整条拒。
     // ⚠ 必须**在这里**拦而不是只在前端隐藏入口 —— PRD 6.3.2 的验收标准原话:
     //   「设为禁分享后,分享入口对非管理员隐藏**且后端拒绝**(前端隐藏不是安全边界)」。

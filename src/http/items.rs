@@ -499,6 +499,39 @@ pub async fn purge(
 }
 
 /// 彻底删一棵子树:先收集候选对象 key,删行,再对**已无人引用**的 key 删对象。返回真正删掉的对象数。
+/// 删一批 S3 对象,★但只删「已经没人引用」的★。
+///
+/// ⚠ 2026-08-05 内容寻址(`blobs/<sha256>`)之后,**同一个 key 会被任意多个项目、
+/// 任意多个人共享** —— 两个毫不相干的人上传同一份 PDF 就共用一个 blob。
+/// 所以「我删我的东西」绝不能直接 `storage.delete(key)`:那会把**别人的文件**一起打空
+/// (items 行还在、名字还在、点开是空的)。
+///
+/// ★2026-08-08 抽成公共函数★:此前 `purge_subtree` 做了计数、`projects::remove` **没做**,
+/// 两份实现只有一份是对的。而 `projects::remove` 那段的注释还停在内容寻址之前的模型
+/// (「key 带 project_id 前缀,不会误伤别的项目」)—— ★一条过期的注释就是下一次事故的许可证★。
+/// 后果是:任何登录用户建个项目、传一份和别人相同的文件、再删掉自己的项目,
+/// 就能永久销毁别人项目里的那一份。
+pub(crate) async fn delete_unreferenced(state: &AppState, keys: &[String]) -> usize {
+    let mut gone = 0usize;
+    for k in keys {
+        // ★含软删除行★:回收站里的东西也算引用,它还等着被还原。
+        let refs: i64 = match sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM items WHERE s3_key = $1)
+                  + (SELECT count(*) FROM item_versions WHERE s3_key = $1)",
+        ).bind(k).fetch_one(&state.pool).await {
+            Ok(v) => v,
+            // ★查不出引用数就**不删**★(fail-closed):删错了不可逆,留个孤儿对象只是占点空间
+            Err(e) => { tracing::warn!(error = %e, key = %k, "引用计数查询失败,跳过删除"); continue }
+        };
+        if refs == 0 {
+            if let Err(e) = state.storage.delete(k).await {
+                tracing::warn!(error = %e, key = %k, "s3 清理失败(孤儿对象,待巡检)");
+            } else { gone += 1 }
+        }
+    }
+    gone
+}
+
 pub(crate) async fn purge_subtree(state: &AppState, iid: i64) -> AppResult<usize> {
     let keys: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE sub AS (
@@ -511,20 +544,7 @@ pub(crate) async fn purge_subtree(state: &AppState, iid: i64) -> AppResult<usize
          ) t",
     ).bind(iid).fetch_all(&state.pool).await?;
     sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await?;
-    let mut gone = 0usize;
-    for k in &keys {
-        // ★含软删除行★:回收站里的东西也算引用,它还等着被还原。
-        let refs: i64 = sqlx::query_scalar(
-            "SELECT (SELECT count(*) FROM items WHERE s3_key = $1)
-                  + (SELECT count(*) FROM item_versions WHERE s3_key = $1)",
-        ).bind(k).fetch_one(&state.pool).await?;
-        if refs == 0 {
-            if let Err(e) = state.storage.delete(k).await {
-                tracing::warn!(error = %e, key = %k, "purge: s3 清理失败(孤儿对象,待巡检)");
-            } else { gone += 1 }
-        }
-    }
-    Ok(gone)
+    Ok(delete_unreferenced(state, &keys).await)
 }
 
 /// GET /api/items/{id}/content —— 文档正文(≥viewer)。空文档(还没保存过)回空串。
