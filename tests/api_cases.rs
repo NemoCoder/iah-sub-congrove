@@ -204,6 +204,12 @@ const CASES: &[Case] = &[
        "200,会议时间变成提议时间;★所有人答复清回 pending,含提议者本人★——他提的是时间,不等于他一定能来", "D2"),
     c!(deny "POST", "/api/meetings/{id}/accept-counter", "没提改期的人不能被采纳", "他 status=accepted",
        "POST {username:'他'}", "400", "D2"),
+    c!("POST", "/api/meetings/{id}/reject-counter", "★驳回后回 pending 不是 declined★",
+       "某人 status=counter", "POST {username:'他'}",
+       "200,他的 status 变回 pending、counter_* 清空 —— 发起人拒的是这个**时间提议**,\
+        不代表替他决定「不来」;他还能接受原时间或另提一个", "D2"),
+    c!(deny "POST", "/api/meetings/{id}/reject-counter", "没提改期的人不能被驳回", "他 status=accepted",
+       "POST {username:'他'}", "400", "D2"),
     c!("GET", "/api/freebusy", "公开项目的会产生忙闲", "他在公开项目 P 有一场会",
        "GET /api/freebusy?users=他&from&to", "200,含那个时间段;★只有 start/end,无标题无任何内容★", "D1"),
     c!("GET", "/api/freebusy", "私密项目的会完全隐形", "他在★私密★项目里有一场会,时间与查询窗重叠",

@@ -117,6 +117,9 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/meetings/{id}/accept-counter", "会议", "发起人 / 记录员",
          "采纳某人的改期建议 = 把会议时间改成他提议的时间。★随后所有人答复清回 pending★\
           (含提议者本人:他提的是时间,不等于他一定能来)", "username"),
+    api!("POST", "/api/meetings/{id}/reject-counter", "会议", "发起人 / 记录员",
+         "驳回改期建议。★驳回后他回到 pending 不是 declined★——拒绝的是这个**时间提议**,\
+          不代表替他决定「不来」", "username"),
     api!("GET", "/api/freebusy", "会议", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),

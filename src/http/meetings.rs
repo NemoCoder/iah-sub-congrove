@@ -778,6 +778,29 @@ pub async fn remind(
     Ok(Json(json!({ "ok": true, "targets": targets.len(), "sent": sent })))
 }
 
+/// POST /api/meetings/{id}/reject-counter —— 驳回某人的改期建议。
+/// ★驳回后他回到 pending 而不是 declined★:发起人拒绝的是**这个时间提议**,
+/// 不代表替他决定「不来」—— 让他重新答复(接受原时间 / 拒绝 / 再提一个)。
+pub async fn reject_counter(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_meeting_host(&state.pool, &id, mid).await?;
+    let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
+    let n = sqlx::query(
+        "UPDATE meeting_participants
+            SET status='pending', responded_at=NULL,
+                counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
+          WHERE meeting_id=$1 AND username=$2 AND status='counter'")
+        .bind(mid).bind(&who).execute(&state.pool).await?.rows_affected();
+    if n == 0 { return Err(AppError::BadRequest("这个人没有待处理的改期建议".into())) }
+    audit::record(&state.pool, id.require_username()?, "meeting.reject-counter", &mid.to_string(), &who).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// POST /api/meetings/{id}/accept-counter —— 采纳某人的改期建议。
 /// ★采纳 = 把会议时间改成他提议的时间★,随后所有人的答复清回 pending(与改时间同一套语义)。
 pub async fn accept_counter(

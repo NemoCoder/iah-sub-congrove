@@ -68,6 +68,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/meetings/{id}/link-history", get(meetings::link_history))
         .route("/meetings/{id}/remind", post(meetings::remind))
         .route("/meetings/{id}/accept-counter", post(meetings::accept_counter))
+        .route("/meetings/{id}/reject-counter", post(meetings::reject_counter))
         // 忙闲(D1):只回时间段不回内容;私密项目的会完全隐形。
         .route("/freebusy", get(meetings::freebusy))
 
