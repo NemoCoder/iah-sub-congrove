@@ -949,6 +949,13 @@ pub async fn public_list(
            LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
+            -- ★只列我**还没有关系**的会★(2026-08-07 用户:「公开会议明明是我发起的,
+            --   为啥会有取消旁听…应该显示我没参与也没旁听的才对」)。
+            --   广场是**发现**的入口:我已经参与或已经旁听的会**早就在我的日历里了**,
+            --   再在右边提醒一遍是纯噪音 —— 更荒谬的是自己发起的会出现在这里,
+            --   还配一个「取消旁听」按钮(我从来就不是旁听)。
+            AND NOT EXISTS (SELECT 1 FROM meeting_participants mpx
+                             WHERE mpx.meeting_id = m.id AND mpx.username = $1)
             AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
             -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)
             AND EXISTS (SELECT 1 FROM meeting_projects mpd
@@ -1095,10 +1102,13 @@ pub async fn my_stats(
 
     // 「我参与 N 个项目」是**当下的成员身份**,与时间段无关 ——
     // 名片上那个数字若跟着「本月/本季度」变,读起来像「我这个月退出了几个项目」。
+    // ★排除我自己主持的★:名片上「主持 2 个 | 参与 25 个」是并列关系(原型如此),
+    // 而建项目时 owner 会自动进成员表 —— 不排除的话「参与」把「主持」也包进去了,
+    // 两个数字加起来大于我实际有关系的项目数。
     let member_of: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM project_members pm
            JOIN projects p ON p.id = pm.project_id AND p.deleted_at IS NULL
-          WHERE pm.username = $1")
+          WHERE pm.username = $1 AND p.owner <> $1")
         .bind(who).fetch_one(&state.pool).await?;
 
     Ok(Json(json!({

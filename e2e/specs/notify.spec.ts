@@ -115,3 +115,26 @@ test.describe('软删除:项目删了会议要跟着走', () => {
     expect(await inList(), '★删掉项目之后不该还躺在日历上★').toBe(false)
   })
 })
+
+// 公开会议广场（D9）—— ★它是「发现」的入口，不是「我的日程」的副本★（2026-08-07 用户指出）。
+test.describe('公开会议广场:只列我还没有关系的会', () => {
+  test('★自己发起的公开会不出现在广场里★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-广场-${Date.now()}`)
+    const now = Date.now()
+    const r = await request.post('/api/meetings', {
+      data: {
+        title: `E2E 我发起的公开会 ${now}`, recorder: 'e2e', visibility: 'public',
+        starts_at: new Date(now + 3600_000).toISOString(),
+        ends_at: new Date(now + 7200_000).toISOString(),
+        project_ids: [pid],
+      },
+    })
+    expect(r.status(), await r.text()).toBe(200)
+    const mid = (await r.json()).id as number
+
+    const board = await (await request.get('/api/meetings/public')).json()
+    // 我发起的会已经在我的日历里了；出现在广场上还配「取消旁听」按钮是荒谬的 —— 我从来就不是旁听
+    expect((board as { id: number }[]).some((x) => x.id === mid),
+      '★自己发起的会不该出现在广场★').toBe(false)
+  })
+})
