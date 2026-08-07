@@ -180,13 +180,26 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
                 {Array.from({ length: 24 }, (_, h) => {
                   const seg = SEGMENTS.find((x) => x.from === h)
                   return (
-                    <div key={h} style={{
-                      position: 'absolute', top: h * HOUR_PX, right: 6, fontSize: 11,
-                      // 时段起点(8/12/18)加深:它们是右边那三条分隔线的锚
-                      color: seg ? '#595959' : '#bfbfbf',
-                      fontWeight: seg ? 600 : 400,
-                      transform: 'translateY(-6px)', whiteSpace: 'nowrap',
-                    }}>{h === 0 ? '' : seg ? `${seg.label} ${h}:00` : `${h}:00`}</div>
+                    <div key={h}>
+                      {/* ★时段名与时间拆成左右两个独立元素★(2026-08-07 第三版):
+                          拼成一个字符串右对齐时,列宽不够就从**左边**裁 ——
+                          「下午 12:00」被切成「午 12:00」、「晚上 18:00」切成「上 18:00」。
+                          裁掉的恰恰是要传达的那两个字,而时间反倒完整。分开放就不会互相挤。 */}
+                      {seg && (
+                        <div style={{
+                          position: 'absolute', top: h * HOUR_PX, left: 4,
+                          fontSize: 11, color: '#8c8c8c', fontWeight: 600,
+                          transform: 'translateY(-6px)', whiteSpace: 'nowrap',
+                        }}>{seg.label}</div>
+                      )}
+                      <div style={{
+                        position: 'absolute', top: h * HOUR_PX, right: 6, fontSize: 11,
+                        // 时段起点(8/12/18)加深:它们是右边那三条分隔线的锚
+                        color: seg ? '#595959' : '#bfbfbf',
+                        fontWeight: seg ? 600 : 400,
+                        transform: 'translateY(-6px)',
+                      }}>{h === 0 ? '' : `${h}:00`}</div>
+                    </div>
                   )
                 })}
               </div>
@@ -282,14 +295,15 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
   }, [days])
   useEffect(() => { void load() }, [load])
 
-  const toggle = async (m: Meeting) => {
+  const observe = async (m: Meeting) => {
     setBusy(m.id)
     try {
-      // my_status 非空 = 我已在名单里(旁听或正式参会)
+      // ★广场里的会我必然与之无关★(后端已滤掉我参与/旁听的),所以这里只会是「加入」一个方向。
+      // 取消旁听在**会议详情页**做 —— 那时它已经进了我的日历,本来就该去那儿管。
       await api(`/api/meetings/${m.id}/observe`, {
-        method: 'POST', body: JSON.stringify({ observe: !m.my_status }),
+        method: 'POST', body: JSON.stringify({ observe: true }),
       })
-      message.success(m.my_status ? '已取消旁听' : '已加入我的日程')
+      message.success('已加入我的日程')
       await load()
     } catch (e) { message.error((e as Error).message) } finally { setBusy(null) }
   }
@@ -320,8 +334,8 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
                 {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan">{p.name}</Tag>)}
                 <Button size="small" type={m.my_status ? 'default' : 'primary'} ghost={!m.my_status}
                   loading={busy === m.id} disabled={busy === m.id}
-                  onClick={() => toggle(m)}>
-                  {m.my_status ? '取消旁听' : '旁听'}
+                  onClick={() => observe(m)}>
+                  旁听
                 </Button>
               </Space>
               {/* ★旁听 ≠ 拿到材料★(D9 与 D3 正交):说在按钮旁边,免得有人以为旁听就能看资料 */}

@@ -44,6 +44,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
   /// 写死「返回日程」的话,从会议页进来的人会以为自己点错了(2026-08-07 用户提)。
   backLabel?: string
 }) {
+  const { message } = AntdApp.useApp()
   const [d, setD] = useState<MeetingDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
@@ -103,6 +104,20 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
         {m.is_private && <Tag color="purple">私密项目</Tag>}
         {d.observer && <Tag>旁听</Tag>}
         <span style={{ flex: 1 }} />
+        {/* ★取消旁听在这里做★(2026-08-07):广场只列「我还没有关系的会」,
+            旁听之后它就从广场消失、进了我的日历 —— 要退出自然该来它自己的页面,
+            而不是回广场上找一个已经不在那儿的条目。 */}
+        {d.observer && !canceled && (
+          <Popconfirm title="不再旁听这场会？" description="它会从你的日历里移除；之后想听可以从公开会议里再加回来。"
+            onConfirm={async () => {
+              try {
+                await api(`/api/meetings/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
+                message.success('已取消旁听'); onBack()
+              } catch (e) { message.error((e as Error).message) }
+            }}>
+            <Button size="small">取消旁听</Button>
+          </Popconfirm>
+        )}
         {/* ★纪要入口★(原型评审时用户问「整理会议纪要的入口是不是还没有」)。
             旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
         {d.participants && (
