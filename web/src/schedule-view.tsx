@@ -150,7 +150,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
         ) : (
           <div style={{ overflowX: 'auto' }}>
             {/* 表头:时间轴列 + 7 天 */}
-            <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `74px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               <div />
               {days.map((d, i) => {
                 const weekend = i === 0 || i === 6
@@ -173,25 +173,22 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
             <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               {/* 时间轴 */}
               <div style={{ position: 'relative', height: DAY_PX }}>
-                {Array.from({ length: 24 }, (_, h) => (
-                  <div key={h} style={{
-                    position: 'absolute', top: h * HOUR_PX, right: 6, fontSize: 11,
-                    // 时段起点(8/12/18)的刻度加深:它们是下面那三条分隔线的锚
-                    color: SEG_MARKS.includes(h) ? '#8c8c8c' : '#bfbfbf',
-                    fontWeight: SEG_MARKS.includes(h) ? 600 : 400,
-                    transform: 'translateY(-6px)',
-                  }}>{h === 0 ? '' : `${h}:00`}</div>
-                ))}
-                {/* ★时段名竖在轴上★:让人一眼知道现在看的是上午还是下午,
-                    而不用去数刻度(2026-08-07 用户提) */}
-                {SEGMENTS.map((sg) => (
-                  <div key={sg.label} style={{
-                    position: 'absolute', top: sg.from * HOUR_PX, left: 2,
-                    height: (sg.to - sg.from) * HOUR_PX,
-                    display: 'flex', alignItems: 'center',
-                    fontSize: 10, color: '#d9d9d9', writingMode: 'vertical-rl', letterSpacing: 2,
-                  }}>{sg.label}</div>
-                ))}
+                {/* ★时段名并进刻度文字★(2026-08-07 截图核对后改):
+                    第一版把「凌晨/上午/下午/晚上」竖排在轴左边,在 48px 宽的列里被挤成
+                    几乎读不出的小字 —— 一个看不清的标识等于没有标识。
+                    现在写成「上午 8:00」,横排、和刻度同一行,列宽相应加到 74px。 */}
+                {Array.from({ length: 24 }, (_, h) => {
+                  const seg = SEGMENTS.find((x) => x.from === h)
+                  return (
+                    <div key={h} style={{
+                      position: 'absolute', top: h * HOUR_PX, right: 6, fontSize: 11,
+                      // 时段起点(8/12/18)加深:它们是右边那三条分隔线的锚
+                      color: seg ? '#595959' : '#bfbfbf',
+                      fontWeight: seg ? 600 : 400,
+                      transform: 'translateY(-6px)', whiteSpace: 'nowrap',
+                    }}>{h === 0 ? '' : seg ? `${seg.label} ${h}:00` : `${h}:00`}</div>
+                  )
+                })}
               </div>
               {days.map((d, i) => {
                 const weekend = i === 0 || i === 6

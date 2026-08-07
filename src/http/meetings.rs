@@ -1044,6 +1044,13 @@ pub async fn my_stats(
         FROM meetings m
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
+          -- ★关联项目全被删的会不计入★(2026-08-07,从个人面板的图上看出来的):
+          -- 少了这一句,totals 会说「参会 1 次」而下面的分项目表是空的 ——
+          -- 因为分项目那条 JOIN 了 projects 判 deleted_at,总数却没判。
+          -- ★两个数字自相矛盾比两个都错更糟★:看的人会以为是自己看错了。
+          AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                        JOIN projects pd ON pd.id = mpd.project_id
+                       WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
           AND (m.organizer = $1
                OR EXISTS (SELECT 1 FROM meeting_participants p
                           WHERE p.meeting_id = m.id AND p.username = $1
@@ -1086,8 +1093,17 @@ pub async fn my_stats(
          ORDER BY p.archived_at IS NOT NULL, p.name")
         .bind(who).fetch_all(&state.pool).await?;
 
+    // 「我参与 N 个项目」是**当下的成员身份**,与时间段无关 ——
+    // 名片上那个数字若跟着「本月/本季度」变,读起来像「我这个月退出了几个项目」。
+    let member_of: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM project_members pm
+           JOIN projects p ON p.id = pm.project_id AND p.deleted_at IS NULL
+          WHERE pm.username = $1")
+        .bind(who).fetch_one(&state.pool).await?;
+
     Ok(Json(json!({
         "range": range,
+        "member_of": member_of,
         "totals": { "meetings": cnt, "hours": (hours * 10.0).round() / 10.0, "projects": projects, "minutes_todo": todo },
         "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
             "id": id, "name": name, "visibility": vis, "archived": arch,
