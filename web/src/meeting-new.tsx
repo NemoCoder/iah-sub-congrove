@@ -186,7 +186,10 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
         选人和看他们忙不忙是**同一个决策**,分开就得来回切。 */}
     <div style={{ width: 420, flexShrink: 0 }}>
       <Card size="small" title={`参会人（${people.length}）`} style={{ marginBottom: 12 }}>
-        <Select mode="tags" value={people} onChange={setPeople} onSearch={search}
+        {/* ★id 是给测试用的★:这个 Select 不在 Form 里,拿不到 Form 自动生成的 id,
+            而 AntD 的 placeholder 是个被交互层盖住的 <span>、类名又跟着版本变 ——
+            E2E 里唯一稳的锚就是我们自己写的 id。**可测性是产品的一部分**,不是测试的私事。 */}
+        <Select id="participants-picker" mode="tags" value={people} onChange={setPeople} onSearch={search}
           filterOption={false} style={{ width: '100%' }} notFoundContent={null}
           placeholder="输入用户名（没搜到也能直接输入）" options={userOpts} />
         <Space style={{ marginTop: 8 }} wrap>

@@ -20,7 +20,14 @@ export default defineConfig({
   // 内网 + 单机跑,并发开小一点;失败重跑一次(网关偶发抖动不该算 red)
   workers: 2,
   retries: 1,
-  reporter: [['list'], ['html', { outputFolder: '.artifacts/report', open: 'never' }]],
+  // ★产物统一落 unit_tests/congrove/screenshots★(2026-08-07 用户要求):
+  // 「截图不要都放到 ~ 以及很多脚本也放到 ~ 家目录,每次我都要清理」——
+  // 失败截图/trace 也是截图,同样不该散落在仓库里。
+  // ⚠ 与 shot.mjs 的 `<版本号>/` 归档目录**分开放**:那些是**成品**的存档、要留;
+  //   这里是**排查**用的即时产物,下一次跑就作废,所以不按版本分、可随时整个删。
+  reporter: [['list'], ['html', {
+    outputFolder: '/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/_e2e-report', open: 'never',
+  }]],
   use: {
     baseURL: BASE,
     // ★key 为空时不要注入空 header★:Traefik 的路由规则按 `HeadersRegexp(X-IAH-E2E-Key, .+)` 匹配,
@@ -30,5 +37,5 @@ export default defineConfig({
     video: 'off',
     trace: 'retain-on-failure',
   },
-  outputDir: './.artifacts/run',
+  outputDir: '/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/_e2e-failures',
 })
