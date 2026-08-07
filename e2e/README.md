@@ -62,6 +62,38 @@ IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) node shot.mjs
 ```
 
 ★产物按版本号归档★:`unit_tests/congrove/screenshots/<线上版本>/`。
+
+## `probe.mjs`:先看清楚,再写 spec
+
+★别拿记忆当事实★——写 M1 验收那组 spec 时,我照「我以为的」文案写了一遍,几乎每个选择器都不对:
+
+| 我以为 | 实际 |
+|---|---|
+| 按钮「新建」 | **「新 建」**(AntD 给两个汉字的按钮**自动插空格**) |
+| `.ant-select-selector` | AntD 6 里不存在(那是 AntD 5 的) |
+| Select 的 placeholder 能用 `getByPlaceholder` | 它是个 `<span>`,不是 input 属性 |
+
+每一个的表现都是「超时 30 秒」,看起来像页面没加载 —— 最难查的那种失败。
+所以先跑一次探查,把真实的按钮/占位符/tab 打出来,照着抄:
+
+```bash
+IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) \
+  NODE_EXTRA_CA_CERTS=$HOME/.config/iah/IAH-Internal-CA-new.crt node probe.mjs
+```
+
+**定位优先级**:自己写的 `id`(最稳)> 可见文本/占位符 > role > ⛔ AntD 内部类名(跟着版本变)。
+
+## 三种产物,三个去处(★都不许落在家目录或仓库里★)
+
+| 产物 | 去处 | 留多久 |
+|---|---|---|
+| **成品截图**(`shot.mjs` 跑出来的各页面图) | `unit_tests/congrove/screenshots/<线上版本>/` | 留档,按版本对比用 |
+| **失败截图 / trace**(测试红了自动存的) | `unit_tests/congrove/screenshots/_e2e-failures/` | 排查完就可以整个删 |
+| **HTML 报告** | `unit_tests/congrove/screenshots/_e2e-report/` | 同上 |
+
+配置在 `playwright.config.ts` 的 `outputDir` / `outputFolder`。
+2026-08-07 之前失败截图落在 `e2e/.artifacts/`,用户指出后统一挪过来 ——
+「截图不要都放到 ~ 以及很多脚本也放到 ~ 家目录,每次我都要清理」。
 版本号**从线上页面实际抓**(页眉那个 `v0.4.x`),不读本地 `version.ts` ——
 本地领先线上几个版本是常态,用本地号会把图归错档。设计稿截图另放 `_prototype/`。
 
