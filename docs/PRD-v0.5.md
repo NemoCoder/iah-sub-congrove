@@ -718,6 +718,7 @@ items(... , activity_id, is_recording, ...)     -- meeting_id → activity_id
 - [x] **相位 2 需求确认** —— ★6 条开放问题全部关闭★（2026-08-07 逐条与 liaoruili 对齐）
 - [x] **相位 3 UI 原型** —— `prototype-v0.5.html`（六视图，★只画新东西★；
       截图在 `unit_tests/congrove/screenshots/_prototype-v0.5/`）
-- [ ] 相位 4 技术设计（schema + OpenAPI 契约 + 测试计划）
+- [x] **相位 4 技术设计** —— `TECH-DESIGN-v0.5-M0.md`（现状盘点 / 全量 schema /
+      OpenAPI 契约 / 8 步实施顺序 / 测试计划 / 风险对策）→ 待同行评审
 - [ ] 相位 5 实现
 - [ ] 相位 6 验收
