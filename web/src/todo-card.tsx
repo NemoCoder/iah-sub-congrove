@@ -26,6 +26,9 @@ const overlaps = (a: Meeting, b: Meeting) =>
   new Date(a.starts_at) < new Date(b.ends_at) && new Date(b.starts_at) < new Date(a.ends_at)
 
 type Unread = { meeting_id: number; title: string; sender: string; body: string; created_at: string; count: number }
+/// 等我答复的主持人转移(PRD ⑨.5)。★放这张卡而不是项目页里★:
+/// 被转让人可能压根不打开那个项目,只在项目内部可见的请求多半永远不会被答复。
+type Transfer = { id: number; project_id: number; project_name: string; from: string; created_at: string }
 
 export function TodoCard({ all, onOpen, onDone, style }: {
   /// 我能看到的会议（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
@@ -37,9 +40,11 @@ export function TodoCard({ all, onOpen, onDone, style }: {
 }) {
   const { message } = AntdApp.useApp()
   const [unread, setUnread] = useState<Unread[]>([])
+  const [transfers, setTransfers] = useState<Transfer[]>([])
 
   const loadUnread = useCallback(() => {
     api<Unread[]>('/api/me/unread').then(setUnread).catch(() => setUnread([]))
+    api<Transfer[]>('/api/me/transfers').then(setTransfers).catch(() => setTransfers([]))
   }, [])
   useEffect(loadUnread, [loadUnread])
 
@@ -50,7 +55,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
   const accepted = all.filter((m) => m.my_status === 'accepted')
 
-  const total = pending.length + unread.length
+  const total = pending.length + unread.length + transfers.length
 
   const markAll = async () => {
     try {
@@ -80,6 +85,9 @@ export function TodoCard({ all, onOpen, onDone, style }: {
           {pending.map((m) => (
             <InviteRow key={m.id} m={m} onOpen={onOpen} onDone={onDone}
               clash={accepted.find((x) => x.id !== m.id && overlaps(x, m))} />
+          ))}
+          {transfers.map((t) => (
+            <TransferRow key={t.id} t={t} onDone={() => { loadUnread(); onDone() }} />
           ))}
           {unread.map((u) => (
             <div key={u.meeting_id} style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
@@ -144,6 +152,38 @@ function InviteRow({ m, clash, onOpen, onDone }: {
         {/* 改期要填具体时间，去详情页做 —— 不在窄栏里塞时间选择器 */}
         <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash} disabled={busy}
           onClick={() => onOpen(m.id)}>建议改期</Button>
+      </Space>
+    </div>
+  )
+}
+
+/// 一条待答复的主持人转移。★两个按钮都要有★:只给「接受」会让不想接的人无处可去,
+/// 那条请求就永远躺在卡上;而拒绝是要通知发起人的正当动作,不是「不理它」。
+function TransferRow({ t, onDone }: { t: Transfer; onDone: () => void }) {
+  const { message } = AntdApp.useApp()
+  const [busy, setBusy] = useState(false)
+  const reply = async (accept: boolean) => {
+    setBusy(true)
+    try {
+      await api(`/api/projects/${t.project_id}/transfer/respond`, {
+        method: 'POST', body: JSON.stringify({ accept }),
+      })
+      message.success(accept ? `你现在是「${t.project_name}」的主持人` : '已拒绝')
+      onDone()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 13 }}>
+        👑 <b>{t.from}</b> 想把项目「{t.project_name}」的主持人转给你
+      </div>
+      {/* 说清接手意味着什么 —— 主持人是有责任的位置,别让人稀里糊涂点了接受 */}
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        接手后由你负责这个项目：成员治理、归档、可见性都归你。
+      </Typography.Text>
+      <Space size={4} style={{ marginTop: 6 }} wrap>
+        <Button size="small" type="primary" loading={busy} disabled={busy} onClick={() => reply(true)}>接受</Button>
+        <Button size="small" loading={busy} disabled={busy} onClick={() => reply(false)}>拒绝</Button>
       </Space>
     </div>
   )

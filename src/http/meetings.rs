@@ -19,6 +19,7 @@ use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
 use crate::perm::{meeting_view, require_meeting_host, MeetingView};
 use crate::state::AppState;
+use crate::notify::{fmt_when, notify_meeting, notify_targets};
 use crate::{audit, perm};
 
 type Ts = chrono::DateTime<chrono::Utc>;
@@ -128,8 +129,16 @@ pub async fn list(
             AND (mp.username IS NOT NULL
                  OR EXISTS (SELECT 1 FROM meeting_projects mpj
                               JOIN project_members pm ON pm.project_id = mpj.project_id
+                              JOIN projects p ON p.id = mpj.project_id AND p.deleted_at IS NULL
                              WHERE mpj.meeting_id = m.id AND pm.username = $1)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
+            -- ★关联项目**全部**被删则这场会不再出现★(2026-08-07,Playwright 截图里肉眼看出来的):
+            -- 项目软删除不动 meeting_projects 也不动成员表,所以删掉项目之后它的会议照样躺在日历上,
+            -- 还因为「找不到未删的公开项目」被误标成**私密**(紫色虚框)。
+            -- 会议必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。
+            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                          JOIN projects pd ON pd.id = mpd.project_id
+                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
             -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
             -- 塞满已结题项目的历史会议会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
             -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
@@ -200,6 +209,10 @@ pub async fn create(
     }
     tx.commit().await?;
     audit::record(&state.pool, username, "meeting.create", &mid.to_string(), title).await;
+    // ★约完就通知★:没有这一步,「我约了你」这件事只存在于我的屏幕上
+    let who = notify_targets(&state.pool, mid, username).await;
+    notify_meeting(&state, mid, &who, "有人约你开会",
+        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at))).await;
     Ok(Json(json!({ "id": mid })))
 }
 
@@ -318,7 +331,27 @@ pub async fn update(
             .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.update", &mid.to_string(), "").await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.update", &mid.to_string(), "").await;
+    // 改时间和改链接是**两件不同的急事**,所以分开通知、正文不一样:
+    //   · 改时间 → 所有人的答复已被清回 pending,他们必须重新答复;
+    //   · 改链接 → 不用重新答复,但**到点前必须看到**(开会前十分钟换链接是真实场景)。
+    // 其余改动(标题/议程/地点)不发信:够不上打扰所有人的分量,他们打开会议页就看得到。
+    let time_changed = (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1);
+    let link_changed = p.online_url.as_deref().is_some_and(|n| n != cur.2);
+    if time_changed || link_changed {
+        let who = notify_targets(&state.pool, mid, actor).await;
+        let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
+        if time_changed {
+            notify_meeting(&state, mid, &who, "会议时间已改",
+                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s))).await;
+        }
+        if link_changed {
+            notify_meeting(&state, mid, &who, "线上会议链接已改",
+                &format!("「{mtitle}」({})的线上链接已更换,开会前请从会议页重新点开。", fmt_when(s))).await;
+        }
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -330,9 +363,16 @@ pub async fn cancel(
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_meeting_host(&state.pool, &id, mid).await?;
+    let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+        .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     sqlx::query("UPDATE meetings SET status='canceled', updated_at=now() WHERE id=$1")
         .bind(mid).execute(&state.pool).await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.cancel", &mid.to_string(), "").await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.cancel", &mid.to_string(), "").await;
+    // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
+    let who = notify_targets(&state.pool, mid, actor).await;
+    notify_meeting(&state, mid, &who, "会议已取消",
+        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts))).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -365,7 +405,18 @@ pub async fn invite(
             .bind(mid).bind(u).bind(kind).execute(&state.pool).await?;
         n += 1;
     }
-    audit::record(&state.pool, id.require_username()?, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
+    // ★只通知这一批新加的人★,不打扰早就在名单里的人(他们什么都没变)。
+    // 旁听者也不通知:observer 是自助加进来的(D9),他自己知道。
+    if kind != "observer" {
+        let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
+        let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty() && u != actor).collect();
+        notify_meeting(&state, mid, &fresh, "有人约你开会",
+            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts))).await;
+    }
     Ok(Json(json!({ "ok": true, "invited": n })))
 }
 
@@ -438,6 +489,21 @@ pub async fn respond(
         .bind(mid).bind(username).bind(st)
         .bind(r.counter_starts_at).bind(r.counter_ends_at).bind(r.counter_reason.as_deref())
         .execute(&state.pool).await?;
+    // ★「建议改期」必须通知发起人★(D2):私密项目的日程对他完全隐形,他不知道我为什么忙,
+    // 这条建议就是他能收到的**唯一**信号。它躺在数据库里没人看 = 这个出口不存在。
+    // 其余三态(接受/拒绝/待定)不发信 —— 发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
+    if st == "counter" {
+        let (mtitle, organizer): (String, String) =
+            sqlx::query_as("SELECT title, organizer FROM meetings WHERE id=$1")
+                .bind(mid).fetch_one(&state.pool).await?;
+        if organizer != username {
+            let when = r.counter_starts_at.map(fmt_when).unwrap_or_else(|| "(未给具体时间)".into());
+            let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
+                .map(|x| format!(",理由:{x}")).unwrap_or_default();
+            notify_meeting(&state, mid, &[organizer], "有人建议改期",
+                &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
+        }
+    }
     Ok(Json(json!({ "ok": true, "status": st })))
 }
 
@@ -702,6 +768,7 @@ pub async fn meeting_items(
     let ok: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM meeting_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
+           JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
           WHERE mp.meeting_id = $1 AND pm.username = $2
           UNION ALL SELECT 1 FROM app_user WHERE username = $2 AND is_super
           LIMIT 1")
@@ -797,7 +864,13 @@ pub async fn reject_counter(
           WHERE meeting_id=$1 AND username=$2 AND status='counter'")
         .bind(mid).bind(&who).execute(&state.pool).await?.rows_affected();
     if n == 0 { return Err(AppError::BadRequest("这个人没有待处理的改期建议".into())) }
-    audit::record(&state.pool, id.require_username()?, "meeting.reject-counter", &mid.to_string(), &who).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.reject-counter", &mid.to_string(), &who).await;
+    // 提了建议就该知道结果 —— 尤其驳回后他回到 pending、**还欠一次答复**,不说他不会知道
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    notify_meeting(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
+        &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。")).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -829,7 +902,15 @@ pub async fn accept_counter(
           WHERE meeting_id=$1 AND username <> $2")
         .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     tx.commit().await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.accept-counter", &mid.to_string(), &who).await;
+    let actor = id.require_username()?;
+    audit::record(&state.pool, actor, "meeting.accept-counter", &mid.to_string(), &who).await;
+    // 采纳 = 会议时间真的变了 → ★通知全员★(和 update 改时间同理:别人的答复已被清回 pending),
+    // 提议人本人也要收到,他要知道自己的建议被采纳了。
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    let all = notify_targets(&state.pool, mid, actor).await;
+    notify_meeting(&state, mid, &all, "会议时间已改",
+        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s))).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
 
@@ -869,6 +950,10 @@ pub async fn public_list(
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
             AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
+            -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)
+            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                          JOIN projects pd ON pd.id = mpd.project_id
+                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
             -- 归档项目的会不进广场(与日历同一条口径:它不该再出现在「接下来要做什么」里)
             AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
                                JOIN projects p ON p.id = mpj.project_id
@@ -959,6 +1044,13 @@ pub async fn my_stats(
         FROM meetings m
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
+          -- ★关联项目全被删的会不计入★(2026-08-07,从个人面板的图上看出来的):
+          -- 少了这一句,totals 会说「参会 1 次」而下面的分项目表是空的 ——
+          -- 因为分项目那条 JOIN 了 projects 判 deleted_at,总数却没判。
+          -- ★两个数字自相矛盾比两个都错更糟★:看的人会以为是自己看错了。
+          AND EXISTS (SELECT 1 FROM meeting_projects mpd
+                        JOIN projects pd ON pd.id = mpd.project_id
+                       WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
           AND (m.organizer = $1
                OR EXISTS (SELECT 1 FROM meeting_participants p
                           WHERE p.meeting_id = m.id AND p.username = $1
@@ -1001,8 +1093,17 @@ pub async fn my_stats(
          ORDER BY p.archived_at IS NOT NULL, p.name")
         .bind(who).fetch_all(&state.pool).await?;
 
+    // 「我参与 N 个项目」是**当下的成员身份**,与时间段无关 ——
+    // 名片上那个数字若跟着「本月/本季度」变,读起来像「我这个月退出了几个项目」。
+    let member_of: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM project_members pm
+           JOIN projects p ON p.id = pm.project_id AND p.deleted_at IS NULL
+          WHERE pm.username = $1")
+        .bind(who).fetch_one(&state.pool).await?;
+
     Ok(Json(json!({
         "range": range,
+        "member_of": member_of,
         "totals": { "meetings": cnt, "hours": (hours * 10.0).round() / 10.0, "projects": projects, "minutes_todo": todo },
         "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
             "id": id, "name": name, "visibility": vis, "archived": arch,
@@ -1081,4 +1182,26 @@ pub async fn mark_read(
             .bind(who).execute(&state.pool).await?.rows_affected(),
     };
     Ok(Json(json!({ "marked": n })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★时区换算是站内信里最容易静默错的一格★:UTC 存、北京时间显示,
+    /// 差 8 小时不会报错,只会让人在错的时间到场。星期也一起钉住 ——
+    /// 它是从日期算出来的,算错了同样不报错。
+    #[test]
+    fn 站内信时间按北京时间显示并带星期() {
+        let t: Ts = "2026-08-13T02:00:00Z".parse().unwrap();   // UTC 02:00 = 北京 10:00
+        assert_eq!(fmt_when(t), "08-13 周四 10:00");
+    }
+
+    /// 跨日的那一格:UTC 当天 20:00 在北京已经是**第二天**凌晨 4 点。
+    /// 只按 UTC 取日期的写法在这里会给出错的日子和错的星期。
+    #[test]
+    fn 站内信时间跨日不串日期() {
+        let t: Ts = "2026-08-13T20:00:00Z".parse().unwrap();   // 北京 08-14 04:00 周五
+        assert_eq!(fmt_when(t), "08-14 周五 04:00");
+    }
 }

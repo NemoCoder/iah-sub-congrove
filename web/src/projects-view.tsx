@@ -633,14 +633,14 @@ export function ProjectsView({ me }: { me: Me | null }) {
           {/* key 按项目:这个面板是常驻挂载的(不是 open 才渲染),不给 key 的话切到别的项目时
               术语表输入框、诊断结果这些内部 state 会留着上一个项目的值——保存就把 A 的词写进 B
               (2026-08-04 审计发现,v0.3.29 引入)。 */}
-          <MembersModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadProjects} />
+          <MembersModal key={cur.id} space={cur} me={me} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadProjects} />
           {shareFor && <ShareModal key={shareFor.map((i) => i.id).join('-')} items={shareFor} onClose={() => setShareFor(null)} />}
           <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
               </>),
             },
             {
               key: 'members', label: '成员',
-              children: <MembersModal key={`m${cur.id}`} space={cur} open onClose={() => {}}
+              children: <MembersModal key={`m${cur.id}`} space={cur} me={me} open onClose={() => {}}
                 onChanged={loadProjects} inline />,
             },
             {
@@ -792,8 +792,8 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
 /// 代价是加人变成一个个加,所以★批量添加是必做的★:第一次拉 20 人不能让人点 20 次。
 /// 成员与设置。★两种形态一份实现★:项目页的「成员」tab 用 inline 内嵌,
 /// 别处仍可当弹窗用 —— 免得同一份逻辑维护两遍(2026-08-07 按原型加四 tab 时)。
-function MembersModal({ space, open, onClose, onChanged, inline = false }:
-  { space: Project; open: boolean; onClose: () => void; onChanged: () => void; inline?: boolean }) {
+function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
+  { space: Project; open: boolean; onClose: () => void; onChanged: () => void; inline?: boolean; me?: Me | null }) {
   const { message } = AntdApp.useApp()
   const [owner, setOwner] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
@@ -890,8 +890,31 @@ function MembersModal({ space, open, onClose, onChanged, inline = false }:
           },
           { title: '加入', dataIndex: 'added_at', width: 110, render: (t: string) => t?.slice(0, 10) },
           {
-            title: '', width: 60,
+            title: '', width: 130,
             render: (_, m) => (m.username === owner ? null : (
+              <AntSpace size={10}>
+              {/* ★转主持人是「发起」不是「转」★(PRD ⑨.5):对方点了接受才生效,
+                  待接受期间我仍是主持人。文案必须说清,否则点完以为已经卸任了。 */}
+              {me?.username === owner && (
+                <Popconfirm
+                  title={`把主持人转给 ${m.username}？`}
+                  description={<div style={{ maxWidth: 320, fontSize: 12 }}>
+                    · <b>要他接受才生效</b>；在他答复之前，主持人还是你<br />
+                    · 他会收到一条站内信；你随时可以撤回<br />
+                    · 生效后你保留<b>管理员</b>身份，不会被移出项目
+                  </div>}
+                  onConfirm={async () => {
+                    try {
+                      await api(`/api/projects/${space.id}/transfer`, {
+                        method: 'POST', body: JSON.stringify({ to: m.username }),
+                      })
+                      message.success('已发出，等他接受')
+                      await load(); onChanged()
+                    } catch (e) { message.error((e as Error).message) }
+                  }}>
+                  <a>转主持人</a>
+                </Popconfirm>
+              )}
               <Popconfirm
                 title={`把 ${m.username} 移出项目？`}
                 description={<div style={{ maxWidth: 320, fontSize: 12 }}>
@@ -911,7 +934,8 @@ function MembersModal({ space, open, onClose, onChanged, inline = false }:
                   } catch (e) { message.error((e as Error).message) }
                 }}>
                 <a style={{ color: '#ff4d4f' }}>移出</a>
-              </Popconfirm>)),
+              </Popconfirm>
+              </AntSpace>)),
           },
         ]} />
 

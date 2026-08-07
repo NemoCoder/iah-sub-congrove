@@ -68,5 +68,13 @@ await page.mouse.wheel(0, 700); await shot('04-会议详情-下')
 await page.goto(BASE + '/'); await nav('会议')
 await page.getByRole('button', { name: /发起会议/ }).click(); await shot('05-发起会议')
 await page.goto(BASE + '/'); await nav('项目'); await shot('06-项目')
+// 个人面板(v0.4.23):在右上用户菜单里,不在主导航 —— 低频入口不占主导航
+await page.goto(BASE + '/')
+// ⚠ 页眉不是 <header> 标签(iah-header.tsx 用的 div),按用户名定位那个下拉按钮
+await page.getByRole('button', { name: /e2e/ }).first().click(); await page.waitForTimeout(400)
+await page.getByText('个人面板', { exact: true }).click(); await shot('07-个人面板')
+// 日程页下半屏:看★时段分隔★(8/12/18 三条线 + 上下午标识,v0.4.22)
+await page.goto(BASE + '/'); await page.waitForTimeout(1200)
+await page.mouse.wheel(0, 500); await shot('08-日程-时段分隔')
 
 await browser.close()

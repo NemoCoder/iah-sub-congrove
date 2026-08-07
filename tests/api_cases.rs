@@ -105,10 +105,36 @@ const CASES: &[Case] = &[
        "DELETE {username:'他'}", "200;★那 2 条立刻 404★——否则人走了链接还在 = R1 后门", "D3/R1"),
     c!("DELETE", "/api/projects/{id}/members", "离开即失去全部含他参与过的会议", "他参加过本项目 3 场会议",
        "移出后以他的身份查这 3 场", "全部不可见;★不得因「他当时参加过」而保留可见性★(那是历史累积模型)", "D3"),
-    c!("POST", "/api/projects/{id}/transfer", "转移主持人", "我是 owner,目标是本项目成员", "POST {to:'他'}",
-       "200,owner 变更;原 owner 保留 admin 成员位(否则转完自己就被踢出去了)", "D0"),
+    // 转移主持人:★发起 ≠ 生效★(PRD ⑨.5,docs/TECH-DESIGN-M1-owner-transfer.md)。
+    // 这一组钉的是「什么时候 owner 才真的变」——早一步变,项目在空档期无主;晚一步变,交接不算数。
+    c!("POST", "/api/projects/{id}/transfer", "★发起后 owner 先不变★", "我是 owner,目标是本项目成员",
+       "POST {to:'他'}", "200 + transfer_id;★projects.owner 仍是我★(T1)——发起即卸任会让项目在\
+        「对方还没点」的整段时间里没人能加人、没人能改设置,而他可能永远不点", ""),
+    c!("POST", "/api/projects/{id}/transfer", "同一项目只能有一条 pending", "已经发起过一条还没答复",
+       "POST {to:'另一个人'}", "400「已有一条待答复的转移」——★由库里的部分唯一索引堵死★,\
+        不是先查后插(那中间有窗口);并发两条会造成两个人都以为自己接手了", ""),
+    c!(deny "POST", "/api/projects/{id}/transfer", "归档项目不能发起转移", "项目已归档",
+       "POST {to:'他'}", "400——归档 = 只读存档(D17)", "D17"),
+    c!("POST", "/api/projects/{id}/transfer/respond", "★接受这一刻 owner 才变★", "我是被转让人",
+       "POST {accept:true}", "200,owner=我;★原主持人保留 admin★(T4:交棒不是逐出,他通常还要继续参与)", ""),
+    c!("POST", "/api/projects/{id}/transfer/respond", "拒绝则 owner 不变且原主持人收到信", "我是被转让人",
+       "POST {accept:false}", "200,owner 不变;发起人收到「转移主持人被拒绝」——\
+        ★不说他不会知道★,请求会静静躺在那里", ""),
+    c!(deny "POST", "/api/projects/{id}/transfer/respond", "★接受前离开项目则接不了★",
+       "转移发起后我被移出了项目", "POST {accept:true}",
+       "400 且 owner 不变 —— 权限是「当前成员身份的函数」(D3),不信发起那一刻的快照(T5)", "D3"),
+    c!(deny "POST", "/api/projects/{id}/transfer/respond", "别人替我答复不行", "我不是被转让人",
+       "POST {accept:true}", "403 —— 接受主持人是本人才能做的决定", ""),
+    c!("POST", "/api/projects/{id}/transfer/respond", "归档项目的 pending 仍可接受", "转移发起后项目被归档",
+       "POST {accept:true}", "200 —— ★否则归档会把请求永久卡死★:发起人已不能撤回(归档只读),\
+        被转让人也接不了(T6)", "D17"),
+    c!("DELETE", "/api/projects/{id}/transfer", "撤回", "我是发起人,对方还没答复",
+       "DELETE .../transfer", "200,该条转为 canceled;对方收到「已撤回」——\
+        ★不通知的话他点进去发现按钮没了,会以为是坏了★", ""),
+    c!(deny "DELETE", "/api/projects/{id}/transfer", "没有待撤回的转移", "从没发起过",
+       "DELETE .../transfer", "400", ""),
     c!(deny "POST", "/api/projects/{id}/transfer", "不能转给非成员", "我是 owner,目标不是成员",
-       "POST {to:'外人'}", "400/422 拒绝且 owner 不变;★否则项目会落到一个看不见它的人手里★", "D0"),
+       "POST {to:'外人'}", "400/422 拒绝;★否则他接受的瞬间成了一个自己都进不去的项目的主持人★(T3)", "D0"),
     c!(deny "POST", "/api/projects/{id}/transfer", "admin 不能转移主持人", "我是 admin 非 owner", "POST {to:'x'}", "403", "D0"),
     c!("POST", "/api/projects/{id}/archive", "归档后变只读", "我是 owner,项目里有材料",
        "POST {} 归档,再试上传/建会议/改名",
@@ -237,6 +263,52 @@ const CASES: &[Case] = &[
 
     // 「我的投入」——这几条钉的全是**口径**。统计一旦口径漂了没人看得出来:
     // 数字照样长得很像那么回事,只是不对。
+    // ── ★项目软删除后,它的会议要跟着消失★(2026-08-07 Playwright 截图里肉眼发现)──
+    // 项目软删除**不动 meeting_projects 也不动成员表**,所以少了这道过滤,
+    // 删掉的项目的会照样躺在日历上,还因为「找不到未删的公开项目」被误标成私密(紫色虚框)。
+    // 这是 CLAUDE.md 那条硬纪律在会议模块的又一处遗漏(上次 v0.3.55 一口气补了 11 处)。
+    c!("GET", "/api/meetings", "★删掉项目后它的会不再进日历★", "项目 P 被删进回收站,它有一场未来的会",
+       "GET /api/meetings", "不含那场会——会议必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。\
+        ★判据是「关联项目**全部**被删」★:多项目关联时只要还有一个活着就留下", ""),
+    c!("GET", "/api/meetings/public", "删掉项目后它的公开会不进广场", "公开会议的关联项目被删",
+       "GET /api/meetings/public", "不含——与日历同一条口径", "D9"),
+    c!(deny "GET", "/api/meetings/{id}/items", "★项目删了,原项目成员就拿不到材料了★",
+       "我不是参会人,只是被删项目的成员", "GET .../items",
+       "403/404 —— 材料权限来自**项目成员身份**(D3),项目进了回收站这个身份就不该再兑现", "D3"),
+    c!(deny "GET", "/api/meetings/{id}", "项目删了,原项目成员也看不到会议详情",
+       "我不是参会人,只是被删项目的成员", "GET /api/meetings/{id}",
+       "404 —— meeting_view 的「项目成员」那条要 JOIN projects 判 deleted_at", "D3"),
+
+    c!("GET", "/api/me/transfers", "只列等我答复的", "有一条转给我的 pending、一条转给别人的",
+       "GET /api/me/transfers", "只回转给我那条;已 accepted/declined/canceled 的都不回", ""),
+    c!("GET", "/api/me/transfers", "项目被删则不回", "转移还 pending 但项目已软删除",
+       "GET /api/me/transfers", "不回 —— 让人去接手一个已经不存在的项目是纯粹的噪音", ""),
+    c!(deny "GET", "/api/me/transfers", "未登录看不了", "无会话", "GET /api/me/transfers", "401", ""),
+
+    // ── 站内信(M1 收口)──★钉的是「谁该收到、谁不该收到」★:
+    // 该收没收 = 人不知道有会;不该收却收 = 收件箱被淹,真正要紧的那条被埋掉。两种错都致命。
+    c!("POST", "/api/meetings", "★建会即通知被约的人★", "我约了 A、B",
+       "POST /api/meetings", "A、B 收到「有人约你开会」站内信,★发起人自己不收★——\
+        他知道自己干了什么,「你约了自己」只会让人觉得系统啰嗦", ""),
+    c!("POST", "/api/meetings", "registry 不可达不影响建会", "平台 registry 挂了",
+       "POST /api/meetings", "★200,会照建★——发不出信是通知的事故,不是约会的事故;只 warn 一行日志", ""),
+    c!("PUT", "/api/meetings/{id}", "★改时间发「请重新答复」★", "把会从周三挪到周四",
+       "PUT {starts_at,ends_at}", "全员收到「会议时间已改」且正文点明答复已作废——\
+        库里确实把 status 清回了 pending,不说他们不会知道自己又欠一次答复", ""),
+    c!("PUT", "/api/meetings/{id}", "改链接通知但不清答复", "只改 online_url",
+       "PUT {online_url}", "发「线上会议链接已改」;★答复不清★——换个链接不影响「我来不来」。\
+        ★改标题/议程/地点不发信★:够不上打扰所有人,他们打开会议页就看得到", ""),
+    c!("DELETE", "/api/meetings/{id}", "★取消最需要通知★", "发起人取消会议",
+       "DELETE /api/meetings/{id}", "全员收到「会议已取消」——不通知的后果是有人按原计划去了,而会不存在了", ""),
+    c!("PUT", "/api/meetings/{id}/participants", "只通知新加的这批", "会上已有 5 人,再加 2 人",
+       "PUT {usernames:[2人]}", "★只有这 2 人收到★:原来 5 个人什么都没变,不该被打扰;\
+        kind=observer 不发信(自助加进来的,他自己知道)", "D9"),
+    c!("POST", "/api/meetings/{id}/respond", "★建议改期必须通知发起人★", "我提了 counter",
+       "POST {status:'counter',...}", "发起人收到「有人建议改期」含提议时间与理由——\
+        私密项目的日程对他完全隐形,这是他能收到的**唯一**信号;躺在库里没人看 = 这个出口不存在", "D2"),
+    c!("POST", "/api/meetings/{id}/respond", "接受/拒绝/待定不发信", "我点了接受",
+       "POST {status:'accepted'}", "★不发★——发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的改期建议", ""),
+
     // 未读:三条钉的是「什么算未读」和「标记已读会不会吞消息」。
     c!("GET", "/api/me/unread", "★公开讨论区的新消息不算未读★", "某会公开频道有 5 条我没看过的消息",
        "GET /api/me/unread", "空数组——那是「群里有人说话」不是「有人找我」;\

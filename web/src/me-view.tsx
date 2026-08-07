@@ -14,6 +14,8 @@ type Row = { id: number; name: string; visibility: string; archived: boolean; co
 type Host = { id: number; name: string; visibility: string; archived: boolean; members: number; minutes_pending: number }
 type Stats = {
   range: string
+  /// 我是成员的项目数(当下的身份,与时间段无关)
+  member_of: number
   totals: { meetings: number; hours: number; projects: number; minutes_todo: number }
   by_project: Row[]
   hosting: Host[]
@@ -61,10 +63,15 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
             fontSize: 26, lineHeight: '64px', margin: '4px auto 10px',
           }}>{display.slice(0, 1).toUpperCase()}</div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>{display}</div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{me?.username}</Typography.Text>
+          {/* 没登记姓名的人 display 就是 username,再显示一遍会变成「e2e / e2e」 */}
+          {me?.name && me.name !== me.username && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{me.username}</Typography.Text>
+          )}
           <div style={{ marginTop: 10 }}>
             <Tag color="gold">主持 {hosting.length} 个项目</Tag>
-            <Tag>参与 {data?.totals.projects ?? 0} 个</Tag>
+            {/* ★用 member_of 不用 totals.projects★:后者是「这段时间开会涉及的项目」,
+                挂在名片上会被读成「我参与的项目数」,而且会跟着「本月/本季度」变 —— 读起来像我退了几个项目 */}
+            <Tag>参与 {data?.member_of ?? 0} 个</Tag>
           </div>
         </Card>
 

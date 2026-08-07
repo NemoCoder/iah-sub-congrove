@@ -32,6 +32,14 @@ function sharePageToken(): string | null {
 }
 
 
+/// 站内信里的「?meeting=<id>」—— ★通知必须点得进去★:
+/// 只说「有事发生」而落地在首页,人还得自己去找是哪场会,那通知就只完成了一半。
+/// 不引路由库(app.tsx 头注的既有约定),查询参数够用:读一次就把人放到那场会上。
+function deepLinkMeetingId(): number | null {
+  const v = new URLSearchParams(window.location.search).get('meeting')
+  return v && /^\d+$/.test(v) ? Number(v) : null
+}
+
 export function App() {
   // ★公开分享页最先劫路由★:它不需要登录,所以必须在 /api/me 之前返回——
   // 否则访客会被 401 整页跳去 Keycloak(2026-08-05 公开分享)。
@@ -45,10 +53,11 @@ export function App() {
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
   // ★默认落在日程★:产品从「文档存储」转向「项目+会议协同」之后,
   // 打开先看到的应该是「我今天要做什么」,而不是文件柜。
-  const [view, setView] = useState<View>('schedule')
+  // 带 ?meeting= 进来的直接落在会议页(否则日程页的日历要先滚到那一周才看得见那场会)
+  const [view, setView] = useState<View>(() => (deepLinkMeetingId() != null ? 'meetings' : 'schedule'))
   // 会议子视图:null=日历 / 数字=看某场会 / 'new'=发起会议。
   // ★不引路由库★:与 /viewer/{id} 一样,这层用状态足够(app.tsx 头注的既有约定)。
-  const [meetingId, setMeetingId] = useState<number | 'new' | null>(null)
+  const [meetingId, setMeetingId] = useState<number | 'new' | null>(deepLinkMeetingId)
   // 纪要是会议的子页:非空时盖在详情之上(返回回到详情,不是回日历)
   const [minutesOf, setMinutesOf] = useState<number | null>(null)
 

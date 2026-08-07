@@ -65,7 +65,14 @@ pub const APIS: &[Api] = &[
          "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),
     api!("DELETE", "/api/projects/{id}/members", "项目", "admin",
          "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username"),
-    api!("POST", "/api/projects/{id}/transfer", "项目", "owner", "转移主持人(只能转给本项目成员)", "to"),
+    api!("POST", "/api/projects/{id}/transfer", "项目", "owner",
+         "★发起★转移主持人(不是直接转,PRD ⑨.5)。只能转给本项目成员;归档项目不能发起;\
+          ★待接受期间原主持人仍是主持人★——发起即卸任会让项目在空档期无主。同一项目只允许一条 pending(库里唯一索引)", "to"),
+    api!("POST", "/api/projects/{id}/transfer/respond", "项目", "★仅被转让人本人★",
+         "接受 / 拒绝接手主持人。★接受时重新校验成员身份★(D3:权限是当前状态的函数,不信发起那刻的快照);\
+          接受后原主持人保留 admin(交棒不是逐出)。⚠ 归档项目的 pending **仍可接受**,否则归档把请求永久卡死", "accept"),
+    api!("DELETE", "/api/projects/{id}/transfer", "项目", "owner",
+         "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", ""),
     api!("POST", "/api/projects/{id}/archive", "项目", "owner",
          "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,\
           但不能再上传/建会议/改内容;配额仍占;归档项目的会不进日历、不产生忙闲。\
@@ -131,6 +138,9 @@ pub const APIS: &[Api] = &[
          "「我的投入」统计(原型 me 视图)。★口径在 handler 注释里,前端不自己算★:只算**已开完**的会、\
           拒绝的不算、发起人不在名单也算;待写纪要=我是记录员且纪要非 done。\
           ⚠ 分项目的次数之和 ≥ 总次数(一场会可关联多个项目)", "range(month/quarter/year)"),
+    api!("GET", "/api/me/transfers", "项目", "登录",
+         "等我答复的主持人转移(喂给「待我处理」卡)。★不做成只在项目页可见★——\
+          被转让人可能压根不打开那个项目,那样请求永远不会被答复", ""),
     api!("GET", "/api/me/unread", "会议", "登录",
          "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
           否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),

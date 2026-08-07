@@ -187,9 +187,18 @@ pub async fn detail(
             .fetch_optional(&state.pool)
             .await?;
     let Some((name, description, created_by, created_at)) = row else { return Err(AppError::NotFound) };
+    // 待答复的主持人转移。★挂在详情里而不是新开一个「我的待办」接口★:
+    // 被转让人必然是本项目成员(T3),他打开项目就该看到 —— 不必为一条极低频的东西再加一次请求。
+    let pt: Option<(i64, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT id, from_user, to_user, created_at FROM owner_transfers
+          WHERE project_id = $1 AND status = 'pending'")
+        .bind(pid).fetch_optional(&state.pool).await?;
     Ok(Json(json!({
         "id": pid, "name": name, "description": description,
         "created_by": created_by, "created_at": created_at, "my_role": role,
+        "pending_transfer": pt.map(|(tid, from, to, at)| json!({
+            "id": tid, "from": from, "to": to, "created_at": at,
+        })),
     })))
 }
 
@@ -449,11 +458,15 @@ pub async fn member_delete(
 #[derive(Deserialize)]
 pub struct TransferIn { pub to: String }
 
-/// POST /api/projects/{id}/transfer —— 转移主持人(仅现任主持人;超管可强转)。
+/// POST /api/projects/{id}/transfer —— ★发起★转移主持人(现任主持人;超管可强推)。
 ///
-/// ⚠ 本版是**直接转移**。PRD ⑨.5 定的是「需对方接受才生效」,
-/// 那需要一张待接受表 + 通知 + 接受入口 —— 排在 M1 收尾,先留 TODO 免得阻塞主线。
-/// 现在至少保证了「不能转给非成员」与「转完原主持人仍是 admin」。
+/// ★不再是直接转★(2026-08-07,PRD ⑨.5;设计见 docs/TECH-DESIGN-M1-owner-transfer.md):
+/// 主持人是有责任的位置(纪要欠账、成员治理都挂他名下),单方面塞给别人不合适;
+/// 更糟的是甩给一个已经不活跃的人之后,项目实际无人负责而系统显示它有主持人 ——
+/// **比明确无主更糟,因为没人会去管它**。
+///
+/// ★待接受期间原主持人仍是主持人★(T1):若发起即卸任,项目在空档期无主 ——
+/// 没人能加人、没人能改设置,而对方可能永远不点。
 pub async fn transfer(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -464,21 +477,118 @@ pub async fn transfer(
     let actor = id.require_username()?;
     let to = input.to.trim();
     if to.is_empty() { return Err(AppError::BadRequest("缺 to".into())) }
+    if to == actor { return Err(AppError::BadRequest("已经是你自己了".into())) }
+    // T3:只能转给现有成员 —— 转给非成员 = 他接受的瞬间成了一个自己都进不去的项目的主持人
     let is_member: Option<String> = sqlx::query_scalar(
         "SELECT role FROM project_members WHERE project_id = $1 AND username = $2",
     ).bind(pid).bind(to).fetch_optional(&state.pool).await?;
     if is_member.is_none() {
         return Err(AppError::BadRequest("只能转给本项目的成员,请先把他加进来".into()));
     }
+    // T6:归档项目不能**发起**转移(归档 = 只读存档,D17)。已 pending 的仍可接受,见 respond。
+    let (archived, name): (bool, String) = sqlx::query_as(
+        "SELECT archived_at IS NOT NULL, name FROM projects WHERE id = $1 AND deleted_at IS NULL")
+        .bind(pid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    if archived { return Err(AppError::BadRequest("项目已归档,请先取消归档再转移主持人".into())) }
+
+    // ★同一项目只允许一条 pending 由库里的部分唯一索引堵死★(迁移 0004):
+    // 先查后插中间有窗口,并发两条会造成「两个人都以为自己接手了」。这里只把冲突翻译成人话。
+    let r = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO owner_transfers (project_id, from_user, to_user) VALUES ($1,$2,$3) RETURNING id")
+        .bind(pid).bind(actor).bind(to).fetch_one(&state.pool).await;
+    let tid = match r {
+        Ok(v) => v,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() =>
+            return Err(AppError::BadRequest("已有一条待答复的转移,请先撤回".into())),
+        Err(e) => return Err(e.into()),
+    };
+    audit::record(&state.pool, actor, "project.transfer.offer", &pid.to_string(),
+        &format!("主持人 {actor} → {to}(待对方接受)")).await;
+    crate::notify::notify_project(&state, pid, &[to.to_string()], "有人要把项目转给你",
+        &format!("{actor} 想把项目「{name}」的主持人转给你。接受后由你负责这个项目。")).await;
+    Ok(Json(json!({ "ok": true, "transfer_id": tid })))
+}
+
+#[derive(Deserialize)]
+pub struct TransferRespondIn { pub accept: bool }
+
+/// POST /api/projects/{id}/transfer/respond —— ★仅被转让人本人★答复。
+///
+/// ★接受时重新校验一次成员身份★(T5):权限是「当前成员身份的函数」(D3),
+/// 不信发起那一刻的快照 —— 中间他可能已经离开项目了。
+pub async fn transfer_respond(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+    Json(input): Json<TransferRespondIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    // ⚠ 这里**不能**用 require_role/require_owner:被转让人可能只是 editor,
+    //   而归档项目的写闸会拒绝一切 ≥editor 的写(T6:已 pending 的必须能接受,否则归档把请求永久卡死)。
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, from_user, to_user FROM owner_transfers
+          WHERE project_id = $1 AND status = 'pending'")
+        .bind(pid).fetch_optional(&state.pool).await?;
+    let (tid, from, to) = row.ok_or_else(|| AppError::BadRequest("没有待答复的转移".into()))?;
+    if to != me { return Err(AppError::Forbidden) }
+
+    let name: String = sqlx::query_scalar("SELECT name FROM projects WHERE id=$1 AND deleted_at IS NULL")
+        .bind(pid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+
+    if !input.accept {
+        sqlx::query("UPDATE owner_transfers SET status='declined', settled_at=now() WHERE id=$1")
+            .bind(tid).execute(&state.pool).await?;
+        audit::record(&state.pool, me, "project.transfer.decline", &pid.to_string(), &from).await;
+        // ★拒绝也要通知★:不说他不会知道,请求会静静躺在那里
+        crate::notify::notify_project(&state, pid, std::slice::from_ref(&from), "转移主持人被拒绝",
+            &format!("{me} 拒绝接手项目「{name}」的主持人。")).await;
+        return Ok(Json(json!({ "ok": true, "accepted": false })));
+    }
+
+    // T5:接受这一刻重新校验 —— 他可能已经不在项目里了
+    let still: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM project_members WHERE project_id=$1 AND username=$2")
+        .bind(pid).bind(me).fetch_optional(&state.pool).await?;
+    if still.is_none() {
+        return Err(AppError::BadRequest("你已不是本项目成员,无法接手".into()));
+    }
     let mut tx = state.pool.begin().await?;
-    sqlx::query("UPDATE projects SET owner = $2 WHERE id = $1").bind(pid).bind(to)
+    sqlx::query("UPDATE projects SET owner = $2 WHERE id = $1").bind(pid).bind(me)
         .execute(&mut *tx).await?;
-    // 新主持人必须是 admin;原主持人保留 admin(他还要继续干活,只是不再是负责人)。
-    sqlx::query("UPDATE project_members SET role = 'admin' WHERE project_id = $1 AND username = $2")
-        .bind(pid).bind(to).execute(&mut *tx).await?;
+    // 新主持人必须是 admin;★原主持人保留 admin★(T4:交棒不是逐出,他通常还要继续参与)
+    sqlx::query("UPDATE project_members SET role='admin' WHERE project_id=$1 AND username IN ($2,$3)")
+        .bind(pid).bind(me).bind(&from).execute(&mut *tx).await?;
+    sqlx::query("UPDATE owner_transfers SET status='accepted', settled_at=now() WHERE id=$1")
+        .bind(tid).execute(&mut *tx).await?;
     tx.commit().await?;
-    audit::record(&state.pool, actor, "project.transfer", &pid.to_string(),
-        &format!("主持人 {actor} → {to}")).await;
+    audit::record(&state.pool, me, "project.transfer.accept", &pid.to_string(),
+        &format!("主持人 {from} → {me}")).await;
+    crate::notify::notify_project(&state, pid, std::slice::from_ref(&from), "主持人已交接",
+        &format!("{me} 已接受项目「{name}」的主持人,你不再是负责人(仍是管理员)。")).await;
+    Ok(Json(json!({ "ok": true, "accepted": true, "owner": me })))
+}
+
+/// DELETE /api/projects/{id}/transfer —— 撤回(发起人;超管)。
+/// ★手滑转错人的唯一退路★(T2):不给撤回就只能去求对方点「拒绝」。
+pub async fn transfer_cancel(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::perm::require_owner(&state.pool, &id, pid).await?;
+    let actor = id.require_username()?;
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, to_user FROM owner_transfers WHERE project_id=$1 AND status='pending'")
+        .bind(pid).fetch_optional(&state.pool).await?;
+    let (tid, to) = row.ok_or_else(|| AppError::BadRequest("没有待撤回的转移".into()))?;
+    sqlx::query("UPDATE owner_transfers SET status='canceled', settled_at=now() WHERE id=$1")
+        .bind(tid).execute(&state.pool).await?;
+    audit::record(&state.pool, actor, "project.transfer.cancel", &pid.to_string(), &to).await;
+    let name: String = sqlx::query_scalar("SELECT name FROM projects WHERE id=$1")
+        .bind(pid).fetch_one(&state.pool).await?;
+    // ★撤回也通知★:否则他点进去发现按钮没了,以为是坏了
+    crate::notify::notify_project(&state, pid, std::slice::from_ref(&to), "转移主持人已撤回",
+        &format!("{actor} 撤回了把项目「{name}」转给你的请求。")).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -512,4 +622,26 @@ pub async fn archive(
     audit::record(&state.pool, username, if want { "project.archive" } else { "project.unarchive" },
                   &pid.to_string(), "").await;
     Ok(Json(json!({ "ok": true, "archived": want })))
+}
+
+/// GET /api/me/transfers —— 等我答复的主持人转移。
+///
+/// ★为什么不是在项目页里看★:被转让人可能**压根不会打开那个项目**——
+/// 一个躺着的请求要是只在项目内部可见,它多半永远不会被答复。
+/// 所以它归到「待我处理」那张卡里,和会议邀请、私聊未读并列:
+/// 那张卡的定义就是「需要我动作的事」,这条完全符合。
+pub async fn my_transfers(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    let rows: Vec<(i64, i64, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT t.id, t.project_id, p.name, t.from_user, t.created_at
+           FROM owner_transfers t JOIN projects p ON p.id = t.project_id AND p.deleted_at IS NULL
+          WHERE t.status = 'pending' AND t.to_user = $1
+          ORDER BY t.created_at")
+        .bind(me).fetch_all(&state.pool).await?;
+    Ok(Json(json!(rows.iter().map(|(tid, pid, name, from, at)| json!({
+        "id": tid, "project_id": pid, "project_name": name, "from": from, "created_at": at,
+    })).collect::<Vec<_>>())))
 }
