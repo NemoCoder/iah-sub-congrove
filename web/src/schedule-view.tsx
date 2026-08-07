@@ -9,7 +9,7 @@
 //
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
 //   公开项目的会 = 青色实框 / 私密项目的会 = 紫色虚框 / 待你应答 = 红色。
-import { App as AntdApp, Badge, Button, Card, Empty, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Badge, Button, Card, Empty, Segmented, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Meeting } from './api'
 import { HOUR_PX, layout } from './schedule-layout'
@@ -173,7 +173,8 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
         </Space>
       </Card>
 
-      {/* ★待我处理在右边★(用户明确要求),固定窄栏 */}
+      {/* 右栏:待我处理 + 公开会议广场 */}
+      <div style={{ width: 320, flexShrink: 0 }}>
       <Card
         style={{ width: 320, flexShrink: 0 }}
         styles={{ body: { padding: 14 } }}
@@ -202,7 +203,83 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
           </Space>
         )}
       </Card>
+
+      <PublicBoard onOpen={onOpenMeeting} />
+      </div>
     </div>
+  )
+}
+
+/// 公开会议广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public
+/// 就只是数据库里的一个字段:没人知道有哪些会可以听。
+///
+/// 默认只看**近 7 天**(日程右栏的定位是「接下来」,不是全量目录),可切「全部未来」。
+/// ★只列还没结束的★:旁听的意义是「我要去听」,开完的会列在这里只是噪音。
+function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
+  const { message } = AntdApp.useApp()
+  const [days, setDays] = useState<7 | 0>(7)      // 0 = 全部未来
+  const [rows, setRows] = useState<Meeting[]>([])
+  const [busy, setBusy] = useState<number | null>(null)
+
+  const load = useCallback(async () => {
+    try { setRows(await api<Meeting[]>(`/api/meetings/public${days ? `?days=${days}` : ''}`)) }
+    catch { setRows([]) }
+  }, [days])
+  useEffect(() => { void load() }, [load])
+
+  const toggle = async (m: Meeting) => {
+    setBusy(m.id)
+    try {
+      // my_status 非空 = 我已在名单里(旁听或正式参会)
+      await api(`/api/meetings/${m.id}/observe`, {
+        method: 'POST', body: JSON.stringify({ observe: !m.my_status }),
+      })
+      message.success(m.my_status ? '已取消旁听' : '已加入我的日程')
+      await load()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(null) }
+  }
+
+  return (
+    <Card size="small" style={{ marginTop: 12 }}
+      title={<Space><span>公开会议</span><Tag color="blue">可旁听</Tag></Space>}
+      extra={
+        <Segmented size="small" value={days} onChange={(v) => setDays(v as 7 | 0)}
+          options={[{ value: 7, label: '近 7 天' }, { value: 0, label: '全部' }]} />
+      }>
+      {rows.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={days ? '近 7 天没有公开会议' : '暂无公开会议'} />
+      ) : (
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {rows.map((m) => (
+            <div key={m.id} style={{ borderBottom: '1px solid #f5f5f5', paddingBottom: 8 }}>
+              <div onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                {m.title}
+              </div>
+              <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                {new Date(m.starts_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}
+                {' '}{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
+                {' · '}{m.organizer}
+              </div>
+              <Space size={4} style={{ marginTop: 4 }} wrap>
+                {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan">{p.name}</Tag>)}
+                <Button size="small" type={m.my_status ? 'default' : 'primary'} ghost={!m.my_status}
+                  loading={busy === m.id} disabled={busy === m.id}
+                  onClick={() => toggle(m)}>
+                  {m.my_status ? '取消旁听' : '旁听'}
+                </Button>
+              </Space>
+              {/* ★旁听 ≠ 拿到材料★(D9 与 D3 正交):说在按钮旁边,免得有人以为旁听就能看资料 */}
+              {!m.my_status && (
+                <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+                  旁听可看议程与地点，看不到会议材料
+                </Typography.Text>
+              )}
+            </div>
+          ))}
+        </Space>
+      )}
+    </Card>
   )
 }
 

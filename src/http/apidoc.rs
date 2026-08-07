@@ -120,6 +120,13 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/meetings/{id}/reject-counter", "会议", "发起人 / 记录员",
          "驳回改期建议。★驳回后他回到 pending 不是 declined★——拒绝的是这个**时间提议**,\
           不代表替他决定「不来」", "username"),
+    api!("GET", "/api/meetings/public", "会议", "登录",
+         "公开会议广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public 只是个字段。\
+          只列**还没结束**的;归档项目的会不进(与日历同口径)", "days(不给=全部未来)"),
+    api!("POST", "/api/meetings/{id}/observe", "会议", "登录(仅 public 会议)",
+         "我要旁听 / 取消旁听。★自助,不需发起人同意★——标了 public 就是邀请全平台来听;\
+          旁听后进我的日历。★旁听不给材料★(D9 与 D3 正交);\
+          ★已是正式参会人不会被降级成 observer★", "observe(true/false)"),
     api!("GET", "/api/freebusy", "会议", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),

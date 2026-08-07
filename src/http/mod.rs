@@ -71,6 +71,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/meetings/{id}/reject-counter", post(meetings::reject_counter))
         // 忙闲(D1):只回时间段不回内容;私密项目的会完全隐形。
         .route("/freebusy", get(meetings::freebusy))
+        // ★公开会议广场 + 自助旁听(D9)★:公开会议没有列表页的话,「全平台可旁听」就是空话
+        .route("/meetings/public", get(meetings::public_list))
+        .route("/meetings/{id}/observe", post(meetings::observe))
 
 
         // 内容树(文档正文小,留在快路由)

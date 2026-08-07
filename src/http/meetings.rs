@@ -832,3 +832,90 @@ pub async fn accept_counter(
     audit::record(&state.pool, id.require_username()?, "meeting.accept-counter", &mid.to_string(), &who).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
+
+// ── 公开会议广场 / 旁听(D9)──────────────────────────────────────────────
+// ★这是 D9 明确要求、我一度漏做的入口★:公开会议若没有列表页,「全平台可旁听」就是一句空话
+// —— 没人知道有哪些会可以听(2026-08-07 用户提出,查 PRD 确认是遗漏)。
+
+#[derive(Deserialize)]
+pub struct PublicQ {
+    /// 往后看几天;不给或 <=0 表示「全部未来的」。前端默认 7。
+    pub days: Option<i64>,
+}
+
+/// GET /api/meetings/public —— 公开会议广场。
+/// ★只列**还没结束**的★:旁听的意义是「我要去听」,已经开完的会列出来只是噪音
+/// (要查历史去会议页搜)。
+pub async fn public_list(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<PublicQ>,
+) -> AppResult<Json<Vec<MeetingRow>>> {
+    let username = id.require_username()?;
+    let days = q.days.filter(|d| *d > 0);
+    let rows: Vec<MeetingRow> = sqlx::query_as(
+        "SELECT m.*, mp.status AS my_status,
+                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.meeting_id = m.id
+                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
+                   FROM meeting_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
+                  WHERE mp2.meeting_id = m.id AND p2.deleted_at IS NULL) AS projects,
+                (SELECT count(*) FROM meeting_participants x WHERE x.meeting_id = m.id) AS participant_count,
+                NULL::text AS minutes_status
+           FROM meetings m
+           LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
+          WHERE m.visibility = 'public' AND m.status = 'active'
+            AND m.ends_at > now()
+            AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
+            -- 归档项目的会不进广场(与日历同一条口径:它不该再出现在「接下来要做什么」里)
+            AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
+                               JOIN projects p ON p.id = mpj.project_id
+                              WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL)
+                     AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
+                                       JOIN projects p2 ON p2.id = m2.project_id
+                                      WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL))
+          ORDER BY m.starts_at LIMIT 200")
+        .bind(username).bind(days)
+        .fetch_all(&state.pool).await?;
+    Ok(Json(rows))
+}
+
+/// POST /api/meetings/{id}/observe —— 我要旁听 / 取消旁听(body: {observe: bool})。
+///
+/// ★旁听是**自助**的★(D9):不需要发起人同意 —— 会议既然标了 public,就是邀请全平台来听。
+/// 旁听后这场会进入我的个人日历(list 接口本来就包含「我是参会人」的会)。
+///
+/// ⚠ 旁听**不给材料**:kind='observer' 在 meeting_items 那里过不了项目成员判权(D9 与 D3 正交)。
+pub async fn observe(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> AppResult<Json<serde_json::Value>> {
+    let username = id.require_username()?;
+    let on = body.get("observe").and_then(|v| v.as_bool()).unwrap_or(true);
+    let vis: Option<String> = sqlx::query_scalar(
+        "SELECT visibility FROM meetings WHERE id = $1 AND status = 'active'")
+        .bind(mid).fetch_optional(&state.pool).await?;
+    match vis.as_deref() {
+        Some("public") => {}
+        // 私密会议对无关的人本就 404(不泄露存在性);已取消的会也没什么可旁听的
+        _ => return Err(AppError::NotFound),
+    }
+    if on {
+        // ★已经是参会人就别降级成旁听★:被正式邀请的人点了旁听按钮不该丢掉自己的答复状态。
+        let n = sqlx::query(
+            "INSERT INTO meeting_participants (meeting_id, username, kind, status, responded_at)
+             VALUES ($1,$2,'observer','accepted',now()) ON CONFLICT (meeting_id, username) DO NOTHING")
+            .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
+        return Ok(Json(json!({ "ok": true, "observing": true, "added": n == 1 })));
+    }
+    // 取消旁听:★只删自己的 observer 行★——正式参会人不能用这个接口把自己从会议里摘掉
+    // (那是发起人的事,走 uninvite)。
+    let n = sqlx::query(
+        "DELETE FROM meeting_participants WHERE meeting_id=$1 AND username=$2 AND kind='observer'")
+        .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
+    Ok(Json(json!({ "ok": true, "observing": false, "removed": n })))
+}
