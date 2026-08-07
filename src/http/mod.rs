@@ -74,6 +74,12 @@ pub fn build_router(state: AppState) -> Router {
         // ★公开会议广场 + 自助旁听(D9)★:公开会议没有列表页的话,「全平台可旁听」就是空话
         .route("/meetings/public", get(meetings::public_list))
         .route("/meetings/{id}/observe", post(meetings::observe))
+        // 个人面板「我的投入」(原型 me 视图):口径写在 handler 注释里,前端不自己算
+        .route("/me/stats", get(meetings::my_stats))
+        // 「待我处理」里的私聊未读(原型 🔔 卡):★只算 private 且 peer 是我的★,
+        // 公开讨论区的新消息不进 —— 天天有红点就等于没有红点
+        .route("/me/unread", get(meetings::my_unread))
+        .route("/me/unread/read", post(meetings::mark_read))
 
 
         // 内容树(文档正文小,留在快路由)

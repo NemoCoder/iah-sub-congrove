@@ -6,10 +6,11 @@
 //
 // 参会人用 chips-combobox(输入即过滤、选中清空、★空输入时 Backspace 删最后一个 chip★),
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
-import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Switch, Typography } from 'antd'
+import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Spin, Switch, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs from 'dayjs'
-import { api, type Me, type Project, type UserOpt } from './api'
+import { api, type FreeBusy, type Me, type Project, type UserOpt } from './api'
+import { DAY_END_H, DAY_START_H, ticks, toBar } from './freebusy-layout'
 
 export function MeetingNewView({ me, onCreated, onCancel }: {
   me: Me | null
@@ -22,6 +23,10 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
   const [found, setFound] = useState<UserOpt[]>([])
   const [busy, setBusy] = useState(false)
   const [pub, setPub] = useState(false)
+  /// ★参会人与时间提到组件级★:右栏的 chips 与忙闲图都要用它们,
+  /// 留在 Form 内部的话右栏读不到(原型就是左表单/右面板并排)。
+  const [people, setPeople] = useState<string[]>([])
+  const [range, setRange] = useState<[string, string] | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /// 当前输入的关键词。★候选只覆盖登录过汇流的人★(/api/users 查本地 app_user),
   /// 而后端能拉任何平台用户 —— 所以搜不到时要允许直接用输入的用户名。
@@ -85,7 +90,7 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
           starts_at: v.range[0].toISOString(),
           ends_at: v.range[1].toISOString(),
           project_ids: v.project_ids,
-          participants: v.participants ?? [],
+          participants: people,
           location: v.location ?? '',
           online_url: v.online_url ?? '',
           visibility: pub ? 'public' : 'private',
@@ -97,7 +102,9 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
   }
 
   return (
-    <Card title="发起会议" extra={<Button size="small" onClick={onCancel}>取消</Button>}>
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+    <Card title="发起会议" style={{ flex: 1, minWidth: 0 }}
+      extra={<Button size="small" onClick={onCancel}>取消</Button>}>
       <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 720 }}
         initialValues={{ recorder: me?.username }}>
         <Form.Item name="title" label="会议标题" rules={[{ required: true, message: '写个标题' }]}>
@@ -108,6 +115,7 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
           {/* ★不让选过去的时间★(2026-08-07 用户):日期粒度禁掉今天以前,
               时间粒度在「今天」这一天里禁掉已过去的小时/分钟。后端另有 5 分钟容差的真闸。 */}
           <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }}
+            onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
             disabledDate={(d) => !!d && d.isBefore(dayjs().startOf('day'))}
             disabledTime={(d) => {
               if (!d || !d.isSame(dayjs(), 'day')) return {}
@@ -138,10 +146,9 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
             onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
         </Form.Item>
 
-        <Form.Item name="participants" label="参会人" extra="之后还能再加">
-          <Select mode="tags" showSearch placeholder="输入用户名（没搜到也能直接输入）" options={userOpts}
-            onSearch={search} filterOption={false} notFoundContent={null} />
-        </Form.Item>
+        {/* ★参会人挪到右栏★(原型):这里只留一个隐藏字段与 Form 打通,
+            真正的选择在右侧「参会人」卡片里 —— 它要和忙闲图并排看。 */}
+        <Form.Item name="participants" hidden><Input /></Form.Item>
 
         <Space size={16} style={{ display: 'flex' }}>
           <Form.Item name="location" label="线下地点" style={{ flex: 1 }}>
@@ -173,6 +180,130 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
           <Button onClick={onCancel}>取消</Button>
         </Space>
       </Form>
+    </Card>
+
+    {/* ★右栏:参会人 + 忙闲★(原型 new 视图)。两者必须并排 ——
+        选人和看他们忙不忙是**同一个决策**,分开就得来回切。 */}
+    <div style={{ width: 420, flexShrink: 0 }}>
+      <Card size="small" title={`参会人（${people.length}）`} style={{ marginBottom: 12 }}>
+        <Select mode="tags" value={people} onChange={setPeople} onSearch={search}
+          filterOption={false} style={{ width: '100%' }} notFoundContent={null}
+          placeholder="输入用户名（没搜到也能直接输入）" options={userOpts} />
+        <Space style={{ marginTop: 8 }} wrap>
+          <ImportFromProject projects={projects} onPick={(us) =>
+            setPeople((cur) => [...new Set([...cur, ...us])])} />
+        </Space>
+      </Card>
+      <FreeBusyPanel users={people} range={range} />
+    </div>
+    </div>
+  )
+}
+
+/// 从其它项目导入成员(原型「从其它项目导入成员」)。
+/// ★为什么值得有★:一场会的参会人往往就是某个项目的组员 —— 一个个敲名字既慢又容易漏人。
+function ImportFromProject({ projects, onPick }: {
+  projects: Project[]; onPick: (usernames: string[]) => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [busy, setBusy] = useState(false)
+  return (
+    <Select size="small" style={{ width: 220 }} placeholder="从其它项目导入成员" value={null}
+      loading={busy} options={projects.map((p) => ({ value: p.id, label: p.name }))}
+      onChange={async (pid) => {
+        setBusy(true)
+        try {
+          const r = await api<{ members: { username: string }[] }>(`/api/projects/${pid}/members`)
+          const us = r.members.map((m) => m.username)
+          onPick(us)
+          message.success(`已导入 ${us.length} 人`)
+        } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+      }} />
+  )
+}
+
+/// 忙闲图(D1 的正面补偿)。
+///
+/// ★这张图存在的理由★:D1 决定了**私密项目的日程对发起人完全隐形** —— 他排会时看不到别人的私事。
+/// 那至少要把「公开项目产生的忙」画出来,让他在**选时间那一刻**就看见冲突,
+/// 而不是等对方事后「建议改期」。⚠ 图上空着**不代表真空**(可能是私密安排),
+/// 这句必须写在图下面,否则这张图会给人虚假的确定感。
+function FreeBusyPanel({ users, range }: { users: string[]; range: [string, string] | null }) {
+  const [fb, setFb] = useState<FreeBusy['busy']>({})
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!users.length || !range) { setFb({}); return }
+    setLoading(true)
+    // 查所选那天的整天忙闲(不只是会议时段)——要看的是「这天他还有什么别的安排」
+    const day = new Date(range[0])
+    const from = new Date(day); from.setHours(0, 0, 0, 0)
+    const to = new Date(day); to.setHours(23, 59, 59, 0)
+    api<FreeBusy>(`/api/freebusy?users=${encodeURIComponent(users.join(','))}` +
+      `&from=${from.toISOString()}&to=${to.toISOString()}`)
+      .then((r) => setFb(r.busy)).catch(() => setFb({})).finally(() => setLoading(false))
+  }, [users, range])
+
+  if (!users.length || !range) {
+    return (
+      <Card size="small" title="忙闲">
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          选好时间与参会人后，这里显示他们那天的忙闲。
+        </Typography.Text>
+      </Card>
+    )
+  }
+  const day = new Date(range[0])
+  const pick = { start: range[0], end: range[1] }
+  const pickBar = toBar(pick, day)
+
+  return (
+    <Card size="small" title="忙闲" extra={loading && <Spin size="small" />}>
+      {/* 时间刻度 */}
+      <div style={{ display: 'flex', marginBottom: 4 }}>
+        <div style={{ width: 72, flexShrink: 0 }} />
+        <div style={{ position: 'relative', flex: 1, height: 14 }}>
+          {ticks().map((t) => (
+            <span key={t.h} style={{ position: 'absolute', left: t.left, fontSize: 11, color: '#bfbfbf' }}>
+              {t.h}:00
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {users.map((u) => (
+        <div key={u} style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ width: 72, flexShrink: 0, fontSize: 12, textAlign: 'right', paddingRight: 8, overflow: 'hidden' }}>
+            {u}
+          </div>
+          <div style={{ position: 'relative', flex: 1, height: 18, background: '#fafafa', borderRadius: 3 }}>
+            {(fb[u] ?? []).map((sp, i) => {
+              const b = toBar(sp, day, pick)
+              if (!b) return null
+              return <div key={i} style={{
+                position: 'absolute', top: 2, height: 14, left: b.left, width: b.width, borderRadius: 2,
+                // ★冲突用红、普通忙用灰★:一眼看出「这个人这个点不行」
+                background: b.clash ? '#ffa39e' : '#d9d9d9',
+              }} />
+            })}
+            {/* 本次会议时段:青色描边,压在最上层 */}
+            {pickBar && <div style={{
+              position: 'absolute', top: 0, height: 18, left: pickBar.left, width: pickBar.width,
+              border: '1px solid #0d9488', background: 'rgba(13,148,136,.18)', borderRadius: 3,
+            }} />}
+          </div>
+        </div>
+      ))}
+
+      <Space size={12} style={{ marginTop: 8, fontSize: 11 }} wrap>
+        <span><i style={{ display: 'inline-block', width: 12, height: 8, background: '#d9d9d9' }} /> 忙</span>
+        <span><i style={{ display: 'inline-block', width: 12, height: 8, background: '#ffa39e' }} /> 冲突</span>
+        <span><i style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(13,148,136,.18)', border: '1px solid #0d9488' }} /> 本次</span>
+      </Space>
+      {/* ★这句不能省★:图上空着不代表真空 */}
+      <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+        只显示{DAY_START_H}–{DAY_END_H} 点。<b>空着不等于一定有空</b>——私密项目的安排不占忙闲。
+      </Typography.Text>
     </Card>
   )
 }

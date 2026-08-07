@@ -2,7 +2,7 @@
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
   Alert, App as AntdApp, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
-  Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
+  Progress, Segmented, Select, Space as AntSpace, Table, Tabs, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
 import {
   DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
@@ -30,6 +30,8 @@ const PARENT_ROW_ID = -1_000_000
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
 import { effectiveScope, showScopeSwitch } from './project-filter'
+import type { Meeting } from './api'
+import { ShareModal } from './share-modal'
 import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -62,6 +64,8 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const [kw, setKw] = useState('')
   /// 归档筛选(D17):默认只看进行中 —— 列表是「我手头的活」,结题的不该抢视线
   const [scope, setScope] = useState<'active' | 'archived'>('active')
+  /// 项目页右侧的四个 tab(原型 proj 视图)
+  const [ptab, setPtab] = useState('items')
   const [cur, setCur] = useState<Project | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 项目根)
@@ -447,6 +451,13 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </Tooltip>
           }
         >
+          {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 会议 / 设置。
+              此前只有「内容」,成员藏在弹窗里、★项目的会议根本没有入口★ ——
+              而 D7 明说材料有两个入口(项目 与 时间线),会议同理。 */}
+          <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
+            {
+              key: 'items', label: '内容',
+              children: (<>
           {/* 归档状态由标题旁的「已归档 · 只读」标签表达,写入按钮同时隐藏 ——
               状态清楚、入口没了,不必再写一段话解释(2026-08-07 用户:这种啰嗦的说明删掉)。 */}
           {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。
@@ -625,6 +636,22 @@ export function ProjectsView({ me }: { me: Me | null }) {
           <MembersModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadProjects} />
           {shareFor && <ShareModal key={shareFor.map((i) => i.id).join('-')} items={shareFor} onClose={() => setShareFor(null)} />}
           <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
+              </>),
+            },
+            {
+              key: 'members', label: '成员',
+              children: <MembersModal key={`m${cur.id}`} space={cur} open onClose={() => {}}
+                onChanged={loadProjects} inline />,
+            },
+            {
+              key: 'meetings', label: '会议',
+              children: <ProjectMeetings projectId={cur.id} />,
+            },
+            {
+              key: 'settings', label: '设置',
+              children: <ProjectSettings space={cur} onChanged={loadProjects} menu={spaceMenu(cur)} />,
+            },
+          ]} />
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
@@ -763,8 +790,10 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
 ///
 /// 删组之后「他为什么能看到这个」永远只有一个答案:**他在这张表里**。
 /// 代价是加人变成一个个加,所以★批量添加是必做的★:第一次拉 20 人不能让人点 20 次。
-function MembersModal({ space, open, onClose, onChanged }:
-  { space: Project; open: boolean; onClose: () => void; onChanged: () => void }) {
+/// 成员与设置。★两种形态一份实现★:项目页的「成员」tab 用 inline 内嵌,
+/// 别处仍可当弹窗用 —— 免得同一份逻辑维护两遍(2026-08-07 按原型加四 tab 时)。
+function MembersModal({ space, open, onClose, onChanged, inline = false }:
+  { space: Project; open: boolean; onClose: () => void; onChanged: () => void; inline?: boolean }) {
   const { message } = AntdApp.useApp()
   const [owner, setOwner] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
@@ -812,8 +841,8 @@ function MembersModal({ space, open, onClose, onChanged }:
     } catch (e) { message.error((e as Error).message); await load() }
   }
 
-  return (
-    <Modal title={`成员与设置 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={680}>
+  const body = (
+    <>
       <Typography.Text strong>成员（{members.length}）</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 10px' }}>
         进了项目就能看到<b>本项目全部资料</b>，包括他加入之前的历史；移出即失去全部。
@@ -925,6 +954,12 @@ function MembersModal({ space, open, onClose, onChanged }:
           } catch (e) { message.error((e as Error).message) }
         }}>保存</Button>
       </AntSpace.Compact>
+    </>
+  )
+  // inline:直接吐内容(项目页的「成员」tab);否则仍是弹窗
+  return inline ? body : (
+    <Modal title={`成员与设置 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={680}>
+      {body}
     </Modal>
   )
 }
@@ -996,118 +1031,80 @@ function AudioPanel({ item }: { item: Item }) {
 /// 公开分享对话框(2026-08-05,对标百度网盘)。
 /// ★这是把内容送出墙外的入口,所以文案要把边界说清楚★:链接一旦发出去,拿到的人**不需要**是
 /// 本项目成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
-function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) {
-  const item = items[0]  // 主项:标题与「已有链接」列表按它查(多选时其余项登记在 share_items)
-  const { message } = AntdApp.useApp()
-  const [code, setCode] = useState(randomCode())
-  const [useCode, setUseCode] = useState(true)
-  const [days, setDays] = useState<number | null>(7)
-  const [maxVisits, setMaxVisits] = useState<number | null>(null)
-  const [allowDownload, setAllowDownload] = useState(true)
-  const [busy, setBusy] = useState(false)
-  // 刚生成的这条:提取码**只在此刻拿得到**(库里存的是加盐哈希,事后取不回),
-  // 所以留在对话框里让用户能再复制一次。
-  const [lastLink, setLastLink] = useState<{ url: string; code: string | null; text: string } | null>(null)
+/// 项目的会议(原型 proj 视图的「会议」tab)。
+/// ★D7 说材料有两个入口:项目 与 时间线★——会议同理:在项目里就该看得到「这个项目开过哪些会」,
+/// 而不是只能去日程/会议页按项目筛。后端 `/api/meetings?project_id=` 早就支持,只是没有入口。
+function ProjectMeetings({ projectId }: { projectId: number }) {
+  const [rows, setRows] = useState<Meeting[]>([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    setLoading(true)
+    // 前后各半年:项目页看的是「这个项目开过/要开哪些会」,不是当周日程
+    const from = new Date(Date.now() - 183 * 864e5).toISOString()
+    const to = new Date(Date.now() + 183 * 864e5).toISOString()
+    api<Meeting[]>(`/api/meetings?project_id=${projectId}&from=${from}&to=${to}`)
+      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
+  }, [projectId])
 
-
-  const create = async () => {
-    setBusy(true)
-    try {
-      const r = await api<{ token: string; code: string | null }>(`/api/items/${item.id}/shares`, {
-        method: 'POST',
-        body: JSON.stringify({
-          code: useCode ? code.trim() : null,
-          expires_days: days, max_visits: maxVisits, allow_download: allowDownload,
-          items: items.map((i) => i.id),   // 多选分享:一条链接带这些内容
-        }),
-      })
-      // ★复制文案带内容名★(2026-08-05 用户:不然对方不知道分享的是啥;百度网盘也是
-      //   「通过网盘分享的文件:xxx」开头)。多项时给第一个名字 + 「等 N 项」。
-      const url = `${window.location.origin}/s/${r.token}`
-      const what = items.length > 1 ? `${item.name} 等 ${items.length} 项` : item.name
-      const life = days ? `${days} 天内有效` : '长期有效'
-      const text = [
-        `通过汇流分享:${what}`,
-        `链接:${url}`,
-        ...(r.code ? [`提取码:${r.code}`] : []),
-        life,
-      ].join('\n')
-      setLastLink({ url, code: r.code, text })
-      try { await navigator.clipboard.writeText(text); message.success('分享文案已复制' + (r.code ? '(含提取码)' : '')) }
-      catch { message.info('链接已生成,见下方') }
-    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-  }
-
+  const now = Date.now()
   return (
-    <Modal open onCancel={onClose} footer={null} width={620}
-      title={<span><ItemIcon it={item} />
-        {items.length > 1 ? `分享 ${items.length} 项(${item.name} 等)` : `分享「${item.name}」`}</span>}>
-      <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="这是公开链接:拿到链接的人不需要是本项目成员"
-        description="提取码、有效期、访问次数是仅有的三道闸;发出去之后唯一的后悔药是撤销。" />
-      <AntSpace direction="vertical" style={{ width: '100%' }} size={10}>
-        <AntSpace wrap>
-          <Switch size="small" checked={useCode} onChange={setUseCode} />
-          <Typography.Text>需要提取码</Typography.Text>
-          {useCode && (
-            <AntSpace.Compact>
-              <Input value={code} onChange={(e) => setCode(e.target.value)} style={{ width: 130 }} maxLength={32} />
-              <Button onClick={() => setCode(randomCode())}>换一个</Button>
-            </AntSpace.Compact>
-          )}
-        </AntSpace>
-        <AntSpace wrap>
-          <Typography.Text>有效期</Typography.Text>
-          <Select value={days} onChange={setDays} style={{ width: 130 }}
-            options={[{ value: 1, label: '1 天' }, { value: 7, label: '7 天' }, { value: 30, label: '30 天' },
-                      { value: null as unknown as number, label: '永久有效' }]} />
-          <Typography.Text>访问次数</Typography.Text>
-          <Select value={maxVisits} onChange={setMaxVisits} style={{ width: 130 }}
-            options={[{ value: null as unknown as number, label: '不限' }, { value: 1, label: '1 次' },
-                      { value: 10, label: '10 次' }, { value: 50, label: '50 次' }]} />
-        </AntSpace>
-        <AntSpace>
-          <Switch size="small" checked={allowDownload} onChange={setAllowDownload} />
-          <Typography.Text>允许下载原件(关掉则只能在线看)</Typography.Text>
-        </AntSpace>
-        <Button type="primary" loading={busy} onClick={create}>生成链接并复制</Button>
-      </AntSpace>
-
-      {/* 「已有链接」不在这里列了(2026-08-05 用户):生成链接的对话框就该只管生成,
-          管理散落在每个文件里没法用。全部分享集中在顶部「🔗 我的分享」页。 */}
-      {lastLink && (
-        <Alert type="success" showIcon style={{ marginTop: 14 }}
-          message="已生成(文案已复制到剪贴板)"
-          description={
-            <AntSpace direction="vertical" size={6} style={{ width: '100%' }}>
-              <Input.TextArea readOnly value={lastLink.text} autoSize style={{ fontSize: 12 }}
-                onFocus={(e) => e.target.select()} />
-              <AntSpace wrap>
-                <Button size="small" onClick={() => { void navigator.clipboard.writeText(lastLink.text); message.success('已复制') }}>
-                  复制文案
-                </Button>
-                {lastLink.code && (
-                  // ?pwd= 是百度那套「提取码自动填充」的做法:一步直达,代价是**链接即等于码**。
-                  // 两种都给,让用户按场景选:要分开发就用上面的文案,图省事就用这个。
-                  <Button size="small" onClick={() => {
-                    void navigator.clipboard.writeText(`${lastLink.url}?pwd=${lastLink.code}`)
-                    message.success('已复制(链接自带提取码,打开即免输)')
-                  }}>复制免输码链接</Button>
-                )}
-              </AntSpace>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                ⚠ 提取码只在这里能看到一次(库里存的是哈希,事后取不回)。
-              </Typography.Text>
-            </AntSpace>
-          } />
-      )}
-    </Modal>
+    <Table<Meeting> size="small" rowKey="id" dataSource={rows} loading={loading}
+      pagination={{ pageSize: 15, hideOnSinglePage: true }}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个项目还没有会议" /> }}
+      columns={[
+        {
+          title: '时间', width: 150,
+          render: (_, m) => {
+            const d = new Date(m.starts_at)
+            const p = (n: number) => String(n).padStart(2, '0')
+            return <span style={{ fontSize: 12 }}>
+              {d.getMonth() + 1}/{d.getDate()} {p(d.getHours())}:{p(d.getMinutes())}
+            </span>
+          },
+        },
+        { title: '标题', dataIndex: 'title', ellipsis: true },
+        { title: '记录员', dataIndex: 'recorder', width: 100, ellipsis: true },
+        {
+          title: '', width: 96,
+          render: (_, m) => new Date(m.ends_at).getTime() < now
+            ? (m.minutes_status === 'done' ? <Tag color="green">纪要完成</Tag> : <Tag color="orange">待整理</Tag>)
+            : <Tag color="blue">未开始</Tag>,
+        },
+      ]} />
   )
 }
 
-
-/// 4 位提取码(去掉易混的 0/O/1/l/I)。只是默认值,用户可改。
-function randomCode(): string {
-  const abc = 'abcdefghjkmnpqrstuvwxyz23456789'
-  return Array.from({ length: 4 }, () => abc[Math.floor(Math.random() * abc.length)]).join('')
+/// 项目设置(原型 proj 视图的「设置」tab)。
+/// ★把散在 ⋯ 菜单里的项目级动作集中到一处★:此前重命名/归档/删除只在左栏那个三点菜单里,
+/// 用户找不到(2026-08-07 反馈「把这三个点点的功能放到同一个界面」)。
+function ProjectSettings({ space, menu }: {
+  space: Project; onChanged: () => void
+  menu: { items: unknown[]; onClick: (e: { key: string }) => void }
+}) {
+  const act = (key: string) => menu.onClick({ key })
+  return (
+    <AntSpace direction="vertical" size={16} style={{ width: '100%' }}>
+      <div>
+        <Typography.Text strong style={{ fontSize: 13 }}>项目</Typography.Text>
+        <div style={{ marginTop: 6 }}>
+          <AntSpace wrap>
+            <Button size="small" disabled={!!space.archived_at} onClick={() => act('rename')}>重命名</Button>
+            {/* 归档 ≠ 删除:归档=做完了留着查,删除=不要了。两个动作在这里也分开摆 */}
+            <Button size="small" onClick={() => act('archive')}>
+              {space.archived_at ? '恢复为进行中' : '归档项目'}
+            </Button>
+            <Button size="small" danger onClick={() => act('delete')}>删除项目</Button>
+          </AntSpace>
+        </div>
+        {space.archived_at && (
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+            已归档于 {new Date(space.archived_at).toLocaleDateString('zh-CN')}，内容只读。
+          </Typography.Text>
+        )}
+      </div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        成员、可见性、禁下载、转写术语表在「成员」标签页里。
+      </Typography.Text>
+    </AntSpace>
+  )
 }

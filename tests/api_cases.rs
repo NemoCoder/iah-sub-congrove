@@ -235,6 +235,41 @@ const CASES: &[Case] = &[
        "不含该时段——他明确说了不来", "D1"),
     c!(deny "GET", "/api/freebusy", "未登录查不了忙闲", "无会话", "GET /api/freebusy?users=x", "401", ""),
 
+    // 「我的投入」——这几条钉的全是**口径**。统计一旦口径漂了没人看得出来:
+    // 数字照样长得很像那么回事,只是不对。
+    // 未读:三条钉的是「什么算未读」和「标记已读会不会吞消息」。
+    c!("GET", "/api/me/unread", "★公开讨论区的新消息不算未读★", "某会公开频道有 5 条我没看过的消息",
+       "GET /api/me/unread", "空数组——那是「群里有人说话」不是「有人找我」;\
+        混进来会让这张卡天天有红点,红点天天有就等于没有", "D13"),
+    c!("GET", "/api/me/unread", "从没读过 = 全部未读", "有人私聊我 2 条,我从没打开过这场会(meeting_reads 无记录)",
+       "GET /api/me/unread", "★返回该会 count=2★——没有记录当「一条都没读过」而不是「全读过」,\
+        否则新人加入项目后的历史讨论会悄悄永远不提醒他", "D3"),
+    c!("GET", "/api/me/unread", "自己发的不算未读", "我私聊了别人",
+       "GET /api/me/unread", "不含——sender = 我的直接排除", ""),
+    c!("POST", "/api/me/unread/read", "★全部标记已读不吞刚发来的消息★",
+       "标记的同一瞬间对方又发了一条", "POST {} (不带 meeting_id)",
+       "read_at = now() 而不是「最后一条消息的时间」;最坏是把刚发来的那条也算读了,\
+        而它还在会议页里躺着不会丢", ""),
+    c!(deny "POST", "/api/me/unread/read", "未登录标不了已读", "无会话", "POST /api/me/unread/read", "401", ""),
+    c!(deny "GET", "/api/me/unread", "未登录看不了未读", "无会话", "GET /api/me/unread", "401", ""),
+
+    c!("GET", "/api/me/stats", "★还没开的会不计入★", "本月有一场明天才开的会",
+       "GET /api/me/stats?range=month", "totals.meetings 不含它——「投入」是回顾,\
+        把未来的会算进去等于月初就看到一个虚高的数字", ""),
+    c!("GET", "/api/me/stats", "★拒绝的会不计入★", "我对一场已开完的会 declined",
+       "GET /api/me/stats", "不计次数也不计时长——人没去,不该算他的投入", ""),
+    c!("GET", "/api/me/stats", "发起人不在参会名单里也算", "我发起了会但没把自己加进 participants",
+       "GET /api/me/stats", "计入——他在开会,只是没给自己发邀请", ""),
+    c!("GET", "/api/me/stats", "待写纪要按记录员算", "我是记录员,会已开完,纪要 status=draft",
+       "GET /api/me/stats", "minutes_todo 含它;若纪要 done 则不含。★记录员是纪要的作者★", "D14"),
+    c!("GET", "/api/me/stats", "一场会关联两个项目会在分项目表里各计一次",
+       "会 M 同时关联 P1、P2", "GET /api/me/stats",
+       "by_project 两行各 1 次,而 totals.meetings 只 +1 —— ★分项目之和 ≥ 总数是设计如此★,\
+        前端别拿它反推总数", ""),
+    c!(deny "GET", "/api/me/stats", "range 只认三个值", "登录", "GET /api/me/stats?range=drop",
+       "400 —— 这个值要进 date_trunc 第一参,乱字符串会让 PG 直接报错 500", ""),
+    c!(deny "GET", "/api/me/stats", "未登录看不了统计", "无会话", "GET /api/me/stats", "401", ""),
+
     c!("GET", "/api/meetings/{id}/minutes", "没有纪要时回空而不是 404", "会议刚建,还没写纪要",
        "GET .../minutes", "200,minutes=null,can_edit 按身份给;★前端不用为「还没写」判 404★", "D14"),
     c!(deny "GET", "/api/meetings/{id}/minutes", "旁听者看不到纪要", "会议 public,我不是参会人",
