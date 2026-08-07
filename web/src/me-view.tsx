@@ -16,7 +16,11 @@ type Stats = {
   range: string
   /// 我是成员的项目数(当下的身份,与时间段无关)
   member_of: number
-  totals: { meetings: number; hours: number; projects: number; minutes_todo: number }
+  totals: {
+    meetings: number; hours: number; projects: number; minutes_todo: number
+    /// ★口径来源★(D5):这个数字会被拿去做季度汇报,来源不透明就会有争议
+    hours_by_source: { recording: number; manual: number; scheduled: number }
+  }
   by_project: Row[]
   hosting: Host[]
 }
@@ -123,6 +127,22 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                   },
                 ]}
               />
+              {/* ★时长口径来源★(D5 原话:「这个数字会被用来做汇报,来源不透明就会有争议;
+                  标出来源,争议时可追溯」)。三级回退:录制 > 手工补录 > 按排程估算 —— 
+                  ★「按排程估算」的那部分最不可信★(排 2 小时、20 分钟散会是常事),
+                  单独标出来,看的人自己判断要不要认。 */}
+              {data.totals.hours > 0 && (
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '6px 0 0' }}>
+                  时长来源：
+                  {data.totals.hours_by_source.recording > 0 && `${data.totals.hours_by_source.recording} h 来自录制　`}
+                  {data.totals.hours_by_source.manual > 0 && `${data.totals.hours_by_source.manual} h 手工补录　`}
+                  {data.totals.hours_by_source.scheduled > 0 && (
+                    <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                      {data.totals.hours_by_source.scheduled} h 按排程估算
+                    </Typography.Text>
+                  )}
+                </Typography.Paragraph>
+              )}
               {/* ★把「分项目之和 ≥ 总数」讲明白★:一场会可以同时关联多个项目,
                   不说的话看表的人会以为哪边算错了。 */}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>

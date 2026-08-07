@@ -235,6 +235,26 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
         .bind(item_id).bind(kind).bind(&content).bind(&state.config.llm_model)
         .execute(&state.pool).await?;
     }
+
+    // ★纪要出来了要告诉人★(PRD 6.3.1 验收标准:「纪要生成后通知参会人」)。
+    // 转写 + 三份纪要要跑好几分钟,★没人会守着页面等★ —— 不通知的话这份东西就静静躺在那里,
+    // 等到有人想起来「那次会的录屏传了吧?」才被发现,而那通常是几天后。
+    //
+    // 只在**这个材料属于某场会议**时发(会议之外的音视频转写不打扰任何人),
+    // 且**只通知记录员**:纪要是他的活(D14——AI 只是原材料,他才是作者),
+    // 全员通知等于告诉一屋子人「有件不归你们管的事完成了」。
+    if let Some(mid) = sqlx::query_scalar::<_, Option<i64>>("SELECT meeting_id FROM items WHERE id = $1")
+        .bind(item_id).fetch_optional(&state.pool).await?.flatten()
+    {
+        if let Ok((title, recorder)) = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, recorder FROM meetings WHERE id = $1")
+            .bind(mid).fetch_one(&state.pool).await
+        {
+            crate::notify::notify_meeting(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
+                &format!("「{title}」的录制已转写完,摘要 / 分段大纲 / 决议待办都出来了 —— \
+                          它们是**给你的原材料**,正式纪要仍由你整理。")).await;
+        }
+    }
     Ok(())
 }
 

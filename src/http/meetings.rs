@@ -39,6 +39,9 @@ pub struct MeetingRow {
     pub visibility: String,
     pub status: String,
     pub created_at: Ts,
+    /// 会后补录的实际时长(分钟,D5 第 2 级)。null = 没填过。
+    #[sqlx(default)]
+    pub actual_minutes: Option<i32>,
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
@@ -287,6 +290,10 @@ pub struct MeetingPatch {
     pub location: Option<String>,
     pub online_url: Option<String>,
     pub visibility: Option<String>,
+    /// ★会后补录的实际时长★(D5 三级回退的第 2 级,单位**分钟**)。
+    /// 绝大多数会不会录屏,而排程时长常常离谱(排 2 小时、20 分钟讲完就散);
+    /// 没有这一级,统计出来的数字系统性偏高 —— 而它是要拿去做季度汇报的。
+    pub actual_minutes: Option<i32>,
 }
 
 pub async fn update(
@@ -296,6 +303,23 @@ pub async fn update(
     Json(p): Json<MeetingPatch>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_meeting_host(&state.pool, &id, mid).await?;
+    // ★改「公开/私密」比改别的重★(PRD 6.1.7:「只有项目主持人或会议发起人能切换」):
+    // 一旦公开,议题与议程对**全平台**可见 —— 这不是记录员该有的权限,
+    // 而 require_meeting_host 是把记录员算进去的(他要整理纪要,所以能改标题议程)。
+    // ⚠ 判「项目主持人」用**任一关联项目的 owner**:会议可以挂多个项目,任何一个的主持人都算。
+    if p.visibility.is_some() {
+        let who = id.require_username()?;
+        let ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM meetings WHERE id = $1 AND organizer = $2)
+                 OR EXISTS (SELECT 1 FROM meeting_projects mp
+                              JOIN projects pr ON pr.id = mp.project_id AND pr.deleted_at IS NULL
+                             WHERE mp.meeting_id = $1 AND pr.owner = $2)
+                 OR EXISTS (SELECT 1 FROM app_user WHERE username = $2 AND is_super)")
+            .bind(mid).bind(who).fetch_one(&state.pool).await?;
+        if !ok {
+            return Err(AppError::Forbidden);
+        }
+    }
     let cur: (Ts, Ts, String) = sqlx::query_as("SELECT starts_at, ends_at, online_url FROM meetings WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let (s, e) = (p.starts_at.unwrap_or(cur.0), p.ends_at.unwrap_or(cur.1));
@@ -306,11 +330,15 @@ pub async fn update(
         "UPDATE meetings SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
                 recorder=COALESCE($4,recorder), starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
-                visibility=COALESCE($9,visibility), updated_at=now()
+                visibility=COALESCE($9,visibility),
+                actual_minutes=COALESCE($10,actual_minutes),
+                actual_by=CASE WHEN $10 IS NULL THEN actual_by ELSE $11 END,
+                updated_at=now()
           WHERE id=$1")
         .bind(mid).bind(p.title.as_deref()).bind(p.agenda.as_deref()).bind(p.recorder.as_deref())
         .bind(s).bind(e).bind(p.location.as_deref()).bind(p.online_url.as_deref())
         .bind(p.visibility.as_deref())
+        .bind(p.actual_minutes).bind(id.require_username()?)
         .execute(&mut *tx).await?;
     // ★改线上链接留痕★:开会前十分钟换链接是真实场景,事后要能追溯「谁何时改成什么」。
     if let Some(new) = p.online_url.as_deref() {
@@ -486,6 +514,14 @@ pub async fn respond(
             return Err(AppError::BadRequest("建议改期必须给出提议的起止时间(只说不行等于把问题丢回去)".into()));
         };
         if e <= s { return Err(AppError::BadRequest("提议的结束时间必须晚于开始时间".into())) }
+        // ★会议开始后不再允许「建议改期」★(PRD 6.1.4 验收标准):会已经在开了,
+        // 改期这个动作没有意义 —— 它要么是误点,要么是想表达「我没去」,而那该用「拒绝」。
+        // ⚠ 其余三态(接受/拒绝/待定)**照常允许**:会后补一个「我其实没去」是正当的(D11 的雏形)。
+        let started: bool = sqlx::query_scalar("SELECT starts_at <= now() FROM meetings WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
+        if started {
+            return Err(AppError::BadRequest("会议已经开始,不能再建议改期(可以标记拒绝)".into()));
+        }
     }
     sqlx::query(
         "UPDATE meeting_participants
@@ -1038,6 +1074,9 @@ pub struct StatsQ {
 ///
 /// ⚠ 分项目那张表的次数之和 **≥ 总次数**:一场会可以同时关联多个项目(设计如此),
 ///   分项目按关联展开就会重复计。这不是 bug,但前端别拿它去反推总数。
+/// 小时数保留一位小数。★统计到处要用★,散在各处 round 迟早出现「12.3 和 12.30000000001」并存。
+fn r1(h: f64) -> f64 { (h * 10.0).round() / 10.0 }
+
 pub async fn my_stats(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -1052,8 +1091,27 @@ pub async fn my_stats(
     // 「我参与过的、已开完的会」——两条统计共用这段口径。
     // ★写成 macro 而不是 String 拼接★:sqlx 的查询要求 `&'static str`,
     // format! 出来的 String 活不到 await 结束(E0597)。macro 展开即字面量,拼完还是 'static。
+    // ★D5 的时长口径是**优先级回退**,不是三选一★:录制 > 手工 > 排程。
+    // 三个来源一起带出来,因为统计界面**必须显示口径来源**(D5 原话:
+    // 「这个数字会被用来做汇报,来源不透明就会有争议;标出来源,争议时可追溯」)。
+    //
+    // ⚠ 多份录制取 **max 不是 sum**:两个人各录一份是同一场会,累加会翻倍。
     macro_rules! mine_cte { () => { "WITH mine AS (
-        SELECT m.id, m.recorder, EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0 AS hours
+        SELECT m.id, m.recorder,
+               COALESCE(
+                 (SELECT max(t.duration_sec)/3600.0
+                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                   WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                 m.actual_minutes/60.0,
+                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
+               ) AS hours,
+               CASE
+                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                               WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
+                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
+                 ELSE 'scheduled'
+               END AS src
         FROM meetings m
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
@@ -1069,9 +1127,13 @@ pub async fn my_stats(
                           WHERE p.meeting_id = m.id AND p.username = $1
                             AND p.kind = 'attendee' AND p.status <> 'declined')))" } }
 
-    let (cnt, hours, projects, todo): (i64, f64, i64, i64) = sqlx::query_as(concat!(mine_cte!(), "
+    let (cnt, hours, h_rec, h_man, h_sch, projects, todo): (i64, f64, f64, f64, f64, i64, i64) =
+        sqlx::query_as(concat!(mine_cte!(), "
          SELECT count(*)::bigint,
                 COALESCE(SUM(hours), 0)::float8,
+                COALESCE(SUM(hours) FILTER (WHERE src = 'recording'), 0)::float8,
+                COALESCE(SUM(hours) FILTER (WHERE src = 'manual'), 0)::float8,
+                COALESCE(SUM(hours) FILTER (WHERE src = 'scheduled'), 0)::float8,
                 (SELECT count(DISTINCT mp.project_id) FROM meeting_projects mp
                    WHERE mp.meeting_id IN (SELECT id FROM mine))::bigint,
                 (SELECT count(*) FROM mine x WHERE x.recorder = $1
@@ -1120,10 +1182,14 @@ pub async fn my_stats(
     Ok(Json(json!({
         "range": range,
         "member_of": member_of,
-        "totals": { "meetings": cnt, "hours": (hours * 10.0).round() / 10.0, "projects": projects, "minutes_todo": todo },
+        "totals": {
+            "meetings": cnt, "hours": r1(hours), "projects": projects, "minutes_todo": todo,
+            // ★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证
+            "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
+        },
         "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
             "id": id, "name": name, "visibility": vis, "archived": arch,
-            "count": c, "hours": (h * 10.0).round() / 10.0, "minutes_done": done,
+            "count": c, "hours": r1(*h), "minutes_done": done,
         })).collect::<Vec<_>>(),
         "hosting": hosting.iter().map(|(id, name, vis, arch, mem, pend)| json!({
             "id": id, "name": name, "visibility": vis, "archived": arch,

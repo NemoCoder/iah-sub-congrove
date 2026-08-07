@@ -164,6 +164,21 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
+              // ★只在会开完之后才出现★(D5 第 2 级):会还没开就问「实际开了多久」是荒谬的,
+              // 而且那一栏摆在那里只会让人以为要预填。
+              ...(new Date(m.ends_at).getTime() < Date.now() ? [{
+                key: 'am', label: '实际时长',
+                children: <span>
+                  <InlineEdit value={m.actual_minutes ? String(m.actual_minutes) : ''}
+                    canEdit={!!d.can_edit && !canceled} placeholder="（双击填分钟数）"
+                    onSave={(v) => patch({ actual_minutes: v.trim() ? Number(v.trim()) : null })}
+                    renderView={(v) => `${v} 分钟`} />
+                  <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                    {/* 说清它有什么用,否则没人会去填 */}
+                    没录屏时统计按这个算；都不填就按排程时长估
+                  </Typography.Text>
+                </span>,
+              }] : []),
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
               { key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> },
               ...(d.projects?.length

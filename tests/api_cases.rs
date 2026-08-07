@@ -316,6 +316,9 @@ const CASES: &[Case] = &[
     c!("POST", "/api/meetings/{id}/respond", "★建议改期必须通知发起人★", "我提了 counter",
        "POST {status:'counter',...}", "发起人收到「有人建议改期」含提议时间与理由——\
         私密项目的日程对他完全隐形,这是他能收到的**唯一**信号;躺在库里没人看 = 这个出口不存在", "D2"),
+    c!(deny "POST", "/api/meetings/{id}/respond", "★会议开始后不能再建议改期★", "会已经在开了",
+       "POST {status:'counter'}", "400 —— 会都开了,改期这个动作没有意义:要么是误点,\
+        要么是想说「我没去」而那该用拒绝。⚠ **其余三态照常允许**:会后补一个「我其实没去」是正当的", ""),
     c!("POST", "/api/meetings/{id}/respond", "接受/拒绝/待定不发信", "我点了接受",
        "POST {status:'accepted'}", "★不发★——发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的改期建议", ""),
 
@@ -334,6 +337,20 @@ const CASES: &[Case] = &[
         而它还在会议页里躺着不会丢", ""),
     c!(deny "POST", "/api/me/unread/read", "未登录标不了已读", "无会话", "POST /api/me/unread/read", "401", ""),
     c!(deny "GET", "/api/me/unread", "未登录看不了未读", "无会话", "GET /api/me/unread", "401", ""),
+
+    // ── D5 时长口径:★三级回退,不是三选一★ ──
+    // 这几条钉的是「哪个数字被采信」。错了不会报错,只会让季度汇报的数字悄悄偏高。
+    c!("GET", "/api/me/stats", "★有录制就用录制时长★", "会排了 2h,录屏实际 1.2h",
+       "GET /api/me/stats", "算 1.2h 且 hours_by_source.recording=1.2 —— 录制是真测出来的,最可信", "D5"),
+    c!("GET", "/api/me/stats", "多份录制取 max 不是 sum", "两个人各录了一份 1.2h",
+       "GET /api/me/stats", "★算 1.2h 不是 2.4h★——两份是同一场会,累加会翻倍", "D5"),
+    c!("GET", "/api/me/stats", "没录制则用手工补录", "没录屏,发起人填了 actual_minutes=40",
+       "GET /api/me/stats", "算 0.7h 且计入 hours_by_source.manual", "D5"),
+    c!("GET", "/api/me/stats", "都没有才退到排程时长", "既没录制也没手工",
+       "GET /api/me/stats", "按 ends_at-starts_at 算,计入 hours_by_source.scheduled ——\
+        ★这部分最不可信★(排 2 小时、20 分钟散会是常事),前端单独标黄", "D5"),
+    c!("PUT", "/api/meetings/{id}", "补录实际时长", "会已结束,我是发起人",
+       "PUT {actual_minutes:40}", "200;统计随即改用这个数。★超过 24 小时或 ≤0 被库里的 CHECK 挡★", "D5"),
 
     c!("GET", "/api/me/stats", "★还没开的会不计入★", "本月有一场明天才开的会",
        "GET /api/me/stats?range=month", "totals.meetings 不含它——「投入」是回顾,\
