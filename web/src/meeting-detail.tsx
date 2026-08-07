@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { InlineEdit } from './inline-edit'
 import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
+import { ShareModal } from './share-modal'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -544,6 +545,9 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
   const { message } = AntdApp.useApp()
   const [items, setItems] = useState<MeetingItem[]>([])
   const [tab, setTab] = useState('mat')
+  // 要分享的那一项(D7:材料有两个入口,分享自然也有两个 —— 同一份材料
+  // 从项目进能分享、从会议进不能,那纯粹是代码住哪儿决定的,不是产品决定的)
+  const [shareFor, setShareFor] = useState<MeetingItem | null>(null)
   const load = useCallback(async () => {
     try { setItems(await api<MeetingItem[]>(`/api/meetings/${id}/items`)) } catch { setItems([]) }
   }, [id])
@@ -560,8 +564,13 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
         { title: '大小', dataIndex: 'size', width: 90, render: (v) => fmtSize(v) },
         { title: '上传', width: 150, render: (_, it) => `${it.created_by} · ${fmtTime(it.created_at).slice(5, 16)}` },
         {
-          title: '', width: 70,
-          render: (_, it) => <a href={`/api/items/${it.id}/download`}>下载</a>,
+          title: '', width: 110,
+          render: (_, it) => <Space size={8}>
+            <a href={`/api/items/${it.id}/download`}>下载</a>
+            {/* ★分享只给能编辑的人★:建公开链接是**绕过项目授权**的动作(share.rs 头注),
+                只读成员不该有这个能力;后端也会再判一次(前端隐藏不是安全边界)。 */}
+            {canEdit && <a onClick={() => setShareFor(it)}>分享</a>}
+          </Space>,
         },
       ]} />
   )
@@ -596,6 +605,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
             <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
           </Space>
         )} />
+      {shareFor && <ShareModal key={shareFor.id} items={[shareFor]} onClose={() => setShareFor(null)} />}
     </Card>
   )
 }
