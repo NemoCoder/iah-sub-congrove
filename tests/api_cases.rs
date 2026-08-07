@@ -189,9 +189,13 @@ const CASES: &[Case] = &[
     c!(deny "DELETE", "/api/meetings/{id}", "参会人不能取消会议", "我是参会人", "DELETE", "403", ""),
     c!("PUT", "/api/meetings/{id}/participants", "批量邀请", "我是发起人",
        "PUT {usernames:['a','b','c']}", "200 invited=3;用户名过平台校验", ""),
-    c!("PUT", "/api/meetings/{id}/participants", "临时参会人看不到材料", "邀请 kind=guest",
-       "以 guest 身份看会议详情、再取关联项目的材料",
-       "详情 200(能看时间议程链接),★材料 404★——他不是项目成员", "D8"),
+    c!("PUT", "/api/meetings/{id}/participants", "★邀请恒为 attendee★", "请求里带 kind=guest(老前端)",
+       "PUT {usernames:['x'], kind:'guest'}", "200 且他的 kind=**attendee** —— 2026-08-07 推翻 D8 删掉了\
+        「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的(走 observe),不从邀请这条路进。\
+        ★老前端传上来的 kind 一律忽略而不是报错★:语义上确实只有这一种,报错只会让老页面白挂", ""),
+    c!("PUT", "/api/meetings/{id}/participants", "非项目成员被邀请照样看不到材料", "邀请一个不在关联项目里的人",
+       "以他的身份取材料", "★材料 403/404★——材料按**项目成员身份**判权(D3),\
+        「被邀请参会」从来就不给资料权限。这条是 D8 作废后仍然成立的那一半", "D3"),
     c!(deny "PUT", "/api/meetings/{id}/participants", "参会人不能拉人", "我是普通参会人",
        "PUT {usernames:['x']}", "403", ""),
     c!(deny "DELETE", "/api/meetings/{id}/participants", "不能移出发起人", "我是记录员",
@@ -216,8 +220,10 @@ const CASES: &[Case] = &[
        "400 拒绝;★不做任意点对点,否则这里会长成一个 IM★", "D13"),
     c!("GET", "/api/meetings/{id}/items", "会议材料与录制分开", "会议下有 2 份材料 1 个录屏",
        "GET .../items", "200,3 条;录屏的 is_recording=true —— ★只有它会被转写、并作为会议时长依据★", "D5"),
-    c!(deny "GET", "/api/meetings/{id}/items", "★临时参会人看不到材料★", "我是 guest,不是任何关联项目的成员",
-       "GET .../items", "403 —— 他看得见这场会(能参会),但材料按★项目成员身份★判权", "D8"),
+    c!(deny "GET", "/api/meetings/{id}/items", "★参会但不是项目成员 → 拿不到材料★",
+       "我被邀请参会,但不是任何关联项目的成员",
+       "GET .../items", "403 —— 他看得见这场会(能参会),但材料按★项目成员身份★判权(D3)。\
+        D8 作废后这条不变:变的只是「不拿材料的人」不再单独分一类", "D3"),
     c!("GET", "/api/meetings/{id}/link-history", "线上链接改动可追溯", "链接改过 2 次",
        "GET .../link-history", "200,2 条,含 谁/何时/改成什么", ""),
     c!(deny "GET", "/api/meetings/{id}/link-history", "旁听者看不到改动历史", "会议 public,我不是参会人",

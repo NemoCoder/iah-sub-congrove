@@ -65,10 +65,30 @@ jobs:
           # 那比红一次难查得多(我们已经因为「仓库领先线上没部署」踩过)。
           test -n "$KEY" || { echo "缺 secret IAH_DEPLOY_KEY"; exit 1; }
           echo "== 门禁已过,触发 dev 构建部署 =="
-          # 内网直连 registry 的 svc(runner 没装内网 CA,不走 registry.ruciah.com)
-          code=$(curl -sS -o /tmp/cd.json -w "%{http_code}" -X POST -H "X-Deploy-Key: $KEY" \
-            "http://subsystem-registry.platform.svc:8000/api/subsystems/congrove/ci-deploy?channel=dev")
-          cat /tmp/cd.json; echo
-          [ "$code" = 200 ] || { echo "❌ 部署触发失败 HTTP $code"; exit 1; }
+          # ★走公网网关,不走内网 svc★(2026-08-07 平台安全修复,群 msg 163):
+          # 原来的 http://subsystem-registry.platform.svc:8000 直连是个 CRITICAL 提权洞 ——
+          # act-runner 跑**任意仓库**的 CI,内网直连**跳过了网关的身份头剥离**,
+          # 于是任何 CI job 都能 curl 带伪造的 X-Forwarded-Preferred-Username 冒充管理员
+          # 打 registry 的任意端点(比如把别人的子系统 undeploy 掉)。平台已撤掉那个口,
+          # 改成只放行 ci-deploy 这一条路径的网关旁路。
+          #
+          # ⚠ -k 是**权衡不是偷懒**:runner 镜像没装内网 CA,而 *.ruciah.com 全是内网 CA 签的。
+          #   代价是这条 curl 不校验证书 —— 内网到网关的一跳,风险可接受(key 还在 header 里)。
+          #   ★更干净的做法是给 runner 镜像装内网 CA★,已在群里提,装好后就把 -k 去掉。
+          #
+          # 409 = 「正在构建中 / 冷却期」,平台按我的建议改成了可重试语义(retryable:true) ——
+          # ★这种红不是代码有问题,而是撞上了另一次构建★,让人去查代码是纯粹的浪费。
+          code=""
+          for i in 1 2 3; do
+            code=$(curl -sS -k -o /tmp/cd.json -w "%{http_code}" -X POST -H "X-Deploy-Key: $KEY" \
+              "https://registry.ruciah.com/api/subsystems/congrove/ci-deploy?channel=dev")
+            cat /tmp/cd.json; echo
+            if [ "$code" = 200 ]; then break; fi
+            # ⚠ 用 if 而不是 `[ ... ] && ...`:set -e 下,最后一次迭代里为假的 && 会让整个 job 静默退出
+            if [ "$code" != 409 ]; then echo "❌ 部署触发失败 HTTP $code"; exit 1; fi
+            echo "⏳ HTTP 409(构建中/冷却期),20s 后重试(第 $i/3 次)"
+            sleep 20
+          done
+          if [ "$code" != 200 ]; then echo "❌ 重试 3 次仍未触发(HTTP $code)"; exit 1; fi
           # ★触发是异步的:这一步绿只代表「构建已排队」,不代表已经上线★。构建日志见门户「日志」页。
           echo "✅ 已触发构建部署(异步,构建日志见门户「日志」页)"

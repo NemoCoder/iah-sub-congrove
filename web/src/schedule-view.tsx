@@ -150,7 +150,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
         ) : (
           <div style={{ overflowX: 'auto' }}>
             {/* 表头:时间轴列 + 7 天 */}
-            <div style={{ display: 'grid', gridTemplateColumns: `74px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `92px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               <div />
               {days.map((d, i) => {
                 const weekend = i === 0 || i === 6
@@ -187,8 +187,11 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
                           裁掉的恰恰是要传达的那两个字,而时间反倒完整。分开放就不会互相挤。 */}
                       {seg && (
                         <div style={{
-                          position: 'absolute', top: h * HOUR_PX, left: 4,
-                          fontSize: 11, color: '#8c8c8c', fontWeight: 600,
+                          position: 'absolute', top: h * HOUR_PX, left: 6,
+                          // ⚠ 列宽 92px 是量出来的:74px 时「上午」和「8:00」贴成了
+                          // 「上午8:00」一个词(2026-08-07 第四版才看准 —— 前三版分别是
+                          // 竖排看不清、拼串被左裁、贴太紧)。字号比时间小一号,拉开层次。
+                          fontSize: 10, color: '#8c8c8c', fontWeight: 600,
                           transform: 'translateY(-6px)', whiteSpace: 'nowrap',
                         }}>{seg.label}</div>
                       )}
