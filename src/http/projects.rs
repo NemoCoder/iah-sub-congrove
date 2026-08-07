@@ -304,12 +304,13 @@ pub async fn remove(
         return Err(AppError::NotFound);
     }
     // DB 先删(权限即刻收回),对象后清;清失败只 warn——孤儿对象可由 P3 的项目容量巡检兜底。
-    for k in &keys {
-        if let Err(e) = state.storage.delete(k).await {
-            tracing::warn!(error = %e, key = %k, "project delete: s3 cleanup failed");
-        }
-    }
-    audit::record(&state.pool, id.require_username()?, "project.delete", &pid.to_string(), &format!("objects={}", keys.len())).await;
+    //
+    // ★必须走 delete_unreferenced 而不是直接 storage.delete★(2026-08-08 修):
+    // 内容寻址之后 `blobs/<sha>` 是**全库共享**的,直接删会把别人项目里同内容的文件一起打空。
+    // 此前这里的注释写着「key 带 project_id 前缀,不会误伤别的项目」——
+    // 那是 2026-08-05 改成内容寻址**之前**的事实,注释没跟着改,于是这个洞在代码里挂了三天。
+    let gone = crate::http::items::delete_unreferenced(&state, &keys).await;
+    audit::record(&state.pool, id.require_username()?, "project.delete", &pid.to_string(), &format!("objects={} 实删={gone}(其余仍被别处引用)", keys.len())).await;
     Ok(Json(json!({ "ok": true })))
 }
 

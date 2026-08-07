@@ -226,6 +226,17 @@ const CASES: &[Case] = &[
        "400 —— 这一条**对所有角色生效**,不像项目那条只拦 viewer:\
         发起人说「这次不许下载」是对全体说的,把 editor 排除在外这开关基本不起作用\
         (会议材料多半就是 editor 传的)。★在线预览/播放不拦★", ""),
+    // ── 两个 2026-08-08 修掉的现存缺陷,各钉一条 ──
+    c!(deny "POST", "/api/items/{id}/shares", "★项目级禁分享也要在建链接时拒★",
+       "项目 no_share=true,我是 editor", "POST /api/items/{id}/shares",
+       "400 —— 此前这道闸**从来没判过**:no_share 只在打开开关那一刻撤销存量链接,\
+        之后照样能建新的。★一个开着的开关实际只做了一次性清理★,而设置它的人以为内容出不去了", ""),
+    c!("DELETE", "/api/projects/{id}", "★删项目不能删掉别人还在引用的对象★",
+       "我和别人各传过同一份文件(内容寻址 → 同一个 blob),我删掉我的项目",
+       "DELETE /api/projects/{id} 后,别人那份仍可下载",
+       "★内容寻址之后 blobs/<sha> 是全库共享的★:直接 storage.delete 会把别人的文件打空\
+        (items 行还在、点开是空的)。走引用计数,refs=0 才删;查不出引用数则**不删**(fail-closed)", ""),
+
     c!(deny "POST", "/api/items/{id}/shares", "★会议设了禁分享,后端拒绝★",
        "会议 no_share=true,我是 editor", "POST /api/items/{id}/shares",
        "400 —— PRD 6.3.2 验收标准原话「前端隐藏不是安全边界」。\
