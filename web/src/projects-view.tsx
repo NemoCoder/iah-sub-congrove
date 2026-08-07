@@ -2,7 +2,7 @@
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
   Alert, App as AntdApp, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
-  Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tag, Tooltip, TreeSelect, Typography, Upload,
+  Progress, Segmented, Select, Space as AntSpace, Switch, Table, Tabs, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
 import {
   DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
@@ -30,6 +30,7 @@ const PARENT_ROW_ID = -1_000_000
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
 import { effectiveScope, showScopeSwitch } from './project-filter'
+import type { Meeting } from './api'
 import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -62,6 +63,8 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const [kw, setKw] = useState('')
   /// 归档筛选(D17):默认只看进行中 —— 列表是「我手头的活」,结题的不该抢视线
   const [scope, setScope] = useState<'active' | 'archived'>('active')
+  /// 项目页右侧的四个 tab(原型 proj 视图)
+  const [ptab, setPtab] = useState('items')
   const [cur, setCur] = useState<Project | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [cwd, setCwd] = useState<number | null>(null) // 当前所在文件夹(null = 项目根)
@@ -447,6 +450,13 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </Tooltip>
           }
         >
+          {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 会议 / 设置。
+              此前只有「内容」,成员藏在弹窗里、★项目的会议根本没有入口★ ——
+              而 D7 明说材料有两个入口(项目 与 时间线),会议同理。 */}
+          <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
+            {
+              key: 'items', label: '内容',
+              children: (<>
           {/* 归档状态由标题旁的「已归档 · 只读」标签表达,写入按钮同时隐藏 ——
               状态清楚、入口没了,不必再写一段话解释(2026-08-07 用户:这种啰嗦的说明删掉)。 */}
           {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。
@@ -625,6 +635,22 @@ export function ProjectsView({ me }: { me: Me | null }) {
           <MembersModal key={cur.id} space={cur} open={grantsOpen} onClose={() => setGrantsOpen(false)} onChanged={loadProjects} />
           {shareFor && <ShareModal key={shareFor.map((i) => i.id).join('-')} items={shareFor} onClose={() => setShareFor(null)} />}
           <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
+              </>),
+            },
+            {
+              key: 'members', label: '成员',
+              children: <MembersModal key={`m${cur.id}`} space={cur} open onClose={() => {}}
+                onChanged={loadProjects} inline />,
+            },
+            {
+              key: 'meetings', label: '会议',
+              children: <ProjectMeetings projectId={cur.id} />,
+            },
+            {
+              key: 'settings', label: '设置',
+              children: <ProjectSettings space={cur} onChanged={loadProjects} menu={spaceMenu(cur)} />,
+            },
+          ]} />
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
@@ -763,8 +789,10 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
 ///
 /// 删组之后「他为什么能看到这个」永远只有一个答案:**他在这张表里**。
 /// 代价是加人变成一个个加,所以★批量添加是必做的★:第一次拉 20 人不能让人点 20 次。
-function MembersModal({ space, open, onClose, onChanged }:
-  { space: Project; open: boolean; onClose: () => void; onChanged: () => void }) {
+/// 成员与设置。★两种形态一份实现★:项目页的「成员」tab 用 inline 内嵌,
+/// 别处仍可当弹窗用 —— 免得同一份逻辑维护两遍(2026-08-07 按原型加四 tab 时)。
+function MembersModal({ space, open, onClose, onChanged, inline = false }:
+  { space: Project; open: boolean; onClose: () => void; onChanged: () => void; inline?: boolean }) {
   const { message } = AntdApp.useApp()
   const [owner, setOwner] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
@@ -812,8 +840,8 @@ function MembersModal({ space, open, onClose, onChanged }:
     } catch (e) { message.error((e as Error).message); await load() }
   }
 
-  return (
-    <Modal title={`成员与设置 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={680}>
+  const body = (
+    <>
       <Typography.Text strong>成员（{members.length}）</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 10px' }}>
         进了项目就能看到<b>本项目全部资料</b>，包括他加入之前的历史；移出即失去全部。
@@ -925,6 +953,12 @@ function MembersModal({ space, open, onClose, onChanged }:
           } catch (e) { message.error((e as Error).message) }
         }}>保存</Button>
       </AntSpace.Compact>
+    </>
+  )
+  // inline:直接吐内容(项目页的「成员」tab);否则仍是弹窗
+  return inline ? body : (
+    <Modal title={`成员与设置 — ${space.name}`} open={open} onCancel={onClose} footer={null} width={680}>
+      {body}
     </Modal>
   )
 }
@@ -1110,4 +1144,83 @@ function ShareModal({ items, onClose }: { items: Item[]; onClose: () => void }) 
 function randomCode(): string {
   const abc = 'abcdefghjkmnpqrstuvwxyz23456789'
   return Array.from({ length: 4 }, () => abc[Math.floor(Math.random() * abc.length)]).join('')
+}
+
+
+/// 项目的会议(原型 proj 视图的「会议」tab)。
+/// ★D7 说材料有两个入口:项目 与 时间线★——会议同理:在项目里就该看得到「这个项目开过哪些会」,
+/// 而不是只能去日程/会议页按项目筛。后端 `/api/meetings?project_id=` 早就支持,只是没有入口。
+function ProjectMeetings({ projectId }: { projectId: number }) {
+  const [rows, setRows] = useState<Meeting[]>([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    setLoading(true)
+    // 前后各半年:项目页看的是「这个项目开过/要开哪些会」,不是当周日程
+    const from = new Date(Date.now() - 183 * 864e5).toISOString()
+    const to = new Date(Date.now() + 183 * 864e5).toISOString()
+    api<Meeting[]>(`/api/meetings?project_id=${projectId}&from=${from}&to=${to}`)
+      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
+  }, [projectId])
+
+  const now = Date.now()
+  return (
+    <Table<Meeting> size="small" rowKey="id" dataSource={rows} loading={loading}
+      pagination={{ pageSize: 15, hideOnSinglePage: true }}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个项目还没有会议" /> }}
+      columns={[
+        {
+          title: '时间', width: 150,
+          render: (_, m) => {
+            const d = new Date(m.starts_at)
+            const p = (n: number) => String(n).padStart(2, '0')
+            return <span style={{ fontSize: 12 }}>
+              {d.getMonth() + 1}/{d.getDate()} {p(d.getHours())}:{p(d.getMinutes())}
+            </span>
+          },
+        },
+        { title: '标题', dataIndex: 'title', ellipsis: true },
+        { title: '记录员', dataIndex: 'recorder', width: 100, ellipsis: true },
+        {
+          title: '', width: 96,
+          render: (_, m) => new Date(m.ends_at).getTime() < now
+            ? (m.minutes_status === 'done' ? <Tag color="green">纪要完成</Tag> : <Tag color="orange">待整理</Tag>)
+            : <Tag color="blue">未开始</Tag>,
+        },
+      ]} />
+  )
+}
+
+/// 项目设置(原型 proj 视图的「设置」tab)。
+/// ★把散在 ⋯ 菜单里的项目级动作集中到一处★:此前重命名/归档/删除只在左栏那个三点菜单里,
+/// 用户找不到(2026-08-07 反馈「把这三个点点的功能放到同一个界面」)。
+function ProjectSettings({ space, menu }: {
+  space: Project; onChanged: () => void
+  menu: { items: unknown[]; onClick: (e: { key: string }) => void }
+}) {
+  const act = (key: string) => menu.onClick({ key })
+  return (
+    <AntSpace direction="vertical" size={16} style={{ width: '100%' }}>
+      <div>
+        <Typography.Text strong style={{ fontSize: 13 }}>项目</Typography.Text>
+        <div style={{ marginTop: 6 }}>
+          <AntSpace wrap>
+            <Button size="small" disabled={!!space.archived_at} onClick={() => act('rename')}>重命名</Button>
+            {/* 归档 ≠ 删除:归档=做完了留着查,删除=不要了。两个动作在这里也分开摆 */}
+            <Button size="small" onClick={() => act('archive')}>
+              {space.archived_at ? '恢复为进行中' : '归档项目'}
+            </Button>
+            <Button size="small" danger onClick={() => act('delete')}>删除项目</Button>
+          </AntSpace>
+        </div>
+        {space.archived_at && (
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+            已归档于 {new Date(space.archived_at).toLocaleDateString('zh-CN')}，内容只读。
+          </Typography.Text>
+        )}
+      </div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        成员、可见性、禁下载、转写术语表在「成员」标签页里。
+      </Typography.Text>
+    </AntSpace>
+  )
 }
