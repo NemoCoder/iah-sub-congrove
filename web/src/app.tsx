@@ -104,7 +104,8 @@ export function App() {
           ) : meetingId === 'new' ? (
             <MeetingNewView me={me} onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
           ) : meetingId != null ? (
-            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
+            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf}
+              backLabel="返回日程" />
           ) : (
             <ScheduleView onOpenMeeting={setMeetingId} onNewMeeting={() => setMeetingId('new')} />
           )
@@ -114,7 +115,8 @@ export function App() {
           ) : meetingId === 'new' ? (
             <MeetingNewView me={me} onCreated={(id) => setMeetingId(id)} onCancel={() => setMeetingId(null)} />
           ) : meetingId != null ? (
-            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf} />
+            <MeetingDetailView id={meetingId} onBack={() => setMeetingId(null)} onOpenMinutes={setMinutesOf}
+              backLabel="返回会议" />
           ) : (
             <MeetingsListView me={me} onOpen={setMeetingId} onNew={() => setMeetingId('new')} />
           )

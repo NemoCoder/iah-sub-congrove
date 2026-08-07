@@ -34,8 +34,13 @@ const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
   counter: { label: '建议改期', color: 'purple' },
 }
 
-export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
-  id: number; onBack: () => void; onOpenMinutes: (id: number) => void
+export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返回' }: {
+  id: number
+  onBack: () => void
+  onOpenMinutes: (id: number) => void
+  /// ★从哪来就写回哪去★:这一页有两个入口(日程页点日历块 / 会议页点列表行),
+  /// 写死「返回日程」的话,从会议页进来的人会以为自己点错了(2026-08-07 用户提)。
+  backLabel?: string
 }) {
   const [d, setD] = useState<MeetingDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -73,7 +78,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
       <Card>
         {/* 看不见的会议后端回 404(与「不存在」同一回应,防按 id 探测),这里不区分原因 */}
         <Empty description={err === '404' ? '这个会议不存在,或你没有权限查看' : err} />
-        <div style={{ textAlign: 'center', marginTop: 12 }}><Button onClick={onBack}>返回日程</Button></div>
+        <div style={{ textAlign: 'center', marginTop: 12 }}><Button onClick={onBack}>{backLabel}</Button></div>
       </Card>
     )
 
@@ -83,7 +88,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes }: {
   return (
     <div>
       <Space style={{ marginBottom: 12 }} wrap>
-        <Button size="small" onClick={onBack}>‹ 返回日程</Button>
+        <Button size="small" onClick={onBack}>‹ {backLabel}</Button>
         <Typography.Text strong style={{ fontSize: 16 }}>{m.title}</Typography.Text>
         {canceled && <Tag color="default">已取消</Tag>}
         {m.visibility === 'public' && <Tag color="blue">公开会议</Tag>}
