@@ -29,6 +29,7 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
+import { effectiveScope, showScopeSwitch } from './project-filter'
 import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -352,8 +353,15 @@ export function ProjectsView({ me }: { me: Me | null }) {
 
   /// 左栏过滤后的项目。★大小写不敏感★:项目名常混中英文,记不住原始大小写。
   const archivedCount = projects.filter((p) => p.archived_at).length
+  /// ★没有归档项目时强制回到「进行中」★(2026-08-07 用户撞到):
+  /// 切换控件是 `archivedCount > 0` 才渲染的 —— 恢复掉最后一个归档项目后,
+  /// 控件消失、而 scope 状态还停在 'archived' → 列表永远筛不出东西,
+  /// 且用户**连切回去的按钮都没有了**。
+  /// 修法是**派生**而不是同步状态:控件的可见性与筛选值来自同一个事实,不会各说各话。
+  /// 两者都抽到 project-filter.ts 并有单测(含这个 bug 的复现用例)。
+  const effScope = effectiveScope(scope, archivedCount)
   const shown = projects
-    .filter((p) => (scope === 'archived' ? !!p.archived_at : !p.archived_at))
+    .filter((p) => (effScope === 'archived' ? !!p.archived_at : !p.archived_at))
     .filter((p) => !kw.trim() || p.name.toLowerCase().includes(kw.trim().toLowerCase()))
 
   return (
@@ -370,9 +378,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
         {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
             只过滤本地已加载的列表(项目列表本来就是一次拉全),不打接口。 */}
         {/* ★有归档项目才显示切换★:一个都没有时,多一个开关只是噪音 */}
-        {archivedCount > 0 && (
+        {showScopeSwitch(archivedCount) && (
           <Segmented
-            size="small" block value={scope} onChange={(v) => { setScope(v as 'active' | 'archived'); setCur(null) }}
+            size="small" block value={effScope} onChange={(v) => { setScope(v as 'active' | 'archived'); setCur(null) }}
             options={[
               { value: 'active', label: `进行中 ${projects.length - archivedCount}` },
               { value: 'archived', label: `已归档 ${archivedCount}` },
@@ -389,7 +397,12 @@ export function ProjectsView({ me }: { me: Me | null }) {
         )}
         <List
           size="small" dataSource={shown}
-          locale={{ emptyText: <Empty description={kw ? '没有匹配的项目' : '还没有可见的项目'} image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          locale={{ emptyText: (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={kw ? '没有匹配的项目'
+                : effScope === 'archived' ? '没有已归档的项目'
+                : '还没有可见的项目'} />
+          ) }}
           renderItem={(s) => (
             <List.Item
               onClick={() => setCur(s)}
