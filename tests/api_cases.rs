@@ -220,6 +220,22 @@ const CASES: &[Case] = &[
        "400 拒绝;★不做任意点对点,否则这里会长成一个 IM★", "D13"),
     c!("GET", "/api/meetings/{id}/items", "会议材料与录制分开", "会议下有 2 份材料 1 个录屏",
        "GET .../items", "200,3 条;录屏的 is_recording=true —— ★只有它会被转写、并作为会议时长依据★", "D5"),
+    // ── 会议粒度的材料策略(PRD 6.3.2)──★与项目级叠加不是覆盖★
+    c!(deny "GET", "/api/items/{id}/download", "★会议设了禁下载,连 editor 也下不了★",
+       "会议 no_download=true,我是项目 editor", "GET /api/items/{id}/download",
+       "400 —— 这一条**对所有角色生效**,不像项目那条只拦 viewer:\
+        发起人说「这次不许下载」是对全体说的,把 editor 排除在外这开关基本不起作用\
+        (会议材料多半就是 editor 传的)。★在线预览/播放不拦★", ""),
+    c!(deny "POST", "/api/items/{id}/shares", "★会议设了禁分享,后端拒绝★",
+       "会议 no_share=true,我是 editor", "POST /api/items/{id}/shares",
+       "400 —— PRD 6.3.2 验收标准原话「前端隐藏不是安全边界」。\
+        分享是全系统**唯一绕过项目授权**的出口,这道闸尤其不能只画在界面上", ""),
+    c!("PUT", "/api/meetings/{id}", "会议策略与项目策略叠加", "项目禁下载、会议放开",
+       "PUT {no_download:false}", "★仍然下不了★——取两者的严格值。反过来做就成了\
+        「在会议上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝", ""),
+    c!("PUT", "/api/meetings/{id}/participants", "标为选参", "邀请时 required=false",
+       "PUT {usernames:['x'], required:false}", "200;他的冲突不计入「N 人时间冲突」的红色提示", ""),
+
     c!(deny "GET", "/api/meetings/{id}/items", "★参会但不是项目成员 → 拿不到材料★",
        "我被邀请参会,但不是任何关联项目的成员",
        "GET .../items", "403 —— 他看得见这场会(能参会),但材料按★项目成员身份★判权(D3)。\

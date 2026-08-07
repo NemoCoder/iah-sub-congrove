@@ -87,6 +87,18 @@ pub async fn create(
         }
         all.push(extra);
     }
+    // ★会议粒度的禁分享★(PRD 6.3.2,迁移 0007):逐项检查,只要有一项属于「禁分享」的会议就整条拒。
+    // ⚠ 必须**在这里**拦而不是只在前端隐藏入口 —— PRD 6.3.2 的验收标准原话:
+    //   「设为禁分享后,分享入口对非管理员隐藏**且后端拒绝**(前端隐藏不是安全边界)」。
+    // 分享是全系统**唯一绕过项目授权**的出口(share.rs 头注),这道闸尤其不能只画在界面上。
+    for &x in &all {
+        let blocked: Option<bool> = sqlx::query_scalar(
+            "SELECT m.no_share FROM items i JOIN meetings m ON m.id = i.meeting_id WHERE i.id = $1")
+            .bind(x).fetch_optional(&state.pool).await?;
+        if blocked == Some(true) {
+            return Err(AppError::BadRequest("这场会议的材料已设为禁止对外分享".into()));
+        }
+    }
     let token = rand_hex(16);
     let mut tx = state.pool.begin().await?;
     sqlx::query(

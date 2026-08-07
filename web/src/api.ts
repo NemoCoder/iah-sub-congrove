@@ -82,6 +82,9 @@ export type Meeting = {
   /// 会后补录的实际时长(分钟)。★D5 三级回退的第 2 级★:录制 > **手工** > 排程。
   /// null = 没填过 —— 统计会退到排程时长,而排程常常离谱(排 2 小时、20 分钟散会)。
   actual_minutes?: number | null
+  /// 会议粒度的材料策略(PRD 6.3.2)。★与项目级叠加不是覆盖★:两处任一禁了就禁。
+  no_download?: boolean
+  no_share?: boolean
   location: string; online_url: string
   visibility: 'private' | 'public'
   status: 'active' | 'canceled'
@@ -98,6 +101,8 @@ export type Meeting = {
   minutes_status?: 'draft' | 'done' | null
 }
 export type Participant = {
+  /// 必参 / 选参 —— ★只有必参人的冲突算「有冲突」★(PRD 6.1.2)
+  required?: boolean
   username: string
   /// 真实姓名;拉进来还没登录过的人为空
   name?: string | null

@@ -42,6 +42,9 @@ pub struct MeetingRow {
     /// 会后补录的实际时长(分钟,D5 第 2 级)。null = 没填过。
     #[sqlx(default)]
     pub actual_minutes: Option<i32>,
+    /// 会议粒度的材料策略(PRD 6.3.2)
+    #[sqlx(default)] pub no_download: bool,
+    #[sqlx(default)] pub no_share: bool,
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
@@ -250,7 +253,7 @@ pub async fn detail(
         })));
     }
     let parts: Vec<Participant> = sqlx::query_as(
-        "SELECT p.username, u.name, p.kind, p.status, p.counter_starts_at, p.counter_ends_at,
+        "SELECT p.username, u.name, p.kind, p.required, p.status, p.counter_starts_at, p.counter_ends_at,
                 p.counter_reason, p.responded_at
            FROM meeting_participants p LEFT JOIN app_user u ON u.username = p.username
           WHERE p.meeting_id = $1 ORDER BY p.invited_at")
@@ -273,6 +276,10 @@ pub struct Participant {
     #[sqlx(default)]
     pub name: Option<String>,
     pub kind: String,
+    /// 必参 / 选参(PRD 6.1.2)。★只有必参人的冲突算「有冲突」★——
+    /// 一场 10 人的会总有人撞车,每个人的冲突都标红,那个红色就变成了背景噪音。
+    #[sqlx(default)]
+    pub required: bool,
     pub status: String,
     pub counter_starts_at: Option<Ts>,
     pub counter_ends_at: Option<Ts>,
@@ -290,6 +297,9 @@ pub struct MeetingPatch {
     pub location: Option<String>,
     pub online_url: Option<String>,
     pub visibility: Option<String>,
+    /// 会议粒度的材料策略(PRD 6.3.2)。⚠ 与项目级**叠加不是覆盖**:两处任一禁了就禁。
+    pub no_download: Option<bool>,
+    pub no_share: Option<bool>,
     /// ★会后补录的实际时长★(D5 三级回退的第 2 级,单位**分钟**)。
     /// 绝大多数会不会录屏,而排程时长常常离谱(排 2 小时、20 分钟讲完就散);
     /// 没有这一级,统计出来的数字系统性偏高 —— 而它是要拿去做季度汇报的。
@@ -333,12 +343,14 @@ pub async fn update(
                 visibility=COALESCE($9,visibility),
                 actual_minutes=COALESCE($10,actual_minutes),
                 actual_by=CASE WHEN $10 IS NULL THEN actual_by ELSE $11 END,
+                no_download=COALESCE($12,no_download), no_share=COALESCE($13,no_share),
                 updated_at=now()
           WHERE id=$1")
         .bind(mid).bind(p.title.as_deref()).bind(p.agenda.as_deref()).bind(p.recorder.as_deref())
         .bind(s).bind(e).bind(p.location.as_deref()).bind(p.online_url.as_deref())
         .bind(p.visibility.as_deref())
         .bind(p.actual_minutes).bind(id.require_username()?)
+        .bind(p.no_download).bind(p.no_share)
         .execute(&mut *tx).await?;
     // ★改线上链接留痕★:开会前十分钟换链接是真实场景,事后要能追溯「谁何时改成什么」。
     if let Some(new) = p.online_url.as_deref() {
@@ -415,6 +427,8 @@ pub struct InviteIn {
     /// 而不是以为漏了。等确认没有老页面在跑之后再删。
     #[allow(dead_code)]
     #[serde(default)] pub kind: Option<String>,
+    /// 必参(默认)/ 选参。★只有必参人的冲突算「有冲突」★(PRD 6.1.2)。
+    #[serde(default)] pub required: Option<bool>,
 }
 
 /// PUT /api/meetings/{id}/participants —— ★批量★邀请(删组之后,一场会拉 20 人不能点 20 次)。
@@ -434,9 +448,11 @@ pub async fn invite(
         if u.is_empty() { continue }
         // 与拉项目成员同一条校验:用户名以平台 Keycloak 为准(registry 不可达时降级本地表)。
         crate::http::projects::ensure_platform_user(&state, u).await?;
-        sqlx::query("INSERT INTO meeting_participants (meeting_id, username, kind) VALUES ($1,$2,$3)
-                     ON CONFLICT (meeting_id, username) DO UPDATE SET kind=EXCLUDED.kind")
-            .bind(mid).bind(u).bind(kind).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO meeting_participants (meeting_id, username, kind, required)
+                     VALUES ($1,$2,$3,COALESCE($4,true))
+                     ON CONFLICT (meeting_id, username)
+                     DO UPDATE SET kind=EXCLUDED.kind, required=EXCLUDED.required")
+            .bind(mid).bind(u).bind(kind).bind(input.required).execute(&state.pool).await?;
         n += 1;
     }
     let actor = id.require_username()?;

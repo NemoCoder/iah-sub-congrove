@@ -7,7 +7,7 @@
 //
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
-import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Table, Tabs, Tag, Typography, Upload } from 'antd'
+import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { InlineEdit } from './inline-edit'
 import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
@@ -208,7 +208,9 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
           {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为会议时长依据) */}
           {d.participants && (
             <MaterialsCard id={id} projectId={d.projects?.[0]?.id ?? null}
-              canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes} />
+              canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes}
+              policy={d.can_edit ? { no_download: m.no_download, no_share: m.no_share } : null}
+              onPolicy={(v) => patch(v)} />
           )}
 
         </div>
@@ -259,6 +261,9 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
             还会让人以为这里有什么要决定的。旁听者本来也不给改(他是自助来听的,
             把他改成参会人等于替他答应「我要参会」)。 */}
         {p.kind === 'observer' && <Tag color="blue">旁听</Tag>}
+        {/* ★只标「选参」,不标「必参」★:必参是默认,全标出来满屏都是标签,
+            反而看不出哪个是特殊的。这里要的是「谁可来可不来」一眼可见。 */}
+        {p.kind !== 'observer' && p.required === false && <Tag>选参</Tag>}
         {/* 旁听者不需要答复,显示答复状态只会让人以为他欠一个回复 */}
         {p.kind !== 'observer' && <Tag color={meta.color}>{meta.label}</Tag>}
         {/* ★催办只对还没答复的人出现★:已接受/已拒绝的人不该再被打扰 */}
@@ -569,8 +574,11 @@ function OnlineCard({ id, url }: { id: number; url: string }) {
 /// 材料 / 录制 两个 tab(原型还有第三个「纪要」,这里做成跳转按钮 —— 纪要有自己一整页)。
 /// ★录制单独一个 tab★:它不是普通材料,是**会被转写、并决定会议时长**的东西(D5),
 /// 混在材料里会让人不知道该传哪儿。
-function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
+function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy }: {
   id: number; projectId: number | null; canEdit: boolean; onOpenMinutes: (id: number) => void
+  /// 会议粒度的材料策略(PRD 6.3.2);null = 我看不到这场会的可编辑信息
+  policy: { no_download?: boolean; no_share?: boolean } | null
+  onPolicy: (p: { no_download?: boolean; no_share?: boolean }) => void
 }) {
   const { message } = AntdApp.useApp()
   const [items, setItems] = useState<MeetingItem[]>([])
@@ -635,6 +643,27 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes }: {
             <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
           </Space>
         )} />
+      {/* ★会议粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
+          说的是**这一次会**,不是把整个项目锁上。只有能改这场会的人看得到这两个开关。 */}
+      {canEdit && policy && (
+        <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}>
+          <Space size={16} wrap>
+            <Space size={6}>
+              <Switch size="small" checked={!!policy.no_download}
+                onChange={(v: boolean) => onPolicy({ no_download: v })} />
+              <Typography.Text style={{ fontSize: 12 }}>禁止下载原件</Typography.Text>
+            </Space>
+            <Space size={6}>
+              <Switch size="small" checked={!!policy.no_share}
+                onChange={(v: boolean) => onPolicy({ no_share: v })} />
+              <Typography.Text style={{ fontSize: 12 }}>禁止对外分享</Typography.Text>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              仍可在线预览 / 播放；与项目级设置<b>叠加</b>，任一禁了就禁
+            </Typography.Text>
+          </Space>
+        </div>
+      )}
       {shareFor && <ShareModal key={shareFor.id} items={[shareFor]} onClose={() => setShareFor(null)} />}
     </Card>
   )

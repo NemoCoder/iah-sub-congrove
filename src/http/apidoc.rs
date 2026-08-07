@@ -91,7 +91,7 @@ pub const APIS: &[Api] = &[
          "title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
     api!("GET", "/api/meetings/{id}", "会议", "参会人/关联项目成员;public 会议任何人可旁听",
          "会议详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
-    api!("PUT", "/api/meetings/{id}", "会议", "发起人 / 记录员",
+    api!("PUT", "/api/meetings/{id}", "会议", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
          "改会议。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
          "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility"),
     api!("DELETE", "/api/meetings/{id}", "会议", "发起人 / 记录员",
@@ -99,7 +99,9 @@ pub const APIS: &[Api] = &[
     api!("PUT", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
          "★批量★邀请(删组之后一场会拉 20 人不能点 20 次)。★恒为 attendee★——\
           2026-08-07 推翻 D8 删掉了「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的,\
-          走 POST .../observe 不从这里进", "usernames[]"),
+          走 POST .../observe 不从这里进。required=false 标「选参」——\
+          ★只有必参人的冲突算「有冲突」★(6.1.2):一场 10 人的会总有人撞车,\
+          每个人都标红那个红色就成了背景噪音", "usernames[], required"),
     api!("DELETE", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
          "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username"),
     api!("POST", "/api/meetings/{id}/respond", "会议", "名单内的人(旁听者不能答复)",
