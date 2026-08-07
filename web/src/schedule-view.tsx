@@ -9,9 +9,10 @@
 //
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
 //   公开项目的会 = 青色实框 / 私密项目的会 = 紫色虚框 / 待你应答 = 红色。
-import { App as AntdApp, Badge, Button, Card, DatePicker, Empty, Input, Modal, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, DatePicker, Empty, Input, Modal, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Meeting, type Project } from './api'
+import { TodoCard } from './todo-card'
 import { HOUR_PX, layout } from './schedule-layout'
 
 const DAY_PX = HOUR_PX * 24
@@ -95,11 +96,8 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
   }, [anchor, message])
   useEffect(() => { void load() }, [load])
 
-  // 待我处理:待应答的会 = 需要我动作的事。★按开始时间排,最近的在最上★
-  const todo = useMemo(
-    () => items.filter((m) => m.my_status === 'pending').sort((a, b) => a.starts_at.localeCompare(b.starts_at)),
-    [items],
-  )
+  // 「待我处理」的筛选与排序搬进 TodoCard —— ★两页共用同一张卡★,
+  // 免得日程页和会议页各筛一套(此前就是各写各的,连能不能就地答复都不一样)。
 
   const title = `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月 ${anchor.getDate()} – ${addDays(anchor, 6).getDate()} 日`
 
@@ -260,34 +258,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
 
       {/* 右栏:待我处理 + 公开会议广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <Card
-        style={{ width: 320, flexShrink: 0 }}
-        styles={{ body: { padding: 14 } }}
-        title={<Space><span>🔔 待我处理</span><Badge count={todo.length} showZero color={todo.length ? '#ff4d4f' : '#d9d9d9'} /></Space>}
-      >
-        {todo.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待你应答的会议" />
-        ) : (
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            {todo.map((m) => (
-              <div key={m.id} onClick={() => onOpenMeeting(m.id)} style={{
-                border: '1px solid #ffccc7', background: '#fff7f6', borderRadius: 6,
-                padding: '8px 10px', cursor: 'pointer',
-              }}>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{m.title}</div>
-                <div style={{ fontSize: 12, color: '#8c8c8c' }}>
-                  {new Date(m.starts_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}
-                  {' '}{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
-                </div>
-                <div style={{ marginTop: 6 }}>
-                  <Tag color="red">待应答</Tag>
-                  {m.is_private && <Tag color="purple">私密</Tag>}
-                </div>
-              </div>
-            ))}
-          </Space>
-        )}
-      </Card>
+      <TodoCard all={items} onOpen={onOpenMeeting} onDone={() => void load()} style={{ width: 320 }} />
 
       <PublicBoard onOpen={onOpenMeeting} />
       </div>

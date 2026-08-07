@@ -7,18 +7,15 @@
 // ★右栏的冲突提示是这一页的灵魂★(D1/D2):私密项目的日程对发起人完全隐形,
 // 他不知道你那个时段忙 —— 所以必须在**你自己**收到邀请时标红提醒,并把「改期」放在手边。
 // 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
-import { App as AntdApp, Badge, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Meeting, type Me, type RespondStatus } from './api'
+import { TodoCard } from './todo-card'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
 const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
-
-/// 两场会时间是否重叠
-const overlaps = (a: Meeting, b: Meeting) =>
-  new Date(a.starts_at) < new Date(b.ends_at) && new Date(b.starts_at) < new Date(a.ends_at)
 
 export function MeetingsListView({ me, onOpen, onNew }: {
   me: Me | null
@@ -63,14 +60,7 @@ export function MeetingsListView({ me, onOpen, onNew }: {
   const upcoming = rows.filter((m) => new Date(m.ends_at).getTime() >= now)
   const past = rows.filter((m) => new Date(m.ends_at).getTime() < now).reverse()
 
-  // 待我应答 + 冲突(本地算:与我**已接受**的会撞了就标出来)
-  const pending = useMemo(() => {
-    const accepted = all.filter((m) => m.my_status === 'accepted')
-    return all
-      .filter((m) => m.my_status === 'pending' && new Date(m.ends_at).getTime() >= now)
-      .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
-      .map((m) => ({ m, clash: accepted.find((x) => x.id !== m.id && overlaps(m, x)) }))
-  }, [all, now])
+  // 待我应答与冲突计算都搬进 TodoCard(★两页共用★),这里不再各算一套
 
   // 我负责的纪要:我是记录员、会已结束、纪要还没定稿
   const myMinutes = useMemo(
@@ -113,16 +103,10 @@ export function MeetingsListView({ me, onOpen, onNew }: {
       </Card>
 
       <div style={{ width: 340, flexShrink: 0 }}>
-        {/* ★待我应答 + 冲突提示★:D1 的三条硬要求之一 —— 发起人看不见你的私事,
-            只能在你这边标红。红框是刻意的:它要抢注意力。 */}
-        <Card size="small" style={{ marginBottom: 12, borderColor: pending.length ? '#ffccc7' : undefined }}
-          title={<Space><span style={{ color: pending.length ? '#cf1322' : undefined }}>待我应答</span>
-            <Badge count={pending.length} showZero color={pending.length ? '#ff4d4f' : '#d9d9d9'} /></Space>}>
-          {pending.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待应答的会议" />
-            : pending.map(({ m, clash }) => (
-              <PendingRow key={m.id} m={m} clash={clash} onOpen={onOpen} onDone={load} />
-            ))}
-        </Card>
+        {/* ★待我应答 + 冲突提示 + 私聊未读★:与日程页**同一张卡**(todo-card.tsx)。
+            此前两页各写各的 —— 日程页只能点进详情才答复、这页能就地答复,
+            同一个动作两套交互,比丑更糟。 */}
+        <TodoCard all={all} onOpen={onOpen} onDone={load} style={{ marginBottom: 12 }} />
 
         <Card size="small" title="我负责的纪要">
           {myMinutes.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待整理的纪要" />
@@ -202,51 +186,6 @@ function Row({ m, onOpen, me }: { m: Meeting; onOpen: (id: number) => void; me: 
             : tag && <Tag color={tag.c}>{tag.t}</Tag>}
         </Space>
       </div>
-    </div>
-  )
-}
-
-/// 待我应答的一条:★带冲突提示与四个动作★
-function PendingRow({ m, clash, onOpen, onDone }: {
-  m: Meeting; clash?: Meeting; onOpen: (id: number) => void; onDone: () => void
-}) {
-  const { message } = AntdApp.useApp()
-  const [busy, setBusy] = useState(false)
-  const s = new Date(m.starts_at)
-  const reply = async (status: RespondStatus) => {
-    setBusy(true)
-    try {
-      await api(`/api/meetings/${m.id}/respond`, { method: 'POST', body: JSON.stringify({ status }) })
-      message.success('已答复'); onDone()
-    } catch (err) { message.error((err as Error).message) } finally { setBusy(false) }
-  }
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <div onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>{m.title}</div>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {fmtDay(s)} {fmtHM(s)}
-      </Typography.Text>
-      {clash && (
-        // ★这是 D1 的核心补偿★:发起人看不到你私密项目里的安排,系统必须在你这边标红,
-        // 并把「改期」放在手边 —— 不提醒就一定会漏。
-        <div style={{
-          marginTop: 4, padding: '3px 8px', borderRadius: 4, fontSize: 12,
-          background: '#fff1f0', border: '1px solid #ffccc7', color: '#cf1322',
-        }}>
-          ⚠ 撞「{clash.title}」{fmtHM(new Date(clash.starts_at))}–{fmtHM(new Date(clash.ends_at))}
-        </div>
-      )}
-      {/* ★busy 时四个按钮全禁★:只给被点的那个加 loading 的话,
-          连点会打出多个请求(2026-08-07 用户提)。这一栏里的会都是 pending,
-          所以不必再按当前状态禁某一个。 */}
-      <Space size={4} style={{ marginTop: 6 }} wrap>
-        <Button size="small" type="primary" loading={busy} disabled={busy} onClick={() => reply('accepted')}>接受</Button>
-        <Button size="small" loading={busy} disabled={busy} onClick={() => reply('tentative')}>待定</Button>
-        <Button size="small" loading={busy} disabled={busy} onClick={() => reply('declined')}>拒绝</Button>
-        {/* 改期要填具体时间,去详情页做 —— 这里只做一跳,不在窄栏里塞时间选择器 */}
-        <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash} disabled={busy}
-          onClick={() => onOpen(m.id)}>改期</Button>
-      </Space>
     </div>
   )
 }

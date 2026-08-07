@@ -1014,3 +1014,71 @@ pub async fn my_stats(
         })).collect::<Vec<_>>(),
     })))
 }
+
+// ── 待我处理:私聊未读(原型 me 之外那张 🔔 卡的第二类条目)────────────────────
+
+/// GET /api/me/unread —— 有谁在会议里私聊了我、我还没看。
+///
+/// ★只算 private 频道且 peer 是我的★:公开讨论区的新消息不进这张卡 ——
+/// 那是「群里有人说话」,不是「有人找我」;混进来会让这张卡天天有红点,
+/// 红点天天有就等于没有。
+///
+/// 未读判据 = 该会我的 `read_at` 之前没有(从没进过)或早于消息时间。
+/// ⚠ **没有记录 = 一条都没读过**(见迁移 0003 的注释)。
+pub async fn my_unread(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    let who = id.require_username()?;
+    let rows: Vec<(i64, String, String, String, Ts, i64)> = sqlx::query_as(
+        "SELECT m.id, m.title, x.sender, x.body, x.created_at, x.cnt
+         FROM (
+            SELECT DISTINCT ON (mm.meeting_id) mm.meeting_id, mm.sender, mm.body, mm.created_at,
+                   count(*) OVER (PARTITION BY mm.meeting_id) AS cnt
+            FROM meeting_messages mm
+            LEFT JOIN meeting_reads r ON r.meeting_id = mm.meeting_id AND r.username = $1
+            WHERE mm.channel = 'private' AND mm.peer = $1 AND mm.sender <> $1
+              AND (r.read_at IS NULL OR mm.created_at > r.read_at)
+            ORDER BY mm.meeting_id, mm.created_at DESC
+         ) x
+         JOIN meetings m ON m.id = x.meeting_id AND m.status = 'active'
+         ORDER BY x.created_at DESC LIMIT 20")
+        .bind(who).fetch_all(&state.pool).await?;
+
+    Ok(Json(json!(rows.iter().map(|(mid, title, sender, body, at, cnt)| json!({
+        "meeting_id": mid, "title": title, "sender": sender, "body": body, "created_at": at, "count": cnt,
+    })).collect::<Vec<_>>())))
+}
+
+#[derive(Deserialize)]
+pub struct ReadBody {
+    /// 不给 = 全部标记已读(原型右上角那个链接);给了 = 只清这一场会的。
+    pub meeting_id: Option<i64>,
+}
+
+/// POST /api/me/unread/read —— 标记已读。
+///
+/// ★把 read_at 推到 now() 而不是「最后一条消息的时间」★:两者在正常情况下等价,
+/// 但并发时不是 —— 若取最后一条的时间,恰好此刻发来的消息会被一起标成已读并**永远消失**。
+/// 推到 now() 最坏只是把刚发来的那条也算读了,而它还在会议页里躺着,不会丢。
+pub async fn mark_read(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Json(b): Json<ReadBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    let who = id.require_username()?;
+    let n = match b.meeting_id {
+        Some(mid) => sqlx::query(
+            "INSERT INTO meeting_reads (meeting_id, username) VALUES ($1, $2)
+             ON CONFLICT (meeting_id, username) DO UPDATE SET read_at = now()")
+            .bind(mid).bind(who).execute(&state.pool).await?.rows_affected(),
+        // 全部:只针对**确实有私聊给我**的会,不给全库每场会都塞一行
+        None => sqlx::query(
+            "INSERT INTO meeting_reads (meeting_id, username)
+             SELECT DISTINCT mm.meeting_id, $1 FROM meeting_messages mm
+              WHERE mm.channel = 'private' AND mm.peer = $1 AND mm.sender <> $1
+             ON CONFLICT (meeting_id, username) DO UPDATE SET read_at = now()")
+            .bind(who).execute(&state.pool).await?.rows_affected(),
+    };
+    Ok(Json(json!({ "marked": n })))
+}
