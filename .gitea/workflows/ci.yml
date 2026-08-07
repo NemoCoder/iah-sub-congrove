@@ -1,0 +1,42 @@
+# CI 硬门禁 —— congrove 是平台 CI 试点(2026-08-07)。见平台 CODE-QUALITY.md / DEV-PROCESS.md。
+#
+# ★跑在自建 Gitea act-runner(host 执行器,label iah-host),纯 run: shell、不用 JS action★:
+#   平台在 GFW 后,actions/checkout 等 JS action 会去 github.com 拉、直接挂;所以手动 git fetch 内网 gitea HTTP svc。
+#   runner 镜像 act-runner:v2 自带 rust+clippy / gcc-make(编 ring 的 C 部分要)/ node22+pnpm11,见 iah_k8s/git/act-runner。
+#
+# 门禁 = ① cargo clippy 零 warning(type_complexity 已在 Cargo.toml 项目级豁免,理由见那里)
+#        ② cargo test —— ★hermetic★:tests/api_cases.rs 只做 apidoc::APIS ↔ CASES 自校验,不连 PG/S3/OIDC,CI 里直接能跑
+#        ③ 前端 tsc(pnpm typecheck,strict)④ 前端 test(pnpm test)
+#   任一红 → job 红 → PR 不能合并(前提:在 Gitea 仓库设置里把本检查设为分支保护的「必需状态检查」,那一步才让它真正「硬」)。
+#   e2e(Playwright)要活环境,归相位 6 验收、不进合并门禁(见 DEV-PROCESS)。
+name: ci
+on:
+  pull_request:            # 合并门禁:对任何目标分支的 PR 都跑
+  push:
+    branches: [dev]        # dev 上持续体检
+  workflow_dispatch:       # 允许手动触发(Gitea Actions 页点一下)
+jobs:
+  gate:
+    runs-on: iah-host
+    steps:
+      - name: 门禁(clippy + cargo test + 前端 tsc/test)
+        env:
+          TOK: ${{ secrets.GITEA_TOKEN }}    # Gitea 自动注入的作业令牌,足够 clone 本仓库(只读)
+          BASE: http://gitea.git.svc:3000     # 内网 gitea HTTP svc —— runner 没装内网 CA,不走 git.ruciah.com
+        run: |
+          set -u
+          # ── 取被测代码:init + fetch 触发本次的那个 ref(PR 取 merge 结果 / push 取该提交),depth=1 够跑门禁 ──
+          # ★不用 actions/checkout★(见文件头):它是 JS action、要 github.com。手动 fetch 内网即可。
+          rm -rf _ci && mkdir _ci && cd _ci && git init -q
+          git -c http.extraheader="Authorization: Bearer $TOK" fetch --depth=1 "$BASE/liaoruili/iah-sub-congrove.git" "$GITHUB_REF"
+          git checkout -q FETCH_HEAD
+          echo "被测提交:$(git rev-parse --short HEAD)"
+          # ── target 缓存放持久路径:runner 的 /data(emptyDir)在 pod 生命内跨 job 存活 → 增量编译,不用每次从头编全依赖树 ──
+          export CARGO_TARGET_DIR=/data/_cache/congrove-target
+          # ── 四道检查都跑完再汇总(不 fail-fast:一次让开发看全所有红,而不是修一个冒一个)──
+          fail=0
+          echo "::group::① cargo clippy -D warnings"; cargo clippy --all-targets --locked -- -D warnings || fail=1; echo "::endgroup::"
+          echo "::group::② cargo test";             cargo test --locked                        || fail=1; echo "::endgroup::"
+          echo "::group::③④ 前端 pnpm typecheck + test"; ( cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test ) || fail=1; echo "::endgroup::"
+          if [ "$fail" != 0 ]; then echo "❌ CI 门禁未过 —— 上面哪一段红看哪段"; exit 1; fi
+          echo "✅ CI 门禁全过"
