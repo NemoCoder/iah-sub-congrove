@@ -98,6 +98,10 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     // 渲染成一个 <span>,点它会撞上「元素找到了但 not stable」——那个 span 被 Select 自己的
     // 交互层盖着。字段 id 来自 Form.Item 的 name,是**我们自己写的**,比任何类名都稳。
     await page.locator('#project_ids').click()
+    await page.waitForTimeout(500)
+    // ★必须先打字过滤★:下拉是**虚拟列表**,库里项目一多,刚建的那个根本没被渲染出来
+    // (表现是 getByTitle 找不到)。真实用户也是这么用的 —— 项目多了谁都不会去滚动找。
+    await page.keyboard.type(pname)
     await page.waitForTimeout(700)
     await page.getByTitle(pname).first().click()
     await page.keyboard.press('Escape')
