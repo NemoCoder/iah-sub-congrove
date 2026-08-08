@@ -10,7 +10,7 @@
 //!
 //! ★权限是「当前状态的函数」,不是「历史事件的累积」(R1)★:
 //! 此刻是成员 ⟺ 看得到本项目全部资料(含他加入之前的历史);移出即失去全部
-//! (**含他本人参与过的会议**)。⚠ 因此**绝不要**引入「授权生效时间」之类的字段。
+//! (**含他本人参与过的活动**)。⚠ 因此**绝不要**引入「授权生效时间」之类的字段。
 //!
 //! **这里是唯一推导**,别在任何 handler 里重写角色比较/合并逻辑(反漂移原则)。
 //! 真判权只在后端:每个项目作用域的 handler 第一行调 require_role;
@@ -128,7 +128,7 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
     // ★归档项目只读:写闸收口在这一处★(D17,2026-08-07)
     //
     // 判据是 `need >= Editor` —— 本系统里**所有写操作都要求 ≥editor**,读只要 viewer,
-    // 所以这一个判断就覆盖了全部写入路径:上传、建文档、建会议、改名、删除、建分享…
+    // 所以这一个判断就覆盖了全部写入路径:上传、建文档、建活动、改名、删除、建分享…
     //
     // ★为什么不在每个写 handler 里各加一句★:软删除那次就是这么漏的 ——
     // `deleted_at IS NULL` 当初只在两处补了,结果 download/content/play/整个公开分享面
@@ -155,14 +155,14 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
     Ok(role)
 }
 
-/// 我能以什么身份看这场会议。★这是会议模块的唯一推导★,别在 handler 里各自拼 SQL。
+/// 我能以什么身份看这场活动。★这是活动模块的唯一推导★,别在 handler 里各自拼 SQL。
 ///
-/// ⚠ **它只管「会议元信息」,不管材料**。材料权限一律走 [`require_role`](项目成员身份,D3),
+/// ⚠ **它只管「活动元信息」,不管材料**。材料权限一律走 [`require_role`](项目成员身份,D3),
 /// 与「是不是参会人」完全无关 —— 这正是 D8(临时参会人能参会、看不到材料)与
-/// D9(公开会议旁听者能看议程、材料一律 404)成立的原因。把两者混在一起,
+/// D9(公开活动旁听者能看议程、材料一律 404)成立的原因。把两者混在一起,
 /// 「参会即获得资料权限」就会把权限模型退回历史累积,而 R1 要的是**当前状态的函数**。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MeetingView {
+pub enum ActivityView {
     /// 参会人 / 关联项目的成员 / 超管:元信息 + 参与者名单 + 讨论区。
     Inside,
     /// 旁听者:仅因为这场会 `visibility='public'` 而看得见。
@@ -170,14 +170,14 @@ pub enum MeetingView {
     Observer,
 }
 
-/// 我与这场会议的一条关系。SQL 只负责**把关系查出来**,判档位交给 [`decide_view`]。
+/// 我与这场活动的一条关系。SQL 只负责**把关系查出来**,判档位交给 [`decide_view`]。
 ///
 /// ★2026-08-08 为什么要拆成两步★(修一个真实的越权缺陷):
 /// 原来 SQL 直接吐 `'inside'`/`'observer'`,第一条分支写的是
-/// `SELECT 'inside' FROM meeting_participants WHERE meeting_id=$1 AND username=$2`
+/// `SELECT 'inside' FROM activity_participants WHERE activity_id=$1 AND username=$2`
 /// —— **不区分 kind**。而 `observe`(自助旁听)插的正是一行 `kind='observer'`。
 /// 于是「点一下旁听」就把自己从 Observer 提权成 Inside,拿到了参与者名单与讨论区,
-/// 而 D9 与上面 `MeetingView::Observer` 的文档注释都写着「名单与讨论区都不给」。
+/// 而 D9 与上面 `ActivityView::Observer` 的文档注释都写着「名单与讨论区都不给」。
 ///
 /// 光在 WHERE 里补一句 `AND kind <> 'observer'` 能修好这一次,但**修不好下一次**:
 /// 那样一来「旁听算不算 Inside」这个安全判断仍然藏在一句 SQL 里,
@@ -192,49 +192,49 @@ const LINK_PART_PREFIX: &str = "participant:";
 /// 由「我与这场会的全部关系」判出可见档位。看不到 → None(调用方转 404)。
 ///
 /// ★fail-closed★:参会人只认 `kind='attendee'` 给 Inside。
-/// 将来若给 `meeting_participants.kind` 加了新取值而忘了改这里,
+/// 将来若给 `activity_participants.kind` 加了新取值而忘了改这里,
 /// 新 kind 会**落到谁都不匹配 → None → 404**,而不是默认放行。
 /// 宁可新功能上线时报「看不到」,也不要悄悄多给一档权限。
-fn decide_view(links: &[String]) -> Option<MeetingView> {
+fn decide_view(links: &[String]) -> Option<ActivityView> {
     /// 参会人关系里的 kind;不是参会人关系则 None。
     fn kind(l: &str) -> Option<&str> { l.strip_prefix(LINK_PART_PREFIX) }
     let inside = links
         .iter()
         .any(|l| l == LINK_MEMBER || l == LINK_SUPER || kind(l) == Some("attendee"));
-    if inside { return Some(MeetingView::Inside) }
+    if inside { return Some(ActivityView::Inside) }
     // ★旁听者与「这场会是 public」是同一档★:两者都只看得到元信息。
     //   旁听行的存在只表示「他点过旁听」(用于取消旁听、以及公开广场里把他排除),
     //   **不提升任何权限**。
     let observer = links.iter().any(|l| l == LINK_PUBLIC || kind(l) == Some("observer"));
-    if observer { return Some(MeetingView::Observer) }
+    if observer { return Some(ActivityView::Observer) }
     None
 }
 
-/// 判我对这场会议的可见档位。看不到 → 404(与 require_role 同口径:不泄露存在性)。
+/// 判我对这场活动的可见档位。看不到 → 404(与 require_role 同口径:不泄露存在性)。
 ///
 /// 四条来源一次查完(与 effective_role 同样的 UNION 手法,零额外往返):
-/// 参会人(带 kind)/ 关联项目成员 / 超管 / 会议本身是 public。
-pub async fn meeting_view(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppResult<MeetingView> {
+/// 参会人(带 kind)/ 关联项目成员 / 超管 / 活动本身是 public。
+pub async fn activity_view(pool: &PgPool, id: &Identity, activity_id: i64) -> AppResult<ActivityView> {
     let username = id.require_username()?;
     let links: Vec<String> = sqlx::query_scalar(
         // ★把 kind 原样带出来★,别在 SQL 里就把它压成 inside/observer(见 decide_view 头注)
-        "SELECT 'participant:' || kind FROM meeting_participants
-           WHERE meeting_id = $1 AND username = $2
+        "SELECT 'participant:' || kind FROM activity_participants
+           WHERE activity_id = $1 AND username = $2
          UNION ALL
          -- ⚠★JOIN projects 判 deleted_at★(2026-08-07):项目软删除**不动成员表**,
-         --   所以少了这一句,项目删进回收站之后成员照样能看到它的会议。
+         --   所以少了这一句,项目删进回收站之后成员照样能看到它的活动。
          --   这是 CLAUDE.md 那条硬纪律(「凡是读内容的路径 SQL 都要带 deleted_at IS NULL」)
-         --   在会议模块的又一处遗漏 —— 上一次是 v0.3.55 一口气补了 11 处。
-         SELECT 'member' FROM meeting_projects mp
+         --   在活动模块的又一处遗漏 —— 上一次是 v0.3.55 一口气补了 11 处。
+         SELECT 'member' FROM activity_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
            JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
-           WHERE mp.meeting_id = $1 AND pm.username = $2
+           WHERE mp.activity_id = $1 AND pm.username = $2
          UNION ALL
          SELECT 'super' FROM app_user WHERE username = $2 AND is_super
          UNION ALL
-         SELECT 'public' FROM meetings WHERE id = $1 AND visibility = 'public'",
+         SELECT 'public' FROM activities WHERE id = $1 AND visibility = 'public'",
     )
-    .bind(meeting_id)
+    .bind(activity_id)
     .bind(username)
     .fetch_all(pool)
     .await?;
@@ -243,19 +243,19 @@ pub async fn meeting_view(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppR
 
 /// 谁能改这场会:发起人、记录员(要整理纪要)、超管。
 /// ★不是「关联项目的 admin」★——一场会可关联多个项目,让任一项目的管理员都能改别人的会太宽。
-pub async fn require_meeting_host(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppResult<()> {
+pub async fn require_activity_host(pool: &PgPool, id: &Identity, activity_id: i64) -> AppResult<()> {
     if is_super_now(pool, id).await? { return Ok(()) }
     let username = id.require_username()?;
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT organizer, recorder FROM meetings WHERE id = $1",
+        "SELECT organizer, recorder FROM activities WHERE id = $1",
     )
-    .bind(meeting_id)
+    .bind(activity_id)
     .fetch_optional(pool)
     .await?;
     match row {
         Some((org, rec)) if org == username || rec == username => Ok(()),
         // 看得见但不是主人 → 403;完全看不见 → 404(同 require_role 的两档口径)
-        Some(_) => match meeting_view(pool, id, meeting_id).await {
+        Some(_) => match activity_view(pool, id, activity_id).await {
             Ok(_) => Err(AppError::Forbidden),
             Err(e) => Err(e),
         },
@@ -292,10 +292,10 @@ mod tests {
         assert_eq!(merge(empty), None);
     }
 
-    // ── decide_view:会议可见档位 ──────────────────────────────────────
+    // ── decide_view:活动可见档位 ──────────────────────────────────────
     //
     // ★这一组是 2026-08-08 那个越权缺陷的复现测试★(先写它,再改的代码)。
-    // 缺陷:`observe`(自助旁听)往 meeting_participants 插一行 kind='observer',
+    // 缺陷:`observe`(自助旁听)往 activity_participants 插一行 kind='observer',
     // 而档位判定的第一条 SQL 分支不看 kind → 旁听者被判成 Inside →
     // 拿到参与者名单与讨论区,而 D9 明写这两样都不给。
     //
@@ -306,19 +306,19 @@ mod tests {
     #[test]
     fn 旁听者只给_observer_不给_inside() {
         // ★这就是缺陷本身★:改之前这里拿到的是 Inside
-        assert_eq!(decide_view(&[l("participant:observer")]), Some(MeetingView::Observer));
-        // 自助旁听的真实形态:公开会议 + 自己那行 observer,两条同时在
+        assert_eq!(decide_view(&[l("participant:observer")]), Some(ActivityView::Observer));
+        // 自助旁听的真实形态:公开活动 + 自己那行 observer,两条同时在
         assert_eq!(
             decide_view(&[l("participant:observer"), l("public")]),
-            Some(MeetingView::Observer),
+            Some(ActivityView::Observer),
         );
     }
 
     #[test]
     fn 正式参会人_项目成员_超管都是_inside() {
-        assert_eq!(decide_view(&[l("participant:attendee")]), Some(MeetingView::Inside));
-        assert_eq!(decide_view(&[l("member")]), Some(MeetingView::Inside));
-        assert_eq!(decide_view(&[l("super")]), Some(MeetingView::Inside));
+        assert_eq!(decide_view(&[l("participant:attendee")]), Some(ActivityView::Inside));
+        assert_eq!(decide_view(&[l("member")]), Some(ActivityView::Inside));
+        assert_eq!(decide_view(&[l("super")]), Some(ActivityView::Inside));
     }
 
     #[test]
@@ -327,13 +327,13 @@ mod tests {
         // (反过来说明上一条测的不是「有 observer 行就降级」,而是「observer 行本身不提权」)
         assert_eq!(
             decide_view(&[l("participant:observer"), l("member")]),
-            Some(MeetingView::Inside),
+            Some(ActivityView::Inside),
         );
     }
 
     #[test]
-    fn 公开会议对无关的人只给_observer() {
-        assert_eq!(decide_view(&[l("public")]), Some(MeetingView::Observer));
+    fn 公开活动对无关的人只给_observer() {
+        assert_eq!(decide_view(&[l("public")]), Some(ActivityView::Observer));
     }
 
     #[test]
@@ -348,7 +348,7 @@ mod tests {
         // 拿它当「一个这里没认的 kind」来测最贴切。
         assert_eq!(decide_view(&[l("participant:guest")]), None);
         assert_eq!(decide_view(&[l("participant:未来某个新档位")]), None);
-        // 但公开会议那条独立来源仍然照常给 Observer
-        assert_eq!(decide_view(&[l("participant:guest"), l("public")]), Some(MeetingView::Observer));
+        // 但公开活动那条独立来源仍然照常给 Observer
+        assert_eq!(decide_view(&[l("participant:guest"), l("public")]), Some(ActivityView::Observer));
     }
 }

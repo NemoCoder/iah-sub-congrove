@@ -48,6 +48,16 @@ lines() {
 case "${1:-check}" in
 dump) dump ;;
 baseline)
+  # ⚠★推进基线会让已声明的 breaking 全部归零 —— 证据就此消失★（2026-08-08 踩过两次：
+  #   M0-1 与 M0-2 都因为先跑了 baseline 再 freeze，`openapi-breaking.txt` 提交上去是空的，
+  #   于是「这 20 个端点被移除」在 PR 里一点痕迹都没有）。
+  #   纪律：**一个里程碑内基线只冻一次**，期间靠 `$DECL` 累积；里程碑收尾时才推进。
+  if [ -s "$DECL" ]; then
+    echo "★拒绝推进基线★：$DECL 里还有 $(grep -c . "$DECL") 条已声明的破坏性变更。"
+    echo "→ 推进基线会把它们清零，PR 里就再也看不到本次到底破坏了什么。"
+    echo "  确实要推进（里程碑收尾）：先 rm $DECL 并在提交信息里说明。"
+    exit 2
+  fi
   mkdir -p docs && dump > "$BASE" || exit 1
   echo "★契约基线已冻结★ $BASE（$(python3 -c "import json;print(len(json.load(open('$BASE'))['paths']))") 条路径）" ;;
 freeze|check)

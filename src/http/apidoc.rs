@@ -75,87 +75,87 @@ pub const APIS: &[Api] = &[
          "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", ""),
     api!("POST", "/api/projects/{id}/archive", "项目", "owner",
          "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,\
-          但不能再上传/建会议/改内容;配额仍占;归档项目的会不进日历、不产生忙闲。\
+          但不能再上传/建活动/改内容;配额仍占;归档项目的会不进日历、不产生忙闲。\
           传 {archived:false} 恢复为进行中",
          "archived"),
     api!("GET", "/api/projects/{id}/diagnose", "项目", "admin",
          "权限诊断:他为什么能/不能看(超管? 成员表里什么角色?)", "username"),
 
-    // ── 会议与日程(M1)──
-    // ★这一组只管**会议元信息**,不管材料★:材料权限一律走上面项目那组(D3/D8/D9)。
-    api!("GET", "/api/meetings", "会议", "登录",
-         "我的会议(参会人 / 所在项目的会)。★public 会议不进这里★——列表是我的日程不是全平台公告板",
+    // ── 活动与日程(M1)──
+    // ★这一组只管**活动元信息**,不管材料★:材料权限一律走上面项目那组(D3/D8/D9)。
+    api!("GET", "/api/activities", "活动", "登录",
+         "我的活动(参会人 / 所在项目的会)。★public 活动不进这里★——列表是我的日程不是全平台公告板",
          "from, to, project_id"),
-    api!("POST", "/api/meetings", "会议", "每个关联项目都要 ≥editor",
-         "建会议。★必须关联至少一个项目★(材料权限来自项目成员身份)+ ★记录员必填★(D14)",
+    api!("POST", "/api/activities", "活动", "每个关联项目都要 ≥editor",
+         "建活动。★必须关联至少一个项目★(材料权限来自项目成员身份)+ ★记录员必填★(D14)",
          "title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
-    api!("GET", "/api/meetings/{id}", "会议", "参会人/关联项目成员;public 会议任何人可旁听",
-         "会议详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
-    api!("PUT", "/api/meetings/{id}", "会议", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
-         "改会议。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
+    api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
+         "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
+    api!("PUT", "/api/activities/{id}", "活动", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
+         "改活动。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
          "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility"),
-    api!("DELETE", "/api/meetings/{id}", "会议", "发起人 / 记录员",
+    api!("DELETE", "/api/activities/{id}", "活动", "发起人 / 记录员",
          "★取消不是删除★:置 canceled 留档(谁邀了谁、谁拒了是协作事实)", ""),
-    api!("PUT", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
+    api!("PUT", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
          "★批量★邀请(删组之后一场会拉 20 人不能点 20 次)。★恒为 attendee★——\
           2026-08-07 推翻 D8 删掉了「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的,\
           走 POST .../observe 不从这里进。required=false 标「选参」——\
           ★只有必参人的冲突算「有冲突」★(6.1.2):一场 10 人的会总有人撞车,\
           每个人都标红那个红色就成了背景噪音", "usernames[], required"),
-    api!("DELETE", "/api/meetings/{id}/participants", "会议", "发起人 / 记录员",
+    api!("DELETE", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
          "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username"),
-    api!("POST", "/api/meetings/{id}/respond", "会议", "名单内的人(旁听者不能答复)",
+    api!("POST", "/api/activities/{id}/respond", "活动", "名单内的人(旁听者不能答复)",
          "答复邀请。★counter(建议改期)必须带具体的替代时间★——它是私事冲突唯一的结构化出口(D2)",
          "status, counter_starts_at, counter_ends_at, counter_reason"),
-    api!("GET", "/api/meetings/{id}/messages", "会议", "参会人/关联项目成员(★旁听者不给★)",
-         "会议讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer"),
-    api!("POST", "/api/meetings/{id}/messages", "会议", "参会人/关联项目成员",
+    api!("GET", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员(★旁听者不给★)",
+         "活动讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer"),
+    api!("POST", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员",
          "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer"),
-    api!("GET", "/api/meetings/{id}/minutes", "会议", "参会人/关联项目成员(★旁听者不给★)",
-         "取会议纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
-    api!("PUT", "/api/meetings/{id}/minutes", "会议", "发起人 / 记录员",
+    api!("GET", "/api/activities/{id}/minutes", "活动", "参会人/关联项目成员(★旁听者不给★)",
+         "取活动纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
+    api!("PUT", "/api/activities/{id}/minutes", "活动", "发起人 / 记录员",
          "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
           ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
          "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
-    api!("GET", "/api/meetings/{id}/items", "会议", "★关联项目的成员★(不是参会人)",
-         "会议的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到会议、看不到材料);\
-          is_recording 区分录制与材料 —— 只有录制会被转写、并作为会议时长依据(D5)", ""),
-    api!("GET", "/api/meetings/{id}/link-history", "会议", "参会人/关联项目成员",
-         "线上会议链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
-    api!("POST", "/api/meetings/{id}/remind", "会议", "发起人 / 记录员",
+    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
+         "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
+          is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
+    api!("GET", "/api/activities/{id}/link-history", "活动", "参会人/关联项目成员",
+         "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
+    api!("POST", "/api/activities/{id}/remind", "活动", "发起人 / 记录员",
          "催办。★只催还没答复的人★,已接受/已拒绝的不该再被打扰;走平台站内信,发不出去不报错",
          "username(可选,不给则催全部待答复的)"),
-    api!("POST", "/api/meetings/{id}/accept-counter", "会议", "发起人 / 记录员",
-         "采纳某人的改期建议 = 把会议时间改成他提议的时间。★随后所有人答复清回 pending★\
+    api!("POST", "/api/activities/{id}/accept-counter", "活动", "发起人 / 记录员",
+         "采纳某人的改期建议 = 把活动时间改成他提议的时间。★随后所有人答复清回 pending★\
           (含提议者本人:他提的是时间,不等于他一定能来)", "username"),
-    api!("POST", "/api/meetings/{id}/reject-counter", "会议", "发起人 / 记录员",
+    api!("POST", "/api/activities/{id}/reject-counter", "活动", "发起人 / 记录员",
          "驳回改期建议。★驳回后他回到 pending 不是 declined★——拒绝的是这个**时间提议**,\
           不代表替他决定「不来」", "username"),
-    api!("GET", "/api/meetings/public", "会议", "登录",
-         "公开会议广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public 只是个字段。\
+    api!("GET", "/api/activities/public", "活动", "登录",
+         "公开活动广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public 只是个字段。\
           只列**还没结束**的;归档项目的会不进(与日历同口径)", "days(不给=全部未来)"),
-    api!("POST", "/api/meetings/{id}/observe", "会议", "登录(仅 public 会议)",
+    api!("POST", "/api/activities/{id}/observe", "活动", "登录(仅 public 活动)",
          "我要旁听 / 取消旁听。★自助,不需发起人同意★——标了 public 就是邀请全平台来听;\
           旁听后进我的日历。★旁听不给材料★(D9 与 D3 正交);\
           ★已是正式参会人不会被降级成 observer★", "observe(true/false)"),
     api!("GET", "/api/projects/{id}/stats", "项目", "≥viewer",
-         "项目统计(6.5.2):会议数 / 总时长(★D5 三级回退,与个人统计同一套口径★)/ 参会率 / 人均时长 / 纪要完成数。\
+         "项目统计(6.5.2):活动数 / 总时长(★D5 三级回退,与个人统计同一套口径★)/ 参会率 / 人均时长 / 纪要完成数。\
           ★取消的场次不计入★;参会率的分母**不含旁听者**(他不是被邀请的,计进去会稀释比例)。\
-          ⚠ 这是「分组展开」的数字(D6),把多个项目的加起来 ≠ 总数,跨项目求总须按会议去重", "range"),
-    api!("GET", "/api/me/stats", "会议", "登录",
+          ⚠ 这是「分组展开」的数字(D6),把多个项目的加起来 ≠ 总数,跨项目求总须按活动去重", "range"),
+    api!("GET", "/api/me/stats", "活动", "登录",
          "「我的投入」统计(原型 me 视图)。★口径在 handler 注释里,前端不自己算★:只算**已开完**的会、\
           拒绝的不算、发起人不在名单也算;待写纪要=我是记录员且纪要非 done。\
           ⚠ 分项目的次数之和 ≥ 总次数(一场会可关联多个项目)", "range(month/quarter/year)"),
     api!("GET", "/api/me/transfers", "项目", "登录",
          "等我答复的主持人转移(喂给「待我处理」卡)。★不做成只在项目页可见★——\
           被转让人可能压根不打开那个项目,那样请求永远不会被答复", ""),
-    api!("GET", "/api/me/unread", "会议", "登录",
+    api!("GET", "/api/me/unread", "活动", "登录",
          "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
           否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),
-    api!("POST", "/api/me/unread/read", "会议", "登录",
-         "标记已读。不带 meeting_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
-          后者在并发下会把此刻刚发来的消息一并吞掉", "meeting_id(可选)"),
-    api!("GET", "/api/freebusy", "会议", "登录",
+    api!("POST", "/api/me/unread/read", "活动", "登录",
+         "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
+          后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),
+    api!("GET", "/api/freebusy", "活动", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),
 
@@ -180,9 +180,9 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/items/{id}/progress", "内容", "≥viewer", "我上次看到哪", ""),
     api!("PUT", "/api/items/{id}/progress", "内容", "≥viewer", "记录播放进度", "position_sec, duration_sec"),
     api!("POST", "/api/projects/{id}/upload", "内容", "≥editor",
-         "流式上传(单文件不限大小,闸是项目配额)。★带 meeting_id 即为会议材料★(D10 的写入口),\
-          is_recording=true 标记为录制 —— 只有录制会被转写、并作为会议时长依据(D5)",
-         "multipart file; parent_id, meeting_id, is_recording"),
+         "流式上传(单文件不限大小,闸是项目配额)。★带 activity_id 即为活动材料★(D10 的写入口),\
+          is_recording=true 标记为录制 —— 只有录制会被转写、并作为活动时长依据(D5)",
+         "multipart file; parent_id, activity_id, is_recording"),
     api!("GET", "/api/items/{id}/download", "内容", "≥viewer", "下载原件;viewer 受项目禁下载开关约束", "inline"),
 
     // ── 大文件直传 ──

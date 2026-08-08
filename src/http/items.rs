@@ -715,12 +715,12 @@ pub struct UploadQuery {
     /// 空串按 None 收(浏览器拼 `?parent_id=` 是常见形态,直接 400 太脆——2026-08-03 线上踩过)。
     #[serde(default, deserialize_with = "empty_as_none")]
     pub parent_id: Option<i64>,
-    /// ★会议材料★(D10):非空表示这份材料属于某次会议的只读区。
-    /// 上传落在**关联项目之一**(前端传 projects[0]),但靠 meeting_id 让**所有**关联项目的成员都看得到
-    /// —— 这就是 D4「一次会议多个项目、材料整份进所有关联项目」的实现方式(不复制文件)。
+    /// ★活动材料★(D10):非空表示这份材料属于某次活动的只读区。
+    /// 上传落在**关联项目之一**(前端传 projects[0]),但靠 activity_id 让**所有**关联项目的成员都看得到
+    /// —— 这就是 D4「一次活动多个项目、材料整份进所有关联项目」的实现方式(不复制文件)。
     #[serde(default, deserialize_with = "empty_as_none")]
-    pub meeting_id: Option<i64>,
-    /// ★录制 ≠ 材料★(D5):只有它为真的文件会被转写、并作为会议时长依据。
+    pub activity_id: Option<i64>,
+    /// ★录制 ≠ 材料★(D5):只有它为真的文件会被转写、并作为活动时长依据。
     #[serde(default)]
     pub is_recording: bool,
 }
@@ -770,13 +770,13 @@ pub async fn upload(
         // 先插行拿 item_id(key 要用);kind 按 mime 粗分,失败路径统一删行。
         let kind = if mime.starts_with("video/") { "video" } else { "file" };
         let iid: i64 = sqlx::query_scalar(
-            // meeting_id / is_recording:会议材料走同一条上传路径(D10 说会议材料是只读区,
-            // 唯一写入口是会议详情页 —— 那指的是**入口**,不必为它另写一套 79 行的流式上传)。
-            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, meeting_id, is_recording)
+            // activity_id / is_recording:活动材料走同一条上传路径(D10 说活动材料是只读区,
+            // 唯一写入口是活动详情页 —— 那指的是**入口**,不必为它另写一套 79 行的流式上传)。
+            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, activity_id, is_recording)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
         )
         .bind(pid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
-        .bind(q.meeting_id).bind(q.is_recording)
+        .bind(q.activity_id).bind(q.is_recording)
         .fetch_one(&state.pool)
         .await?;
         // ★先落临时 key,算完真实 sha 再按内容寻址归位★:边收边算哈希,收完才知道内容的 key。
@@ -950,7 +950,7 @@ pub async fn download(
         //   本该「禁下载」的人拿到的是 500 不是 403,本该能下载的 viewer 则一律下不了。
         //   ★为什么 13 条安全网 + 70 条 E2E 全绿也没发现★:两个原因叠加 ——
         //   ① 这个分支只在 `role == Viewer` 时才走,而测试用的都是 owner/admin 身份;
-        //   ② 现有的「禁下载」测试覆盖的全是**会议级** `meetings.no_download`(0007 加的),
+        //   ② 现有的「禁下载」测试覆盖的全是**活动级** `activities.no_download`(0007 加的),
         //      项目级这条一条都没有。
         //   抓到它的是 `scripts/sql-prepare-check.py`(全量 SQL 对真库 PREPARE)第一次跑 ——
         //   这正是它存在的理由:**冷门路径的 SQL 错,靠测试覆盖是等不到的**。
@@ -962,18 +962,18 @@ pub async fn download(
             return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
         }
     }
-    // ★会议粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
+    // ★活动粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
     // 说的是**这一次会**,不是把整个项目锁上(项目级那个太钝,会连带影响无关材料)。
     //
-    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(会议放开能盖过项目)
-    // 就成了「在会议上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
+    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(活动放开能盖过项目)
+    // 就成了「在活动上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
     // ⚠ 这一条**对所有角色生效**,不像项目那条只拦 viewer —— 发起人说「这次不许下载」
-    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(会议材料多半是 editor 传的)。
-    let meeting_blocked: Option<bool> = sqlx::query_scalar(
-        "SELECT m.no_download FROM items i JOIN meetings m ON m.id = i.meeting_id WHERE i.id = $1")
+    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(活动材料多半是 editor 传的)。
+    let activity_blocked: Option<bool> = sqlx::query_scalar(
+        "SELECT m.no_download FROM items i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
         .bind(iid).fetch_optional(&state.pool).await?;
-    if meeting_blocked == Some(true) {
-        return Err(AppError::BadRequest("这场会议的材料已设为禁止下载原件(可在线预览/播放)".into()));
+    if activity_blocked == Some(true) {
+        return Err(AppError::BadRequest("这场活动的材料已设为禁止下载原件(可在线预览/播放)".into()));
     }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =
