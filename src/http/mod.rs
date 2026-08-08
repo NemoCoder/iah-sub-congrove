@@ -8,6 +8,7 @@ pub mod apidoc;
 pub(crate) mod items;
 mod media;
 mod activities;
+mod activity_types;
 mod share;
 pub(crate) mod projects;
 
@@ -63,6 +64,9 @@ pub fn build_router(state: AppState) -> Router {
         // 活动与日程(M1)。★活动参与 ≠ 资料权限★:这些接口只管活动元信息,
         // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 activities.rs 头注)。
         .route("/activities", get(activities::list).post(activities::create))
+        // 活动类型（ADR-0002）：预置两条 + 每人自建
+        .route("/activity-types", get(activity_types::list).post(activity_types::create))
+        .route("/activity-types/{id}", put(activity_types::update).delete(activity_types::remove))
         .route("/activities/{id}", get(activities::detail).put(activities::update).delete(activities::cancel))
         .route("/activities/{id}/participants", put(activities::invite).delete(activities::uninvite))
         .route("/activities/{id}/respond", post(activities::respond))
