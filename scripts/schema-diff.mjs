@@ -37,6 +37,7 @@
 //   报不出来 = 这个脚本本身没用。★
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const TOKEN = process.env.IAH_TOKEN
 if (!TOKEN) { console.error('缺 IAH_TOKEN（门户「日志」页生成的个人令牌）'); process.exit(2) }
@@ -78,9 +79,13 @@ const EXPECTED_DROPS = [
   { m: /^projects\.visibility$/, why: '技术设计 §3.2：退出忙闲判定后这一列没有任何语义' },
 ]
 const EXPECTED_ADDS = [
-  { m: /^activity_types\b/, why: 'PRD A1：新表' },
-  { m: /^user_prefs\b/, why: 'PRD E0/F3：新表' },
-  { m: /^user_quota\b/, why: 'PRD L3：新表' },
+  // ⚠ ★别用 `\b`：下划线是词字符★，`/^activity_types\b/` **匹配不上** `activity_types_pkey`
+  //   （实测 `/^activity_types\b/.test('activity_types_pkey')` = false）。
+  //   于是三张新表的主键/非空/CHECK 约束会全部落成「未声明的新增」——
+  //   说明这份白名单从没对着 M0-1 的**目标状态**跑过。用 `(\.|_|$)` 显式收边。
+  { m: /^activity_types(\.|_|$)/, why: 'PRD A1：新表' },
+  { m: /^user_prefs(\.|_|$)/, why: 'PRD E0/F3：新表' },
+  { m: /^user_quota(\.|_|$)/, why: 'PRD L3：新表' },
   { m: /^projects\.kind$/, why: 'PRD J1：区分 materials 区' },
   { m: /^activities\.(type_id|busy|remind_minutes|remind_done_at|deleted_at|deleted_by)$/, why: '技术设计 §2.4' },
   { m: /^activity_participants\.notified_at$/, why: 'PRD L0b（O5 拍板）' },
@@ -93,18 +98,37 @@ const EXPECTED_CHANGES = [
 ]
 const hit = (list, key) => list.find((e) => e.m.test(key))
 
-// ── 跑迁移 ──
-const migDir = path.join(ROOT, 'migrations')
-const files = fs.readdirSync(migDir).filter((f) => f.endsWith('.sql')).sort()
-const OLD = files                       // 0001~0007，历史真相
-const NEW = files.filter((f) => f.startsWith('0001'))   // 重写后应当只剩这一个
+// ══════ 老侧：★从**钉死的 sha** 取迁移，绝不读工作树★ ══════
+//
+// ⚠⚠ ★这是第一版最致命的错，而且我的「自检」当时证明不了它★：
+//    第一版两侧都 `readdirSync(migrations/)` —— 老侧取全部、新侧取 `0001*`。
+//    今天跑它，工作树里有 7 个文件，于是老侧 7 个、新侧 1 个，报出 41 项差异，看起来很对。
+//    ★但 M0-1 那个 PR 的第一件事就是**删掉 0002~0007**★（§4.2 明写，否则 `sqlx::migrate!`
+//    会去 ALTER 已改名的表）。到那时工作树里只剩一个文件 → 老侧 = 新侧 = 同一份新 0001
+//    → 脚本自信地打印「门禁通过」，而它比的是新 0001 和它自己。
+//    ★在唯一要守的那个 PR 上，它必定空绿。★（实测 exit=0）
+//
+//    根因是我把「实测要验到能推翻自己那一步」这条规矩用在了 schema 上、**没用在脚本自己身上**：
+//    我在「今天的状态」下自检，而不是在「M0-1 的状态」下自检。
+//
+// → 老侧改成 `git show <sha>:migrations/...`。这也让它和文档表头「现状钉一个 sha」同源。
+const BASE_SHA = process.env.SCHEMA_BASE_SHA ?? '8f82cf1'   // 改名前的基准（= 文档表头那个）
+const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 })
 
-async function build(schema, list) {
+const OLD = git('ls-tree', '--name-only', BASE_SHA, 'migrations/')
+  .split('\n').filter((f) => f.endsWith('.sql')).sort()
+const readOld = (f) => git('show', `${BASE_SHA}:${f}`)
+
+const migDir = path.join(ROOT, 'migrations')
+const NEW = fs.readdirSync(migDir).filter((f) => f.endsWith('.sql')).sort()
+  .map((f) => path.join('migrations', f))
+const readNew = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8')
+
+async function build(schema, list, read) {
   await sql(`DROP SCHEMA IF EXISTS ${schema} CASCADE; CREATE SCHEMA ${schema}`)
   for (const f of list) {
-    const body = fs.readFileSync(path.join(migDir, f), 'utf8')
     // ★每条请求都自带 search_path★：这个端点每次可能是新连接，SET 不会跨请求保留
-    await sql(`SET search_path TO ${schema}; ${body}`)
+    await sql(`SET search_path TO ${schema}; ${read(f)}`)
   }
 }
 
@@ -129,12 +153,20 @@ async function snapshot(schema) {
   return out
 }
 
-console.error(`老 schema：跑 ${OLD.length} 个迁移 ${OLD.join(', ')}`)
-await build('zz_old', OLD)
-console.error(`新 schema：跑 ${NEW.length} 个迁移 ${NEW.join(', ')}`)
-await build('zz_new', NEW)
-
-const A0 = await snapshot('zz_old'), B0 = await snapshot('zz_new')
+console.error(`老 schema（★取自 ${BASE_SHA}★）：${OLD.length} 个迁移`)
+console.error(`新 schema（工作树）：${NEW.length} 个迁移`)
+if (OLD.length === NEW.length && OLD.every((f, i) => f === NEW[i]) && BASE_SHA === 'HEAD') {
+  console.error('⚠ 两侧同源，这次比对没有意义'); process.exit(2)
+}
+let A0, B0
+try {
+  await build('zz_old', OLD, readOld)
+  await build('zz_new', NEW, readNew)
+  A0 = await snapshot('zz_old'); B0 = await snapshot('zz_new')
+} finally {
+  // ★异常时也要清★：第一版把 DROP 放在最后，脚本一抛异常就把 zz_old/zz_new 留在真库里
+  await sql('DROP SCHEMA IF EXISTS zz_old CASCADE; DROP SCHEMA IF EXISTS zz_new CASCADE').catch(() => {})
+}
 // ★**两侧都**过一遍改名★（不是只归一化老侧）：改名规则对已改名的一侧是空操作
 // （`activities` 里不含 `meetings`），所以幂等；而只归一化一侧的话，
 // **自检时**（两边都是改名前的 0001）老侧变成 activities、新侧还是 meetings → 全不匹配。
@@ -142,8 +174,6 @@ const A0 = await snapshot('zz_old'), B0 = await snapshot('zz_new')
 //    「归一化必须对称」这条，两个脚本各踩一次，记在这里免得第三次。
 const norm = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [rn(k), rn(v)]))
 const A = norm(A0), B = norm(B0)
-
-await sql('DROP SCHEMA IF EXISTS zz_old CASCADE; DROP SCHEMA IF EXISTS zz_new CASCADE')
 
 const bare = (k) => k.replace(/^(列|索引|约束) /, '')
 const dropped = [], added = [], changed = [], ok = []
