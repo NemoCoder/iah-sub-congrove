@@ -190,6 +190,15 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
         </Form.Item>}
 
+        {/* ★议题与议程★（原型「新建活动」有这一栏，而代码里一直没有 —— 2026-08-09 并排对照才发现）。
+            ⚠ 这不是 M0 弄丢的:提交体里一直写着 `agenda: v.agenda ?? ''`、类型里也声明了,
+            **就是没有输入框** —— 于是它永远送空串,后端那一列永远是空。
+            ★一个「字段声明了却接不到输入」的洞,类型检查看不见、E2E 也看不见★
+            (E2E 自己在 data 里塞 agenda,走的不是表单)。只有对着原型看才照得出来。 */}
+        <Form.Item name="agenda" label="议题与议程" extra="一行一条；会写进纪要的议程部分">
+          <Input.TextArea rows={4} placeholder="一行一条" />
+        </Form.Item>
+
         {/* ★参会人挪到右栏★(原型):这里只留一个隐藏字段与 Form 打通,
             真正的选择在右侧「参会人」卡片里 —— 它要和忙闲图并排看。 */}
         <Form.Item name="participants" hidden><Input /></Form.Item>
