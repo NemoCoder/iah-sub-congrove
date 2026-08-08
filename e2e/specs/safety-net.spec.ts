@@ -260,3 +260,44 @@ test.describe('安全网·会议材料与纪要', () => {
     expect(got.minutes?.content_md).toBe(text)
   })
 })
+
+// ════════ ⑥ `is_private` 的四个组合（★M0 要换定义，这是那条语义的守卫★）════════
+//
+// ⚠ ★为什么这条必须是**直接断言**，而不是靠 golden 的 diff 白名单★（2026-08-08 实测教训）：
+//
+// M0 要把 is_private 从「所有关联项目都不 public」换成「活动自己 visibility != public」（PRD J4）。
+// 我一开始想靠 golden 指纹的 diff 白名单守它，做了两轮都失败：
+//   · 第一轮：fixture 只有一种组合 → 判反时**根本不产生 diff**（旧值与判反值恰好相同）；
+//   · 第二轮：补齐四个组合，白名单写 `{from:false,to:true}` / `{from:true,to:false}`
+//     —— 判反产生的两条变化**数值一模一样**，只是落在不同的行上，照样被白名单核销。
+// 根因是结构性的：指纹摊平成 `…<of>.<下标>.is_private` 之后，
+// ★`visibility` 与 `is_private` 在同一行里的关联就丢了★，而「判反」恰恰只体现在这个关联上。
+//
+// 所以分工是：**golden 抓意料之外的变化；已知的语义变更由这里的具名断言守。**
+// 下面这条现在断言的是**旧定义**（它现在必须是绿的）。M0-3 换定义时，
+// 实现者必须**有意识地**把期望值改成新定义 —— 那一刻判反就会当场变红。
+test.describe('安全网·is_private 语义', () => {
+  const COMBOS = [
+    { proj: 'public' as const, act: 'private' as const, old: false },
+    { proj: 'private' as const, act: 'public' as const, old: true },
+    { proj: 'private' as const, act: 'private' as const, old: true },
+    { proj: 'public' as const, act: 'public' as const, old: false },
+  ]
+
+  test('★四个组合逐个对★（旧定义 = 所有关联项目都不 public）', async ({ request }) => {
+    const from = new Date(Date.now() - 864e5).toISOString()
+    const to = new Date(Date.now() + 30 * 864e5).toISOString()
+    for (const c of COMBOS) {
+      const pid = await newProject(request, `E2E-网-isp-${c.proj}-${tag()}`, { visibility: c.proj })
+      const mid = await newMeeting(request, pid, { visibility: c.act })
+      const list = (await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()) as
+        { id: number; is_private: boolean }[]
+      const row = list.find((m) => m.id === mid)
+      expect(row, `活动 ${mid} 应当在日历里`).toBeTruthy()
+      expect(
+        row!.is_private,
+        `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.old}`,
+      ).toBe(c.old)
+    }
+  })
+})
