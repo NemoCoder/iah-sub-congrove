@@ -12,11 +12,12 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { api, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
 
-/// ★分钟只给 00 / 15 / 30★（2026-08-09 用户）。会不会约在 8:07？不会。
-/// 而 AntD 默认给 60 行分钟,常用的那三个要滚很久才够得着 —— 选项多 ≠ 更自由,
-/// 这里多出来的 57 个选项**只制造滚动**。
-/// ⚠ 没给 :45 是照用户的字面清单（「00、15、30 这3个」）；要加回来在这个数组里加一项即可。
-const MINUTES = [0, 15, 30]
+/// ★分钟只走一刻钟★:00 / 15 / 30 / 45（2026-08-09 用户）。会不会约在 8:07？不会。
+/// 而 AntD 默认给 60 行分钟,常用的那四个要滚很久才够得着 —— 选项多 ≠ 更自由,
+/// 多出来的 56 个选项**只制造滚动**。
+/// ⚠ 第一版按用户字面写的「00、15、30 这3个」少了 :45,当天即补 —— ★一刻钟是四格不是三格★,
+/// 缺 :45 会让「8:45 开个短会」这种最常见的排法**根本选不出来**。
+const MINUTES = [0, 15, 30, 45]
 const BAD_MINUTES = Array.from({ length: 60 }, (_, i) => i).filter((m) => !MINUTES.includes(m))
 
 /// 持续时长快捷（参考腾讯会议）。★先定「开多久」再算结束时刻★ ——
