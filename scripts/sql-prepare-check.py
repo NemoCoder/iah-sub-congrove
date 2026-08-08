@@ -37,16 +37,46 @@ def inventory():
     return json.loads(r.stdout)
 
 
-def via_psql(dsn, sqls):
-    """给 CI 用：一次 psql 会话跑完全部 PREPARE，最快，且不需要平台令牌。"""
-    # 每条前后加一个 \echo 标记，好把错误对回条目
-    script = '\n'.join(f"\\echo ___{i}___\nPREPARE _c{i} AS {s};" for i, s in enumerate(sqls))
+def via_psql(dsn, sqls, pre=None):
+    """给 CI 用：一次 psql 会话跑完全部 PREPARE，最快，且不需要平台令牌。
+
+    ★`--pre <file>` 是这道闸最有用的用法★：先施加一段 schema 变更（DROP COLUMN /
+    RENAME TABLE …），再跑全量 PREPARE，**最后 ROLLBACK**。于是「这个 schema 改动会打断哪些 SQL」
+    由数据库**穷举**出来 —— 而不是由人去 grep 一张清单。
+    PG 的 DDL 是事务性的，所以整段在 BEGIN…ROLLBACK 里跑，对库零影响（已实测）。
+
+    这条正是相位 4 卡八轮的解药：`projects.visibility` 的引用面我先后写错三版
+    （「没有语义」→「10 处」→「11+7」），三版都通不过评审。★清单不该由人写。★
+    """
+    # ⚠★两个 bug，都是第一次跑 --pre 时暴露的，而症状是**假绿**（报「207/207 通过」而其实什么都没测）★
+    #
+    # ① ★一条语句出错，整个事务就被中止★，后续全部 `current transaction is aborted`
+    #    —— 穷举根本进行不下去。所以每条 PREPARE 各套一个 SAVEPOINT，错了只回滚到自己那一格。
+    # ② stdout / stderr **分开捕获再拼接，交错顺序就丢了**：所有 `\echo` 标记排在前、
+    #    所有错误排在后，于是错误全被记到最后一个下标上。必须 `stderr=STDOUT` 合流。
+    #
+    # ★教训：一道门禁的**失败路径**必须单独验过。★ 这条 psql 路此前只在「全通过」时跑过，
+    # 于是坏了也看不出来；真正抓到 D4 那个 bug 的是另一条（registry）路。
+    head = 'BEGIN;\n' + (pre + '\n' if pre else '')
+    body = '\n'.join(f"\\echo ___{i}___\nSAVEPOINT sp;\nPREPARE _c{i} AS {s};\nROLLBACK TO SAVEPOINT sp;"
+                     for i, s in enumerate(sqls))
     p = subprocess.run(['psql', dsn, '-v', 'ON_ERROR_STOP=0', '-q', '-f', '-'],
-                       input=script, capture_output=True, text=True)
-    fails, cur = {}, None
-    for line in (p.stdout + p.stderr).split('\n'):
-        if m := re.match(r'___(\d+)___', line): cur = int(m.group(1))
-        elif line.startswith('ERROR:') and cur is not None: fails.setdefault(cur, line)
+                       input=head + body + '\nROLLBACK;', text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    fails, cur, seen = {}, None, 0
+    for line in p.stdout.split('\n'):
+        if m := re.match(r'___(\d+)___', line): cur = int(m.group(1)); seen += 1
+        # ⚠★psql 的错误行带前缀★:`psql:<stdin>:5: ERROR:  relation … does not exist`
+        #   —— 判 `startswith('ERROR:')` 一条都匹配不上,于是**每次都报全过**。
+        elif (m := re.search(r'\bERROR:\s+(.*)', line)) and cur is not None:
+            fails.setdefault(cur, m.group(1))
+    # ★没跑 ≠ 全过★:这是本脚本最重要的一条自检。
+    # 之前 psql 路整条不工作(错误全没匹配上)时,它照样打印「207/207 通过」——
+    # 而我拿 `DROP TABLE projects CASCADE` 当输入,它**还是**说通过。
+    # 一道会把「什么都没检查」报成绿的门禁,比没有门禁更糟。
+    if seen != len(sqls):
+        print(f'★检查没有真正跑起来:预期 {len(sqls)} 个标记,只看到 {seen} 个★', file=sys.stderr)
+        print(p.stdout[:1500], file=sys.stderr); sys.exit(2)
     return fails
 
 
@@ -80,9 +110,15 @@ def via_registry(sqls):
 def main():
     items = inventory()
     sqls = [it['sql'] for it in items]
-    dsn = None
+    dsn = os.environ.get('CONGROVE_DEV_DSN')
     if '--dsn' in sys.argv: dsn = sys.argv[sys.argv.index('--dsn') + 1]
-    fails = via_psql(dsn, sqls) if dsn else via_registry(sqls)
+    pre = None
+    if '--pre' in sys.argv:
+        pre = pathlib.Path(sys.argv[sys.argv.index('--pre') + 1]).read_text()
+        if not dsn:
+            print('--pre 需要 --dsn / CONGROVE_DEV_DSN（要在一条事务里施加变更再回滚）', file=sys.stderr); sys.exit(2)
+        print(f'★先施加 schema 变更再检查，最后 ROLLBACK★\n{pre.strip()}\n{"─" * 60}')
+    fails = via_psql(dsn, sqls, pre) if dsn else via_registry(sqls)
     for i in sorted(fails):
         it = items[i]
         print(f"✗ {it['file']}:{it['line']}\n    {' '.join(it['sql'].split())[:150]}\n    → {fails[i]}")
