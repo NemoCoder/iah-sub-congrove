@@ -99,7 +99,7 @@ export function Analysis({ item, onSeek, onTranscript }: {
           「摘要/分段大纲/…」的 Segmented 视觉上连成一片,用户会把它当成又一个 tab
           (2026-08-05 反馈)。现在左标题右按钮、按钮带图标,和 tab 明确分开。 */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-        <Typography.Text strong>AI 会议纪要</Typography.Text>
+        <Typography.Text strong>AI 活动纪要</Typography.Text>
         {job?.status === 'failed' && <Tag color="red" style={{ marginLeft: 8 }}>上次失败</Tag>}
         <div style={{ marginLeft: 'auto' }}>
           {!d.transcript && !running && (

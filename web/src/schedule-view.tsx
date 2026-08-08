@@ -11,7 +11,7 @@
 //   公开项目的会 = 青色实框 / 私密项目的会 = 紫色虚框 / 待你应答 = 红色。
 import { App as AntdApp, Button, Card, DatePicker, Empty, Input, Modal, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Meeting, type Project } from './api'
+import { api, type Activity, type Project } from './api'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, layout } from './schedule-layout'
 
@@ -53,24 +53,24 @@ const pad = (n: number) => String(n).padStart(2, '0')
 const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 
 /// ★布局与位置计算已抽到 schedule-layout.ts 并有单测覆盖★——
-/// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让会议在界面上凭空消失。
+/// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让活动在界面上凭空消失。
 /// 这里只留渲染,别把算法抄回来(抄回来就是第二个真相源,也就没人再跑那 9 条测试了)。
-/// 会议在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
-function evStyle(m: Meeting): React.CSSProperties {
+/// 活动在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
+function evStyle(m: Activity): React.CSSProperties {
   if (m.my_status === 'pending') return { background: '#fff1f0', border: '1px solid #ff4d4f', color: '#a8071a' }
   if (m.is_private) return { background: '#f9f0ff', border: '1px dashed #722ed1', color: '#531dab' }
   return { background: '#e6fffb', border: '1px solid #0d9488', color: '#00474f' }
 }
 
-export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
-  onOpenMeeting: (id: number) => void
-  onNewMeeting: () => void
+export function ScheduleView({ onOpenActivity, onNewActivity }: {
+  onOpenActivity: (id: number) => void
+  onNewActivity: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()))
   /// 视图模式(原型:日/周/月/列表)。★周是默认★——排会看的是一周。
   const [mode, setMode] = useState<'day' | 'week' | 'month' | 'list'>('week')
-  const [items, setItems] = useState<Meeting[]>([])
+  const [items, setItems] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
 
   /// 一屏显示几天 + 翻页步长。★月视图不做成 6×7 网格★:那是另一套布局,
@@ -86,7 +86,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
     try {
       const from = anchor.toISOString()
       const to = addDays(anchor, 7).toISOString()
-      setItems(await api<Meeting[]>(`/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
+      setItems(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
     } catch (e) {
       message.error((e as Error).message)
       setItems([])
@@ -97,7 +97,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
   useEffect(() => { void load() }, [load])
 
   // 「待我处理」的筛选与排序搬进 TodoCard —— ★两页共用同一张卡★,
-  // 免得日程页和会议页各筛一套(此前就是各写各的,连能不能就地答复都不一样)。
+  // 免得日程页和活动页各筛一套(此前就是各写各的,连能不能就地答复都不一样)。
 
   const title = `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月 ${anchor.getDate()} – ${addDays(anchor, 6).getDate()} 日`
 
@@ -116,10 +116,10 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
               { value: 'month', label: '月' }, { value: 'list', label: '列表' },
             ]} />
           <span style={{ flex: 1 }} />
-          {/* ★+ 个人日程★(原型):私事不该走「发起会议」那套(要选项目、指记录员、邀请人)。
+          {/* ★+ 个人日程★(原型):私事不该走「发起活动」那套(要选项目、指记录员、邀请人)。
               它落在「我的日程」私密项目里 —— 不产生忙闲、对别人完全隐形(D1)。 */}
           <Button size="small" onClick={() => setQuickOpen(true)}>+ 个人日程</Button>
-          <Button size="small" type="primary" onClick={onNewMeeting}>+ 发起会议</Button>
+          <Button size="small" type="primary" onClick={onNewActivity}>+ 发起活动</Button>
         </Space>
 
         {loading ? (
@@ -130,7 +130,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
             {items.length === 0
               ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这段时间没有安排" />
               : [...items].sort((a, b) => a.starts_at.localeCompare(b.starts_at)).map((m) => (
-                <div key={m.id} onClick={() => onOpenMeeting(m.id)} style={{
+                <div key={m.id} onClick={() => onOpenActivity(m.id)} style={{
                   display: 'flex', gap: 12, padding: '8px 4px', cursor: 'pointer',
                   borderBottom: '1px solid #f5f5f5',
                 }}>
@@ -239,7 +239,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
                     {layout(items, d).map(({ item: m, top, height, left, width }) => (
                       <div
                         key={m.id}
-                        onClick={() => onOpenMeeting(m.id)}
+                        onClick={() => onOpenActivity(m.id)}
                         title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 私密' : ''}`}
                         style={{
                           position: 'absolute', top, height, left, width,
@@ -269,11 +269,11 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
         </Space>
       </Card>
 
-      {/* 右栏:待我处理 + 公开会议广场 */}
+      {/* 右栏:待我处理 + 公开活动广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <TodoCard all={items} onOpen={onOpenMeeting} onDone={() => void load()} style={{ width: 320 }} />
+      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load()} style={{ width: 320 }} />
 
-      <PublicBoard onOpen={onOpenMeeting} />
+      <PublicBoard onOpen={onOpenActivity} />
       </div>
 
       {quickOpen && <QuickPersonal onClose={() => setQuickOpen(false)} onDone={() => { setQuickOpen(false); void load() }} />}
@@ -281,7 +281,7 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
   )
 }
 
-/// 公开会议广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public
+/// 公开活动广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public
 /// 就只是数据库里的一个字段:没人知道有哪些会可以听。
 ///
 /// 默认只看**近 7 天**(日程右栏的定位是「接下来」,不是全量目录),可切「全部未来」。
@@ -289,21 +289,21 @@ export function ScheduleView({ onOpenMeeting, onNewMeeting }: {
 function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
   const { message } = AntdApp.useApp()
   const [days, setDays] = useState<7 | 0>(7)      // 0 = 全部未来
-  const [rows, setRows] = useState<Meeting[]>([])
+  const [rows, setRows] = useState<Activity[]>([])
   const [busy, setBusy] = useState<number | null>(null)
 
   const load = useCallback(async () => {
-    try { setRows(await api<Meeting[]>(`/api/meetings/public${days ? `?days=${days}` : ''}`)) }
+    try { setRows(await api<Activity[]>(`/api/activities/public${days ? `?days=${days}` : ''}`)) }
     catch { setRows([]) }
   }, [days])
   useEffect(() => { void load() }, [load])
 
-  const observe = async (m: Meeting) => {
+  const observe = async (m: Activity) => {
     setBusy(m.id)
     try {
       // ★广场里的会我必然与之无关★(后端已滤掉我参与/旁听的),所以这里只会是「加入」一个方向。
-      // 取消旁听在**会议详情页**做 —— 那时它已经进了我的日历,本来就该去那儿管。
-      await api(`/api/meetings/${m.id}/observe`, {
+      // 取消旁听在**活动详情页**做 —— 那时它已经进了我的日历,本来就该去那儿管。
+      await api(`/api/activities/${m.id}/observe`, {
         method: 'POST', body: JSON.stringify({ observe: true }),
       })
       message.success('已加入我的日程')
@@ -313,14 +313,14 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
 
   return (
     <Card size="small" style={{ marginTop: 12 }}
-      title={<Space><span>公开会议</span><Tag color="blue">可旁听</Tag></Space>}
+      title={<Space><span>公开活动</span><Tag color="blue">可旁听</Tag></Space>}
       extra={
         <Segmented size="small" value={days} onChange={(v) => setDays(v as 7 | 0)}
           options={[{ value: 7, label: '近 7 天' }, { value: 0, label: '全部' }]} />
       }>
       {rows.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={days ? '近 7 天没有公开会议' : '暂无公开会议'} />
+          description={days ? '近 7 天没有公开活动' : '暂无公开活动'} />
       ) : (
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           {rows.map((m) => (
@@ -344,7 +344,7 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
               {/* ★旁听 ≠ 拿到材料★(D9 与 D3 正交):说在按钮旁边,免得有人以为旁听就能看资料 */}
               {!m.my_status && (
                 <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
-                  旁听可看议程与地点，看不到会议材料
+                  旁听可看议程与地点，看不到活动材料
                 </Typography.Text>
               )}
             </div>
@@ -366,7 +366,7 @@ function LegendDot({ style, text }: { style: React.CSSProperties; text: string }
 
 /// 快速建个人日程(原型「+ 个人日程」)。
 ///
-/// ★为什么不复用「发起会议」★:私事不需要选项目成员、指记录员、发邀请 —— 那套表单对
+/// ★为什么不复用「发起活动」★:私事不需要选项目成员、指记录员、发邀请 —— 那套表单对
 /// 「下午三点去医院」这种事太重,★重到人宁可不记★,而不记就等于让别人以为你有空。
 /// 这里只问三件:叫什么、什么时候、放哪个项目。
 ///
@@ -396,7 +396,7 @@ function QuickPersonal({ onClose, onDone }: { onClose: () => void; onDone: () =>
     try {
       // 记录员填自己:后端要求非空(D14),而个人日程本来就没有别的记录员
       const me = await api<{ username: string }>('/api/me')
-      await api('/api/meetings', {
+      await api('/api/activities', {
         method: 'POST',
         body: JSON.stringify({
           title: title.trim(), agenda: '', recorder: me.username,

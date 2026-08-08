@@ -1,4 +1,4 @@
-// 会议纪要整理 —— ★按 docs/prototype-m1.html 的 `min` 视图重做★(2026-08-07)。
+// 活动纪要整理 —— ★按 docs/prototype-m1.html 的 `min` 视图重做★(2026-08-07)。
 //
 // 布局是原型定的**两栏**,不是我自己想的:
 //   左(430px)= AI 参考稿,★只读原材料★:AI 摘要 / 逐字稿 / 录制;
@@ -16,7 +16,7 @@
 // 播放器**不常驻**、切到「录制」标签才出现。
 import { App as AntdApp, Button, Card, Empty, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, showUser, type MeetingDetail, type MeetingItem, type Minutes } from './api'
+import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
 import { fmtSize, ItemIcon } from './preview'
 
@@ -34,14 +34,14 @@ type Analysis = {
   asr_ready: boolean
 }
 
-export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; onBack: () => void }) {
+export function ActivityMinutesView({ activityId, onBack }: { activityId: number; onBack: () => void }) {
   const { message } = AntdApp.useApp()
   const [m, setM] = useState<Minutes | null>(null)
   const [canEdit, setCanEdit] = useState(false)
-  const [detail, setDetail] = useState<MeetingDetail | null>(null)
-  const [items, setItems] = useState<MeetingItem[]>([])
+  const [detail, setDetail] = useState<ActivityDetail | null>(null)
+  const [items, setItems] = useState<ActivityItem[]>([])
   const [ana, setAna] = useState<Analysis | null>(null)
-  const [playing, setPlaying] = useState<MeetingItem | null>(null)
+  const [playing, setPlaying] = useState<ActivityItem | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [pane, setPane] = useState('info')
@@ -50,9 +50,9 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
     setLoading(true)
     try {
       const [mi, d, its] = await Promise.all([
-        api<{ minutes: Minutes | null; can_edit: boolean }>(`/api/meetings/${meetingId}/minutes`),
-        api<MeetingDetail>(`/api/meetings/${meetingId}`),
-        api<MeetingItem[]>(`/api/meetings/${meetingId}/items`).catch(() => [] as MeetingItem[]),
+        api<{ minutes: Minutes | null; can_edit: boolean }>(`/api/activities/${activityId}/minutes`),
+        api<ActivityDetail>(`/api/activities/${activityId}`),
+        api<ActivityItem[]>(`/api/activities/${activityId}/items`).catch(() => [] as ActivityItem[]),
       ])
       setM(mi.minutes); setCanEdit(mi.can_edit); setDetail(d); setItems(its); setErr(null)
       // 只有**录制**才有转写(D5);取第一个录制的分析结果当参考稿
@@ -62,12 +62,12 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
         api<Analysis>(`/api/items/${rec.id}/analysis`).then(setAna).catch(() => setAna(null))
       }
     } catch (e) { setErr((e as Error).message) } finally { setLoading(false) }
-  }, [meetingId])
+  }, [activityId])
   useEffect(() => { void load() }, [load])
 
   const save = async (patch: Partial<Minutes>) => {
     try {
-      await api(`/api/meetings/${meetingId}/minutes`, { method: 'PUT', body: JSON.stringify(patch) })
+      await api(`/api/activities/${activityId}/minutes`, { method: 'PUT', body: JSON.stringify(patch) })
       await load()
     } catch (e) { message.error((e as Error).message) }
   }
@@ -89,7 +89,7 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
     agenda_text: '', content_md: '', resolutions: '', todos: '',
   }
   const done = v.status === 'done'
-  const mt = detail?.meeting
+  const mt = detail?.activity
   const sum = (k: string) => ana?.summaries.find((x) => x.kind === k)?.content ?? ''
   const recs = items.filter((x) => x.is_recording)
 
@@ -97,8 +97,8 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
     <div>
       <Card size="small" style={{ marginBottom: 12 }} styles={{ body: { padding: '10px 16px' } }}>
         <Space wrap>
-          <Button size="small" onClick={onBack}>‹ 返回会议</Button>
-          <Typography.Text strong style={{ fontSize: 15 }}>会议纪要</Typography.Text>
+          <Button size="small" onClick={onBack}>‹ 返回活动</Button>
+          <Typography.Text strong style={{ fontSize: 15 }}>活动纪要</Typography.Text>
           <Tag color={done ? 'green' : 'orange'}>{done ? '已完成' : '草稿'}</Tag>
           {mt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>记录员 {mt.recorder}</Typography.Text>}
           {m?.updated_at && (
@@ -144,7 +144,7 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
             {
               key: 'r', label: `录制 ${recs.length}`,
               children: <RecordingPane items={recs} playing={playing} onPlay={setPlaying}
-                projectId={detail?.projects?.[0]?.id ?? null} meetingId={meetingId}
+                projectId={detail?.projects?.[0]?.id ?? null} activityId={activityId}
                 canEdit={canEdit} onChanged={load} />,
             },
           ]} />
@@ -160,7 +160,7 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
                   {mt && (
                     <table style={{ fontSize: 13, marginBottom: 16, lineHeight: 2 }}>
                       <tbody>
-                        <tr><td style={{ width: 84, color: '#8c8c8c' }}>会议主题</td><td><b>{mt.title}</b></td></tr>
+                        <tr><td style={{ width: 84, color: '#8c8c8c' }}>活动主题</td><td><b>{mt.title}</b></td></tr>
                         <tr><td style={{ color: '#8c8c8c' }}>时间</td><td>{fmtTime(mt.starts_at)} – {fmtTime(mt.ends_at).slice(11)}</td></tr>
                         <tr><td style={{ color: '#8c8c8c' }}>地点</td><td>{mt.location || mt.online_url || '—'}</td></tr>
                         <tr><td style={{ color: '#8c8c8c' }}>所属项目</td>
@@ -195,7 +195,7 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
                 <div>
                   <Field label="议题" value={v.agenda_text} canEdit={canEdit} rows={4}
                     onSave={(x) => save({ agenda_text: x })}
-                    pull={mt?.agenda ? { label: '从会议议程带入', text: mt.agenda } : undefined} />
+                    pull={mt?.agenda ? { label: '从活动议程带入', text: mt.agenda } : undefined} />
                   <Field label="主要内容" hint="支持 Markdown；出 PDF 时由平台的 LaTeX 服务排版"
                     value={v.content_md} canEdit={canEdit} rows={12}
                     onSave={(x) => save({ content_md: x })}
@@ -217,7 +217,7 @@ export function MeetingMinutesView({ meetingId, onBack }: { meetingId: number; o
 
 /// 按答复状态取人名,给「带入」按钮当默认值。
 /// ★absent = 未应答 + 已拒绝★:两者都是「没答应来」,会后补录时都要核对一遍。
-function peopleOf(d: MeetingDetail, kind: 'accepted' | 'observer' | 'absent') {
+function peopleOf(d: ActivityDetail, kind: 'accepted' | 'observer' | 'absent') {
   const ps = d.participants ?? []
   const pick = kind === 'observer'
     ? ps.filter((p) => p.kind === 'observer')
@@ -255,9 +255,9 @@ function Field({ label, hint, value, canEdit, rows = 3, onSave, pull }: {
 
 /// 录制面板:播放器 + 上传 + 文件列表(点行切换播放 / 单独转写)。
 /// ★播放器不常驻★(原型评审时用户定的):切到「录制」标签才出现。
-function RecordingPane({ items, playing, onPlay, projectId, meetingId, canEdit, onChanged }: {
-  items: MeetingItem[]; playing: MeetingItem | null; onPlay: (i: MeetingItem) => void
-  projectId: number | null; meetingId: number; canEdit: boolean; onChanged: () => void
+function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit, onChanged }: {
+  items: ActivityItem[]; playing: ActivityItem | null; onPlay: (i: ActivityItem) => void
+  projectId: number | null; activityId: number; canEdit: boolean; onChanged: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState<number | null>(null)
@@ -275,8 +275,8 @@ function RecordingPane({ items, playing, onPlay, projectId, meetingId, canEdit, 
               if (!f) return
               const fd = new FormData()
               fd.append('file', f)
-              // ★is_recording=true★:只有录制会被转写、并作为会议时长依据(D5)
-              const r = await fetch(`/api/projects/${projectId}/upload?meeting_id=${meetingId}&is_recording=true`,
+              // ★is_recording=true★:只有录制会被转写、并作为活动时长依据(D5)
+              const r = await fetch(`/api/projects/${projectId}/upload?activity_id=${activityId}&is_recording=true`,
                 { method: 'POST', body: fd })
               if (r.ok) { message.success('已上传'); onChanged() } else message.error(await r.text())
               e.target.value = ''
@@ -286,7 +286,7 @@ function RecordingPane({ items, playing, onPlay, projectId, meetingId, canEdit, 
           </Button>
         </div>
       )}
-      <Table<MeetingItem> size="small" rowKey="id" dataSource={items} pagination={false} showHeader={false}
+      <Table<ActivityItem> size="small" rowKey="id" dataSource={items} pagination={false} showHeader={false}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有录屏或录音" /> }}
         onRow={(it) => ({ onClick: () => onPlay(it), style: { cursor: 'pointer' } })}
         columns={[

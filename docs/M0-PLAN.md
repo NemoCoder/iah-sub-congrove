@@ -36,13 +36,21 @@ M0-1 部署后 DB 里是 `activities`，而 `src/` 里还全写着 `meetings`，
 | **M0-2** | ★**纯机械改名**，一件事：`0001` 的表名 + 全部后端代码 + 路由 + 清单 + 文件名，同一个 PR★ | `sql-prepare-check.py --pre`（改名有没有漏，它一次说清）＋`no-meeting.sh --migrations` 与 `--backend-all` 双双 exit 0＋`api-check.sh`（路径改名的 breaking 逐条声明）＋clippy/test |
 | **M0-2b** | 语义改动（从原 M0-2 挪出来）：`notified_at` 读写规则（ADR-0003）＋`recorder` 空值守卫＋`projects.kind` 与 `effective_role` 的 materials 单点否决（ADR-0005） | `sql-prepare-check.py --pre`＋clippy/test（含 `merge` 吃掉 BLOCK、`require_owner` 被短路这两条的回归单测） |
 | **M0-3** | 新功能：`activity_types` 建表并用起来＋能力位收口＋4 个类型接口 | `cargo test` 的清单比对＋能力位单测（三个位 / 预置行不可改删 / 自建名不得与预置重名）＋`api-check.sh` |
-| **M0-4** | 前端改名＋类型下拉＋表单按能力位显隐 | `pnpm typecheck`/`pnpm test`＋`no-meeting.sh --frontend`＋★对着 `prototype-v0.5.html` **逐视图并排截图**作为 PR 附件★ |
+| **M0-4** | 前端改名＋类型下拉＋能力位徽章＋表单按能力位显隐 | `pnpm typecheck`＋`no-meeting.sh --frontend`＋★**实现前**逐视图读原型、列元素清单★（并排截图挪到 M0-5，见下） |
+| **M0-4b** | 「我的活动类型」管理页＋下拉里的「＋ 新建类型…」入口（原型有这两处，M0-4 未做） | `pnpm typecheck`＋原型对照 |
 | **M0-5** | ★首次把特性分支部到 dev★（配合 ADR-0001 的四步清库）＋跑 70 条 E2E＋采 golden 后像 | E2E 全绿（人工）＋`golden-diff.mjs` 差异逐字节等于 `e2e/golden/expected.diff` |
 | **M0-6** | 配额换算法（ADR-0004 全部）＋`user_prefs`/`user_quota` 接口＋★先补齐 5 条配额 E2E★ | 配额 E2E 6 条全绿（人工）＋`schema-check.sh`（★`quota_bytes` 真正被删的是**这个** PR★）＋`sql-prepare-check.py` |
 | **M0-7** | 收尾：把 `no-meeting.sh` 与 `api-check.sh` 加进 `ci.yml` 的 gate；`feat/v0.5-m0` → dev | 五道闸全绿 = M0 完成 |
 
-★M0-4 那条截图纪律是 2026-08-07 复盘立的★：我只截了原型一个视图就凭需求文档推导写完，
+★M0-4 那条原型纪律是 2026-08-07 复盘立的★：我只截了原型一个视图就凭需求文档推导写完，
 漏了整个「会议」tab，是 liaoruili 对着原型一眼看出来的。**本该是开发自己的验收。**
+
+⚠★纪律拆成两半，因为它们的时机不同★（2026-08-08 做 M0-4 时发现）：
+· **实现前读原型、列元素清单** → 归 M0-4。这一半才是防漏的那一半。
+· **并排截图对照** → ★只能归 M0-5★：M0-5 之前特性分支根本没部署，跑不起来也就截不了图。
+  原来把两件事都写在 M0-4，是一条**不可能满足**的门禁。
+（M0-4 实测:我又差点凭需求推导写完就交。读了原型才发现漏了**能力位徽章**
+ 与**「＋ 新建类型…」入口** —— 前者已补，后者连同「我的活动类型」管理页记为 M0-4b。）
 
 ## 三处中间态断裂（写出来，别踩）
 

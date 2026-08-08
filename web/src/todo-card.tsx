@@ -1,12 +1,12 @@
-// 「🔔 待我处理」—— 日程页与会议页**共用同一张卡**（原型两处长得就是一样的）。
+// 「🔔 待我处理」—— 日程页与活动页**共用同一张卡**（原型两处长得就是一样的）。
 //
-// ★为什么非抽出来不可★：此前日程页只能点进详情才答复、会议页却能就地答复，
+// ★为什么非抽出来不可★：此前日程页只能点进详情才答复、活动页却能就地答复，
 // 同一件事两页两套。上一轮已经因为「双击编辑 vs 编辑按钮」被用户指出过一次
 // （见 inline-edit.tsx 头注）—— 同一个动作两套交互，比丑更糟。
 //
 // 卡里两类条目，判据不同：
 //   · 📩 **邀请**：我的答复还是 pending 且会还没开始 —— 要我做的是「答不答应」；
-//   · 💬 **私聊未读**：有人在会议里私聊我且我没看过 —— 要我做的是「回一句」。
+//   · 💬 **私聊未读**：有人在活动里私聊我且我没看过 —— 要我做的是「回一句」。
 //     ★公开讨论区的新消息不进这张卡★（后端就没给）：那是「群里有人说话」，
 //     混进来会让这卡天天有红点，红点天天有就等于没有。
 //
@@ -15,24 +15,24 @@
 // 本地算是因为列表里已经有我全部的会（含私密项目的），不必再打一次接口。
 import { App as AntdApp, Badge, Button, Card, Empty, Space, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Meeting, type RespondStatus } from './api'
+import { api, type Activity, type RespondStatus } from './api'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
 const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 
-const overlaps = (a: Meeting, b: Meeting) =>
+const overlaps = (a: Activity, b: Activity) =>
   new Date(a.starts_at) < new Date(b.ends_at) && new Date(b.starts_at) < new Date(a.ends_at)
 
-type Unread = { meeting_id: number; title: string; sender: string; body: string; created_at: string; count: number }
+type Unread = { activity_id: number; title: string; sender: string; body: string; created_at: string; count: number }
 /// 等我答复的主持人转移(PRD ⑨.5)。★放这张卡而不是项目页里★:
 /// 被转让人可能压根不打开那个项目,只在项目内部可见的请求多半永远不会被答复。
 type Transfer = { id: number; project_id: number; project_name: string; from: string; created_at: string }
 
 export function TodoCard({ all, onOpen, onDone, style }: {
-  /// 我能看到的会议（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
-  all: Meeting[]
+  /// 我能看到的活动（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
+  all: Activity[]
   onOpen: (id: number) => void
   /// 答复成功后让宿主页重新加载（日历颜色、列表状态都要跟着变）
   onDone: () => void
@@ -90,7 +90,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
             <TransferRow key={t.id} t={t} onDone={() => { loadUnread(); onDone() }} />
           ))}
           {unread.map((u) => (
-            <div key={u.meeting_id} style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
+            <div key={u.activity_id} style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
               <div style={{ fontSize: 13 }}>
                 💬 <b>{u.sender}</b> 在「{u.title}」私聊了你
                 {u.count > 1 && <Typography.Text type="secondary">（{u.count} 条）</Typography.Text>}
@@ -100,7 +100,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
                 marginTop: 4, padding: '4px 8px', background: '#fafafa', borderRadius: 4,
                 fontSize: 12, color: '#595959', borderLeft: '2px solid #d9d9d9',
               }}>{u.body.length > 60 ? `${u.body.slice(0, 60)}…` : u.body}</div>
-              <Button size="small" style={{ marginTop: 6 }} onClick={() => onOpen(u.meeting_id)}>回复</Button>
+              <Button size="small" style={{ marginTop: 6 }} onClick={() => onOpen(u.activity_id)}>回复</Button>
             </div>
           ))}
         </Space>
@@ -111,7 +111,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
 
 /// 一条邀请：★冲突提示 + 四个动作★
 function InviteRow({ m, clash, onOpen, onDone }: {
-  m: Meeting; clash?: Meeting; onOpen: (id: number) => void; onDone: () => void
+  m: Activity; clash?: Activity; onOpen: (id: number) => void; onDone: () => void
 }) {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
@@ -119,7 +119,7 @@ function InviteRow({ m, clash, onOpen, onDone }: {
   const reply = async (status: RespondStatus) => {
     setBusy(true)
     try {
-      await api(`/api/meetings/${m.id}/respond`, { method: 'POST', body: JSON.stringify({ status }) })
+      await api(`/api/activities/${m.id}/respond`, { method: 'POST', body: JSON.stringify({ status }) })
       message.success('已答复'); onDone()
     } catch (err) { message.error((err as Error).message) } finally { setBusy(false) }
   }

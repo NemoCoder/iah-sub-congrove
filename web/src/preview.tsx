@@ -10,7 +10,7 @@ import remarkGfm from 'remark-gfm'
 
 /// markdown 渲染:react-markdown **默认不渲染原始 HTML**(不开 rehype-raw),
 /// 所以团队成员写的文档里就算塞 <script> 也只会当文本显示——同源存储型 XSS 从源头堵死。
-/// remark-gfm 补表格/任务列表/删除线(会议记录高频)。
+/// remark-gfm 补表格/任务列表/删除线(活动记录高频)。
 export function MarkdownView({ text }: { text: string }) {
   return (
     <div className="cg-md" style={{ lineHeight: 1.75, wordBreak: 'break-word' }}>
