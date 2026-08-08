@@ -125,11 +125,26 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
         {/* ★类型放在最前★：它决定下面哪些字段出现、哪些必填，放后面会让人先填后改。 */}
         <Form.Item label="活动类型" required>
           <Select
-            value={typeId} onChange={setTypeId} style={{ maxWidth: 240 }}
-            options={types.map((t) => ({
-              value: t.id,
-              label: t.owner === null ? t.name : `${t.name}（我建的）`,
-            }))}
+            value={typeId}
+            // ⚠★守住 -1★：那是「＋ 新建类型…」这个入口项的哨兵值，不是真类型。
+            //   不守的话选它会把 typeId 设成 -1，表单当场废掉（提交必然 400）。
+            onChange={(v) => { if (v !== -1) setTypeId(v) }}
+            style={{ maxWidth: 260 }}
+            // ★下拉里带「＋ 新建类型…」入口★（原型）：想不起来先建类型再回来发起活动，
+            // 是很自然的顺序 —— 但**不能在这里直接建**（那要嵌一整套增删改），
+            // 所以指向管理页，并明说去哪。
+            options={[
+              ...types.map((t) => ({
+                value: t.id,
+                label: t.owner === null ? t.name : `${t.name}（我建的）`,
+              })),
+              { value: -1, label: '＋ 新建类型…（去「我的活动类型」）', disabled: false },
+            ]}
+            onSelect={(v) => {
+              if (v === -1) {
+                message.info('在右上角头像菜单里的「我的活动类型」新建，建完回来即可选到')
+              }
+            }}
           />
           {/* ★能力位徽章★（原型「新建活动」视图）：选了类型之后，
               「这类活动要不要纪要 / 要不要项目 / 占不占忙闲」必须**一眼看见** ——

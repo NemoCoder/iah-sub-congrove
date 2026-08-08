@@ -4,7 +4,7 @@ import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type View = 'schedule' | 'projects' | 'activities' | 'shares' | 'apis' | 'me'
+type View = 'schedule' | 'projects' | 'activities' | 'shares' | 'apis' | 'atypes' | 'me'
 import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
 import { ProjectsView } from './projects-view'
@@ -17,6 +17,7 @@ import { ActivityNewView } from './activity-new'
 import { ActivityMinutesView } from './activity-minutes'
 import { ActivitiesListView } from './activities-list'
 import { MeView } from './me-view'
+import ActivityTypesView from './activity-types-view'
 
 /// 独立查看窗路由:/viewer/{id}。没上路由库——只此一条,读 pathname 足够
 /// (后端对未知路径回落 index.html,所以直接打开这个地址也能进)。
@@ -81,12 +82,14 @@ export function App() {
             items: [
               { key: 'me', label: '个人面板' },
               { key: 'shares', label: '我的分享' },
+              // ★活动类型是低频设置,收进用户菜单★(与「我的分享」同档);主导航只放三个天天用的
+              { key: 'atypes', label: '我的活动类型' },
               // 开发者页面只给超管:清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,不会漂移
               ...(me?.is_super ? [{ key: 'apis', label: '开发者' }] : []),
               { type: 'divider' as const },
               { key: 'logout', label: <a href="/auth/logout">退出登录</a> },
             ],
-            onClick: ({ key }) => { if (key === 'me' || key === 'shares' || key === 'apis') { setView(key as View); setActivityId(null); setMinutesOf(null) } },
+            onClick: ({ key }) => { if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null) } },
           }}>
             <Button type="text" style={{ height: 'auto', padding: '4px 8px' }}>
               <Avatar size="small" style={{ background: '#0d9488', marginRight: 8 }}>{display.slice(0, 1).toUpperCase()}</Avatar>
@@ -133,7 +136,8 @@ export function App() {
           )
         ) : view === 'projects' ? <ProjectsView me={me} />
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />
-          : view === 'apis' ? <ApiDocView /> : <SharesView />}
+          : view === 'apis' ? <ApiDocView />
+          : view === 'atypes' ? <ActivityTypesView me={me?.username ?? ''} /> : <SharesView />}
       </div>
     </div>
   )
