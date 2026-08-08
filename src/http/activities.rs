@@ -357,7 +357,8 @@ pub async fn update(
             return Err(AppError::Forbidden);
         }
     }
-    let cur: (Ts, Ts, String) = sqlx::query_as("SELECT starts_at, ends_at, online_url FROM activities WHERE id=$1")
+    let cur: (Ts, Ts, String, String) =
+        sqlx::query_as("SELECT starts_at, ends_at, online_url, title FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let (s, e) = (p.starts_at.unwrap_or(cur.0), p.ends_at.unwrap_or(cur.1));
     if e <= s { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
@@ -408,6 +409,23 @@ pub async fn update(
                     counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
               WHERE activity_id=$1 AND username <> $2")
             .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
+    }
+    // ★活动材料文件夹的名字跟着活动走★（2026-08-09 liaoruili:「现在改了会议 title,
+    // 文件夹名字会一起变吗」——**当时不会,这是个缺陷**）。
+    //
+    // 文件夹名是 `YYYY-MM-DD 活动标题`,是一个**派生值**;而同一批改动里我刚刚
+    // ★禁掉了在项目树里给它改名★(理由正是「名字由活动决定」)。
+    // 两条加在一起:源变了而派生值不变,这个名字就**永久错着、且谁都改不了** ——
+    // ★把唯一的修正入口也堵上,比不派生更糟。★ 所以源一变就跟着改。
+    //
+    // 认领仍然靠 activity_id(不靠名字),所以改名不会让材料散成两处。
+    let title_now = p.title.as_deref().unwrap_or(&cur.3);
+    if title_now != cur.3 || s != cur.0 {
+        // ★命名规则只有一处★:见 items.rs::activity_folder_name 的注释
+        let name = crate::http::items::activity_folder_name(s, title_now);
+        sqlx::query("UPDATE items SET name=$2, updated_at=now()
+                      WHERE activity_id=$1 AND kind='folder' AND deleted_at IS NULL AND name <> $2")
+            .bind(mid).bind(&name).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     let actor = id.require_username()?;
