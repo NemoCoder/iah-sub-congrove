@@ -167,6 +167,12 @@ CREATE TABLE IF NOT EXISTS activity_participants (
   invited_at   timestamptz NOT NULL DEFAULT now(),
   -- 必到 / 可选(原 0007):冲突检测只对必到的人报警。
   required     boolean NOT NULL DEFAULT true,
+  -- ★「这个人有没有被通知过」——存事实,不推导★(ADR-0003)。
+  -- NULL = 从没通知过 = 他对这场活动**自始至终不知情**(补录场景,PRD L0b)。
+  -- 为什么不用「created_at > starts_at」那种推导:★它会随改期翻转★ ——
+  -- 建一场未来的会(不是补录)→ 改到昨天 → 判据翻成「是补录」,而那个人早就被通知过、
+  -- 也确实参加了。缺陷在判据本身,不在实现方式,即使「现算不存」也一样翻转。
+  notified_at  timestamptz,
   PRIMARY KEY (activity_id, username)
 );
 -- 忙闲是最热路径:按人 + 时间窗查。
