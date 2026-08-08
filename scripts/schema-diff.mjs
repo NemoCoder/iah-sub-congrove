@@ -196,6 +196,7 @@ function positiveChecks(B) {
     if (!Object.keys(B).some((k) => e.m.test(bare(k)))) miss.push(`${e.m}  —— ${e.why}`)
   }
   // 新侧还留着旧表名 = 根本没改名
+  // no-meeting:allow —— ★这条正向断言的全部作用就是「新侧不许再出现旧表名」，它必须字面写旧表名★
   const stale = Object.keys(B).filter((k) => /(^|[^a-z])meetings?([^a-z]|$)/i.test(bare(k)))
   return { miss, stale }
 }

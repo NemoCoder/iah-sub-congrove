@@ -26,20 +26,29 @@ cd "$(dirname "$0")/.."
 SELF='scripts/no-meeting.sh'
 TENCENT='[Mm][Ee][Ee][Tt][Ii][Nn][Gg]\.[Tt][Ee][Nn][Cc][Ee][Nn][Tt]\.[Cc][Oo][Mm]'
 
+# ★两道分开报★（2026-08-08）：最后那道 grep 原来作用在**整行**（`路径:行号:内容`）上，
+#   于是「内容已经干净、只有**文件名**里还带 meeting」也算红，而输出看不出是哪一种
+#   —— 实跑改名完成的树时，满屏 `src/meeting-detail.tsx:13:…ActivityDetail…` 就是这么来的。
+#   文件名确实也该改（`meeting-detail.tsx` → `activity-detail.tsx`），但那是**另一件事**，要分开说。
 scan() {
-  local hits
-  hits=$(grep -rniE 'meeting' "$@" 2>/dev/null \
+  local content names rc=0
+  # ① 内容：剥掉 `路径:行号:` 前缀之后再判，不让路径里的 meeting 混进来
+  content=$(grep -rniE 'meeting' "$@" 2>/dev/null \
     | sed -E "s#${TENCENT}##g" \
     | grep -vE '^[^:]+:[0-9]+: *(//|--|\*|#)' \
     | grep -vE "^(e2e/golden/|${SELF})" \
     | grep -v 'no-meeting:allow' \
-    | grep -iE 'meeting') || true
-  if [ -n "$hits" ]; then
-    echo "$hits"
-    echo "★上面这些是非注释、未豁免的 meeting 残留★"
-    echo "  （改名映射表这类**确实不能改**的，在那一行加 no-meeting:allow 标记并说明理由）"
-    exit 1
+    | awk -F: 'BEGIN{OFS=":"} { line=$0; sub(/^[^:]+:[0-9]+:/,"",line); if (tolower(line) ~ /meeting/) print }') || true
+  # ② 文件名
+  names=$(grep -rliE 'x' "$@" 2>/dev/null | grep -iE '[^/]*meeting[^/]*$' | grep -vE "^(e2e/golden/|${SELF})") || true
+  if [ -n "$content" ]; then
+    echo "★非注释、未豁免的 meeting 残留（内容）★"; echo "$content"
+    echo "  （改名映射表这类**确实不能改**的，在那一行加 no-meeting:allow 标记并说明理由）"; rc=1
   fi
+  if [ -n "$names" ]; then
+    echo "★文件名里还带 meeting★（改名要连文件名一起改）"; echo "$names"; rc=1
+  fi
+  [ $rc -eq 0 ] || exit 1
 }
 
 case "${1:-}" in
