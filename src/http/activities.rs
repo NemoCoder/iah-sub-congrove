@@ -314,6 +314,15 @@ pub struct ActivityPatch {
     /// 绝大多数会不会录屏,而排程时长常常离谱(排 2 小时、20 分钟讲完就散);
     /// 没有这一级,统计出来的数字系统性偏高 —— 而它是要拿去做季度汇报的。
     pub actual_minutes: Option<i32>,
+    /// ★关联项目：只增不减★（2026-08-09 用户）。
+    ///
+    /// 传进来的 id 会被**并入**现有关联，**永远不删**。理由是关联项目一旦建立，
+    /// 那个项目的成员就已经收到了通知、看得到材料 —— 事后解除关联并不能把
+    /// 「他已经知道这场活动」收回去，只会让他手里的入口突然 404，
+    /// 而库里再也查不出他当时是凭什么看到的。★能撤销的东西才适合做成开关。★
+    /// 真要收回，走的是删活动（软删、留痕），不是悄悄摘掉一个项目。
+    #[serde(default)]
+    pub add_project_ids: Option<Vec<i64>>,
 }
 
 pub async fn update(
@@ -371,6 +380,18 @@ pub async fn update(
                 .execute(&mut *tx).await?;
         }
     }
+    // ★关联项目:只增不减★(见 ActivityPatch::add_project_ids 的注释)。
+    // 每个新增的项目都要 ≥editor —— 把活动挂到一个项目上等于往那个项目塞材料入口,
+    // 逐个校验而不是只验第一个(多项目关联时,漏验的那个就是越权入口)。
+    if let Some(add) = p.add_project_ids.as_deref() {
+        for pid in add {
+            crate::perm::require_role(&state.pool, &id, *pid, crate::perm::Role::Editor).await?;
+            sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)
+                         ON CONFLICT DO NOTHING")
+                .bind(mid).bind(pid).execute(&mut *tx).await?;
+        }
+    }
+
     // ★改了时间就把所有人的答复清回 pending★:上次的「接受」是对**旧时间**说的,
     // 留着它等于替人答应了一个他没看过的时间。发起人与记录员除外(改的人自己知道)。
     if (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1) {
@@ -562,6 +583,17 @@ pub async fn respond(
         // 活动存在但我不在名单 → 403;活动根本看不见 → activity_view 会给 404
         activity_view(&state.pool, &id, mid).await?;
         return Err(AppError::Forbidden);
+    }
+    // ★发起人不答复★(2026-08-09 用户:「发起人怎么还能拒绝呢？」)。
+    //   他是**定这个时间的人**,create 时就写成了 accepted —— 再让他答复一次没有意义,
+    //   而「拒绝自己发起的活动」更是自相矛盾的状态:名单里挂着一个拒绝了的发起人,
+    //   统计、答复进度、催办全要为这个不可能的状态让路。
+    //   想改时间就直接改(update 会把所有人的答复清回 pending);去不了就取消(DELETE)。
+    let organizer: String = sqlx::query_scalar("SELECT organizer FROM activities WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    if organizer == username {
+        return Err(AppError::BadRequest(
+            "发起人不用答复自己发起的活动:想改时间直接改,去不了就取消".into()));
     }
     let st = match r.status.as_str() {
         s @ ("accepted" | "declined" | "tentative" | "counter") => s,

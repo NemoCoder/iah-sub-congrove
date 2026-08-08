@@ -72,24 +72,23 @@ export function ActivitiesListView({ me, onOpen, onNew }: {
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
-        <Space wrap style={{ marginBottom: 12, width: '100%' }}>
-          <Typography.Text strong style={{ fontSize: 15 }}>活动</Typography.Text>
+        {/* ★一行搞定：动作 + 分组 + 计数 …… 搜索/筛选靠右★（2026-08-09 用户）。
+            原来是三行：标题「活动」/ 分组 tab / 搜索。
+            ⚠ 标题去掉了 —— ★这里本来就在「活动」这个根 tab 底下★，再写一遍是复读。
+            搜索与筛选是**次要动作**，靠右放让左边那条「做什么 + 看哪一组」连成一句话读。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           <Button size="small" type="primary" onClick={onNew}>+ 发起活动</Button>
-          <span style={{ flex: 1 }} />
+          <Segmented
+            size="small" value={tab} onChange={(v) => setTab(v as typeof tab)}
+            options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' }, { value: 'past', label: '已结束' }]}
+          />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 场</Typography.Text>
-        </Space>
-
-        <Segmented
-          size="small" value={tab} onChange={(v) => setTab(v as typeof tab)}
-          options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' }, { value: 'past', label: '已结束' }]}
-          style={{ marginBottom: 10 }}
-        />
-        <Space wrap style={{ marginBottom: 12, width: '100%' }}>
-          <Input.Search allowClear placeholder="搜索活动标题、议程…" style={{ width: 280 }}
+          <span style={{ flex: 1 }} />
+          <Input.Search size="small" allowClear placeholder="搜索标题、议程…" style={{ width: 220 }}
             onChange={(e) => setKw(e.target.value)} />
-          <Select size="middle" style={{ width: 160 }} value={proj} onChange={setProj}
+          <Select size="small" style={{ width: 140 }} value={proj} onChange={setProj}
             options={[{ value: 'all' as const, label: '全部项目' }, ...projectOpts]} />
-        </Space>
+        </div>
 
         {loading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : (
           <>

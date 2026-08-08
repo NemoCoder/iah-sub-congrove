@@ -9,6 +9,7 @@
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
 import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
@@ -36,9 +37,11 @@ const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
   counter: { label: '建议改期', color: 'purple' },
 }
 
-export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返回' }: {
+export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = '返回' }: {
   id: number
   onBack: () => void
+  /// 当前登录用户名 —— 用来判「我是不是发起人」（发起人不出「我的答复」）
+  me: string
   onOpenMinutes: (id: number) => void
   /// ★从哪来就写回哪去★:这一页有两个入口(日程页点日历块 / 活动页点列表行),
   /// 写死「返回日程」的话,从活动页进来的人会以为自己点错了(2026-08-07 用户提)。
@@ -53,6 +56,20 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
   const [clash, setClash] = useState<{ title: string; starts_at: string; ends_at: string } | null>(null)
 
   /// ★所有字段走同一个 PUT★:就地编辑的统一保存口,省得每个字段各写一份请求。
+  /// 改时间用的临时区间（null = 没在改）。★不做成 InlineEdit★，见时间那一行的注释。
+  const [timeEdit, setTimeEdit] = useState<[Dayjs, Dayjs] | null>(null)
+  /// 「再关联一个项目」弹窗。★只增不减★，见关联项目那一行的注释。
+  const [addProj, setAddProj] = useState(false)
+  const [pickProj, setPickProj] = useState<number[]>([])
+  const [myProjects, setMyProjects] = useState<{ id: number; name: string }[]>([])
+  useEffect(() => {
+    if (!addProj) return
+    // 只列我有编辑权的（后端也会逐个再判一次）
+    api<{ id: number; name: string; my_role: string | null }[]>('/api/projects')
+      .then((ps) => setMyProjects(ps.filter((x) => x.my_role === 'editor' || x.my_role === 'admin')))
+      .catch(() => {})
+  }, [addProj])
+
   const patch = async (body: Record<string, unknown>) => {
     await api(`/api/activities/${id}`, { method: 'PUT', body: JSON.stringify(body) })
     // ★静默刷新★:不走 loading 态 —— 见 load() 的注释
@@ -125,7 +142,40 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
             <Button size="small">取消旁听</Button>
           </Popconfirm>
         )}
-        {/* ★纪要入口已挪到材料卡片的第三个 tab★(2026-08-09 用户):
+        <Modal open={addProj} title="再关联一个项目" okText="添加" cancelText="取消"
+        onCancel={() => { setAddProj(false); setPickProj([]) }}
+        onOk={async () => {
+          if (pickProj.length) await patch({ add_project_ids: pickProj })
+          setAddProj(false); setPickProj([])
+        }}>
+        <Select mode="multiple" style={{ width: '100%' }} placeholder="选一个或多个项目"
+          value={pickProj} onChange={setPickProj} optionFilterProp="label"
+          options={myProjects
+            .filter((x) => !d.projects?.some((p) => p.id === x.id))
+            .map((x) => ({ value: x.id, label: x.name }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          ★只能加，不能取消★：关联之后那个项目的成员就看得到这场活动的材料，
+          事后解除并不能把「他已经知道」收回去。
+        </Typography.Text>
+      </Modal>
+      {/* 改时间。★确认文案里写清连带后果★：改了时间所有人的答复会清回待定，
+          那是 update 的既有行为（上次的「接受」是对**旧时间**的），不该让人事后才发现。 */}
+      <Modal open={!!timeEdit} title="改时间" okText="保存" cancelText="取消"
+        onCancel={() => setTimeEdit(null)}
+        onOk={async () => {
+          if (!timeEdit) return
+          const [a, b] = timeEdit
+          if (!b.isAfter(a)) { message.error('结束时间必须晚于开始时间'); return }
+          await patch({ starts_at: a.toISOString(), ends_at: b.toISOString() })
+          setTimeEdit(null)
+        }}>
+        <DatePicker.RangePicker showTime style={{ width: '100%' }} value={timeEdit}
+          onChange={(v) => setTimeEdit(v as [Dayjs, Dayjs] | null)} />
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          ★所有人的答复会清回「待定」★，并收到一条改期通知。
+        </Typography.Text>
+      </Modal>
+      {/* ★纪要入口已挪到材料卡片的第三个 tab★(2026-08-09 用户):
             同一件事原来有三个入口(顶栏「活动纪要」、右上角「整理纪要」、原型里的 tab),
             留一个就够。旁听者拿不到纪要 —— 那块卡片本来就只对参会人渲染。 */}
         {d.can_edit && !canceled && (
@@ -156,7 +206,24 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
-              { key: 't', label: '时间', children: fmtRange(m.starts_at, m.ends_at) },
+              {
+                key: 't', label: '时间',
+                // ★时间要有明确的编辑入口★（2026-08-09 用户）：地点/线上是「双击编辑」，
+                // 而时间是只读文本 —— 用户按同样的手势双击它，什么也没发生。
+                // ⚠ 时间不适合做成 InlineEdit（要选起止两个时刻、还要校验先后），
+                // 所以给一个**看得见的**铅笔按钮，点开日期区间选择器。
+                // ★不一致的交互比不能编辑更糟★：它让人以为是坏了。
+                children: (
+                  <Space size={6}>
+                    <span>{fmtRange(m.starts_at, m.ends_at)}</span>
+                    {!!d.can_edit && !canceled && (
+                      <Button type="text" size="small" style={{ padding: '0 4px', height: 20 }}
+                        title="改时间（所有人的答复会清回待定）"
+                        onClick={() => setTimeEdit([dayjs(m.starts_at), dayjs(m.ends_at)])}>✎</Button>
+                    )}
+                  </Space>
+                ),
+              },
               {
                 key: 'l', label: '地点',
                 children: <InlineEdit value={m.location} canEdit={!!d.can_edit && !canceled}
@@ -186,9 +253,23 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
               }] : []),
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
               { key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> },
-              ...(d.projects?.length
-                ? [{ key: 'p', label: '关联项目', children: <Space wrap>{d.projects.map((p) => <Tag key={p.id}>{p.name}</Tag>)}</Space> }]
-                : []),
+              {
+                key: 'p', label: '关联项目',
+                children: (
+                  <Space wrap size={4}>
+                    {d.projects?.map((p) => <Tag key={p.id}>{p.name}</Tag>)}
+                    {/* ★只增不减★（2026-08-09 用户）：关联一旦建立，那个项目的成员就已经
+                        收到通知、看得到材料 —— 事后解除并不能把「他已经知道」收回去，
+                        只会让他手里的入口突然 404。所以这里**没有删除按钮**，只有「+」。
+                        真要收回，走删活动（软删、留痕）。 */}
+                    {!!d.can_edit && !canceled && (
+                      <Button type="text" size="small" style={{ padding: '0 6px', height: 22 }}
+                        title="再关联一个项目（★只能加，不能取消★）"
+                        onClick={() => setAddProj(true)}>＋</Button>
+                    )}
+                  </Space>
+                ),
+              },
             ]} />
           </Card>
 
@@ -227,7 +308,11 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
               canHost={!!d.can_edit && !canceled} onDone={load} />
           )}
-          {!canceled && m.my_status && <RespondCard id={id} mine={m.my_status} onDone={load} />}
+          {/* ★发起人不出「我的答复」★(2026-08-09 用户):他是定这个时间的人,
+              create 时就是 accepted。让他答复等于允许「拒绝自己发起的活动」这种
+              自相矛盾的状态。想改时间直接改、去不了就取消 —— 后端也会拒。 */}
+          {!canceled && m.my_status && m.organizer !== me
+            && <RespondCard id={id} mine={m.my_status} onDone={load} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
         </div>
       </div>

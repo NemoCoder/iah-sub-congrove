@@ -283,7 +283,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
   // ── 项目所有者操作(admin;只在左栏项目「⋯」里)────────────────────────────
   const spaceMenu = (s: Project) => ({
     items: [
-      { key: 'members', label: '成员与设置' },
+      // ★菜单里每一项都要有图标★(2026-08-09 用户):只有这一项没有,
+      // 于是它的文字比别人往左顶,整列对不齐 —— 一眼看去像是加载没完。
+      { key: 'members', label: '👥 成员与设置' },
       { key: 'rename', label: '✏️ 重命名项目', disabled: !!s.archived_at },
       { type: 'divider' as const },
       // ★归档与删除是两件事,菜单里也要分开★:归档=做完了留着查,删除=不要了。

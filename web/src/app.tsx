@@ -117,7 +117,7 @@ export function App() {
           ) : activityId === 'new' ? (
             <ActivityNewView me={me} onCreated={(id) => setActivityId(id)} onCancel={() => setActivityId(null)} />
           ) : activityId != null ? (
-            <ActivityDetailView id={activityId} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
+            <ActivityDetailView id={activityId} me={me?.username ?? ''} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
               backLabel="返回日程" />
           ) : (
             <ScheduleView onOpenActivity={setActivityId} onNewActivity={() => setActivityId('new')} />
@@ -128,7 +128,7 @@ export function App() {
           ) : activityId === 'new' ? (
             <ActivityNewView me={me} onCreated={(id) => setActivityId(id)} onCancel={() => setActivityId(null)} />
           ) : activityId != null ? (
-            <ActivityDetailView id={activityId} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
+            <ActivityDetailView id={activityId} me={me?.username ?? ''} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
               backLabel="返回活动" />
           ) : (
             <ActivitiesListView me={me} onOpen={setActivityId} onNew={() => setActivityId('new')} />
