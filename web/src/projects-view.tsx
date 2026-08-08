@@ -441,13 +441,11 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </AntSpace>
           }
           extra={
-            <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}`}>
-              <span style={{ width: 130, display: 'inline-block' }}>
-                <Progress
-                  percent={Math.min(100, Math.round((cur.used_bytes / Math.max(1, cur.quota_bytes)) * 100))}
-                  size="small" status={cur.used_bytes >= cur.quota_bytes ? 'exception' : 'normal'}
-                />
-              </span>
+            /* ★配额条去掉了★（ADR-0004）：额度不再挂在项目上，挂在**人**身上。
+               这里只显示「这个项目占了多少」—— 一个项目的占用除以**别人的**总额度
+               画出来的进度条，是在误导人。总额度看「个人面板」的 /api/me/quota。 */
+            <Tooltip title="这个项目占用的空间；总额度按人算，见个人面板">
+              <span style={{ color: '#888', fontSize: 12 }}>占用 {fmtSize(cur.used_bytes)}</span>
             </Tooltip>
           }
         >

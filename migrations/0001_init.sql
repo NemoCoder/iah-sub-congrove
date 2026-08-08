@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS projects (
   owner        text NOT NULL,
   created_by   text NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
-  quota_bytes  bigint  NOT NULL DEFAULT 10737418240,
   no_download  boolean NOT NULL DEFAULT false,
   no_share     boolean NOT NULL DEFAULT false,
   hotwords     text    NOT NULL DEFAULT '',
@@ -91,6 +90,27 @@ CREATE TABLE IF NOT EXISTS project_members (
   PRIMARY KEY (project_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members (username);
+
+-- ══════ 每人的偏好与配额（ADR-0004）══════
+--
+-- ★拆成两张表，理由是写权限不同★：偏好由**用户自己**改，配额**只有超管**能改。
+-- 放同一张表意味着一条 UPDATE 路径要在字段级分权 —— 那是漏权的经典长法。
+CREATE TABLE user_prefs (
+  username    text PRIMARY KEY,
+  -- ★可空且无默认★（PRD E0「不设默认北京」）：没有行 = 没有默认，
+  -- 由前端按浏览器时区显示，服务端不猜。
+  timezone    text,
+  default_remind_minutes int,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE user_quota (
+  username    text PRIMARY KEY,
+  -- ⚠ 与 config.rs 的 DEFAULT_QUOTA_BYTES **必须同步**（两处写死同一个数，是已知的重复）。
+  -- ★没有行 = 用系统默认，不是 0★ —— 新用户不该一上来就超额。
+  quota_bytes bigint NOT NULL DEFAULT 10737418240,
+  updated_by  text,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
 
 -- ══════ 活动类型（ADR-0002）══════
 -- ★一条活动必须有类型★：「会议」这个词原本把三件事绑死了 —— 必须有纪要、必须关联项目、

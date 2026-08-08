@@ -1,3 +1,4 @@
+in api put /api/admin/projects/{id}/quota api path removed without deprecation
 in api get /api/meetings api path removed without deprecation
 in api post /api/meetings api path removed without deprecation
 in api get /api/meetings/public api path removed without deprecation

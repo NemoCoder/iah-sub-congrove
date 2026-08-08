@@ -34,7 +34,9 @@ export type Role = 'viewer' | 'editor' | 'admin'
 /// 后者已挪到**活动自己的** `busy`(PRD A4)。项目的资料可见性由成员身份唯一决定(D3)。
 export type Project = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
-  quota_bytes: number; used_bytes: number; no_download: boolean
+  /// ★没有 quota_bytes★（ADR-0004）：额度挂在**人**身上，见 `/api/me/quota`。
+  /// `used_bytes` 是「这个项目占了多少」，信息性，不是判据。
+  used_bytes: number; no_download: boolean
   /// 本项目的转写术语表(空格分隔),项目管理员维护
   hotwords: string
   /// 归档时间;非空 = ★只读存档★(D17)。归档 ≠ 删除:材料全保留、可读可下载,
@@ -159,3 +161,6 @@ export type ActivityType = {
   /// 默认占不占忙闲（自建类型时唯一开放的开关）
   busy_default: boolean
 }
+
+/// 我的额度与已用量（ADR-0004）。★用量算我**名下所有项目**之和★，不是我上传的东西。
+export type MyQuota = { quota_bytes: number; used_bytes: number }
