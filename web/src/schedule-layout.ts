@@ -16,17 +16,30 @@ export const HOUR_PX = 30
 /// 最小可见高度:15 分钟的会只有 7.5px,连标题都放不下、也点不中
 export const MIN_H = 18
 
+/// ★凌晨默认折叠★（2026-08-09 用户）：0–8 点几乎永远是空的，却白占整屏三分之一，
+/// 把真正有事的白天挤扁。折叠之后网格从 8 点起画；那一段有活动时，页面顶上给一条提示。
+///
+/// ⚠ 为什么是「折叠」而不是「压成 2 小时一格」：后者要改**坐标映射**（`hour × HOUR_PX`
+/// 不再线性），刻度、事件、分隔线全得走同一个映射函数，而这套坐标有 20 条单测钉着。
+/// 折叠只是把原点从 0 点挪到 8 点 —— 一个减法，改动面小得多。★简单的做法先做。★
+export const NIGHT_END_H = 8
+
 /// 事件在某一天的纵向位置;不在这一天则 null。跨天事件按当天可见的那段裁剪。
-export function slot(s: Span, day: Date): { top: number; height: number } | null {
+///
+/// `fromH` = 网格从几点开始画（折叠凌晨时是 8，展开时是 0）。
+/// 完全落在 `fromH` 之前的事件返回 null —— 它在折叠状态下本来就不该出现。
+export function slot(s: Span, day: Date, fromH = 0): { top: number; height: number } | null {
   const from0 = new Date(s.starts_at).getTime()
   const to0 = new Date(s.ends_at).getTime()
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1)
   if (to0 <= dayStart.getTime() || from0 >= dayEnd.getTime()) return null
-  const from = Math.max(from0, dayStart.getTime())
+  const gridStart = dayStart.getTime() + fromH * 3600_000
+  if (to0 <= gridStart) return null          // 整段都在折叠区里
+  const from = Math.max(from0, gridStart)
   const to = Math.min(to0, dayEnd.getTime())
   return {
-    top: ((from - dayStart.getTime()) / 3600_000) * HOUR_PX,
+    top: ((from - gridStart) / 3600_000) * HOUR_PX,
     height: Math.max(MIN_H, ((to - from) / 3600_000) * HOUR_PX),
   }
 }
@@ -38,9 +51,9 @@ export function slot(s: Span, day: Date): { top: number; height: number } | null
 /// ★不做「最多两列」这种退化★(上一版的教训):声称退化却没实现,
 /// 结果是第三个开始的事件全宽覆盖前面的 —— 活动在界面上凭空消失。
 /// 列多了确实窄,但**窄总比看不见强**,而且窄本身就是「这天排太满了」的正确信号。
-export function layout<T extends Span>(items: T[], day: Date): Box<T>[] {
+export function layout<T extends Span>(items: T[], day: Date, fromH = 0): Box<T>[] {
   const placed = items
-    .map((item) => ({ item, pos: slot(item, day) }))
+    .map((item) => ({ item, pos: slot(item, day, fromH) }))
     .filter((x): x is { item: T; pos: { top: number; height: number } } => x.pos !== null)
     // 同起点时短的排前面,让它先占到列,视觉上更稳
     .sort((a, b) => a.pos.top - b.pos.top || a.pos.height - b.pos.height)

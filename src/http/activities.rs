@@ -27,6 +27,12 @@ type Ts = chrono::DateTime<chrono::Utc>;
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ActivityRow {
     pub id: i64,
+    /// 活动类型名（ADR-0002）。★列表与详情都要显示它★ ——
+    /// M0 把「这是哪种活动」提成了一等概念，界面上却一直看不见，
+    /// 于是用户建完就再也分不清哪条是会议、哪条是个人日程。
+    /// ⚠ 取的是 `activity_types.name` 而不是 id：软删的类型历史照常显示名字（L1）。
+    #[sqlx(default)]
+    pub type_name: Option<String>,
     pub title: String,
     pub agenda: String,
     pub organizer: String,
@@ -113,7 +119,7 @@ pub async fn list(
     let rows: Vec<ActivityRow> = sqlx::query_as(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
                 -- 列表要显示的三样,都在这条 SQL 里一次取全:
                 -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
@@ -123,6 +129,7 @@ pub async fn list(
                 (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
                 (SELECT mm.status FROM activity_minutes mm WHERE mm.activity_id = m.id) AS minutes_status
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
             AND ($4::bigint IS NULL OR EXISTS (
@@ -244,9 +251,10 @@ pub async fn detail(
 ) -> AppResult<Json<serde_json::Value>> {
     let view = activity_view(&state.pool, &id, mid).await?;
     let m: ActivityRow = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $2
           WHERE m.id = $1")
         .bind(mid).bind(id.require_username()?)
@@ -314,6 +322,15 @@ pub struct ActivityPatch {
     /// 绝大多数会不会录屏,而排程时长常常离谱(排 2 小时、20 分钟讲完就散);
     /// 没有这一级,统计出来的数字系统性偏高 —— 而它是要拿去做季度汇报的。
     pub actual_minutes: Option<i32>,
+    /// ★关联项目：只增不减★（2026-08-09 用户）。
+    ///
+    /// 传进来的 id 会被**并入**现有关联，**永远不删**。理由是关联项目一旦建立，
+    /// 那个项目的成员就已经收到了通知、看得到材料 —— 事后解除关联并不能把
+    /// 「他已经知道这场活动」收回去，只会让他手里的入口突然 404，
+    /// 而库里再也查不出他当时是凭什么看到的。★能撤销的东西才适合做成开关。★
+    /// 真要收回，走的是删活动（软删、留痕），不是悄悄摘掉一个项目。
+    #[serde(default)]
+    pub add_project_ids: Option<Vec<i64>>,
 }
 
 pub async fn update(
@@ -371,6 +388,18 @@ pub async fn update(
                 .execute(&mut *tx).await?;
         }
     }
+    // ★关联项目:只增不减★(见 ActivityPatch::add_project_ids 的注释)。
+    // 每个新增的项目都要 ≥editor —— 把活动挂到一个项目上等于往那个项目塞材料入口,
+    // 逐个校验而不是只验第一个(多项目关联时,漏验的那个就是越权入口)。
+    if let Some(add) = p.add_project_ids.as_deref() {
+        for pid in add {
+            crate::perm::require_role(&state.pool, &id, *pid, crate::perm::Role::Editor).await?;
+            sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)
+                         ON CONFLICT DO NOTHING")
+                .bind(mid).bind(pid).execute(&mut *tx).await?;
+        }
+    }
+
     // ★改了时间就把所有人的答复清回 pending★:上次的「接受」是对**旧时间**说的,
     // 留着它等于替人答应了一个他没看过的时间。发起人与记录员除外(改的人自己知道)。
     if (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1) {
@@ -562,6 +591,17 @@ pub async fn respond(
         // 活动存在但我不在名单 → 403;活动根本看不见 → activity_view 会给 404
         activity_view(&state.pool, &id, mid).await?;
         return Err(AppError::Forbidden);
+    }
+    // ★发起人不答复★(2026-08-09 用户:「发起人怎么还能拒绝呢？」)。
+    //   他是**定这个时间的人**,create 时就写成了 accepted —— 再让他答复一次没有意义,
+    //   而「拒绝自己发起的活动」更是自相矛盾的状态:名单里挂着一个拒绝了的发起人,
+    //   统计、答复进度、催办全要为这个不可能的状态让路。
+    //   想改时间就直接改(update 会把所有人的答复清回 pending);去不了就取消(DELETE)。
+    let organizer: String = sqlx::query_scalar("SELECT organizer FROM activities WHERE id=$1")
+        .bind(mid).fetch_one(&state.pool).await?;
+    if organizer == username {
+        return Err(AppError::BadRequest(
+            "发起人不用答复自己发起的活动:想改时间直接改,去不了就取消".into()));
     }
     let st = match r.status.as_str() {
         s @ ("accepted" | "declined" | "tentative" | "counter") => s,
@@ -1048,7 +1088,7 @@ pub async fn public_list(
     let username = id.require_username()?;
     let days = q.days.filter(|d| *d > 0);
     let rows: Vec<ActivityRow> = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
                    FROM activity_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
@@ -1056,6 +1096,7 @@ pub async fn public_list(
                 (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
                 NULL::text AS minutes_status
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
@@ -1417,7 +1458,8 @@ pub async fn project_stats(
                     EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
                   (SELECT count(*) FROM activity_participants p
                     WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
-             FROM activities m JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
+             FROM activities m
+           JOIN activity_types at ON at.id = m.type_id JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
             WHERE m.status = 'active' AND m.ends_at <= now() AND m.starts_at >= date_trunc($2, now())
          ) x")
         .bind(pid).bind(range).fetch_one(&state.pool).await?;

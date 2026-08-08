@@ -9,6 +9,7 @@
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
 import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
@@ -36,9 +37,11 @@ const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
   counter: { label: '建议改期', color: 'purple' },
 }
 
-export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返回' }: {
+export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = '返回' }: {
   id: number
   onBack: () => void
+  /// 当前登录用户名 —— 用来判「我是不是发起人」（发起人不出「我的答复」）
+  me: string
   onOpenMinutes: (id: number) => void
   /// ★从哪来就写回哪去★:这一页有两个入口(日程页点日历块 / 活动页点列表行),
   /// 写死「返回日程」的话,从活动页进来的人会以为自己点错了(2026-08-07 用户提)。
@@ -53,16 +56,37 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
   const [clash, setClash] = useState<{ title: string; starts_at: string; ends_at: string } | null>(null)
 
   /// ★所有字段走同一个 PUT★:就地编辑的统一保存口,省得每个字段各写一份请求。
+  /// 改时间用的临时区间（null = 没在改）。★不做成 InlineEdit★，见时间那一行的注释。
+  const [timeEdit, setTimeEdit] = useState<[Dayjs, Dayjs] | null>(null)
+  /// 「再关联一个项目」弹窗。★只增不减★，见关联项目那一行的注释。
+  const [addProj, setAddProj] = useState(false)
+  const [pickProj, setPickProj] = useState<number[]>([])
+  const [myProjects, setMyProjects] = useState<{ id: number; name: string }[]>([])
+  useEffect(() => {
+    if (!addProj) return
+    // 只列我有编辑权的（后端也会逐个再判一次）
+    api<{ id: number; name: string; my_role: string | null }[]>('/api/projects')
+      .then((ps) => setMyProjects(ps.filter((x) => x.my_role === 'editor' || x.my_role === 'admin')))
+      .catch(() => {})
+  }, [addProj])
+
   const patch = async (body: Record<string, unknown>) => {
     await api(`/api/activities/${id}`, { method: 'PUT', body: JSON.stringify(body) })
-    await load()
+    // ★静默刷新★:不走 loading 态 —— 见 load() 的注释
+    await load(true)
   }
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /// `silent=true` 时**不切 loading 态**。
+  ///
+  /// ⚠★这就是「点开关页面会抖」的原因★(2026-08-09 用户):原来任何改动都走同一个
+  /// `load()`,它 `setLoading(true)` → 整块详情被换成 Spin → 再换回来,
+  /// 页面**塌一下又撑开**。首屏加载该有 loading,而「切一个开关」不该 ——
+  /// 用户已经在看着内容了,把内容抽走再放回去是纯粹的噪声。
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try { setD(await api<ActivityDetail>(`/api/activities/${id}`)); setErr(null) }
     catch (e) { setErr((e as Error).message) }
-    finally { setLoading(false) }
+    finally { if (!silent) setLoading(false) }
   }, [id])
   useEffect(() => { void load() }, [load])
 
@@ -118,11 +142,42 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
             <Button size="small">取消旁听</Button>
           </Popconfirm>
         )}
-        {/* ★纪要入口★(原型评审时用户问「整理活动纪要的入口是不是还没有」)。
-            旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
-        {d.participants && (
-          <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>活动纪要</Button>
-        )}
+        <Modal open={addProj} title="再关联一个项目" okText="添加" cancelText="取消"
+        onCancel={() => { setAddProj(false); setPickProj([]) }}
+        onOk={async () => {
+          if (pickProj.length) await patch({ add_project_ids: pickProj })
+          setAddProj(false); setPickProj([])
+        }}>
+        <Select mode="multiple" style={{ width: '100%' }} placeholder="选一个或多个项目"
+          value={pickProj} onChange={setPickProj} optionFilterProp="label"
+          options={myProjects
+            .filter((x) => !d.projects?.some((p) => p.id === x.id))
+            .map((x) => ({ value: x.id, label: x.name }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          ★只能加，不能取消★：关联之后那个项目的成员就看得到这场活动的材料，
+          事后解除并不能把「他已经知道」收回去。
+        </Typography.Text>
+      </Modal>
+      {/* 改时间。★确认文案里写清连带后果★：改了时间所有人的答复会清回待定，
+          那是 update 的既有行为（上次的「接受」是对**旧时间**的），不该让人事后才发现。 */}
+      <Modal open={!!timeEdit} title="改时间" okText="保存" cancelText="取消"
+        onCancel={() => setTimeEdit(null)}
+        onOk={async () => {
+          if (!timeEdit) return
+          const [a, b] = timeEdit
+          if (!b.isAfter(a)) { message.error('结束时间必须晚于开始时间'); return }
+          await patch({ starts_at: a.toISOString(), ends_at: b.toISOString() })
+          setTimeEdit(null)
+        }}>
+        <DatePicker.RangePicker showTime style={{ width: '100%' }} value={timeEdit}
+          onChange={(v) => setTimeEdit(v as [Dayjs, Dayjs] | null)} />
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          ★所有人的答复会清回「待定」★，并收到一条改期通知。
+        </Typography.Text>
+      </Modal>
+      {/* ★纪要入口已挪到材料卡片的第三个 tab★(2026-08-09 用户):
+            同一件事原来有三个入口(顶栏「活动纪要」、右上角「整理纪要」、原型里的 tab),
+            留一个就够。旁听者拿不到纪要 —— 那块卡片本来就只对参会人渲染。 */}
         {d.can_edit && !canceled && (
           <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
             onConfirm={async () => {
@@ -151,7 +206,24 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
-              { key: 't', label: '时间', children: fmtRange(m.starts_at, m.ends_at) },
+              {
+                key: 't', label: '时间',
+                // ★时间要有明确的编辑入口★（2026-08-09 用户）：地点/线上是「双击编辑」，
+                // 而时间是只读文本 —— 用户按同样的手势双击它，什么也没发生。
+                // ⚠ 时间不适合做成 InlineEdit（要选起止两个时刻、还要校验先后），
+                // 所以给一个**看得见的**铅笔按钮，点开日期区间选择器。
+                // ★不一致的交互比不能编辑更糟★：它让人以为是坏了。
+                children: (
+                  <Space size={6}>
+                    <span>{fmtRange(m.starts_at, m.ends_at)}</span>
+                    {!!d.can_edit && !canceled && (
+                      <Button type="text" size="small" style={{ padding: '0 4px', height: 20 }}
+                        title="改时间（所有人的答复会清回待定）"
+                        onClick={() => setTimeEdit([dayjs(m.starts_at), dayjs(m.ends_at)])}>✎</Button>
+                    )}
+                  </Space>
+                ),
+              },
               {
                 key: 'l', label: '地点',
                 children: <InlineEdit value={m.location} canEdit={!!d.can_edit && !canceled}
@@ -180,10 +252,26 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
                 </span>,
               }] : []),
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
-              { key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> },
-              ...(d.projects?.length
-                ? [{ key: 'p', label: '关联项目', children: <Space wrap>{d.projects.map((p) => <Tag key={p.id}>{p.name}</Tag>)}</Space> }]
-                : []),
+              ...(m.type_name ? [{ key: 'ty', label: '类型', children: <Tag>{m.type_name}</Tag> }] : []),
+              // 记录员只有「要出纪要」的类型才有（ADR-0002 的 has_minutes）
+              ...(m.recorder ? [{ key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> }] : []),
+              {
+                key: 'p', label: '关联项目',
+                children: (
+                  <Space wrap size={4}>
+                    {d.projects?.map((p) => <Tag key={p.id}>{p.name}</Tag>)}
+                    {/* ★只增不减★（2026-08-09 用户）：关联一旦建立，那个项目的成员就已经
+                        收到通知、看得到材料 —— 事后解除并不能把「他已经知道」收回去，
+                        只会让他手里的入口突然 404。所以这里**没有删除按钮**，只有「+」。
+                        真要收回，走删活动（软删、留痕）。 */}
+                    {!!d.can_edit && !canceled && (
+                      <Button type="text" size="small" style={{ padding: '0 6px', height: 22 }}
+                        title="再关联一个项目（★只能加，不能取消★）"
+                        onClick={() => setAddProj(true)}>＋</Button>
+                    )}
+                  </Space>
+                ),
+              },
             ]} />
           </Card>
 
@@ -193,11 +281,6 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
               placeholder="（双击填写议题与议程，一行一条）"
               style={{ minHeight: 160, fontSize: 13, lineHeight: 1.8 }}
               onSave={(v) => patch({ agenda: v })} />
-            {m.visibility === 'public' && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                这是公开活动,议程对全平台可见 —— ★但材料不公开★,只有关联项目的成员能看。
-              </Typography.Text>
-            )}
           </Card>
 
           {/* ★线上活动区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
@@ -225,9 +308,13 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
-              canHost={!!d.can_edit && !canceled} onDone={load} isPublic={m.visibility === 'public'} />
+              canHost={!!d.can_edit && !canceled} onDone={load} />
           )}
-          {!canceled && m.my_status && <RespondCard id={id} mine={m.my_status} onDone={load} />}
+          {/* ★发起人不出「我的答复」★(2026-08-09 用户):他是定这个时间的人,
+              create 时就是 accepted。让他答复等于允许「拒绝自己发起的活动」这种
+              自相矛盾的状态。想改时间直接改、去不了就取消 —— 后端也会拒。 */}
+          {!canceled && m.my_status && m.organizer !== me
+            && <RespondCard id={id} mine={m.my_status} onDone={load} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
         </div>
       </div>
@@ -419,18 +506,23 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
             </div>
           ))}
       </div>
-      <Select size="small" value={to} onChange={setTo} style={{ width: '100%', marginBottom: 6 }}
-        options={[
-          { value: 'public', label: '所有参会人' },
-          // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
-          { value: organizer, label: `私聊 ${organizer}（发起人）` },
-          ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
-        ]} />
       <Input.TextArea rows={2} value={text} placeholder="说点什么…（Enter 发送）"
         onChange={(e) => setText(e.target.value)}
         onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void send() } }} />
-      <Button size="small" type="primary" block style={{ marginTop: 8 }} loading={busy}
-        disabled={!text.trim()} onClick={send}>发送</Button>
+      {/* ★「发给谁」和「发送」并排★(2026-08-09 用户):它们是同一个动作的两半 ——
+          「发给谁 + 发」。分成上下两截时,选择器顶在输入框上方,读起来像一个独立的筛选器,
+          而且发送按钮通栏占了整行宽度,视觉分量比它该有的重。 */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Select size="small" value={to} onChange={setTo} style={{ flex: 1, minWidth: 0 }}
+          options={[
+            { value: 'public', label: '所有参会人' },
+            // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
+            { value: organizer, label: `私聊 ${organizer}（发起人）` },
+            ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
+          ]} />
+        <Button size="small" type="primary" loading={busy}
+          disabled={!text.trim()} onClick={send}>发送</Button>
+      </div>
     </Card>
   )
 }
@@ -444,10 +536,9 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
 /// ★旁听那一栏**没人时也显示**★(2026-08-07 用户:「加个想要旁听人的显示」):
 /// 只在有人时才出现的区块,发起人根本不知道这个位置存在,也就不会去看 ——
 /// 公开活动开出去之后「有没有人要来听」是他真正关心的事。
-function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
+function PeopleCard({ people, mid, organizer, canHost, onDone }: {
   people: Participant[]; mid: number; organizer: string; canHost: boolean; onDone: () => void
   /// 私密活动不会有人旁听(D9),空栏的文案要说清是「还没人来」还是「本来就不会有」
-  isPublic: boolean
 }) {
   const joined = people.filter((p) => p.kind !== 'observer')
   const observers = people.filter((p) => p.kind === 'observer')
@@ -460,15 +551,10 @@ function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
         ))}
       </Space>
       <div style={{ margin: '12px 0 6px', fontSize: 12, color: '#8c8c8c', borderTop: '1px solid #f0f0f0', paddingTop: 10 }}>
-        想旁听的人（{observers.length}）
-        <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
-          自己来听的，不用答复，也看不到材料
-        </Typography.Text>
+        旁听（{observers.length}）
       </div>
       {observers.length === 0 ? (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {isPublic ? '还没有人来听' : '这是私密活动，只有公开活动才会有人来旁听'}
-        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>
       ) : (
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
           {observers.map((p) => (
@@ -616,11 +702,17 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   return (
     <Card size="small" style={{ marginBottom: 12 }}
       styles={{ body: { paddingTop: 4 } }}>
-      <Tabs size="small" activeKey={tab} onChange={setTab}
+      <Tabs size="small" activeKey={tab}
         items={[
           { key: 'mat', label: `材料 ${mats.length}`, children: table(mats, '还没有材料') },
           { key: 'rec', label: `录制 ${recs.length}`, children: table(recs, '还没有录屏或录音') },
+          // ★纪要是第三个 tab★（2026-08-09 用户）：它和材料/录制是同一层的东西 ——
+          // 「这场活动留下了什么」。原来做成右上角一个「整理纪要」按钮，读起来像个动作，
+          // 而它其实是**一块内容**。⚠ 点它跳到纪要页（纪要有自己一整页，塞不进这个卡片），
+          // 所以 tab 本身不承载 children —— 靠 onChange 拦截。
+          { key: 'min', label: '纪要', children: null },
         ]}
+        onChange={(k) => { if (k === 'min') onOpenMinutes(id); else setTab(k) }}
         tabBarExtraContent={canEdit && (
           <Space size={6}>
             {/* ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
@@ -640,7 +732,6 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
                 {tab === 'rec' ? '上传录屏 / 录音' : '上传材料'}
               </Button>
             </Upload>
-            <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
           </Space>
         )} />
       {/* ★活动粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
@@ -658,9 +749,6 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
                 onChange={(v: boolean) => onPolicy({ no_share: v })} />
               <Typography.Text style={{ fontSize: 12 }}>禁止对外分享</Typography.Text>
             </Space>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              仍可在线预览 / 播放；与项目级设置<b>叠加</b>，任一禁了就禁
-            </Typography.Text>
           </Space>
         </div>
       )}
