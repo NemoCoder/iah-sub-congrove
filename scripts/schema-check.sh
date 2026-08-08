@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# ★门禁二：schema 差异逐条确认★（2026-08-08）
+#
+#   scripts/schema-check.sh baseline        # 把当前库的 schema 冻成基线（改造前跑一次）
+#   scripts/schema-check.sh check           # 现库 vs 基线，差异必须**逐字节等于** expected.diff
+#   scripts/schema-check.sh render          # 只渲染，打到 stdout
+#
+# 连接从环境变量 `CONGROVE_DEV_DSN` 取（★口令绝不入库★，放 ~/.config/iah/congrove-dev.env）。
+#
+# ══════ 为什么白名单是一个 **diff 文件** 而不是一张清单 ══════
+#
+# 老的 `schema-diff.mjs` 用「人写的 EXPECTED_ADDS 清单」核销差异 —— 于是评审得核对
+# 「清单」和「代码」是否一致，而清单会随代码前进自动过期。★这正是相位 4 卡八轮的根因。★
+# 这里改成：**预期差异本身就是一个 checked-in 的 diff 文件**，由程序生成、评审直接读差异。
+# 它不可能和现实不符 —— 不符就是红。
+#
+# ══════ 三个它比老脚本强的地方 ══════
+#
+# ① ★「你什么都没做」不再是全绿★：老脚本实测能被「把 0001~0007 原样 cat 成一个 0001、
+#    一处不改名」骗过（exit 0）。这里如果 expected.diff 非空而实际 diff 为空，两者不等 → 红。
+# ② 覆盖四个盲区（UNIQUE 索引 / 生成列 / 类型精度 / 列顺序）—— 见 schema_ddl.sql 头注。
+# ③ 不依赖 `pg_dump`：服务端 PG 18.4，本机 pg_dump 只有 16.14，★低版本客户端拒绝 dump
+#    高版本服务端★（实测 `aborting because of server version mismatch`）。目录查询没有这个耦合。
+set -uo pipefail
+cd "$(dirname "$0")/.."
+DIR=schema; BASE=$DIR/baseline.sql; EXP=$DIR/expected.diff
+: "${CONGROVE_DEV_DSN:?缺 CONGROVE_DEV_DSN（source ~/.config/iah/congrove-dev.env）}"
+
+render() { psql "$CONGROVE_DEV_DSN" -At -f scripts/schema_ddl.sql; }
+
+case "${1:-check}" in
+render) render ;;
+baseline)
+  mkdir -p $DIR && render > $BASE || exit 1
+  echo "★基线已冻结★ $BASE（$(wc -l < $BASE) 行 / $(grep -c '^TABLE ' $BASE) 张表）"
+  echo "→ 提交它。之后 schema 的每一处变动都要在 $EXP 里有对应的一行。" ;;
+check)
+  [ -f $BASE ] || { echo "没有基线，先跑 $0 baseline"; exit 2; }
+  T=$(mktemp); render > "$T" || exit 1
+  A=$(mktemp); diff -u $BASE "$T" > "$A"; rm -f "$T"
+  if [ ! -s "$A" ]; then
+    # 无差异：只有在「本来就不该有差异」时才算过
+    if [ -s $EXP ]; then
+      echo "★现库与基线**毫无差异**，但 $EXP 声明了预期变更 —— 门禁不通过★"
+      echo "→ 要么改动还没部署上去（清库 + 部署 + rollout restart 三步做全了吗），"
+      echo "  要么 $EXP 是陈的。★这一格就是老脚本「你什么都没做也全绿」的那个洞。★"
+      rm -f "$A"; exit 1
+    fi
+    echo "★schema 与基线一致 —— 门禁通过★"; rm -f "$A"; exit 0
+  fi
+  if [ ! -f $EXP ]; then
+    echo "★出现 $(grep -c '^[+-][^+-]' "$A") 处 schema 变动，但没有 $EXP —— 门禁不通过★"
+    echo "→ 看一遍下面的差异，确认每一条都是**有意为之**，再执行："
+    echo "    diff -u $BASE <($0 render) > $EXP && git add $EXP"
+    cat "$A"; rm -f "$A"; exit 1
+  fi
+  if diff -q $EXP "$A" >/dev/null; then
+    echo "★schema 差异逐字节等于 $EXP（$(grep -c '^[+-][^+-]' $EXP) 处，全部事先声明）—— 门禁通过★"
+    rm -f "$A"; exit 0
+  fi
+  echo "★实际差异与 $EXP 对不上 —— 门禁不通过★"
+  echo "（下面是「预期的差异」与「实际的差异」之间的差异；- 是预期里有而实际没有，+ 是冒出来的）"
+  diff -u $EXP "$A" | tail -n +3
+  rm -f "$A"; exit 1 ;;
+*) echo "用法: $0 {baseline|check|render}"; exit 2 ;;
+esac

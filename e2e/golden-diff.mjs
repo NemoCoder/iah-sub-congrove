@@ -26,10 +26,10 @@ import fs from 'node:fs'
 // ── ① 机械改名：归一化后不算差异 ──────────────────────────────
 // 顺序有意义：长的先替，否则 `meeting_id` 会被 `meeting` 的规则先啃掉。
 const RENAMES = [
-  ['meeting_id', 'activity_id'],
-  ['meeting_projects', 'activity_projects'],
-  ['meetings', 'activities'],
-  ['meeting', 'activity'],
+  ['meeting_id', 'activity_id'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_projects', 'activity_projects'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meetings', 'activities'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting', 'activity'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
 ]
 const rename = (s) => RENAMES.reduce((acc, [a, b]) => acc.split(a).join(b), s)
 
@@ -60,15 +60,16 @@ const EXPECTED_CHANGES = [
   { path: 'activities.list.body.<of>.*.is_private',
     why: 'PRD J4 换定义。★新值由 safety-net.spec.ts「安全网·is_private 语义」四组合断言守，不由本白名单守★' },
   { path: 'freebusy',                  why: 'PRD A4：判据改成 activities.busy，不再要求关联公开项目' },
-  { path: 'me.stats',                  why: 'PRD K：新增按类型分组；去掉 EXISTS(activity_projects) 闸' },
+  // ⚠ ★整块前缀豁免 = me/stats 的所有改动都没有机械守卫★（评审 P2-2）。
+  //   其中包括 PRD L0b 残留边界②那条**安全性收紧**（口径只认 accepted）——
+  //   把整块放过，等于那条收紧改没改、改反没改，golden 都不吭声。
+  //   → 收窄成逐字段，并给「只认 accepted」在 safety-net 里配一条具名断言（§5.2b）。
+  { path: 'me.stats.body.by_type',     why: 'PRD K：新增按类型分组' },
+  { path: 'me.stats.body.by_project',  why: 'PRD B3：归档项目计入，带 archived 标记' },
   { path: '*.body.<of>.*.type_id',     why: 'PRD A1：活动新增 type_id（NOT NULL）' },
   { path: '*.body.<of>.*.busy',        why: 'PRD A1：活动新增 busy' },
-  { path: '*.body.<of>.*.is_backfilled',   why: 'PRD F1：新增生成列' },
-  { path: '*.body.<of>.*.is_past_record',  why: 'PRD L0b：新增生成列' },
   { path: '*.body.type_id',            why: 'PRD A1（详情形态）' },
   { path: '*.body.busy',               why: 'PRD A1（详情形态）' },
-  { path: '*.body.is_backfilled',      why: 'PRD F1（详情形态）' },
-  { path: '*.body.is_past_record',     why: 'PRD L0b（详情形态）' },
 ]
 const pathMatches = (pat, path) => {
   const p = pat.split('.'), q = path.split('.')
