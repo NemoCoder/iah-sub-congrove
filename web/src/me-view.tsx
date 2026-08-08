@@ -6,9 +6,16 @@
 //
 // ⚠ 口径**全在后端**（`/api/me/stats` 的 handler 注释里），前端一个数都不自己算：
 // 同一个数字两处各算一套，迟早对不上，而对不上的时候没人知道该信哪边。
-import { Card, Empty, Segmented, Space, Spin, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Card, Empty, Progress, Segmented, Select, Space, Spin, Table, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
-import { api, type Me } from './api'
+import { api, type Me, type MyQuota } from './api'
+import { fmtSize } from './preview'
+
+/// 时区候选。★不做成全量 IANA 列表★：几百条里挑一个比打字还慢，
+/// 而这里的实际需求就是「我在国内 / 我在国外某地」。不够用再加。
+const TZS = ['Asia/Shanghai', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'UTC']
+
+type Prefs = { timezone: string | null; default_remind_minutes: number | null }
 
 type Row = { id: number; name: string; archived: boolean; count: number; hours: number; minutes_done: number }
 type Host = { id: number; name: string; archived: boolean; members: number; minutes_pending: number }
@@ -43,6 +50,21 @@ function Stat({ n, label, warn }: { n: number | string; label: string; warn?: bo
 }
 
 export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () => void }) {
+  const { message } = AntdApp.useApp()
+  const [quota, setQuota] = useState<MyQuota | null>(null)
+  const [prefs, setPrefs] = useState<Prefs | null>(null)
+  useEffect(() => {
+    api<MyQuota>('/api/me/quota').then(setQuota).catch(() => {})
+    api<Prefs>('/api/me/prefs').then(setPrefs).catch(() => {})
+  }, [])
+  /// ★整对象送★：接口是替换语义（见 me_quota.rs 的注释）——
+  /// 只送改动的那半个会把另一半清掉。
+  const savePrefs = async (patch: Partial<Prefs>) => {
+    const next: Prefs = { timezone: null, default_remind_minutes: null, ...prefs, ...patch }
+    setPrefs(next)
+    try { await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify(next) }) }
+    catch (e) { message.error((e as Error).message) }
+  }
   const [range, setRange] = useState('month')
   const [data, setData] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -79,12 +101,50 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
           </div>
         </Card>
 
+        {/* ★存储配额★（ADR-0004）。M0-6 把额度从项目挪到人之后，项目卡片上那条
+            配额进度条被去掉了（一个项目的占用除以**别人的**总额度是误导），
+            于是★总额度在界面上一时没了去处★ —— 这里补上，它本来就该在「我」这一页。 */}
+        <Card size="small" title="存储配额" style={{ marginTop: 12 }}>
+          {quota ? (
+            <>
+              <Progress
+                percent={Math.min(100, Math.round((quota.used_bytes / Math.max(1, quota.quota_bytes)) * 100))}
+                size="small" status={quota.used_bytes >= quota.quota_bytes ? 'exception' : 'normal'}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                已用 {fmtSize(quota.used_bytes)} / {fmtSize(quota.quota_bytes)}
+              </Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 6, marginBottom: 0 }}>
+                算的是<b>你名下所有项目</b>之和；同一份内容放进多个项目只算一次。
+                要调额度找超管。
+              </Typography.Paragraph>
+            </>
+          ) : <Spin size="small" />}
+        </Card>
+
         <Card size="small" title="设置" style={{ marginTop: 12 }}>
-          {/* ★只放已经做出来的入口★:原型里的「会前提醒时间」「通知偏好」属于 M2,
-              先摆一个不通的链接比不摆更糟 —— 用户点了没反应会以为是坏了。 */}
           <div style={{ lineHeight: 2.2, fontSize: 13 }}>
             <a onClick={onOpenShares}>我的分享</a>
-            <div style={{ color: '#bfbfbf' }}>会前提醒 / 通知偏好（M2）</div>
+          </div>
+          {/* ★时区不设默认★（PRD E0）：没设过就跟浏览器，服务端不猜。 */}
+          <div style={{ marginTop: 8 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>时区</Typography.Text>
+            <Select size="small" style={{ width: '100%', marginTop: 4 }} allowClear
+              placeholder={`跟随浏览器（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`}
+              value={prefs?.timezone ?? undefined}
+              onChange={(v) => savePrefs({ timezone: v ?? null })}
+              options={TZS.map((z) => ({ value: z, label: z }))} />
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>默认提前提醒</Typography.Text>
+            <Select size="small" style={{ width: '100%', marginTop: 4 }} allowClear
+              placeholder="不提醒"
+              value={prefs?.default_remind_minutes ?? undefined}
+              onChange={(v) => savePrefs({ default_remind_minutes: v ?? null })}
+              options={[5, 10, 15, 30, 60].map((n) => ({ value: n, label: `提前 ${n} 分钟` }))} />
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              ⚠ 提醒的**投递**属 M2，这里先把偏好存下来
+            </Typography.Text>
           </div>
         </Card>
       </div>

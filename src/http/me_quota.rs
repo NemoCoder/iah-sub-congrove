@@ -44,7 +44,16 @@ pub struct PrefsIn {
     #[serde(default)] pub default_remind_minutes: Option<i32>,
 }
 
-/// PUT /api/me/prefs —— 改我的偏好（upsert）。
+/// PUT /api/me/prefs —— 改我的偏好（upsert，★整对象替换★）。
+///
+/// ⚠★为什么不是 COALESCE 部分更新★（2026-08-09 改的）：第一版写成
+/// `COALESCE(EXCLUDED.x, user_prefs.x)`，意思是「没传的字段保留」——
+/// 听起来贴心，但它让 **null 变得不可表达**：用户在界面上点「清空时区」，
+/// 前端送 `{timezone: null}`，后端把它当成「这次没传」→ 旧值原样留着。
+/// ★点了没反应、也不报错★，正是最难查的那种。
+/// 这个对象只有两个字段，整体替换语义清楚：**传什么就是什么**。
+/// （要保留部分更新的话，得用 `Option<Option<T>>` 区分「缺字段」与「显式 null」，
+///  为两个字段引入那套机制不值当。）
 pub async fn put_prefs(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -55,9 +64,8 @@ pub async fn put_prefs(
     sqlx::query(
         "INSERT INTO user_prefs (username, timezone, default_remind_minutes) VALUES ($1,$2,$3)
          ON CONFLICT (username) DO UPDATE
-            SET timezone = COALESCE(EXCLUDED.timezone, user_prefs.timezone),
-                default_remind_minutes = COALESCE(EXCLUDED.default_remind_minutes,
-                                                  user_prefs.default_remind_minutes)",
+            SET timezone = EXCLUDED.timezone,
+                default_remind_minutes = EXCLUDED.default_remind_minutes",
     )
     .bind(me).bind(input.timezone.as_deref()).bind(input.default_remind_minutes)
     .execute(&state.pool)

@@ -89,6 +89,8 @@ export type Activity = {
   no_share?: boolean
   location: string; online_url: string
   visibility: 'private' | 'public'
+  /// 活动类型名（ADR-0002）。软删的类型历史照常显示名字（L1）。
+  type_name?: string | null
   status: 'active' | 'canceled'
   created_at: string
   /// 我的答复;不在名单里则 null

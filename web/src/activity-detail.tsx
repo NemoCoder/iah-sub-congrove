@@ -252,7 +252,9 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                 </span>,
               }] : []),
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
-              { key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> },
+              ...(m.type_name ? [{ key: 'ty', label: '类型', children: <Tag>{m.type_name}</Tag> }] : []),
+              // 记录员只有「要出纪要」的类型才有（ADR-0002 的 has_minutes）
+              ...(m.recorder ? [{ key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> }] : []),
               {
                 key: 'p', label: '关联项目',
                 children: (

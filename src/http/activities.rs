@@ -27,6 +27,12 @@ type Ts = chrono::DateTime<chrono::Utc>;
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ActivityRow {
     pub id: i64,
+    /// 活动类型名（ADR-0002）。★列表与详情都要显示它★ ——
+    /// M0 把「这是哪种活动」提成了一等概念，界面上却一直看不见，
+    /// 于是用户建完就再也分不清哪条是会议、哪条是个人日程。
+    /// ⚠ 取的是 `activity_types.name` 而不是 id：软删的类型历史照常显示名字（L1）。
+    #[sqlx(default)]
+    pub type_name: Option<String>,
     pub title: String,
     pub agenda: String,
     pub organizer: String,
@@ -113,7 +119,7 @@ pub async fn list(
     let rows: Vec<ActivityRow> = sqlx::query_as(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
                 -- 列表要显示的三样,都在这条 SQL 里一次取全:
                 -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
@@ -123,6 +129,7 @@ pub async fn list(
                 (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
                 (SELECT mm.status FROM activity_minutes mm WHERE mm.activity_id = m.id) AS minutes_status
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
             AND ($4::bigint IS NULL OR EXISTS (
@@ -244,9 +251,10 @@ pub async fn detail(
 ) -> AppResult<Json<serde_json::Value>> {
     let view = activity_view(&state.pool, &id, mid).await?;
     let m: ActivityRow = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $2
           WHERE m.id = $1")
         .bind(mid).bind(id.require_username()?)
@@ -1080,7 +1088,7 @@ pub async fn public_list(
     let username = id.require_username()?;
     let days = q.days.filter(|d| *d > 0);
     let rows: Vec<ActivityRow> = sqlx::query_as(
-        "SELECT m.*, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
                    FROM activity_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
@@ -1088,6 +1096,7 @@ pub async fn public_list(
                 (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
                 NULL::text AS minutes_status
            FROM activities m
+           JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
@@ -1449,7 +1458,8 @@ pub async fn project_stats(
                     EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
                   (SELECT count(*) FROM activity_participants p
                     WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
-             FROM activities m JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
+             FROM activities m
+           JOIN activity_types at ON at.id = m.type_id JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
             WHERE m.status = 'active' AND m.ends_at <= now() AND m.starts_at >= date_trunc($2, now())
          ) x")
         .bind(pid).bind(range).fetch_one(&state.pool).await?;

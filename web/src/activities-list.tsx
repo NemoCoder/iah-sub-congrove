@@ -164,9 +164,13 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, marginBottom: 3 }}>{m.title}</div>
         <Space size={[6, 2]} wrap style={{ fontSize: 12, color: '#8c8c8c' }}>
+          {/* ★类型放在最前★（2026-08-09）：M0 把「这是哪种活动」提成了一等概念，
+              界面上却一直看不见 —— 建完就再也分不清哪条是会议、哪条是个人日程。 */}
+          {m.type_name && <Tag style={{ marginInlineEnd: 0 }}>{m.type_name}</Tag>}
           {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan" style={{ marginInlineEnd: 0 }}>{p.name}</Tag>)}
           <span>{m.organizer === me?.username ? '我' : m.organizer} 发起</span>
-          <span>· 记录员 {m.recorder}</span>
+          {/* 记录员只有「要出纪要」的类型才有 —— 空的时候别显示「记录员 」这半句 */}
+          {m.recorder && <span>· 记录员 {m.recorder}</span>}
           {!!m.participant_count && <span>· {m.participant_count} 人</span>}
           {m.is_private && <Tag color="purple" style={{ marginInlineEnd: 0 }}>私密</Tag>}
         </Space>
