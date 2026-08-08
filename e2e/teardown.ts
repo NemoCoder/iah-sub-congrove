@@ -23,7 +23,21 @@ export default async function teardown() {
   const KEY = process.env.IAH_E2E_KEY
   if (!KEY) return
   const base = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
-  const ctx = await request.newContext({ baseURL: base, extraHTTPHeaders: { 'X-IAH-E2E-Key': KEY } })
+  // ★以**超管身份**清场★（2026-08-08 修）：这个 teardown 的整个设计前提是
+  //   「靠命名前缀扫描，不靠记账」——而扫描需要**全局可见性**。
+  //   在此之前它用默认身份 `e2e` 调 `GET /api/projects`，于是
+  //   `multi-identity.spec.ts` 造的、owner 是 `e2e-host`/`e2e-owner` 的项目
+  //   按 D3「非成员一律 404」根本看不见 → ★一个都清不掉，而它照常打印「已清理 N 个」★。
+  //   实测漏了 8 个项目 / 5 场会议。
+  //   ⚠ 这跟本文件开头记的那次事故是**同一个失败模式**（当时是前缀对不上，这次是可见性不够），
+  //     所以修法要针对「前提」而不是针对「这一次的成因」：★让扫描真的能看到全部★。
+  //   `X-IAH-E2E-User` 到位之后这件事才做得到（此前只有 `e2e` 一个身份）。
+  //   安全性：只在 dev、只删 `^(E2E-|演示·)` 前缀，真实项目碰不到。
+  const ADMIN = process.env.IAH_E2E_ADMIN ?? 'liaoruili'   // CONGROVE_SUPER_USERS 里的那个
+  const ctx = await request.newContext({
+    baseURL: base,
+    extraHTTPHeaders: { 'X-IAH-E2E-Key': KEY, 'X-IAH-E2E-User': ADMIN },
+  })
   try {
     // 会议:先清(它引用项目,留着会挡住项目删除)
     const from = new Date(Date.now() - 30 * 864e5).toISOString()
