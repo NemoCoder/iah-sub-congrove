@@ -119,6 +119,14 @@ test.describe('安全网·内容', () => {
 
 // ════════ ② 配额（「钱」路径，改名后要整体换算法）════════
 
+// ★M0-6 换算法（ADR-0004）★：额度从「每项目」挪到「每人」，用量算**项目 owner** 名下
+// 所有项目之和，同一 owner 内按 blob 去重。PRD 要验 6 条语义，此前只有 1 条 ——
+// 下面 5 条是 M0-6 开工前补的（M0-PLAN 写死：★先补测试再改实现★，
+// 否则这个 PR 的门禁判定不了它声称判定的东西）。
+async function myQuota(req: APIRequestContext) {
+  return (await (await req.get('/api/me/quota')).json()) as { quota_bytes: number; used_bytes: number }
+}
+
 test.describe('安全网·配额', () => {
   test('用量随上传增长,且回收站里的仍然计入', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-配额-${tag()}`)
@@ -131,6 +139,58 @@ test.describe('安全网·配额', () => {
     await request.delete(`/api/items/${iid}`)
     // ★回收站仍然计入★：占着盘就该算（v0.4 明确定过，M0 的配额改造最容易在这里改错）
     expect(await usedBytes(request, pid), '删进回收站后用量不该掉').toBe(after)
+  })
+
+  test('★按 owner 汇总他名下所有项目★', async ({ request }) => {
+    const a = await newProject(request, `E2E-网-额度A-${tag()}`)
+    const b = await newProject(request, `E2E-网-额度B-${tag()}`)
+    const before = (await myQuota(request)).used_bytes
+    await upload(request, a, 'a.txt', 'a'.repeat(3000))
+    await upload(request, b, 'b.txt', 'b'.repeat(4000))
+    // ★两个项目的占用要加在同一个人头上★ —— 不是各算各的
+    expect((await myQuota(request)).used_bytes, '两个项目的用量没汇总到 owner 头上').toBe(before + 7000)
+  })
+
+  test('★同一 owner 内按 blob 去重,只算一份★', async ({ request }) => {
+    const a = await newProject(request, `E2E-网-去重A-${tag()}`)
+    const b = await newProject(request, `E2E-网-去重B-${tag()}`)
+    const same = 'dedup'.repeat(1000)   // 5000 字节，同一份内容
+    const before = (await myQuota(request)).used_bytes
+    await upload(request, a, 'same.txt', same)
+    const mid = (await myQuota(request)).used_bytes
+    await upload(request, b, 'same.txt', same)
+    // 内容寻址让同内容全库只存一份；同一个人放进两个项目还算两遍 = 收他没花的钱
+    expect(mid, '第一次传要涨').toBe(before + same.length)
+    expect((await myQuota(request)).used_bytes, '★同一个人的同一份内容算了两遍★').toBe(mid)
+  })
+
+  test('★版本历史计入★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-网-版本-${tag()}`)
+    const iid = (await (await upload(request, pid, 'v.md', 'v1'.repeat(500))).json()).id as number
+    const one = (await myQuota(request)).used_bytes
+    // 改一次内容 → 旧版进 item_versions，两份都占盘，都该算
+    await request.put(`/api/items/${iid}/content`, { data: { content: 'v2'.repeat(900) } })
+    expect((await myQuota(request)).used_bytes, '历史版本没被计入 = 用户能靠反复改版白嫖').toBeGreaterThan(one)
+  })
+
+  test('★半截直传不计★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-网-半截-${tag()}`)
+    const before = (await myQuota(request)).used_bytes
+    // begin 只建占位行（s3_key 为空），没 complete 就不该占额度
+    const r = await request.post(`/api/projects/${pid}/media/begin`, {
+      data: { name: 'big.bin', size: 12345, mime: 'application/octet-stream', parts: 1 },
+    })
+    expect([200, 501]).toContain(r.status())   // 501 = 平台没开直传，跳过判定
+    if (r.status() === 200) {
+      expect((await myQuota(request)).used_bytes, '半截直传就开始占额度 = 取消一次就白扣').toBe(before)
+    }
+  })
+
+  test('★新用户没有 user_quota 行时走系统默认,不是 0★', async ({ request }) => {
+    // e2e 这个账号从没被超管调过额度 → user_quota 里没有它的行
+    const q = await myQuota(request)
+    expect(q.quota_bytes, '没有 quota 行时额度算成了 0 = 新用户一上来就超额').toBeGreaterThan(0)
+    expect(q.quota_bytes, '默认额度应当是 10GiB').toBe(10737418240)
   })
 })
 

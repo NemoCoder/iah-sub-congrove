@@ -19,7 +19,8 @@ pub struct ProjectRow {
     pub description: String,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub quota_bytes: i64,
+    // ★没有 quota_bytes 了★（ADR-0004）：额度挂在**人**身上（`user_quota`），不挂在项目上。
+    // `used_bytes` 留着 —— 它是「这个项目占了多少」，信息性，不是判据。
     pub no_download: bool,
     /// 本空间的转写术语表(空格/换行分隔;迁移 0007)。人名与专业词按组不同,由项目管理员维护。
     pub hotwords: String,
@@ -84,7 +85,7 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<ProjectRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, no_download, hotwords, archived_at \
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at \
                             FROM projects WHERE deleted_at IS NULL ORDER BY archived_at NULLS FIRST, id")
                 .fetch_all(&state.pool)
                 .await?;
@@ -98,10 +99,10 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     // ★权限只到人(D12)★:一条 JOIN 就够,不再有「我属于哪些组、那些组有什么授权」这一层。
     // ★排序:进行中在前,归档的沉到后面★(D17)——列表默认是「我手头的活」,
     // 归档的还在同一份数据里(前端可切换筛选),但不该抢占视线。
-    type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String, String,
+    type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, bool, String, String,
                 Option<chrono::DateTime<chrono::Utc>>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.no_download, s.hotwords, g.role, s.archived_at
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
           WHERE s.deleted_at IS NULL
           ORDER BY s.archived_at NULLS FIRST, s.id",
@@ -111,8 +112,8 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     .await?;
     // 一个人在一个项目里只有一行,不再需要跨行合并取 max。
     Ok(Json(rows.into_iter()
-        .map(|(pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords, role, archived_at)| ProjectRow {
-            id: pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords,
+        .map(|(pid, name, description, created_by, created_at, no_download, hotwords, role, archived_at)| ProjectRow {
+            id: pid, name, description, created_by, created_at, no_download, hotwords,
             my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0), archived_at,
         }).collect()))
 }

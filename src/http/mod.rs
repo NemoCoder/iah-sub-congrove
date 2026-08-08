@@ -9,6 +9,7 @@ pub(crate) mod items;
 mod media;
 mod activities;
 mod activity_types;
+mod me_quota;
 mod share;
 pub(crate) mod projects;
 
@@ -32,7 +33,7 @@ pub fn build_router(state: AppState) -> Router {
     let admin = Router::new()
         .route("/admin/users", get(admin::users))
         .route("/admin/users/{username}/super", put(admin::set_super))
-        .route("/admin/projects/{id}/quota", put(admin::set_quota))
+        .route("/admin/users/{username}/quota", put(admin::set_quota))
         .route("/admin/audit", get(admin::audit_list))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_super));
 
@@ -65,6 +66,9 @@ pub fn build_router(state: AppState) -> Router {
         // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 activities.rs 头注)。
         .route("/activities", get(activities::list).post(activities::create))
         // 活动类型（ADR-0002）：预置两条 + 每人自建
+        // 我的配额与偏好（ADR-0004）
+        .route("/me/quota", get(me_quota::get_quota))
+        .route("/me/prefs", get(me_quota::get_prefs).put(me_quota::put_prefs))
         .route("/activity-types", get(activity_types::list).post(activity_types::create))
         .route("/activity-types/{id}", put(activity_types::update).delete(activity_types::remove))
         .route("/activities/{id}", get(activities::detail).put(activities::update).delete(activities::cancel))

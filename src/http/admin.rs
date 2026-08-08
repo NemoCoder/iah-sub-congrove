@@ -103,26 +103,33 @@ pub struct QuotaIn {
     pub quota_bytes: i64,
 }
 
-/// PUT /api/admin/spaces/{id}/quota —— 调空间配额(超管专属;容量吃共享 5TB 池,是平台资源不是空间自治项)。
+/// PUT /api/admin/users/{username}/quota —— ★调**某个人**的配额★（ADR-0004，超管专属）。
+///
+/// 从「按项目」改成「按人」：额度是给人的资源，挂在项目上意味着建一个新项目就白得 10GiB。
+/// ★upsert★：没有行 = 用系统默认（不是 0），所以第一次调额度要插行。
 pub async fn set_quota(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-    Path(pid): Path<i64>,
+    Path(username): Path<String>,
     Json(input): Json<QuotaIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     if input.quota_bytes < 0 {
         return Err(AppError::BadRequest("配额不能为负".into()));
     }
-    let n = sqlx::query("UPDATE projects SET quota_bytes = $1 WHERE id = $2")
-        .bind(input.quota_bytes)
-        .bind(pid)
-        .execute(&state.pool)
-        .await?
-        .rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound);
+    let who = username.trim();
+    if who.is_empty() {
+        return Err(AppError::BadRequest("用户名不能为空".into()));
     }
-    audit::record(&state.pool, id.require_username()?, "admin.quota", &pid.to_string(), &input.quota_bytes.to_string()).await;
+    let actor = id.require_username()?;
+    sqlx::query(
+        "INSERT INTO user_quota (username, quota_bytes, updated_by) VALUES ($1,$2,$3)
+         ON CONFLICT (username) DO UPDATE SET quota_bytes = EXCLUDED.quota_bytes,
+                                              updated_by = EXCLUDED.updated_by, updated_at = now()",
+    )
+    .bind(who).bind(input.quota_bytes).bind(actor)
+    .execute(&state.pool)
+    .await?;
+    audit::record(&state.pool, actor, "admin.quota", who, &input.quota_bytes.to_string()).await;
     Ok(Json(json!({ "ok": true })))
 }
 

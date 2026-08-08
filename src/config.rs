@@ -4,6 +4,13 @@
 
 use std::env;
 
+/// 每人的默认配额（ADR-0004）。★没有 `user_quota` 行 = 用这个值，不是 0★ ——
+/// 新用户不该一上来就超额。
+/// ⚠ 与 `migrations/0001_init.sql` 里 `user_quota.quota_bytes` 的 DEFAULT **必须同步**，
+///   两处写死同一个数是已知的重复（改一处要改两处）。
+pub const DEFAULT_QUOTA_BYTES: i64 = 10_737_418_240;
+
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub app_env: String,

@@ -51,6 +51,9 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
 
     // ── 项目 ──
+    api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", ""),
+    api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
+    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert；没传的字段保留）", "timezone, default_remind_minutes"),
     // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
     api!("GET", "/api/activity-types", "活动", "登录", "列出预置的 + 我自建的活动类型", ""),
     api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
@@ -224,7 +227,9 @@ pub const APIS: &[Api] = &[
     // ── 超管 ──
     api!("GET", "/api/admin/users", "超管", "超管", "全部用户", ""),
     api!("PUT", "/api/admin/users/{username}/super", "超管", "超管", "设/撤超管位", "is_super"),
-    api!("PUT", "/api/admin/projects/{id}/quota", "超管", "超管", "调项目配额", "quota_bytes"),
+    api!("PUT", "/api/admin/users/{username}/quota", "超管", "超管",
+         "调某个人的配额（ADR-0004：额度挂在人身上，不挂在项目上）。★upsert★：没有行 = 用系统默认",
+         "quota_bytes"),
     api!("GET", "/api/admin/audit", "超管", "超管", "全局审计日志", "limit, actor, action"),
 
     // ── 开发者 ──
