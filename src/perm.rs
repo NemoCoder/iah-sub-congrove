@@ -54,6 +54,41 @@ impl Role {
 
 /// 多条授权取最强(纯函数,单测覆盖)。DB 里 CHECK 约束保证值合法,
 /// 万一出现非法值按「无授权」处理而不是 panic。
+/// SQL 吐出来的授权行 → 有效角色。★纯函数,所以 hermetic 的 `cargo test` 够得着★。
+///
+/// 判定藏在 SQL 或 async 函数里的话,`cargo test` 永远测不到它 —— 上一次修
+/// 「旁听者提权」时就是把判定从 SQL 里挪出来才拿到回归测试的(v0.4.39)。
+pub fn decide_role(rows: &[String]) -> Option<Role> {
+    // ⚠★否决必须在 merge **之前**单独判★:`merge` 是 `.flatten().max()`,
+    // 它设计上就**忽略未知值**(`Role::parse("BLOCK")` 是 None),混进去会被静静吃掉。
+    if rows.iter().any(|r| r == BLOCK) {
+        return None;
+    }
+    merge(rows.iter().map(|r| Role::parse(r)))
+}
+
+/// `require_owner` 的判定,拆成纯函数。★超管那一问是**懒**的★——
+/// 只有在「不是 owner 且不是材料区」时才值得去查库,所以这里返回三态而不是 bool。
+#[derive(Debug, PartialEq, Eq)]
+pub enum OwnerVerdict {
+    /// 直接放行(他就是 owner)
+    Allow,
+    /// 直接拒绝,★不必再问超管★(材料区)
+    Deny,
+    /// 还要看他是不是超管
+    AskSuper,
+}
+
+pub fn decide_owner(kind: &str, owner: &str, me: Option<&str>) -> OwnerVerdict {
+    let is_owner = Some(owner) == me;
+    // ★材料区:除 owner 外谁都不行,超管也不行★(ADR-0005)。顺序要紧 ——
+    // 放在超管之后等于没挂,那正是评审抓到的坑。
+    if kind == "materials" && !is_owner {
+        return OwnerVerdict::Deny;
+    }
+    if is_owner { OwnerVerdict::Allow } else { OwnerVerdict::AskSuper }
+}
+
 pub fn merge(grants: impl IntoIterator<Item = Option<Role>>) -> Option<Role> {
     grants.into_iter().flatten().max()
 }
@@ -66,7 +101,17 @@ pub fn merge(grants: impl IntoIterator<Item = Option<Role>>) -> Option<Role> {
 pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> AppResult<Option<Role>> {
     let username = id.require_username()?;
     let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT 'admin'::text FROM app_user WHERE username = $2 AND is_super
+        // ★材料区的隔离在这里单点否决★(ADR-0005):materials 项目**只有 owner 有角色**,
+        // 别人(含超管)一律无角色。放在这一层而不是逐个入口设防的理由:
+        //   ① `require_role` 的签名里没有 `op`,而要放行的「回收站还原」与要拦的「上传/删除」
+        //      在 `need` 上完全一样(都是 Editor),用现有签名区分不了;
+        //   ② ★7 个项目写入口根本不经 `require_role`★(走 require_owner),其中 transfer
+        //      会把材料区连同配额转给别人。
+        // 单点否决则**新增入口自动被覆盖** —— 这是它相对白名单的全部价值。
+        "SELECT 'BLOCK'::text FROM projects
+          WHERE id = $1 AND kind = 'materials' AND owner <> $2 AND deleted_at IS NULL
+         UNION ALL
+         SELECT 'admin'::text FROM app_user WHERE username = $2 AND is_super
          UNION ALL
          SELECT role FROM project_members WHERE project_id = $1 AND username = $2",
     )
@@ -74,7 +119,10 @@ pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> Ap
     .bind(username)
     .fetch_all(pool)
     .await?;
-    Ok(merge(rows.iter().map(|r| Role::parse(r))))
+    // ⚠★否决必须在 merge **之前**单独判★(评审抓到的坑):`merge` 是
+    // `.flatten().max()` —— 它设计上就**忽略未知值**,`Role::parse("BLOCK")` 返回 None,
+    // 于是「BLOCK」会被静静吃掉,这道闸等于没挂。
+    Ok(decide_role(&rows))
 }
 
 /// 主持人判定(D0)。只有他能:指定/撤销管理员、转移主持人、改可见性、删项目。
@@ -83,21 +131,27 @@ pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> Ap
 /// ★与 require_role 分开★:主持人不是「比 admin 更高一档的角色」,而是项目上的一个**字段**。
 /// 混进 Role 枚举会让「有几个 admin」这种查询变得别扭,也会多一次数据迁移。
 pub async fn require_owner(pool: &PgPool, id: &Identity, project_id: i64) -> AppResult<()> {
-    if is_super_now(pool, id).await? {
-        return Ok(());
-    }
-    let owner: Option<String> = sqlx::query_scalar(
-        "SELECT owner FROM projects WHERE id = $1 AND deleted_at IS NULL",
+    // ⚠★超管短路必须在**查完 kind 之后**★(评审抓到的坑,与上面 merge 那条是同一类):
+    // 原来是先 `is_super_now` 直接 return,再去查 owner —— 那样材料区的判据挂在后面等于没挂,
+    // 超管照样能改别人的材料区、甚至把它连同配额 transfer 走。
+    // 所以:**无条件先 SELECT kind, owner**,materials 的判据排在超管之前。
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT kind, owner FROM projects WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(project_id)
     .fetch_optional(pool)
     .await?;
-    match owner {
-        // 不是主持人但确实是成员 → 403(他看得见这个项目,回 404 只会让人以为项目没了)
-        Some(o) if Some(o.as_str()) == id.username.as_deref() => Ok(()),
-        Some(_) => Err(AppError::Forbidden),
-        // 项目根本不存在 → 404,与 require_role 的口径一致
-        None => Err(AppError::NotFound),
+    // 项目根本不存在 → 404,与 require_role 的口径一致
+    let Some((kind, owner)) = row else { return Err(AppError::NotFound) };
+    match decide_owner(&kind, &owner, id.username.as_deref()) {
+        OwnerVerdict::Allow => Ok(()),
+        // 材料区:不必再问超管
+        OwnerVerdict::Deny => Err(AppError::Forbidden),
+        OwnerVerdict::AskSuper => {
+            if is_super_now(pool, id).await? { Ok(()) }
+            // 不是主持人但确实看得见这个项目 → 403(回 404 只会让人以为项目没了)
+            else { Err(AppError::Forbidden) }
+        }
     }
 }
 
@@ -184,6 +238,8 @@ pub enum ActivityView {
 /// 而 CI 的 `cargo test` 是 hermetic 的(不连 PG),够不着它 ——
 /// 这正是它错了整整一个版本没人发现的原因。
 /// ★所以把判档位挪成纯函数★:关系由 SQL 查,结论由 Rust 定,结论就能被单测钉死。
+/// `effective_role` 的否决标记。★不是角色★——混进 `Role::parse` 会被静静吃掉,所以单独判。
+const BLOCK: &str = "BLOCK";
 const LINK_MEMBER: &str = "member";
 const LINK_SUPER: &str = "super";
 const LINK_PUBLIC: &str = "public";
@@ -350,5 +406,51 @@ mod tests {
         assert_eq!(decide_view(&[l("participant:未来某个新档位")]), None);
         // 但公开活动那条独立来源仍然照常给 Observer
         assert_eq!(decide_view(&[l("participant:guest"), l("public")]), Some(ActivityView::Observer));
+    }
+
+    // ══════ ADR-0005:材料区隔离 ══════
+    //
+    // ★这两组各对应一处**评审抓到的**坑★。实测(不是声称)的反向验证结果:
+    //   · 去掉 `decide_role` 里的 BLOCK 分支      → `材料区对别人零角色…` 红 ✅
+    //   · materials 从 `Deny` 改成 `AskSuper`     → `材料区的判据排在超管之前` 红 ✅
+    //
+    // ⚠★有一条我一开始写错了,记下来★:我原本声称「把 materials 判据挪到 `is_owner` 之后
+    //   → 测试变红」。**实测不红,因为那两种写法是等价的**(`is_owner` 为真时 materials
+    //   分支本来就不触发)。真正的顺序 bug 在 `require_owner` 里「超管短路排在查 kind 之前」,
+    //   而把判定抽成 `decide_owner` 之后,★那个 bug 结构上不可能再发生★ ——
+    //   纯函数根本不知道「超管」这回事,它只会返回 `AskSuper` 交给调用方去问。
+    //   **把缺陷变成不可表达,比给它加一条测试更强。**
+
+    #[test]
+    fn 材料区对别人零角色_哪怕他是超管() {
+        // SQL 会同时吐出 BLOCK 与 admin(超管那一行) —— ★BLOCK 必须赢★
+        assert_eq!(decide_role(&["BLOCK".into(), "admin".into()]), None);
+        // 也可能同时是成员表里的 editor:一样零角色
+        assert_eq!(decide_role(&["BLOCK".into(), "editor".into()]), None);
+    }
+
+    #[test]
+    fn 没有否决标记时照常取最高角色() {
+        assert_eq!(decide_role(&["viewer".into(), "admin".into()]), Some(Role::Admin));
+        assert_eq!(decide_role(&[]), None);
+        // ⚠ 未知值仍然按老规矩忽略(BLOCK 之外的脏数据不应把人锁死)
+        assert_eq!(decide_role(&["viewer".into(), "陌生角色".into()]), Some(Role::Viewer));
+    }
+
+    #[test]
+    fn 材料区的判据排在超管之前() {
+        // 别人的材料区 → ★Deny,而且**不必再问超管**★
+        assert_eq!(decide_owner("materials", "alice", Some("bob")), OwnerVerdict::Deny);
+        // 自己的材料区 → 放行
+        assert_eq!(decide_owner("materials", "alice", Some("alice")), OwnerVerdict::Allow);
+    }
+
+    #[test]
+    fn 普通项目仍然给超管留口子() {
+        assert_eq!(decide_owner("team", "alice", Some("bob")), OwnerVerdict::AskSuper);
+        assert_eq!(decide_owner("team", "alice", Some("alice")), OwnerVerdict::Allow);
+        // 未登录(没有用户名)不是 owner
+        assert_eq!(decide_owner("team", "alice", None), OwnerVerdict::AskSuper);
+        assert_eq!(decide_owner("materials", "alice", None), OwnerVerdict::Deny);
     }
 }
