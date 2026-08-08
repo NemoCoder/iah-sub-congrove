@@ -7,12 +7,13 @@
 //
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
-import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload } from 'antd'
+import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
-import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Participant, type RespondStatus } from './api'
-import { fmtSize, ItemIcon } from './preview'
+import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
+import { fmtSize, ItemIcon, MarkdownView } from './preview'
+import { useActivityUpload } from './activity-upload'
 import { ShareModal } from './share-modal'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -506,21 +507,29 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
             </div>
           ))}
       </div>
+      {/* ★禁掉右下角那个缩放手柄★:它正好落在输入框与下面一行的接缝上,
+          两个描边框加一个手柄挤在几个像素里,看着像两个控件粘住了。 */}
       <Input.TextArea rows={2} value={text} placeholder="说点什么…（Enter 发送）"
+        style={{ resize: 'none' }}
         onChange={(e) => setText(e.target.value)}
         onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void send() } }} />
       {/* ★「发给谁」和「发送」并排★(2026-08-09 用户):它们是同一个动作的两半 ——
           「发给谁 + 发」。分成上下两截时,选择器顶在输入框上方,读起来像一个独立的筛选器,
-          而且发送按钮通栏占了整行宽度,视觉分量比它该有的重。 */}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Select size="small" value={to} onChange={setTo} style={{ flex: 1, minWidth: 0 }}
+          而且发送按钮通栏占了整行宽度,视觉分量比它该有的重。
+          ⚠★选择器不描边★(2026-08-09 用户再指):第一版给它 flex:1 + 默认描边,
+          于是输入框下面紧接着又是一个同宽的描边框 —— 两个长得一样的框上下贴着,
+          读起来像**同一个控件被切成了两截**。它是这次发送的一个修饰语,不是一个独立输入,
+          所以去掉边框、宽度按内容收,让描边框在这一小块里**只出现一次**。 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        <Select size="small" value={to} onChange={setTo} variant="borderless"
+          style={{ flex: '0 1 auto', minWidth: 0, marginLeft: -8 }}
           options={[
             { value: 'public', label: '所有参会人' },
             // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
             { value: organizer, label: `私聊 ${organizer}（发起人）` },
             ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
           ]} />
-        <Button size="small" type="primary" loading={busy}
+        <Button size="small" type="primary" loading={busy} style={{ marginLeft: 'auto' }}
           disabled={!text.trim()} onClick={send}>发送</Button>
       </div>
     </Card>
@@ -657,7 +666,89 @@ function OnlineCard({ id, url }: { id: number; url: string }) {
   )
 }
 
-/// 材料 / 录制 两个 tab(原型还有第三个「纪要」,这里做成跳转按钮 —— 纪要有自己一整页)。
+/// 「纪要」tab 的内容 —— ★这里给的是**成品**,不是编辑器★（2026-08-09 用户）。
+///
+/// 之前点这个 tab 会直接把人扔进整理页,对**大多数人**是错的:
+/// 他们来这儿是想**读**这次会的纪要,而不是去整理它 —— 整理是记录员一个人的活(D14)。
+/// 现在按身份分岔:
+///   · 已完成 → 就地显示成品（有 PDF 就给 PDF，没有就渲染正文）;
+///   · 还没整理完 → 记录员看到「去整理纪要 →」;其他人只看到「纪要还没有整理完」。
+///
+/// ⚠★PDF 导出本身还没做★:`activity_minutes.pdf_item_id` 这一列建了、类型里也有,
+/// 但**全仓库没有任何地方写过它**(2026-08-09 查证)。正文里那句「出 PDF 时由平台的
+/// LaTeX 服务排版」描述的是设计意图,不是已实现的功能。所以这里两条路都留着:
+/// 有 pdf_item_id 就给下载/预览,没有就退回渲染 Markdown 正文 —— 等 PDF 做出来自动生效。
+function MinutesTab({ id, canEdit, onOpen }: {
+  id: number; canEdit: boolean; onOpen: (id: number) => void
+}) {
+  const [m, setM] = useState<Minutes | null>(null)
+  const [mine, setMine] = useState(false)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let dead = false
+    api<{ minutes: Minutes | null; can_edit: boolean }>(`/api/activities/${id}/minutes`)
+      .then((r) => { if (!dead) { setM(r.minutes); setMine(r.can_edit) } })
+      .catch(() => { if (!dead) { setM(null); setMine(false) } })
+      .finally(() => { if (!dead) setLoading(false) })
+    return () => { dead = true }
+  }, [id])
+
+  if (loading) return <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+
+  const done = m?.status === 'done'
+  // 能整理的人 = 纪要接口说的 can_edit(记录员/主持人),不是「能改这场活动的人」
+  const editor = mine || canEdit
+
+  if (!done) {
+    return (
+      <div style={{ padding: '16px 4px' }}>
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={editor ? '这份纪要还是草稿' : '纪要还没有整理完'} />
+        {editor && (
+          <div style={{ textAlign: 'center' }}>
+            <Button type="primary" size="small" onClick={() => onOpen(id)}>去整理纪要 →</Button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <Space wrap style={{ marginBottom: 8 }}>
+        <Tag color="green">已完成</Tag>
+        {m?.completed_at && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{fmtTime(m.completed_at)}</Typography.Text>
+        )}
+        <span style={{ flex: 1 }} />
+        {m?.pdf_item_id && <a href={`/api/items/${m.pdf_item_id}/download`}>下载 PDF</a>}
+        {editor && <Button size="small" onClick={() => onOpen(id)}>修改</Button>}
+      </Space>
+      <MinutesSection label="议题" text={m!.agenda_text} />
+      <MinutesSection label="主要内容" text={m!.content_md} md />
+      <MinutesSection label="决议事项" text={m!.resolutions} />
+      <MinutesSection label="待办事项" text={m!.todos} />
+      <MinutesSection label="参会人" text={m!.attendees} />
+      <MinutesSection label="旁听人" text={m!.observers} />
+      <MinutesSection label="缺席人" text={m!.absentees} />
+    </div>
+  )
+}
+
+/// 成品纪要里的一段;空的那几段**不显示**(读成品时,空标题只是噪音)。
+function MinutesSection({ label, text, md }: { label: string; text: string; md?: boolean }) {
+  if (!text?.trim()) return null
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <Typography.Text strong style={{ fontSize: 13 }}>{label}</Typography.Text>
+      {md
+        ? <div style={{ fontSize: 13 }}><MarkdownView text={text} /></div>
+        : <div style={{ fontSize: 13, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>{text}</div>}
+    </div>
+  )
+}
+
+/// 材料 / 录制 / 纪要 三个 tab。
 /// ★录制单独一个 tab★:它不是普通材料,是**会被转写、并决定活动时长**的东西(D5),
 /// 混在材料里会让人不知道该传哪儿。
 function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy }: {
@@ -666,7 +757,6 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   policy: { no_download?: boolean; no_share?: boolean } | null
   onPolicy: (p: { no_download?: boolean; no_share?: boolean }) => void
 }) {
-  const { message } = AntdApp.useApp()
   const [items, setItems] = useState<ActivityItem[]>([])
   const [tab, setTab] = useState('mat')
   // 要分享的那一项(D7:材料有两个入口,分享自然也有两个 —— 同一份材料
@@ -679,6 +769,18 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
 
   const mats = items.filter((i) => !i.is_recording)
   const recs = items.filter((i) => i.is_recording)
+
+  // ★两个 tab 各一份上传器★:`is_recording` 不同,后端据它决定要不要转写(D5),
+  // 共用一个的话切 tab 时正在传的那份会被算成另一类。
+  const upMat = useActivityUpload({
+    projectId: projectId ?? 0, activityId: id, isRecording: false,
+    label: '上传材料', onDone: load,
+  })
+  const upRec = useActivityUpload({
+    projectId: projectId ?? 0, activityId: id, isRecording: true,
+    accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: load,
+  })
+  const up = tab === 'rec' ? upRec : upMat
 
   const table = (rows: ActivityItem[], empty: string) => (
     <Table<ActivityItem> size="small" rowKey="id" dataSource={rows} pagination={false}
@@ -702,37 +804,20 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   return (
     <Card size="small" style={{ marginBottom: 12 }}
       styles={{ body: { paddingTop: 4 } }}>
-      <Tabs size="small" activeKey={tab}
+      <Tabs size="small" activeKey={tab} onChange={setTab}
         items={[
-          { key: 'mat', label: `材料 ${mats.length}`, children: table(mats, '还没有材料') },
-          { key: 'rec', label: `录制 ${recs.length}`, children: table(recs, '还没有录屏或录音') },
+          // ★拖放区包住列表★(2026-08-09 用户「可以拖动上传」):平时不显形,拖进来才亮边框。
+          { key: 'mat', label: `材料 ${mats.length}`, children: upMat.zone(table(mats, '还没有材料')) },
+          { key: 'rec', label: `录制 ${recs.length}`, children: upRec.zone(table(recs, '还没有录屏或录音')) },
           // ★纪要是第三个 tab★（2026-08-09 用户）：它和材料/录制是同一层的东西 ——
           // 「这场活动留下了什么」。原来做成右上角一个「整理纪要」按钮，读起来像个动作，
-          // 而它其实是**一块内容**。⚠ 点它跳到纪要页（纪要有自己一整页，塞不进这个卡片），
-          // 所以 tab 本身不承载 children —— 靠 onChange 拦截。
-          { key: 'min', label: '纪要', children: null },
+          // 而它其实是**一块内容**。
+          { key: 'min', label: '纪要', children: <MinutesTab id={id} canEdit={canEdit} onOpen={onOpenMinutes} /> },
         ]}
-        onChange={(k) => { if (k === 'min') onOpenMinutes(id); else setTab(k) }}
-        tabBarExtraContent={canEdit && (
-          <Space size={6}>
-            {/* ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
-                因为它决定「会不会被转写」,和传一份参考资料完全是两件事。 */}
-            <Upload showUploadList={false} multiple
-              customRequest={({ file, onSuccess, onError }) => {
-                // ★走项目上传接口 + activity_id★:活动材料是「只读区」指的是**入口唯一**(D10),
-                // 不必为它另写一套流式上传。落在关联项目之一,靠 activity_id 让所有关联项目都看得到(D4)。
-                const fd = new FormData()
-                fd.append('file', file as File)
-                const qs = `activity_id=${id}&is_recording=${tab === 'rec'}`
-                fetch(`/api/projects/${projectId}/upload?${qs}`, { method: 'POST', body: fd })
-                  .then((r) => r.ok ? (onSuccess?.({}), load()) : r.text().then((t) => { message.error(t); onError?.(new Error(t)) }))
-                  .catch((e) => { message.error(String(e)); onError?.(e as Error) })
-              }}>
-              <Button size="small" type={tab === 'rec' ? 'primary' : 'default'}>
-                {tab === 'rec' ? '上传录屏 / 录音' : '上传材料'}
-              </Button>
-            </Upload>
-          </Space>
+        tabBarExtraContent={canEdit && projectId != null && tab !== 'min' && (
+          // ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
+          // 因为它决定「会不会被转写」,和传一份参考资料完全是两件事。
+          <Space size={6}>{up.button}</Space>
         )} />
       {/* ★活动粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
           说的是**这一次会**,不是把整个项目锁上。只有能改这场会的人看得到这两个开关。 */}

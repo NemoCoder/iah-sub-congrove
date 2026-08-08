@@ -191,9 +191,6 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                 )
               })}
             </div>
-            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-              点一天：只有一项直接打开，多项跳到那一周
-            </Typography.Text>
           </div>
         ) : mode === 'list' ? (
           /* ★列表视图★:日程密的时候网格反而难读 —— 一行一条按时间排,一眼看完 */
@@ -221,26 +218,10 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
         ) : (
           <div style={{ overflowX: 'auto' }}>
             {/* 表头:时间轴列 + 7 天 */}
-            {/* ★凌晨折叠条★：折叠区里有活动才出现。不自动展开 ——
-                自动展开会让「今天有个 3 点的会」把整周的布局都撑高一截。 */}
-            {!nightOpen && (
-              <div onClick={() => setNightOpen(true)} style={{
-                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-                padding: '4px 8px', marginBottom: 4, borderRadius: 4,
-                background: nightCount ? '#fffbe6' : '#fafafa',
-                border: `1px solid ${nightCount ? '#ffe58f' : '#f0f0f0'}`,
-                fontSize: 12, color: '#8c8c8c',
-              }}>
-                <span>凌晨 0–8 点已折叠</span>
-                {nightCount > 0 && <Tag color="orange" style={{ margin: 0 }}>这段有 {nightCount} 项</Tag>}
-                <span style={{ marginLeft: 'auto', color: '#0d9488' }}>展开 ▾</span>
-              </div>
-            )}
-            {nightOpen && (
-              <div onClick={() => setNightOpen(false)} style={{
-                cursor: 'pointer', padding: '4px 8px', marginBottom: 4, fontSize: 12, color: '#0d9488',
-              }}>收起凌晨 ▴</div>
-            )}
+            {/* ⚠★折叠条只有一条,就在网格正上方★:2026-08-09 第一版把这段**贴了两遍**
+                (表头上方一条、网格上方一条),截图里读作两条「凌晨 0–8 点已折叠」。
+                它是**网格的**折叠开关,所以只能贴在网格那一侧;贴在表头之上时它和星期行
+                中间还隔着一行,语义上更像是整个卡片的横幅。 */}
             <div style={{ display: 'grid', gridTemplateColumns: `92px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               <div />
               {days.map((d, i) => {
@@ -383,9 +364,6 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
           <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488' }} text="公开项目" />
           <LegendDot style={{ background: '#f9f0ff', border: '1px dashed #722ed1' }} text="私密项目" />
           <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待你应答" />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            私密项目的会不占别人眼里的忙闲
-          </Typography.Text>
         </Space>
       </Card>
 
