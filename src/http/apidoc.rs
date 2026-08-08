@@ -52,11 +52,11 @@ pub const APIS: &[Api] = &[
 
     // ── 项目 ──
     api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", ""),
-    api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description, visibility"),
+    api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description"),
     api!("GET", "/api/projects/{id}", "项目", "≥viewer", "项目详情", ""),
-    api!("PUT", "/api/projects/{id}", "项目", "admin;改 visibility 需 owner",
-         "改名/描述/禁下载/术语表/可见性/禁分享。★开启禁分享会连带撤销已有公开链接★",
-         "name, description, no_download, hotwords, visibility, no_share"),
+    api!("PUT", "/api/projects/{id}", "项目", "admin",
+         "改名/描述/禁下载/术语表/禁分享。★开启禁分享会连带撤销已有公开链接★",
+         "name, description, no_download, hotwords, no_share"),
     api!("DELETE", "/api/projects/{id}", "项目", "owner",
          "删项目(软删除)。★owner 专属(D0)★,不是 admin;★归档的项目也能直接删★\
           (走 require_owner,不受归档写闸约束)", ""),

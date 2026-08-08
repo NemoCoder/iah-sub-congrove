@@ -33,9 +33,11 @@ CREATE TABLE IF NOT EXISTS app_user (
 -- ★可见性规则(D3/R1)★:**此刻是成员 ⟺ 看得到本项目全部资料**(含他加入之前的历史);
 -- 移出即失去全部(**含他本人参与过的会议**)。权限是「当前状态的函数」而非「历史事件的累积」。
 --
---   visibility  (D1):**只影响忙闲**。public 的会议让成员在别人眼里显示「忙」(仅忙/空,不含标题);
---                    private 完全不占忙闲,别人看到的是空闲 —— 私事、以及**几个人私下组队**。
---                    ⚠ 两者的**资料**都只有成员能看,项目名与成员名单也都不公开。随时可改。
+--   ★项目没有 visibility★(M0-1 删):它原本兼着两件**正交**的事 ——「内容给谁看」与
+--   「会不会占别人的忙闲」。后者已挪到**活动自己的** `busy`(PRD A4,用户逐条可控);
+--   前者由成员身份唯一决定(D3)——资料、项目名、成员名单一律只有成员能看,本来就没有第二档。
+--   合在一个字段里的后果是「私密项目的会不占忙闲」成了默认,而「我这个时段没空」
+--   本来就不泄露任何内容。
 --                    ★不叫「团队/个人」★:那个命名把人数与隐私绑死,表达不了「多人但不公开」。
 --   owner       (D0):唯一主持人。只有他能指定/撤销管理员、转移主持人、删除项目。
 --                    转移需**对方接受**才生效;主持人须先转移才能退出;销号则自动转最早的管理员。
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS projects (
   id           bigserial PRIMARY KEY,
   name         text NOT NULL,
   description  text NOT NULL DEFAULT '',
-  visibility   text NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+  -- ⚠★没有 visibility★（M0-1 删）：它原本兼着两件正交的事 ——「内容给谁看」与「会不会占忙闲」，
+  --   而后者已经挪到活动自己的 `busy`（PRD A4）。内容可见性由项目成员身份唯一决定（D3）。
   owner        text NOT NULL,
   created_by   text NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
@@ -57,9 +60,16 @@ CREATE TABLE IF NOT EXISTS projects (
   no_share     boolean NOT NULL DEFAULT false,
   hotwords     text    NOT NULL DEFAULT '',
   deleted_at   timestamptz,
-  deleted_by   text
+  deleted_by   text,
+  -- 归档(原 0002):归档 = 只读封存,不是删除。★排在最后是有意的★——
+  -- 老库里这两列是 ALTER ADD COLUMN 加的,PG 只能加在表尾且不支持调列序,
+  -- 写在中间会让新旧库列序不同(schema 门禁看得见)。
+  archived_at  timestamptz,
+  archived_by  text
 );
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects (owner);
+-- 列表默认只看「活着且没归档」的(原 0002)
+CREATE INDEX IF NOT EXISTS idx_projects_active ON projects (id) WHERE archived_at IS NULL AND deleted_at IS NULL;
 
 -- 项目成员:★只到具体的人,没有「组」这一层(D12)★。
 -- 角色展示名:admin=管理员(副手) / editor=成员 / viewer=只读成员;主持人在 projects.owner 单列。
@@ -103,6 +113,18 @@ CREATE TABLE IF NOT EXISTS meetings (
   rrule      text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  -- 占不占忙闲（PRD A4，M0-1 加）：★由活动自己决定，用户逐条可改★。
+  -- 以前的判据是「有没有关联到公开项目」—— 那把「内容可见」和「时间可见」绑成了一件事，
+  -- 于是「私密项目的会不占别人忙闲」这种明显错的行为成了默认。
+  -- 默认 true 与旧行为里的「会议」一致；M0-2 起由活动类型的 busy_default 决定初值。
+  busy       boolean NOT NULL DEFAULT true,
+  -- 实际时长(原 0006):排期是计划,这是事实。统计按事实算。
+  actual_minutes integer CHECK (actual_minutes IS NULL OR (actual_minutes > 0 AND actual_minutes <= 24 * 60)),
+  actual_by      text,
+  -- 会议粒度的材料策略(原 0007):「这次会涉及敏感内容,想让大家能看但不能下载」。
+  -- ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。
+  no_download boolean NOT NULL DEFAULT false,
+  no_share    boolean NOT NULL DEFAULT false,
   CHECK (ends_at > starts_at)
 );
 -- 忙闲与日历都按时间窗查,且只关心未取消的。
@@ -126,7 +148,9 @@ CREATE INDEX IF NOT EXISTS idx_mpj_project ON meeting_projects (project_id);
 CREATE TABLE IF NOT EXISTS meeting_participants (
   meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
   username   text NOT NULL,
-  kind       text NOT NULL DEFAULT 'attendee' CHECK (kind IN ('attendee','guest','observer')),
+  -- ⚠ ★没有 guest 档★(原 0005 删掉的):它和 observer 的可见面完全一样,
+  --   两个名字装同一件事,只会让判权的人以为有区别。
+  kind       text NOT NULL DEFAULT 'attendee' CHECK (kind IN ('attendee','observer')),
   status     text NOT NULL DEFAULT 'pending'
              CHECK (status IN ('pending','accepted','declined','tentative','counter')),
   counter_starts_at timestamptz,
@@ -134,6 +158,8 @@ CREATE TABLE IF NOT EXISTS meeting_participants (
   counter_reason    text,
   responded_at timestamptz,
   invited_at   timestamptz NOT NULL DEFAULT now(),
+  -- 必到 / 可选(原 0007):冲突检测只对必到的人报警。
+  required     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (meeting_id, username)
 );
 -- 忙闲是最热路径:按人 + 时间窗查。
@@ -376,3 +402,36 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log (ts);
+
+-- ══════ 讨论区已读位（原 0003）══════
+-- ★存「读到哪儿」而不是逐条已读标记★：逐条要为每人 × 每条消息写一行，一场会几百条讨论
+--   就是几百行 × 人数，而它唯一的用途是「有没有我还没看的」—— 一个时间戳就答得了。
+-- ⚠ 没有记录 = 一条都没读过（而不是全读过）：新人加入项目后能看到历史讨论，
+--   若默认全读过，那些讨论就悄悄地永远不会提醒他了。
+CREATE TABLE meeting_reads (
+  meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  username   text   NOT NULL,
+  read_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (meeting_id, username)
+);
+CREATE INDEX idx_mr_user ON meeting_reads (username);
+
+-- ══════ 主持人转移（原 0004）══════
+-- ★留全部历史而不是只存当前那条★：谁在什么时候想把项目甩给谁、对方拒没拒，是治理事实。
+-- 和会议「取消不是删除」同一条道理 —— 真删掉之后没人说得清当时发生过什么。
+CREATE TABLE owner_transfers (
+  id         bigserial PRIMARY KEY,
+  project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  from_user  text NOT NULL,
+  to_user    text NOT NULL,
+  status     text NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','accepted','declined','canceled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  settled_at timestamptz
+);
+-- ★同一项目同时只允许一条 pending★：并发发起两条会造成「两个人都以为自己接手了」，
+-- 而 owner 只有一个 —— 后点的那个人会莫名其妙地什么都不是。
+-- 用部分唯一索引在**库里**堵死，不靠应用层先查后插（那中间有窗口）。
+CREATE UNIQUE INDEX idx_ot_one_pending ON owner_transfers (project_id) WHERE status = 'pending';
+-- 被转让人打开项目时要查「有没有等我答复的」
+CREATE INDEX idx_ot_to ON owner_transfers (to_user) WHERE status = 'pending';

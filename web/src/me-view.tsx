@@ -10,8 +10,8 @@ import { Card, Empty, Segmented, Space, Spin, Table, Tag, Typography } from 'ant
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type Row = { id: number; name: string; visibility: string; archived: boolean; count: number; hours: number; minutes_done: number }
-type Host = { id: number; name: string; visibility: string; archived: boolean; members: number; minutes_pending: number }
+type Row = { id: number; name: string; archived: boolean; count: number; hours: number; minutes_done: number }
+type Host = { id: number; name: string; archived: boolean; members: number; minutes_pending: number }
 type Stats = {
   range: string
   /// 我是成员的项目数(当下的身份,与时间段无关)
@@ -115,7 +115,6 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                     title: '项目', dataIndex: 'name',
                     render: (v: string, r: Row) => <>
                       {v}
-                      {r.visibility === 'private' && <Tag color="purple" style={{ marginLeft: 6 }}>私密</Tag>}
                       {r.archived && <Tag style={{ marginLeft: 4 }}>已归档</Tag>}
                     </>,
                   },
@@ -162,9 +161,6 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                 dataIndex: 'name',
                 render: (v: string, r: Host) => <>
                   <b>{v}</b>
-                  <Tag color={r.visibility === 'private' ? 'purple' : 'cyan'} style={{ marginLeft: 6 }}>
-                    {r.visibility === 'private' ? '私密' : '公开'}
-                  </Tag>
                   {r.archived && <Tag style={{ marginLeft: 4 }}>已归档</Tag>}
                 </>,
               },
