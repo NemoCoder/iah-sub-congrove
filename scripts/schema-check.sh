@@ -28,8 +28,43 @@ DIR=schema; BASE=$DIR/baseline.sql; EXP=$DIR/expected.diff
 
 render() { psql "$CONGROVE_DEV_DSN" -At -f scripts/schema_ddl.sql; }
 
+# ★在事务里模拟「清库 + 跑新迁移」,渲染出它会建成什么样,然后回滚★
+#
+# 为什么需要它:重写 `0001_init.sql`(ADR-0001)之后,要在**部署之前**知道它建出来的 schema
+# 和现状差在哪。否则只能「部了再看」,而按纪律部署要先 DROP SCHEMA —— 错了就得重来一轮。
+# PG 的 DDL 是事务性的,所以整段 BEGIN…ROLLBACK,★对库零影响★(已实测)。
+#
+# ⚠ 它会在事务期间锁住 public 下的一切,dev 上的服务会短暂阻塞。只在 dev 用。
+simulate() {
+  local f=$1 out rc
+  # ★-q 不能省★:不加的话 psql 会把 `CREATE TABLE` / `BEGIN` 这类**命令标签**打到 stdout,
+  # 和渲染出来的 DDL 混在一起 —— 一眼看去像是「多了几十张表」。
+  out=$(psql "$CONGROVE_DEV_DSN" -Atq -v ON_ERROR_STOP=1 <<SQL
+BEGIN;
+SET client_min_messages = warning;   -- 压掉 DROP CASCADE 的几十行 NOTICE
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+\i $f
+\i scripts/schema_ddl.sql
+ROLLBACK;
+SQL
+  ); rc=$?
+  # ★没跑 ≠ 全过★:迁移脚本报错时 psql 非零退出,绝不能把空输出当成「建出了个空 schema」
+  [ $rc -ne 0 ] && { echo "$out" >&2; echo "★迁移脚本执行失败(见上),模拟中止★" >&2; return 1; }
+  printf '%s\n' "$out"
+}
+
 case "${1:-check}" in
 render) render ;;
+simulate)
+  [ -n "${2:-}" ] || { echo "用法: $0 simulate <迁移文件>"; exit 2; }
+  simulate "$2" || exit 1 ;;
+sim-diff)
+  # 新迁移建出来的 schema vs 冻结基线 —— 部署之前就能逐行看差异
+  [ -n "${2:-}" ] || { echo "用法: $0 sim-diff <迁移文件>"; exit 2; }
+  T=$(mktemp); simulate "$2" > "$T" || { rm -f "$T"; exit 1; }
+  diff -u $BASE "$T"; rc=$?; rm -f "$T"
+  [ $rc -eq 0 ] && echo "★与基线逐行相同★"; exit 0 ;;
 baseline)
   mkdir -p $DIR && render > $BASE || exit 1
   echo "★基线已冻结★ $BASE（$(wc -l < $BASE) 行 / $(grep -c '^TABLE ' $BASE) 张表）"
@@ -62,5 +97,5 @@ check)
   echo "（下面是「预期的差异」与「实际的差异」之间的差异；- 是预期里有而实际没有，+ 是冒出来的）"
   diff -u $EXP "$A" | tail -n +3
   rm -f "$A"; exit 1 ;;
-*) echo "用法: $0 {baseline|check|render}"; exit 2 ;;
+*) echo "用法: $0 {baseline|check|render|simulate <f>|sim-diff <f>}"; exit 2 ;;
 esac
