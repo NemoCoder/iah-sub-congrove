@@ -40,7 +40,7 @@ M0-1 部署后 DB 里是 `activities`，而 `src/` 里还全写着 `meetings`，
 | **M0-4b** | 「我的活动类型」管理页＋下拉里的「＋ 新建类型…」入口（原型有这两处，M0-4 未做） | `pnpm typecheck`＋原型对照 |
 | **M0-5** | ★首次把特性分支部到 dev★（配合 ADR-0001 的四步清库）＋跑 70 条 E2E＋采 golden 后像 | E2E 全绿（人工）＋`golden-diff.mjs` 差异逐字节等于 `e2e/golden/expected.diff` |
 | **M0-6** | 配额换算法（ADR-0004 全部）＋`user_prefs`/`user_quota` 接口＋★先补齐 5 条配额 E2E★ | 配额 E2E 6 条全绿（人工）＋`schema-check.sh`（★`quota_bytes` 真正被删的是**这个** PR★）＋`sql-prepare-check.py` |
-| **M0-7** | 收尾：把 `no-meeting.sh` 与 `api-check.sh` 加进 `ci.yml` 的 gate；`feat/v0.5-m0` → dev | 五道闸全绿 = M0 完成 |
+| **M0-7** | 收尾：把 `no-meeting.sh` 加进 `ci.yml` 的 gate（＋版本号一致性检查）；部署验收；`feat/v0.5-m0` → dev | 五道闸全绿 = M0 完成 |
 
 ★M0-4 那条原型纪律是 2026-08-07 复盘立的★：我只截了原型一个视图就凭需求文档推导写完，
 漏了整个「会议」tab，是 liaoruili 对着原型一眼看出来的。**本该是开发自己的验收。**
@@ -76,7 +76,8 @@ scripts/sql-prepare-check.py --pre <(printf 'SET client_min_messages=warning;\nD
 ## 门禁的两条使用纪律
 
 1. ★进不了 CI 的闸（要活的 dev 库 / 内网 CA / 个人令牌）必须在 PR 描述里**如实标注为人工验证**，
-   不许标成「CI 绿」★。五道闸里只有 `no-meeting.sh` 和 `api-check.sh` 能完全进 CI。
+   不许标成「CI 绿」★。**目前 CI 里只有 `no-meeting.sh`**：`api-check.sh` 本来也能进
+   （它离线生成契约、不连库），但卡在共享 runner 没有 `oasdiff` 二进制 —— 见开放问题 O4。
 2. ★每道闸都要能证明自己**跑起来了**★。本仓库栽过三次「工具没跑 → 输出为空 → 报绿」：
    PREPARE 闸的 psql 路整条不工作却报 207/207 通过、接口闸的规范化脚本崩了却报无破坏性变更、
    老 `schema-diff.mjs` 被「什么都没做」骗过。**一道会把「什么都没检查」报成绿的门禁，比没有门禁更糟。**
@@ -92,6 +93,7 @@ scripts/sql-prepare-check.py --pre <(printf 'SET client_min_messages=warning;\nD
 |---|---|---|---|
 | **O2** | CI 挂一个测试 PG | 平台 | 挂上之后 `sql-prepare-check.py --dsn` 与 `schema-check.sh` 都能进 CI，「钱/权/删」的 SQL 语义不必再靠人工门禁 |
 | **O3b** | 两个专用 E2E 账号（拉人/授权要过 Keycloak 校验，编的用户名 400） | 平台（已申请） | 「加入即可见 / 离开即失去」等 2 条 E2E 暂跳过 |
+| **O4** | 共享 act-runner 里装 `oasdiff`（单个 Go 静态二进制，~6MB） | 平台 | 接口面门禁**本可以进 CI**（它离线生成契约、不连库），卡在 runner 没这个二进制。装上之后 CI 就有两道机械闸而不是一道 |
 
 **都不阻塞 M0 开工**，但决定了验收是「机械」还是「人工」。
 
