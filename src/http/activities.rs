@@ -199,8 +199,9 @@ pub async fn create(
             .bind(mid).bind(pid).execute(&mut *tx).await?;
     }
     // 发起人与记录员自动进名单(发起人 accepted:他自己定的时间,不用再答复一次)。
-    sqlx::query("INSERT INTO activity_participants (activity_id, username, status, responded_at)
-                 VALUES ($1,$2,'accepted',now()) ON CONFLICT DO NOTHING")
+    // 发起人 notified_at=now():他自己定的时间,不存在「不知情」
+    sqlx::query("INSERT INTO activity_participants (activity_id, username, status, responded_at, notified_at)
+                 VALUES ($1,$2,'accepted',now(),now()) ON CONFLICT DO NOTHING")
         .bind(mid).bind(username).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
         .bind(mid).bind(input.recorder.trim()).execute(&mut *tx).await?;
@@ -216,6 +217,7 @@ pub async fn create(
     let who = notify_targets(&state.pool, mid, username).await;
     notify_activity(&state, mid, &who, "有人约你开会",
         &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at))).await;
+    mark_notified(&state.pool, mid, &who).await?;
     Ok(Json(json!({ "id": mid })))
 }
 
@@ -385,6 +387,10 @@ pub async fn update(
             notify_activity(&state, mid, &who, "线上活动链接已改",
                 &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s))).await;
         }
+        // ★ADR-0003 边界①:补录 → 改到未来,必须补发邀请**并置位**★。
+        // 上面那两条通知就是「补发邀请」;这里把事实记下来 —— 否则一条从没通知过的活动
+        // 被改到未来、通知也发了,库里却仍是「他不知情」,后续判定全错。
+        mark_notified(&state.pool, mid, &who).await?;
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -425,6 +431,23 @@ pub struct InviteIn {
     #[serde(default)] pub required: Option<bool>,
 }
 
+/// 把「这些人已经被通知过」这个**事实**落库(ADR-0003)。
+///
+/// ★只在真的发出了通知之后调用★ —— 它是事实记录,不是状态标记。
+/// 已经有值的不覆盖(`notified_at IS NULL` 才写):第一次知情的时刻才有意义,
+/// 后续每次改期都刷新的话,「他到底知不知道这场活动」就答不了了。
+///
+/// ⚠ 谁**不该**进来:旁听者(observe 是自助的,他自己加的自己知道,但那不是「被通知」)。
+async fn mark_notified(pool: &sqlx::PgPool, mid: i64, users: &[String]) -> AppResult<()> {
+    if users.is_empty() { return Ok(()) }
+    sqlx::query(
+        "UPDATE activity_participants SET notified_at = now()
+          WHERE activity_id = $1 AND username = ANY($2) AND notified_at IS NULL",
+    )
+    .bind(mid).bind(users).execute(pool).await?;
+    Ok(())
+}
+
 /// PUT /api/activities/{id}/participants —— ★批量★邀请(删组之后,一场会拉 20 人不能点 20 次)。
 pub async fn invite(
     State(state): State<AppState>,
@@ -460,6 +483,7 @@ pub async fn invite(
             .filter(|u| !u.is_empty() && u != actor).collect();
         notify_activity(&state, mid, &fresh, "有人约你开会",
             &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts))).await;
+        mark_notified(&state.pool, mid, &fresh).await?;
     }
     Ok(Json(json!({ "ok": true, "invited": n })))
 }
@@ -601,6 +625,9 @@ pub async fn freebusy(
            JOIN activities m ON m.id = mp.activity_id
           WHERE mp.username = ANY($1) AND m.status='active'
             AND mp.status <> 'declined'
+            -- ★没通知过的人不进忙闲★(ADR-0003):他对这场活动自始至终不知情,
+            -- 却因此在别人眼里显示「忙」—— 那是凭空占用他的时间。
+            AND mp.notified_at IS NOT NULL
             AND m.starts_at < $3 AND m.ends_at > $2
             -- ★判据是活动自己的 busy(PRD A4),不再是「有没有关联到公开项目」★
             --   旧判据把「内容给谁看」和「时间占不占别人」绑成一件事,后果有二:
@@ -1152,7 +1179,10 @@ pub async fn my_stats(
           AND (m.organizer = $1
                OR EXISTS (SELECT 1 FROM activity_participants p
                           WHERE p.activity_id = m.id AND p.username = $1
-                            AND p.kind = 'attendee' AND p.status <> 'declined')))" } }
+                            -- ★口径只认 accepted★(ADR-0003 边界②):原来是 `status <> 'declined'`,
+                            -- 于是「建未来的会拉上张三 → 他被通知一次 → 改成昨天 9:00–18:00」
+                            -- **两步就能给他的季度统计塞 9 小时**。
+                            AND p.kind = 'attendee' AND p.status = 'accepted')))" } }
 
     let (cnt, hours, h_rec, h_man, h_sch, projects, todo): (i64, f64, f64, f64, f64, i64, i64) =
         sqlx::query_as(concat!(mine_cte!(), "
