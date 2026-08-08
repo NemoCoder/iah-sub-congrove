@@ -128,6 +128,11 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
          "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
           is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
+    api!("DELETE", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
+         "删一份活动材料/录制(软删,进回收站)。★活动材料只能从这里删★ —— 通用的
+          DELETE /api/items/{id} 会拒绝带 activity_id 的 item(D10:项目树里是只读区)。
+          入口不同接口就不同,因为后端看不见调用方是哪个页面,只靠前端藏按钮等于没有这条规则。
+          不删活动文件夹本身(结构由活动决定)", ""),
     api!("GET", "/api/activities/{id}/link-history", "活动", "参会人/关联项目成员",
          "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
     api!("POST", "/api/activities/{id}/remind", "活动", "发起人 / 记录员",

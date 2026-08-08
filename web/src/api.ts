@@ -60,6 +60,9 @@ export type Item = {
   size: number | null
   mime: string | null
   created_by: string
+  /// ★属于某场活动的材料★(D10 的只读区):非空时**不画**改名/移动/删除 ——
+  /// 后端也拒(items.rs 的 update/remove 里有判断),这里不画是为了不引导人去犯错。
+  activity_id?: number | null
   created_at: string
   updated_at: string
 }

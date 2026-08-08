@@ -14,7 +14,7 @@
 //
 // 用户在原型评审时定的两条交互仍然成立:**双击才进编辑**(不是一上来就是输入框)、
 // 播放器**不常驻**、切到「录制」标签才出现。
-import { App as AntdApp, Button, Card, Empty, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Popconfirm, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
@@ -436,6 +436,23 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
                 </div>
                 <div style={{ fontSize: 12, color: '#8c8c8c' }}>{it.created_by} · {fmtSize(it.size)}</div>
               </div>
+            ),
+          },
+          {
+            // ★录制也要能删★(2026-08-09 liaoruili):和材料同一条规则 ——
+            // 项目树里删不掉,唯一入口在活动这边。
+            title: '', width: 40,
+            render: (_, it) => canEdit && (
+              <Popconfirm title={`删除「${it.name}」？`} description="进项目回收站，30 天内可还原。"
+                okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
+                onConfirm={async () => {
+                  try {
+                    await api(`/api/activities/${activityId}/items/${it.id}`, { method: 'DELETE' })
+                    message.success('已删除'); onChanged()
+                  } catch (e) { message.error((e as Error).message) }
+                }}>
+                <a style={{ color: '#ff4d4f' }} onClick={(e) => e.stopPropagation()}>删除</a>
+              </Popconfirm>
             ),
           },
           {

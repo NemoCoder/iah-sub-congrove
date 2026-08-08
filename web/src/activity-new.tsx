@@ -6,26 +6,13 @@
 //
 // 参会人用 chips-combobox(输入即过滤、选中清空、★空输入时 Backspace 删最后一个 chip★),
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
-import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { api, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
+import { DURATIONS, QuarterRangePicker } from './time-range'
 
-/// ★分钟只走一刻钟★:00 / 15 / 30 / 45（2026-08-09 用户）。会不会约在 8:07？不会。
-/// 而 AntD 默认给 60 行分钟,常用的那四个要滚很久才够得着 —— 选项多 ≠ 更自由,
-/// 多出来的 56 个选项**只制造滚动**。
-/// ⚠ 第一版按用户字面写的「00、15、30 这3个」少了 :45,当天即补 —— ★一刻钟是四格不是三格★,
-/// 缺 :45 会让「8:45 开个短会」这种最常见的排法**根本选不出来**。
-const MINUTES = [0, 15, 30, 45]
-const BAD_MINUTES = Array.from({ length: 60 }, (_, i) => i).filter((m) => !MINUTES.includes(m))
-
-/// 持续时长快捷（参考腾讯会议）。★先定「开多久」再算结束时刻★ ——
-/// 人脑里想的是「开一小时」，不是「10:00 到 11:00」；让人心算结束时间是白饶的一步。
-const DURATIONS: { m: number; label: string }[] = [
-  { m: 30, label: '30 分钟' }, { m: 60, label: '1 小时' },
-  { m: 90, label: '1.5 小时' }, { m: 120, label: '2 小时' }, { m: 180, label: '3 小时' },
-]
 
 export function ActivityNewView({ me, onCreated, onCancel }: {
   me: Me | null
@@ -236,27 +223,10 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
 
         <Form.Item label="时间" required>
           <Form.Item name="range" noStyle rules={[{ required: true, message: '选时间' }]}>
-            {/* ★不让选过去的时间★(2026-08-07 用户):日期粒度禁掉今天以前,
-                时间粒度在「今天」这一天里禁掉已过去的小时/分钟。后端另有 5 分钟容差的真闸。
-                ★needConfirm={false}★(2026-08-09 用户):选完分钟就算数、光标自己跳到结束时间,
-                不再需要点一次「确定」。那一步是纯仪式 —— 时间已经选好了,再让人确认一遍
-                只是在问「你确定你刚才点的是你点的吗」。 */}
-            <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm"
-              style={{ width: '100%' }} needConfirm={false}
-              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
-              disabledDate={(d) => !!d && d.isBefore(dayjs().startOf('day'))}
-              disabledTime={(d) => {
-                const isToday = !!d && d.isSame(dayjs(), 'day')
-                const now = dayjs()
-                return {
-                  disabledHours: () => isToday ? Array.from({ length: now.hour() }, (_, i) => i) : [],
-                  // ★两条限制在这里合流★:不是 00/15/30 的分钟一律禁;今天的当前小时里,
-                  // 还要额外禁掉已经过去的那几个。漏掉后半句就能选出「过去的整点」。
-                  disabledMinutes: (h: number) => isToday && h === now.hour()
-                    ? [...new Set([...BAD_MINUTES, ...Array.from({ length: now.minute() }, (_, i) => i)])]
-                    : BAD_MINUTES,
-                }
-              }} />
+            {/* ★不让选过去的时间★(2026-08-07 用户):`noPast` 打开日期与时刻两级限制。
+                后端另有 5 分钟容差的真闸(activities.rs)。粒度与免确认在 time-range.tsx 统一定义。 */}
+            <QuarterRangePicker noPast style={{ width: '100%' }}
+              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
           </Form.Item>
           {/* ★持续时长快捷★(2026-08-09 用户,参考腾讯会议):点一下就把结束时间算出来。
               ★还没选开始时间时也能用★ —— 那就默认从「下一个整点」起算,

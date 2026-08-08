@@ -133,7 +133,7 @@ export function ProjectsView({ me }: { me: Me | null }) {
 
   // 上传:先整批入队(立刻在表里出现带进度的伪行),再由 UPLOAD_CONCURRENCY 个 worker 取着做。
   // 上传中的任务在表里占「伪行」:id 取负,靠 Map 反查回任务(rowKey 仍是 id,不用改 Table)。
-  const upRows = useMemo(
+  const upRows: Item[] = useMemo(
     () => uploads.map((u, i) => ({
       id: -(i + 1), parent_id: cwd, kind: 'file' as const, name: u.file.name,
       size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '', created_at: '', updated_at: '',
@@ -456,7 +456,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
               而 D7 明说材料有两个入口(项目 与 时间线),活动同理。 */}
           <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
             {
-              key: 'items', label: '内容',
+              // ★叫「文档」不叫「内容」★(2026-08-09 liaoruili):这一栏装的就是文件与文档,
+              // 而「内容」这个词在同一页里还指别的东西(活动、成员也都是这个项目的内容)。
+              key: 'items', label: '文档',
               children: (<>
           {/* 归档状态由标题旁的「已归档 · 只读」标签表达,写入按钮同时隐藏 ——
               状态清楚、入口没了,不必再写一段话解释(2026-08-07 用户:这种啰嗦的说明删掉)。 */}
@@ -527,7 +529,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
                 description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
               rowSelection={canEdit ? {
                 selectedRowKeys: checked, onChange: (k) => setChecked((k as number[]).filter((x) => x > 0)),
-                getCheckboxProps: (it) => ({ disabled: !!up(it) || it.id === PARENT_ROW_ID }),
+                // ★活动材料不给勾选★:勾上之后「移动 / 删除」两个批量动作会整批失败,
+                // 而批量失败的报错最难读(不知道是哪一条挡住的)。不给选就不会走到那一步。
+                getCheckboxProps: (it) => ({ disabled: !!up(it) || it.id === PARENT_ROW_ID || !!it.activity_id }),
               } : undefined}
               columns={[
                 {
@@ -580,15 +584,23 @@ export function ProjectsView({ me }: { me: Me | null }) {
                       {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.no_download) && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
-                      {canEdit && <Tooltip title="重命名"><a onClick={() => rename(it)}><EditOutlined /></a></Tooltip>}
+                      {/* ★活动材料在项目树里是只读的★（D10;2026-08-09 liaoruili:「项目文件夹中的
+                          会议内容是不可修改的」「要去会议里面删除」）：名字与位置由活动决定,
+                          删除要回活动页。**后端已经拒了**(items.rs 的 update/remove),
+                          这里不画按钮是为了不引导人去点一个必然失败的东西。
+                          分享与下载照旧 —— 那是读操作,只读区不该连读都受限。 */}
+                      {canEdit && !it.activity_id && <Tooltip title="重命名"><a onClick={() => rename(it)}><EditOutlined /></a></Tooltip>}
                       {/* 移动用 SwapOutlined(双向箭头),2026-08-04 用户看过 16 个候选的真实渲染后定的。
                           试过 FolderOpenOutlined(撞「打开文件夹」)、ExportOutlined(像「导出/新窗口」)、
                           SendOutlined(纸飞机,用户嫌丑)。hover 的「移动到…」补足语义。 */}
-                      {canEdit && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><SwapOutlined /></a></Tooltip>}
-                      {canEdit && (
+                      {canEdit && !it.activity_id && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><SwapOutlined /></a></Tooltip>}
+                      {canEdit && !it.activity_id && (
                         <Tooltip title="删除">
                           <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}><DeleteOutlined /></a>
                         </Tooltip>
+                      )}
+                      {it.activity_id && (
+                        <Tooltip title="这是活动材料：名称与位置由活动决定，删除请到活动页"><span style={{ color: '#bfbfbf', fontSize: 12 }}>活动</span></Tooltip>
                       )}
                     </AntSpace>
                   )),

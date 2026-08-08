@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::perm::{activity_view, require_activity_host, ActivityView};
+use crate::perm::{activity_view, require_activity_host, require_role, ActivityView, Role};
 use crate::state::AppState;
 use crate::notify::{fmt_when, notify_activity, notify_targets};
 use crate::{audit, perm};
@@ -937,6 +937,35 @@ pub async fn activity_items(
           ORDER BY is_recording, created_at")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(rows))
+}
+
+/// DELETE /api/activities/{mid}/items/{iid} —— 删一份活动材料/录制(≥editor)。
+///
+/// ★为什么不复用 DELETE /api/items/{iid}★(2026-08-09 liaoruili:「要去会议里面删除」):
+/// D10 说活动材料在**项目树里**是只读区,唯一入口是活动页。而后端看不见「用户点的是哪个页面」——
+/// ★只靠前端不画删除按钮,这条规则等于没有★(本仓库自己的原则:前端隐藏不是安全边界)。
+/// 所以拆成两条路:通用那条**拒绝**带 activity_id 的 item,这条只收活动材料。
+/// 接口的形状本身就说明了「你正在删的是某场活动的材料」。
+///
+/// ⚠ 只删**单份材料**,不删活动文件夹本身 —— 文件夹是结构,由活动决定,不该被手动删掉。
+pub async fn delete_activity_item(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path((mid, iid)): Path<(i64, i64)>,
+) -> AppResult<Json<serde_json::Value>> {
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    let actor = id.require_username()?;
+    // ★路径里的 mid 必须与这份材料实际归属的活动一致★:否则「在我能编辑的 A 活动下,
+    // 报一个属于 B 活动的 item id」就能删掉 B 的材料 —— 一个典型的越权形状。
+    let n = sqlx::query(
+        "UPDATE items SET deleted_at = now(), deleted_by = $3
+          WHERE id = $1 AND activity_id = $2 AND kind <> 'folder' AND deleted_at IS NULL")
+        .bind(iid).bind(mid).bind(actor).execute(&state.pool).await?.rows_affected();
+    if n == 0 { return Err(AppError::NotFound) }
+    audit::record(&state.pool, actor, "activity.item.delete", &iid.to_string(),
+        &format!("activity={mid} project={pid} 删除活动材料(进回收站)")).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
