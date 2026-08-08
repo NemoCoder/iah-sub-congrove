@@ -40,7 +40,7 @@ test('极短的会有最小可见宽度', () => {
   assert.ok(parseFloat(b.width) >= 1, '短会窄到看不见等于没画')
 })
 
-test('与本次会议重叠的标记为冲突', () => {
+test('与本次活动重叠的标记为冲突', () => {
   const pick = at(10, 2)                       // 本次 10:00–12:00
   assert.equal(toBar(at(11), DAY, pick)!.clash, true, '11:00 落在本次时段内')
   assert.equal(toBar(at(14), DAY, pick)!.clash, false)

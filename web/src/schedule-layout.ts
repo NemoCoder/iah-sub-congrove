@@ -1,12 +1,12 @@
 // 日历布局的纯函数部分 —— 抽出来是为了**能单测**(schedule-layout.test.ts)。
 //
-// ★为什么值得单测★:2026-08-07 这里有过一个会**隐藏会议**的 bug ——
+// ★为什么值得单测★:2026-08-07 这里有过一个会**隐藏活动**的 bug ——
 // 三个以上重叠时,后来的事件以全宽盖住前面的,用户界面上直接看不到自己的会,
 // 而且不报任何错。这种「静默丢东西」的逻辑,靠肉眼看截图是抓不稳的
 // (当时两次渲染盖住的还不是同一个)。
 
-/// 布局只关心「什么时候开始、什么时候结束」,不关心会议的其它字段 ——
-/// 用最小接口而不是 import Meeting,免得纯函数被业务类型绑住(测试里也好造数据)。
+/// 布局只关心「什么时候开始、什么时候结束」,不关心活动的其它字段 ——
+/// 用最小接口而不是 import Activity,免得纯函数被业务类型绑住(测试里也好造数据)。
 export type Span = { starts_at: string; ends_at: string }
 
 export type Box<T> = { item: T; top: number; height: number; left: string; width: string }
@@ -36,7 +36,7 @@ export function slot(s: Span, day: Date): { top: number; height: number } | null
 ///   ② **簇内分列**——每个事件放进第一个已空出的列,放不下就新开一列,最后按列数平分宽度。
 ///
 /// ★不做「最多两列」这种退化★(上一版的教训):声称退化却没实现,
-/// 结果是第三个开始的事件全宽覆盖前面的 —— 会议在界面上凭空消失。
+/// 结果是第三个开始的事件全宽覆盖前面的 —— 活动在界面上凭空消失。
 /// 列多了确实窄,但**窄总比看不见强**,而且窄本身就是「这天排太满了」的正确信号。
 export function layout<T extends Span>(items: T[], day: Date): Box<T>[] {
   const placed = items

@@ -1,6 +1,6 @@
-// 会议页 —— 对应 docs/prototype-m1.html 的 `meets` 视图。
+// 活动页 —— 对应 docs/prototype-m1.html 的 `meets` 视图。
 //
-// ★2026-08-07 补做★:此前整页缺失(导航里连「会议」这个 tab 都没有),
+// ★2026-08-07 补做★:此前整页缺失(导航里连「活动」这个 tab 都没有),
 // 因为我当初只照着原型的日历那一段实现,其余页面凭自己想 —— 用户对着原型一眼看出来了。
 // 现在严格按原型:三 tab + 搜索/筛选 + 即将进行/已结束分组 + 右栏「待我应答」「我负责的纪要」。
 //
@@ -9,7 +9,7 @@
 // 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
 import { App as AntdApp, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Meeting, type Me, type RespondStatus } from './api'
+import { api, type Activity, type Me, type RespondStatus } from './api'
 import { TodoCard } from './todo-card'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -17,13 +17,13 @@ const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'
 const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
 const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 
-export function MeetingsListView({ me, onOpen, onNew }: {
+export function ActivitiesListView({ me, onOpen, onNew }: {
   me: Me | null
   onOpen: (id: number) => void
   onNew: () => void
 }) {
   const { message } = AntdApp.useApp()
-  const [all, setAll] = useState<Meeting[]>([])
+  const [all, setAll] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'joined' | 'mine' | 'past'>('joined')
   const [kw, setKw] = useState('')
@@ -32,10 +32,10 @@ export function MeetingsListView({ me, onOpen, onNew }: {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      // ★范围要大★:这一页是「我的全部会议」,不是日历那一屏。前后各半年。
+      // ★范围要大★:这一页是「我的全部活动」,不是日历那一屏。前后各半年。
       const from = new Date(Date.now() - 183 * 864e5).toISOString()
       const to = new Date(Date.now() + 183 * 864e5).toISOString()
-      setAll(await api<Meeting[]>(`/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
+      setAll(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
     } catch (e) { message.error((e as Error).message); setAll([]) } finally { setLoading(false) }
   }, [message])
   useEffect(() => { void load() }, [load])
@@ -73,8 +73,8 @@ export function MeetingsListView({ me, onOpen, onNew }: {
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
         <Space wrap style={{ marginBottom: 12, width: '100%' }}>
-          <Typography.Text strong style={{ fontSize: 15 }}>会议</Typography.Text>
-          <Button size="small" type="primary" onClick={onNew}>+ 发起会议</Button>
+          <Typography.Text strong style={{ fontSize: 15 }}>活动</Typography.Text>
+          <Button size="small" type="primary" onClick={onNew}>+ 发起活动</Button>
           <span style={{ flex: 1 }} />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 场</Typography.Text>
         </Space>
@@ -85,7 +85,7 @@ export function MeetingsListView({ me, onOpen, onNew }: {
           style={{ marginBottom: 10 }}
         />
         <Space wrap style={{ marginBottom: 12, width: '100%' }}>
-          <Input.Search allowClear placeholder="搜索会议标题、议程…" style={{ width: 280 }}
+          <Input.Search allowClear placeholder="搜索活动标题、议程…" style={{ width: 280 }}
             onChange={(e) => setKw(e.target.value)} />
           <Select size="middle" style={{ width: 160 }} value={proj} onChange={setProj}
             options={[{ value: 'all' as const, label: '全部项目' }, ...projectOpts]} />
@@ -97,7 +97,7 @@ export function MeetingsListView({ me, onOpen, onNew }: {
               <Group title="即将进行" items={upcoming} onOpen={onOpen} me={me} />
             )}
             <Group title="已结束" items={past} onOpen={onOpen} me={me} />
-            {rows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有会议" />}
+            {rows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有活动" />}
           </>
         )}
       </Card>
@@ -131,9 +131,9 @@ export function MeetingsListView({ me, onOpen, onNew }: {
   )
 }
 
-/// 一组会议(即将进行 / 已结束)
+/// 一组活动(即将进行 / 已结束)
 function Group({ title, items, onOpen, me }: {
-  title: string; items: Meeting[]; onOpen: (id: number) => void; me: Me | null
+  title: string; items: Activity[]; onOpen: (id: number) => void; me: Me | null
 }) {
   if (items.length === 0) return null
   return (
@@ -150,7 +150,7 @@ const STATUS_TAG: Record<RespondStatus, { t: string; c: string }> = {
   counter: { t: '已提改期', c: 'purple' },
 }
 
-function Row({ m, onOpen, me }: { m: Meeting; onOpen: (id: number) => void; me: Me | null }) {
+function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me: Me | null }) {
   const s = new Date(m.starts_at), e = new Date(m.ends_at)
   const ended = e.getTime() < Date.now()
   const tag = m.my_status ? STATUS_TAG[m.my_status] : null

@@ -1,16 +1,16 @@
-// 会议详情 —— 左:会议信息 + 议程 + 参会人;右:我的答复 / 建议改期 / 讨论区。
+// 活动详情 —— 左:活动信息 + 议程 + 参会人;右:我的答复 / 建议改期 / 讨论区。
 // 对应 docs/prototype-m1.html 的 `meet` 视图。
 //
 // ★用户在原型上定的两处布局,别改回去★:
 //   · **讨论也挪到右边**,而且**放在「建议改期」下面**——答复是主动作,讨论是它的延伸;
-//   · 会议与议程内容区**高度要够**(原型里嫌太矮),所以议程用大块留白而不是挤成一行。
+//   · 活动与议程内容区**高度要够**(原型里嫌太矮),所以议程用大块留白而不是挤成一行。
 //
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
 import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { InlineEdit } from './inline-edit'
-import { api, showUser, type LinkChange, type MeetingDetail, type MeetingItem, type MeetingMessage, type Participant, type RespondStatus } from './api'
+import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon } from './preview'
 import { ShareModal } from './share-modal'
 
@@ -36,44 +36,44 @@ const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
   counter: { label: '建议改期', color: 'purple' },
 }
 
-export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返回' }: {
+export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返回' }: {
   id: number
   onBack: () => void
   onOpenMinutes: (id: number) => void
-  /// ★从哪来就写回哪去★:这一页有两个入口(日程页点日历块 / 会议页点列表行),
-  /// 写死「返回日程」的话,从会议页进来的人会以为自己点错了(2026-08-07 用户提)。
+  /// ★从哪来就写回哪去★:这一页有两个入口(日程页点日历块 / 活动页点列表行),
+  /// 写死「返回日程」的话,从活动页进来的人会以为自己点错了(2026-08-07 用户提)。
   backLabel?: string
 }) {
   const { message } = AntdApp.useApp()
-  const [d, setD] = useState<MeetingDetail | null>(null)
+  const [d, setD] = useState<ActivityDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   /// ★与我已接受的会撞了吗★:D1 决定了发起人看不见我私密项目里的安排,
-  /// 所以冲突只能在**我这边**算、在**我这边**提醒。用我自己的会议列表本地比,不必新接口。
+  /// 所以冲突只能在**我这边**算、在**我这边**提醒。用我自己的活动列表本地比,不必新接口。
   const [clash, setClash] = useState<{ title: string; starts_at: string; ends_at: string } | null>(null)
 
   /// ★所有字段走同一个 PUT★:就地编辑的统一保存口,省得每个字段各写一份请求。
   const patch = async (body: Record<string, unknown>) => {
-    await api(`/api/meetings/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    await api(`/api/activities/${id}`, { method: 'PUT', body: JSON.stringify(body) })
     await load()
   }
 
   const load = useCallback(async () => {
     setLoading(true)
-    try { setD(await api<MeetingDetail>(`/api/meetings/${id}`)); setErr(null) }
+    try { setD(await api<ActivityDetail>(`/api/activities/${id}`)); setErr(null) }
     catch (e) { setErr((e as Error).message) }
     finally { setLoading(false) }
   }, [id])
   useEffect(() => { void load() }, [load])
 
-  // 冲突检测:拉这场会前后一天的会议,找时间重叠且我已接受的
+  // 冲突检测:拉这场会前后一天的活动,找时间重叠且我已接受的
   useEffect(() => {
-    if (!d?.meeting || d.meeting.my_status !== 'pending') { setClash(null); return }
-    const mm = d.meeting
+    if (!d?.activity || d.activity.my_status !== 'pending') { setClash(null); return }
+    const mm = d.activity
     const from = new Date(new Date(mm.starts_at).getTime() - 864e5).toISOString()
     const to = new Date(new Date(mm.ends_at).getTime() + 864e5).toISOString()
     api<{ id: number; title: string; starts_at: string; ends_at: string; my_status: string | null }[]>(
-      `/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+      `/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
       .then((all) => setClash(all.find((x) => x.id !== mm.id && x.my_status === 'accepted'
         && new Date(x.starts_at) < new Date(mm.ends_at) && new Date(mm.starts_at) < new Date(x.ends_at)) ?? null))
       .catch(() => setClash(null))
@@ -83,13 +83,13 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
   if (err || !d)
     return (
       <Card>
-        {/* 看不见的会议后端回 404(与「不存在」同一回应,防按 id 探测),这里不区分原因 */}
-        <Empty description={err === '404' ? '这个会议不存在,或你没有权限查看' : err} />
+        {/* 看不见的活动后端回 404(与「不存在」同一回应,防按 id 探测),这里不区分原因 */}
+        <Empty description={err === '404' ? '这个活动不存在,或你没有权限查看' : err} />
         <div style={{ textAlign: 'center', marginTop: 12 }}><Button onClick={onBack}>{backLabel}</Button></div>
       </Card>
     )
 
-  const m = d.meeting
+  const m = d.activity
   const canceled = m.status === 'canceled'
 
   return (
@@ -100,7 +100,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
           <InlineEdit value={m.title} canEdit={!!d.can_edit && !canceled} onSave={(v) => patch({ title: v })} />
         </Typography.Text>
         {canceled && <Tag color="default">已取消</Tag>}
-        {m.visibility === 'public' && <Tag color="blue">公开会议</Tag>}
+        {m.visibility === 'public' && <Tag color="blue">公开活动</Tag>}
         {m.is_private && <Tag color="purple">私密项目</Tag>}
         {d.observer && <Tag>旁听</Tag>}
         <span style={{ flex: 1 }} />
@@ -108,27 +108,27 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
             旁听之后它就从广场消失、进了我的日历 —— 要退出自然该来它自己的页面,
             而不是回广场上找一个已经不在那儿的条目。 */}
         {d.observer && !canceled && (
-          <Popconfirm title="不再旁听这场会？" description="它会从你的日历里移除；之后想听可以从公开会议里再加回来。"
+          <Popconfirm title="不再旁听这场会？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
             onConfirm={async () => {
               try {
-                await api(`/api/meetings/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
+                await api(`/api/activities/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
                 message.success('已取消旁听'); onBack()
               } catch (e) { message.error((e as Error).message) }
             }}>
             <Button size="small">取消旁听</Button>
           </Popconfirm>
         )}
-        {/* ★纪要入口★(原型评审时用户问「整理会议纪要的入口是不是还没有」)。
+        {/* ★纪要入口★(原型评审时用户问「整理活动纪要的入口是不是还没有」)。
             旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
         {d.participants && (
-          <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>会议纪要</Button>
+          <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>活动纪要</Button>
         )}
         {d.can_edit && !canceled && (
-          <Popconfirm title="取消这场会议？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
+          <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
             onConfirm={async () => {
-              try { await api(`/api/meetings/${id}`, { method: 'DELETE' }); await load() } catch (e) { /* 失败由下方错误区呈现 */ }
+              try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load() } catch (e) { /* 失败由下方错误区呈现 */ }
             }}>
-            <Button size="small" danger>取消会议</Button>
+            <Button size="small" danger>取消活动</Button>
           </Popconfirm>
         )}
       </Space>
@@ -147,7 +147,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
       )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        {/* 左:会议信息 + 议程 + 线上 + 材料。★参会人不在这里★——按原型它在右栏顶上 */}
+        {/* 左:活动信息 + 议程 + 线上 + 材料。★参会人不在这里★——按原型它在右栏顶上 */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <Card size="small" style={{ marginBottom: 12 }}>
             <Descriptions column={1} size="small" items={[
@@ -160,7 +160,7 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
               {
                 key: 'u', label: '线上',
                 children: <InlineEdit value={m.online_url} canEdit={!!d.can_edit && !canceled}
-                  placeholder="（双击填写腾讯会议 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
+                  placeholder="（双击填写腾讯活动 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
@@ -195,17 +195,17 @@ export function MeetingDetailView({ id, onBack, onOpenMinutes, backLabel = '返�
               onSave={(v) => patch({ agenda: v })} />
             {m.visibility === 'public' && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                这是公开会议,议程对全平台可见 —— ★但材料不公开★,只有关联项目的成员能看。
+                这是公开活动,议程对全平台可见 —— ★但材料不公开★,只有关联项目的成员能看。
               </Typography.Text>
             )}
           </Card>
 
-          {/* ★线上会议区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
+          {/* ★线上活动区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
           {m.online_url && d.participants && (
             <OnlineCard id={id} url={m.online_url} />
           )}
 
-          {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为会议时长依据) */}
+          {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为活动时长依据) */}
           {d.participants && (
             <MaterialsCard id={id} projectId={d.projects?.[0]?.id ?? null}
               canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes}
@@ -245,7 +245,7 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
   const act = async (path: string, ok: string) => {
     setBusy(true)
     try {
-      await api(`/api/meetings/${mid}/${path}`, { method: 'POST', body: JSON.stringify({ username: p.username }) })
+      await api(`/api/activities/${mid}/${path}`, { method: 'POST', body: JSON.stringify({ username: p.username }) })
       message.success(ok); onDone()
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
@@ -272,10 +272,10 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
         )}
         {/* ★发起人不能被移出★(后端也拦):他被移出就没人改得了这场会 */}
         {canHost && p.username !== organizer && (
-          <Popconfirm title={`把 ${p.username} 移出这场会议？`}
+          <Popconfirm title={`把 ${p.username} 移出这场活动？`}
             onConfirm={async () => {
               try {
-                await api(`/api/meetings/${mid}/participants`, {
+                await api(`/api/activities/${mid}/participants`, {
                   method: 'DELETE', body: JSON.stringify({ username: p.username }),
                 })
                 message.success('已移出'); onDone()
@@ -293,7 +293,7 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
           {p.counter_reason && <div style={{ fontSize: 12, color: '#8c8c8c' }}>理由：{p.counter_reason}</div>}
           {canHost && (
             <Popconfirm title="采纳这个时间？"
-              description="会议时间会改成他提议的时间，所有人的答复都会清回「待应答」——包括他本人。"
+              description="活动时间会改成他提议的时间，所有人的答复都会清回「待应答」——包括他本人。"
               onConfirm={() => act('accept-counter', '已改期')}>
               <Button size="small" type="primary" loading={busy} style={{ marginTop: 6 }}>采纳并改期</Button>
             </Popconfirm>
@@ -318,7 +318,7 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
     if (status === 'counter' && !range) { message.warning('请先选一个你方便的时间段'); return }
     setBusy(true)
     try {
-      await api(`/api/meetings/${id}/respond`, {
+      await api(`/api/activities/${id}/respond`, {
         method: 'POST',
         body: JSON.stringify({
           status,
@@ -374,11 +374,11 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
   )
 }
 
-/// 会议讨论区(D13)。★放在答复下面★(用户定的位置)。
+/// 活动讨论区(D13)。★放在答复下面★(用户定的位置)。
 /// 只做 public 频道:私聊只能发给发起人/记录员,入口放在参会人行上更自然,M1 先不做。
 function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: string; recorder: string }) {
   const { message } = AntdApp.useApp()
-  const [msgs, setMsgs] = useState<MeetingMessage[]>([])
+  const [msgs, setMsgs] = useState<ActivityMessage[]>([])
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   /// ★发送至★:公开 or 私聊。私聊对象只限发起人与记录员(D13:不做任意点对点,否则长成 IM)。
@@ -386,7 +386,7 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
   const load = useCallback(async () => {
     try {
       const q = to === 'public' ? '' : `?channel=private&peer=${encodeURIComponent(to)}`
-      setMsgs(await api<MeetingMessage[]>(`/api/meetings/${id}/messages${q}`))
+      setMsgs(await api<ActivityMessage[]>(`/api/activities/${id}/messages${q}`))
     } catch { setMsgs([]) }
   }, [id, to])
   useEffect(() => { void load() }, [load])
@@ -396,7 +396,7 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
     if (!body) return
     setBusy(true)
     try {
-      await api(`/api/meetings/${id}/messages`, {
+      await api(`/api/activities/${id}/messages`, {
         method: 'POST',
         body: JSON.stringify(to === 'public' ? { body } : { body, channel: 'private', peer: to }),
       })
@@ -443,10 +443,10 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
 ///
 /// ★旁听那一栏**没人时也显示**★(2026-08-07 用户:「加个想要旁听人的显示」):
 /// 只在有人时才出现的区块,发起人根本不知道这个位置存在,也就不会去看 ——
-/// 公开会议开出去之后「有没有人要来听」是他真正关心的事。
+/// 公开活动开出去之后「有没有人要来听」是他真正关心的事。
 function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
   people: Participant[]; mid: number; organizer: string; canHost: boolean; onDone: () => void
-  /// 私密会议不会有人旁听(D9),空栏的文案要说清是「还没人来」还是「本来就不会有」
+  /// 私密活动不会有人旁听(D9),空栏的文案要说清是「还没人来」还是「本来就不会有」
   isPublic: boolean
 }) {
   const joined = people.filter((p) => p.kind !== 'observer')
@@ -467,7 +467,7 @@ function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
       </div>
       {observers.length === 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {isPublic ? '还没有人来听' : '这是私密会议，只有公开会议才会有人来旁听'}
+          {isPublic ? '还没有人来听' : '这是私密活动，只有公开活动才会有人来旁听'}
         </Typography.Text>
       ) : (
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
@@ -507,7 +507,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
     if (!picked.length) { message.warning('先选人'); return }
     setBusy(true)
     try {
-      await api(`/api/meetings/${mid}/participants`, {
+      await api(`/api/activities/${mid}/participants`, {
         method: 'PUT', body: JSON.stringify({ usernames: picked, kind }),
       })
       message.success(`已添加 ${picked.length} 人`)
@@ -533,17 +533,17 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
   )
 }
 
-/// 线上会议:链接 + 复制 + 改动历史。
+/// 线上活动:链接 + 复制 + 改动历史。
 /// ★改动历史不是装饰★:临开会前换链接很常见,事后「我进的是旧链接」要能查清是谁什么时候改的。
 function OnlineCard({ id, url }: { id: number; url: string }) {
   const { message } = AntdApp.useApp()
   const [hist, setHist] = useState<LinkChange[]>([])
   const [open, setOpen] = useState(false)
   useEffect(() => {
-    api<LinkChange[]>(`/api/meetings/${id}/link-history`).then(setHist).catch(() => setHist([]))
+    api<LinkChange[]>(`/api/activities/${id}/link-history`).then(setHist).catch(() => setHist([]))
   }, [id])
   return (
-    <Card size="small" title="线上会议" style={{ marginBottom: 12 }}>
+    <Card size="small" title="线上活动" style={{ marginBottom: 12 }}>
       <Space wrap>
         <a href={url} target="_blank" rel="noreferrer">{url}</a>
         <Button size="small" onClick={async () => {
@@ -572,30 +572,30 @@ function OnlineCard({ id, url }: { id: number; url: string }) {
 }
 
 /// 材料 / 录制 两个 tab(原型还有第三个「纪要」,这里做成跳转按钮 —— 纪要有自己一整页)。
-/// ★录制单独一个 tab★:它不是普通材料,是**会被转写、并决定会议时长**的东西(D5),
+/// ★录制单独一个 tab★:它不是普通材料,是**会被转写、并决定活动时长**的东西(D5),
 /// 混在材料里会让人不知道该传哪儿。
 function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy }: {
   id: number; projectId: number | null; canEdit: boolean; onOpenMinutes: (id: number) => void
-  /// 会议粒度的材料策略(PRD 6.3.2);null = 我看不到这场会的可编辑信息
+  /// 活动粒度的材料策略(PRD 6.3.2);null = 我看不到这场会的可编辑信息
   policy: { no_download?: boolean; no_share?: boolean } | null
   onPolicy: (p: { no_download?: boolean; no_share?: boolean }) => void
 }) {
   const { message } = AntdApp.useApp()
-  const [items, setItems] = useState<MeetingItem[]>([])
+  const [items, setItems] = useState<ActivityItem[]>([])
   const [tab, setTab] = useState('mat')
   // 要分享的那一项(D7:材料有两个入口,分享自然也有两个 —— 同一份材料
-  // 从项目进能分享、从会议进不能,那纯粹是代码住哪儿决定的,不是产品决定的)
-  const [shareFor, setShareFor] = useState<MeetingItem | null>(null)
+  // 从项目进能分享、从活动进不能,那纯粹是代码住哪儿决定的,不是产品决定的)
+  const [shareFor, setShareFor] = useState<ActivityItem | null>(null)
   const load = useCallback(async () => {
-    try { setItems(await api<MeetingItem[]>(`/api/meetings/${id}/items`)) } catch { setItems([]) }
+    try { setItems(await api<ActivityItem[]>(`/api/activities/${id}/items`)) } catch { setItems([]) }
   }, [id])
   useEffect(() => { void load() }, [load])
 
   const mats = items.filter((i) => !i.is_recording)
   const recs = items.filter((i) => i.is_recording)
 
-  const table = (rows: MeetingItem[], empty: string) => (
-    <Table<MeetingItem> size="small" rowKey="id" dataSource={rows} pagination={false}
+  const table = (rows: ActivityItem[], empty: string) => (
+    <Table<ActivityItem> size="small" rowKey="id" dataSource={rows} pagination={false}
       locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} /> }}
       columns={[
         { title: '名称', render: (_, it) => <span><ItemIcon it={it} />{it.name}</span> },
@@ -627,11 +627,11 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
                 因为它决定「会不会被转写」,和传一份参考资料完全是两件事。 */}
             <Upload showUploadList={false} multiple
               customRequest={({ file, onSuccess, onError }) => {
-                // ★走项目上传接口 + meeting_id★:会议材料是「只读区」指的是**入口唯一**(D10),
-                // 不必为它另写一套流式上传。落在关联项目之一,靠 meeting_id 让所有关联项目都看得到(D4)。
+                // ★走项目上传接口 + activity_id★:活动材料是「只读区」指的是**入口唯一**(D10),
+                // 不必为它另写一套流式上传。落在关联项目之一,靠 activity_id 让所有关联项目都看得到(D4)。
                 const fd = new FormData()
                 fd.append('file', file as File)
-                const qs = `meeting_id=${id}&is_recording=${tab === 'rec'}`
+                const qs = `activity_id=${id}&is_recording=${tab === 'rec'}`
                 fetch(`/api/projects/${projectId}/upload?${qs}`, { method: 'POST', body: fd })
                   .then((r) => r.ok ? (onSuccess?.({}), load()) : r.text().then((t) => { message.error(t); onError?.(new Error(t)) }))
                   .catch((e) => { message.error(String(e)); onError?.(e as Error) })
@@ -643,7 +643,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
             <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
           </Space>
         )} />
-      {/* ★会议粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
+      {/* ★活动粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
           说的是**这一次会**,不是把整个项目锁上。只有能改这场会的人看得到这两个开关。 */}
       {canEdit && policy && (
         <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}>
