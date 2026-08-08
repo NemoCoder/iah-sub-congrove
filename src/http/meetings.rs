@@ -513,8 +513,18 @@ pub async fn respond(
 ) -> AppResult<Json<serde_json::Value>> {
     let username = id.require_username()?;
     // ★只有名单里的人能答复★:旁听者(public 会议路人)看得见这场会,但不能给自己投一票。
+    //
+    // ⚠★2026-08-08 修:这句 SQL 此前不看 kind,于是上面这行注释描述的闸根本不存在★。
+    //   `observe`(自助旁听)往这张表插的正是一行 `kind='observer'`,所以旁听者
+    //   `listed` 必然是 Some → 闸放行 → 他能提交 `counter`(建议改期),
+    //   而 counter **是唯一会给发起人发站内信的分支**(见下面 D2 那段)。
+    //   也就是:任何看得到某场公开会议的人,点一下旁听就能给发起人投递消息。
+    //   同一个根因(「表里有行」≠「是正式参会人」)在 `perm.rs::meeting_view` 里
+    //   还造成过一次真正的提权,两处同一批修。
+    //   ★判据以 kind 为准★——统计(:1142)与答复进度(:1330)一直是这么写的,是这两处漏了。
     let listed: Option<String> = sqlx::query_scalar(
-        "SELECT username FROM meeting_participants WHERE meeting_id=$1 AND username=$2")
+        "SELECT username FROM meeting_participants
+          WHERE meeting_id=$1 AND username=$2 AND kind='attendee'")
         .bind(mid).bind(username).fetch_optional(&state.pool).await?;
     if listed.is_none() {
         // 会议存在但我不在名单 → 403;会议根本看不见 → meeting_view 会给 404

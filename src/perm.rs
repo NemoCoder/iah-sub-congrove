@@ -170,36 +170,75 @@ pub enum MeetingView {
     Observer,
 }
 
+/// 我与这场会议的一条关系。SQL 只负责**把关系查出来**,判档位交给 [`decide_view`]。
+///
+/// ★2026-08-08 为什么要拆成两步★(修一个真实的越权缺陷):
+/// 原来 SQL 直接吐 `'inside'`/`'observer'`,第一条分支写的是
+/// `SELECT 'inside' FROM meeting_participants WHERE meeting_id=$1 AND username=$2`
+/// —— **不区分 kind**。而 `observe`(自助旁听)插的正是一行 `kind='observer'`。
+/// 于是「点一下旁听」就把自己从 Observer 提权成 Inside,拿到了参与者名单与讨论区,
+/// 而 D9 与上面 `MeetingView::Observer` 的文档注释都写着「名单与讨论区都不给」。
+///
+/// 光在 WHERE 里补一句 `AND kind <> 'observer'` 能修好这一次,但**修不好下一次**:
+/// 那样一来「旁听算不算 Inside」这个安全判断仍然藏在一句 SQL 里,
+/// 而 CI 的 `cargo test` 是 hermetic 的(不连 PG),够不着它 ——
+/// 这正是它错了整整一个版本没人发现的原因。
+/// ★所以把判档位挪成纯函数★:关系由 SQL 查,结论由 Rust 定,结论就能被单测钉死。
+const LINK_MEMBER: &str = "member";
+const LINK_SUPER: &str = "super";
+const LINK_PUBLIC: &str = "public";
+const LINK_PART_PREFIX: &str = "participant:";
+
+/// 由「我与这场会的全部关系」判出可见档位。看不到 → None(调用方转 404)。
+///
+/// ★fail-closed★:参会人只认 `kind='attendee'` 给 Inside。
+/// 将来若给 `meeting_participants.kind` 加了新取值而忘了改这里,
+/// 新 kind 会**落到谁都不匹配 → None → 404**,而不是默认放行。
+/// 宁可新功能上线时报「看不到」,也不要悄悄多给一档权限。
+fn decide_view(links: &[String]) -> Option<MeetingView> {
+    /// 参会人关系里的 kind;不是参会人关系则 None。
+    fn kind(l: &str) -> Option<&str> { l.strip_prefix(LINK_PART_PREFIX) }
+    let inside = links
+        .iter()
+        .any(|l| l == LINK_MEMBER || l == LINK_SUPER || kind(l) == Some("attendee"));
+    if inside { return Some(MeetingView::Inside) }
+    // ★旁听者与「这场会是 public」是同一档★:两者都只看得到元信息。
+    //   旁听行的存在只表示「他点过旁听」(用于取消旁听、以及公开广场里把他排除),
+    //   **不提升任何权限**。
+    let observer = links.iter().any(|l| l == LINK_PUBLIC || kind(l) == Some("observer"));
+    if observer { return Some(MeetingView::Observer) }
+    None
+}
+
 /// 判我对这场会议的可见档位。看不到 → 404(与 require_role 同口径:不泄露存在性)。
 ///
 /// 四条来源一次查完(与 effective_role 同样的 UNION 手法,零额外往返):
-/// 参会人(含 guest)/ 关联项目成员 / 超管 / 会议本身是 public。
+/// 参会人(带 kind)/ 关联项目成员 / 超管 / 会议本身是 public。
 pub async fn meeting_view(pool: &PgPool, id: &Identity, meeting_id: i64) -> AppResult<MeetingView> {
     let username = id.require_username()?;
-    let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT 'inside'::text FROM meeting_participants
+    let links: Vec<String> = sqlx::query_scalar(
+        // ★把 kind 原样带出来★,别在 SQL 里就把它压成 inside/observer(见 decide_view 头注)
+        "SELECT 'participant:' || kind FROM meeting_participants
            WHERE meeting_id = $1 AND username = $2
          UNION ALL
          -- ⚠★JOIN projects 判 deleted_at★(2026-08-07):项目软删除**不动成员表**,
          --   所以少了这一句,项目删进回收站之后成员照样能看到它的会议。
          --   这是 CLAUDE.md 那条硬纪律(「凡是读内容的路径 SQL 都要带 deleted_at IS NULL」)
          --   在会议模块的又一处遗漏 —— 上一次是 v0.3.55 一口气补了 11 处。
-         SELECT 'inside' FROM meeting_projects mp
+         SELECT 'member' FROM meeting_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
            JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
            WHERE mp.meeting_id = $1 AND pm.username = $2
          UNION ALL
-         SELECT 'inside' FROM app_user WHERE username = $2 AND is_super
+         SELECT 'super' FROM app_user WHERE username = $2 AND is_super
          UNION ALL
-         SELECT 'observer' FROM meetings WHERE id = $1 AND visibility = 'public'",
+         SELECT 'public' FROM meetings WHERE id = $1 AND visibility = 'public'",
     )
     .bind(meeting_id)
     .bind(username)
     .fetch_all(pool)
     .await?;
-    if rows.iter().any(|r| r == "inside") { return Ok(MeetingView::Inside) }
-    if rows.iter().any(|r| r == "observer") { return Ok(MeetingView::Observer) }
-    Err(AppError::NotFound)
+    decide_view(&links).ok_or(AppError::NotFound)
 }
 
 /// 谁能改这场会:发起人、记录员(要整理纪要)、超管。
@@ -251,5 +290,65 @@ mod tests {
         assert_eq!(merge([None, None]), None);
         let empty: [Option<Role>; 0] = [];
         assert_eq!(merge(empty), None);
+    }
+
+    // ── decide_view:会议可见档位 ──────────────────────────────────────
+    //
+    // ★这一组是 2026-08-08 那个越权缺陷的复现测试★(先写它,再改的代码)。
+    // 缺陷:`observe`(自助旁听)往 meeting_participants 插一行 kind='observer',
+    // 而档位判定的第一条 SQL 分支不看 kind → 旁听者被判成 Inside →
+    // 拿到参与者名单与讨论区,而 D9 明写这两样都不给。
+    //
+    // 缺陷发现于 v0.4.38,存在了整整一个版本 —— 因为判定藏在 SQL 里,
+    // 而 CI 的 cargo test 是 hermetic 的够不着。现在判定是纯函数,这组测试每次 CI 都跑。
+    fn l(s: &str) -> String { s.to_string() }
+
+    #[test]
+    fn 旁听者只给_observer_不给_inside() {
+        // ★这就是缺陷本身★:改之前这里拿到的是 Inside
+        assert_eq!(decide_view(&[l("participant:observer")]), Some(MeetingView::Observer));
+        // 自助旁听的真实形态:公开会议 + 自己那行 observer,两条同时在
+        assert_eq!(
+            decide_view(&[l("participant:observer"), l("public")]),
+            Some(MeetingView::Observer),
+        );
+    }
+
+    #[test]
+    fn 正式参会人_项目成员_超管都是_inside() {
+        assert_eq!(decide_view(&[l("participant:attendee")]), Some(MeetingView::Inside));
+        assert_eq!(decide_view(&[l("member")]), Some(MeetingView::Inside));
+        assert_eq!(decide_view(&[l("super")]), Some(MeetingView::Inside));
+    }
+
+    #[test]
+    fn 旁听者若同时是项目成员_仍然是_inside() {
+        // 档位取**最高**的那条来源:他本来就能看名单,点没点旁听都一样。
+        // (反过来说明上一条测的不是「有 observer 行就降级」,而是「observer 行本身不提权」)
+        assert_eq!(
+            decide_view(&[l("participant:observer"), l("member")]),
+            Some(MeetingView::Inside),
+        );
+    }
+
+    #[test]
+    fn 公开会议对无关的人只给_observer() {
+        assert_eq!(decide_view(&[l("public")]), Some(MeetingView::Observer));
+    }
+
+    #[test]
+    fn 没有任何关系就是看不见() {
+        assert_eq!(decide_view(&[]), None);
+    }
+
+    #[test]
+    fn 未知的_kind_一律不给_inside() {
+        // ★fail-closed★:将来给 kind 加了新取值却忘了改 decide_view,
+        // 应当落到「看不见」而不是默认放行。'guest' 是 0005 迁移删掉的历史取值,
+        // 拿它当「一个这里没认的 kind」来测最贴切。
+        assert_eq!(decide_view(&[l("participant:guest")]), None);
+        assert_eq!(decide_view(&[l("participant:未来某个新档位")]), None);
+        // 但公开会议那条独立来源仍然照常给 Observer
+        assert_eq!(decide_view(&[l("participant:guest"), l("public")]), Some(MeetingView::Observer));
     }
 }
