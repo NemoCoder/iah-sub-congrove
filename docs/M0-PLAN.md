@@ -24,17 +24,18 @@ M0-1 部署后 DB 里是 `activities`，而 `src/` 里还全写着 `meetings`，
 
 | # | 耦合 | 处置 |
 |---|---|---|
-| ① | 表名改动 ⇄ 代码里的 SQL | 改名必须 **schema + 后端同一个 PR**（合进 M0-2） |
+| ① | 表名改动 ⇄ 代码里的 SQL | 改名必须 **schema + 后端同一个 PR**（合进 M0-2）。★路由与清单也一并并入★ —— 否则 `activities.rs` 里 17 处描述路由的**文档注释**会先于真路由改掉，注释就在说谎 |
 | ② | 删 `projects.visibility` ⇄ `is_private` | 现定义就是从项目 visibility 推的（`NOT EXISTS(关联项目 WHERE visibility='public')`），列一删语义无处可依 → PRD J4 换定义**必须同 PR**（进 M0-1） |
-| ③ | 删 `projects.visibility` ⇄ `freebusy` 判据 | 同上；而替代品 `activities.busy` 原计划在 M0-2 才有 → ★`busy` 列提前到 M0-1★（默认 true，与旧行为里的「会议」一致；M0-2 起由类型的 `busy_default` 定初值） |
+| ③ | 删 `projects.visibility` ⇄ `freebusy` 判据 | 同上；而替代品 `activities.busy` 原计划在 M0-2 才有 → ★`busy` 列提前到 M0-1★（默认 true，与旧行为里的「会议」一致；**M0-3** 起由活动类型的 `busy_default` 定初值） |
 
 ## 七个 PR
 
 | PR | 内容 | 门禁 |
 |---|---|---|
 | **M0-1** | 把 0002~0007 的产物合进 `0001_init.sql` ＋删那六个文件 ＋★删 `projects.visibility`★（连带 `is_private` 换定义、`freebusy` 改判据、新增 `meetings.busy`）。`quota_bytes` 留到 M0-6；`activity_types`/`user_prefs`/`user_quota` **跟各自的消费者走，不提前建空表**（提前建也验不了什么） | ★`schema-check.sh sim-diff`★（事务内建库，差异只剩有意的）＋★`sql-prepare-check.py --pre <新 schema>`★＋`api-check.sh`＋clippy/test/typecheck。⚠ **没有 `--migrations`**：本 PR 不改表名，那道闸留给 M0-2 |
-| **M0-2** | ★改名：`0001` 的表名 + 后端代码**同一个 PR**★（见上面的耦合①）＋原「后端非路由改名」的其余部分＋`notified_at` 读写规则（ADR-0003）＋`recorder` 空值守卫＋`effective_role` 的 materials 单点否决（ADR-0005） | `sql-prepare-check.py`＋`no-meeting.sh --backend-core`＋clippy/test（含 `merge` 吃掉 BLOCK、`require_owner` 被短路这两条的回归单测） |
-| **M0-3** | 路由与清单侧：路径改名＋`apidoc.rs`＋`api_cases.rs`＋`activity_types` 用起来＋能力位收口 | ★`api-check.sh check`（19 条 breaking 逐条声明）★＋`cargo test` 的清单比对＋`no-meeting.sh --backend-all` |
+| **M0-2** | ★**纯机械改名**，一件事：`0001` 的表名 + 全部后端代码 + 路由 + 清单 + 文件名，同一个 PR★ | `sql-prepare-check.py --pre`（改名有没有漏，它一次说清）＋`no-meeting.sh --migrations` 与 `--backend-all` 双双 exit 0＋`api-check.sh`（路径改名的 breaking 逐条声明）＋clippy/test |
+| **M0-2b** | 语义改动（从原 M0-2 挪出来）：`notified_at` 读写规则（ADR-0003）＋`recorder` 空值守卫＋`projects.kind` 与 `effective_role` 的 materials 单点否决（ADR-0005） | `sql-prepare-check.py --pre`＋clippy/test（含 `merge` 吃掉 BLOCK、`require_owner` 被短路这两条的回归单测） |
+| **M0-3** | 新功能：`activity_types` 建表并用起来＋能力位收口＋4 个类型接口 | `cargo test` 的清单比对＋能力位单测（三个位 / 预置行不可改删 / 自建名不得与预置重名）＋`api-check.sh` |
 | **M0-4** | 前端改名＋类型下拉＋表单按能力位显隐 | `pnpm typecheck`/`pnpm test`＋`no-meeting.sh --frontend`＋★对着 `prototype-v0.5.html` **逐视图并排截图**作为 PR 附件★ |
 | **M0-5** | ★首次把特性分支部到 dev★（配合 ADR-0001 的四步清库）＋跑 70 条 E2E＋采 golden 后像 | E2E 全绿（人工）＋`golden-diff.mjs` 差异逐字节等于 `e2e/golden/expected.diff` |
 | **M0-6** | 配额换算法（ADR-0004 全部）＋`user_prefs`/`user_quota` 接口＋★先补齐 5 条配额 E2E★ | 配额 E2E 6 条全绿（人工）＋`schema-check.sh`（★`quota_bytes` 真正被删的是**这个** PR★）＋`sql-prepare-check.py` |
@@ -49,7 +50,7 @@ M0-1 部署后 DB 里是 `activities`，而 `src/` 里还全写着 `meetings`，
 |---|---|---|
 | ① | `projects.quota_bytes`：M0-1 删列、M0-6 才改代码 → 中间项目列表/建项目/上传全 500，★而 M0-5 正要拿这个分支部到 dev 跑 E2E★ | **M0-1 保留这一列，M0-6 再删**（按 ADR-0001，`0001` 随时可改，零成本） |
 | ② | `projects.visibility` | M0-1 删列 **+ 同 PR 摘掉受影响的 SQL**，不留断裂。影响面由 `sql-prepare-check.py --pre` 穷举，不手数 |
-| ③ | `activities.type_id` 是 NOT NULL 无默认，而 `POST` 要到 M0-3 才接受 `type_id` | M0-2 里给 create 临时填「会议」预置类型的 id，M0-3 换成入参。hermetic 的 `cargo test` 看不见它，E2E 要等 M0-5 |
+| ③ | ~~`activities.type_id`~~ ★这一处断裂已消失★ | 原因是 `activity_types` 与 `type_id` 现在**同在 M0-3**（建表、NOT NULL 列、接受入参一起做），中间不存在「列已 NOT NULL 而接口还不认」的窗口。★把「建表」和「用起来」拆开才会制造断裂，合在一起反而没有。★ |
 
 ## 未部署时怎么过闸（M0-1~M0-4 都适用）
 

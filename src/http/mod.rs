@@ -7,7 +7,7 @@ mod admin;
 pub mod apidoc;
 pub(crate) mod items;
 mod media;
-mod meetings;
+mod activities;
 mod share;
 pub(crate) mod projects;
 
@@ -54,41 +54,41 @@ pub fn build_router(state: AppState) -> Router {
         .route("/projects/{id}/diagnose", get(projects::diagnose))
         // 项目统计(PRD 6.5.2 + D6)。★时长口径与个人统计同一套★(D5 三级回退):
         // 两处各写一套的话,同一场会在个人页和项目页会显示不同时长,而没人说得清该信哪个
-        .route("/projects/{id}/stats", get(meetings::project_stats))
+        .route("/projects/{id}/stats", get(activities::project_stats))
         // 开发者:全部 API 清单(超管可见)。数据源是 apidoc::APIS,
         // ★它与本文件的路由表由 apidoc 里的测试逐条比对,漏写/多写都会让 cargo test 红★
         .route("/_dev/apis", get(apidoc::list))
         // OpenAPI 3.1 契约:★从 APIS 生成★,继承「路由改了不同步就 cargo test 红」那条保证
         .route("/_dev/openapi.json", get(apidoc::openapi))
-        // 会议与日程(M1)。★会议参与 ≠ 资料权限★:这些接口只管会议元信息,
-        // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 meetings.rs 头注)。
-        .route("/meetings", get(meetings::list).post(meetings::create))
-        .route("/meetings/{id}", get(meetings::detail).put(meetings::update).delete(meetings::cancel))
-        .route("/meetings/{id}/participants", put(meetings::invite).delete(meetings::uninvite))
-        .route("/meetings/{id}/respond", post(meetings::respond))
-        .route("/meetings/{id}/messages", get(meetings::messages).post(meetings::send_message))
+        // 活动与日程(M1)。★活动参与 ≠ 资料权限★:这些接口只管活动元信息,
+        // 材料一律走上面项目那套 require_role(D3/D8/D9,详见 activities.rs 头注)。
+        .route("/activities", get(activities::list).post(activities::create))
+        .route("/activities/{id}", get(activities::detail).put(activities::update).delete(activities::cancel))
+        .route("/activities/{id}/participants", put(activities::invite).delete(activities::uninvite))
+        .route("/activities/{id}/respond", post(activities::respond))
+        .route("/activities/{id}/messages", get(activities::messages).post(activities::send_message))
         // 纪要(D14):★AI 转写只是原材料,记录员才是作者★,两者刻意不打通
-        .route("/meetings/{id}/minutes", get(meetings::minutes_get).put(meetings::minutes_put))
-        // 会议详情页要的几块(docs/UI-GAP.md):材料与录制 / 线上链接改动历史 / 催办 / 采纳改期
-        .route("/meetings/{id}/items", get(meetings::meeting_items))
-        .route("/meetings/{id}/link-history", get(meetings::link_history))
-        .route("/meetings/{id}/remind", post(meetings::remind))
-        .route("/meetings/{id}/accept-counter", post(meetings::accept_counter))
-        .route("/meetings/{id}/reject-counter", post(meetings::reject_counter))
+        .route("/activities/{id}/minutes", get(activities::minutes_get).put(activities::minutes_put))
+        // 活动详情页要的几块(docs/UI-GAP.md):材料与录制 / 线上链接改动历史 / 催办 / 采纳改期
+        .route("/activities/{id}/items", get(activities::activity_items))
+        .route("/activities/{id}/link-history", get(activities::link_history))
+        .route("/activities/{id}/remind", post(activities::remind))
+        .route("/activities/{id}/accept-counter", post(activities::accept_counter))
+        .route("/activities/{id}/reject-counter", post(activities::reject_counter))
         // 忙闲(D1):只回时间段不回内容;私密项目的会完全隐形。
-        .route("/freebusy", get(meetings::freebusy))
-        // ★公开会议广场 + 自助旁听(D9)★:公开会议没有列表页的话,「全平台可旁听」就是空话
-        .route("/meetings/public", get(meetings::public_list))
-        .route("/meetings/{id}/observe", post(meetings::observe))
+        .route("/freebusy", get(activities::freebusy))
+        // ★公开活动广场 + 自助旁听(D9)★:公开活动没有列表页的话,「全平台可旁听」就是空话
+        .route("/activities/public", get(activities::public_list))
+        .route("/activities/{id}/observe", post(activities::observe))
         // 个人面板「我的投入」(原型 me 视图):口径写在 handler 注释里,前端不自己算
-        .route("/me/stats", get(meetings::my_stats))
+        .route("/me/stats", get(activities::my_stats))
         // 「待我处理」里的私聊未读(原型 🔔 卡):★只算 private 且 peer 是我的★,
         // 公开讨论区的新消息不进 —— 天天有红点就等于没有红点
         // 等我答复的主持人转移。★不放项目页里★:被转让人可能压根不打开那个项目,
         // 只在项目内部可见的请求多半永远不会被答复 —— 归到「待我处理」那张卡
         .route("/me/transfers", get(projects::my_transfers))
-        .route("/me/unread", get(meetings::my_unread))
-        .route("/me/unread/read", post(meetings::mark_read))
+        .route("/me/unread", get(activities::my_unread))
+        .route("/me/unread/read", post(activities::mark_read))
 
 
         // 内容树(文档正文小,留在快路由)

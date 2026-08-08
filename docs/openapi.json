@@ -2,7 +2,7 @@
   "info": {
     "description": "★本文件由 src/http/apidoc.rs 的 APIS 生成,不要手改★。路由与 APIS 的一致性由 cargo test 逐条比对保证。当前只到路径级,字段级 schema 是已知欠账。",
     "title": "congrove(汇流)",
-    "version": "0.4.47"
+    "version": "0.4.45"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2091,6 +2091,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "visibility",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2221,6 +2229,14 @@
           },
           {
             "in": "query",
+            "name": "visibility",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "no_share",
             "required": false,
             "schema": {
@@ -2242,11 +2258,11 @@
             "description": "不存在,或**完全没有授权**(刻意与不存在同一回应,防存在性探测)"
           }
         },
-        "summary": "改名/描述/禁下载/术语表/禁分享。★开启禁分享会连带撤销已有公开链接★",
+        "summary": "改名/描述/禁下载/术语表/可见性/禁分享。★开启禁分享会连带撤销已有公开链接★",
         "tags": [
           "项目"
         ],
-        "x-iah-auth": "admin"
+        "x-iah-auth": "admin;改 visibility 需 owner"
       }
     },
     "/api/projects/{id}/archive": {

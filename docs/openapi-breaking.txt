@@ -1,0 +1,22 @@
+in api get /api/meetings api path removed without deprecation
+in api post /api/meetings api path removed without deprecation
+in api get /api/meetings/public api path removed without deprecation
+in api delete /api/meetings/{id} api path removed without deprecation
+in api get /api/meetings/{id} api path removed without deprecation
+in api put /api/meetings/{id} api path removed without deprecation
+in api post /api/meetings/{id}/accept-counter api path removed without deprecation
+in api get /api/meetings/{id}/items api path removed without deprecation
+in api get /api/meetings/{id}/link-history api path removed without deprecation
+in api get /api/meetings/{id}/messages api path removed without deprecation
+in api post /api/meetings/{id}/messages api path removed without deprecation
+in api get /api/meetings/{id}/minutes api path removed without deprecation
+in api put /api/meetings/{id}/minutes api path removed without deprecation
+in api post /api/meetings/{id}/observe api path removed without deprecation
+in api delete /api/meetings/{id}/participants api path removed without deprecation
+in api put /api/meetings/{id}/participants api path removed without deprecation
+in api post /api/meetings/{id}/reject-counter api path removed without deprecation
+in api post /api/meetings/{id}/remind api path removed without deprecation
+in api post /api/meetings/{id}/respond api path removed without deprecation
+in api post /api/projects deleted the `query` request parameter `visibility`
+in api put /api/projects/{id} deleted the `query` request parameter `visibility`
+in api post /api/projects/{id}/upload deleted the `query` request parameter `meeting_id`
