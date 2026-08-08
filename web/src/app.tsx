@@ -131,7 +131,7 @@ export function App() {
             <ActivityDetailView id={activityId} me={me?.username ?? ''} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
               backLabel="返回活动" />
           ) : (
-            <ActivitiesListView me={me} onOpen={setActivityId} onNew={() => setActivityId('new')} />
+            <ActivitiesListView me={me} onOpen={setActivityId} onOpenMinutes={setMinutesOf} onNew={() => setActivityId('new')} />
           )
         ) : view === 'projects' ? <ProjectsView me={me} />
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />

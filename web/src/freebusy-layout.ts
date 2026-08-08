@@ -29,9 +29,15 @@ export function toBar(span: Span, day: Date, pick?: Span): Bar | null {
   const from = Math.max(s, winStart.getTime())
   const to = Math.min(e, winEnd.getTime())
 
+  // ★左+宽必须夹在 100% 以内★(2026-08-09 用户:「其他人的忙闲超出了边界」)。
+  // 越界的来源是上面那个「至少 1%」的下限:一段 19:58–20:00 的忙,左边算出来 99.7%,
+  // 再撑到 1% 宽就是 100.7% —— ★为了让它看得见而加的下限,反过来把它顶出了轨道★。
+  // 处置:宽度优先保住(要看得见),左边往回收。
+  const w = Math.min(Math.max(((to - from) / total) * 100, 1), 100)
+  const l = Math.min(((from - winStart.getTime()) / total) * 100, 100 - w)
   return {
-    left: `${((from - winStart.getTime()) / total) * 100}%`,
-    width: `${Math.max(((to - from) / total) * 100, 1)}%`,               // 至少 1%,否则短会看不见
+    left: `${l}%`,
+    width: `${w}%`,
     clash: pick ? overlaps({ start: span.start, end: span.end }, pick) : false,
   }
 }

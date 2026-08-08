@@ -58,3 +58,22 @@ test('刻度覆盖整个窗口', () => {
   assert.equal(t[t.length - 1].h, DAY_END_H)
   assert.equal(t[t.length - 1].left, '100%')
 })
+
+/// ★左+宽不许越过 100%★(2026-08-09 用户:「其他人的忙闲超出了边界」)。
+/// 越界不是画错位置,而是**画到轨道外面**去 —— 在卡片里表现为一条糊出边框的灰条。
+/// 起因是「至少 1% 宽」这个为了可见性加的下限:靠窗口末尾的短会被它顶出去。
+test('贴着窗口末尾的短会不越界', () => {
+  const s = new Date(DAY); s.setHours(DAY_END_H - 1, 58, 0, 0)   // 19:58
+  const e = new Date(DAY); e.setHours(DAY_END_H, 0, 0, 0)        // 20:00
+  const b = toBar({ start: s.toISOString(), end: e.toISOString() }, DAY)!
+  assert.ok(parseFloat(b.width) >= 1, '仍然要看得见')
+  assert.ok(parseFloat(b.left) + parseFloat(b.width) <= 100 + 1e-9,
+    `left+width=${parseFloat(b.left) + parseFloat(b.width)} 超出轨道`)
+})
+
+/// 反向:正常时段的坐标不能因为夹逼而挪位(夹逼只该在越界时生效)
+test('不越界的条坐标不受影响', () => {
+  const b = toBar(at(10, 2), DAY)!               // 10:00–12:00
+  assert.equal(b.left, `${((10 - DAY_START_H) / (DAY_END_H - DAY_START_H)) * 100}%`)
+  assert.equal(b.width, `${(2 / (DAY_END_H - DAY_START_H)) * 100}%`)
+})

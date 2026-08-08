@@ -17,9 +17,12 @@ const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'
 const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
 const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 
-export function ActivitiesListView({ me, onOpen, onNew }: {
+export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   me: Me | null
   onOpen: (id: number) => void
+  /// ★「我负责的纪要」直接进整理页★（2026-08-09 用户）：这张卡列的是**待办**，
+  /// 点它的人下一步一定是去写，先落到活动详情再点一次「纪要」是白饶的一跳。
+  onOpenMinutes: (id: number) => void
   onNew: () => void
 }) {
   const { message } = AntdApp.useApp()
@@ -112,7 +115,7 @@ export function ActivitiesListView({ me, onOpen, onNew }: {
             : myMinutes.map((m) => {
               const days = Math.floor((now - new Date(m.ends_at).getTime()) / 864e5)
               return (
-                <div key={m.id} onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', marginBottom: 10 }}>
+                <div key={m.id} onClick={() => onOpenMinutes(m.id)} style={{ cursor: 'pointer', marginBottom: 10 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{m.title}</div>
                   <Space size={6}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>

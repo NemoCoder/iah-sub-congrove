@@ -8,9 +8,24 @@
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
 import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import dayjs from 'dayjs'
-import { api, type ActivityType, type FreeBusy, type Me, type Project, type UserOpt } from './api'
-import { DAY_END_H, DAY_START_H, ticks, toBar } from './freebusy-layout'
+import dayjs, { type Dayjs } from 'dayjs'
+import { api, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
+import { ticks, toBar } from './freebusy-layout'
+
+/// ★分钟只走一刻钟★:00 / 15 / 30 / 45（2026-08-09 用户）。会不会约在 8:07？不会。
+/// 而 AntD 默认给 60 行分钟,常用的那四个要滚很久才够得着 —— 选项多 ≠ 更自由,
+/// 多出来的 56 个选项**只制造滚动**。
+/// ⚠ 第一版按用户字面写的「00、15、30 这3个」少了 :45,当天即补 —— ★一刻钟是四格不是三格★,
+/// 缺 :45 会让「8:45 开个短会」这种最常见的排法**根本选不出来**。
+const MINUTES = [0, 15, 30, 45]
+const BAD_MINUTES = Array.from({ length: 60 }, (_, i) => i).filter((m) => !MINUTES.includes(m))
+
+/// 持续时长快捷（参考腾讯会议）。★先定「开多久」再算结束时刻★ ——
+/// 人脑里想的是「开一小时」，不是「10:00 到 11:00」；让人心算结束时间是白饶的一步。
+const DURATIONS: { m: number; label: string }[] = [
+  { m: 30, label: '30 分钟' }, { m: 60, label: '1 小时' },
+  { m: 90, label: '1.5 小时' }, { m: 120, label: '2 小时' }, { m: 180, label: '3 小时' },
+]
 
 export function ActivityNewView({ me, onCreated, onCancel }: {
   me: Me | null
@@ -23,6 +38,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   const [found, setFound] = useState<UserOpt[]>([])
   const [busy, setBusy] = useState(false)
   const [pub, setPub] = useState(false)
+  const [projOpen, setProjOpen] = useState(false)
   /// ★参会人与时间提到组件级★:右栏的 chips 与忙闲图都要用它们,
   /// 留在 Form 内部的话右栏读不到(原型就是左表单/右面板并排)。
   const [people, setPeople] = useState<string[]>([])
@@ -82,6 +98,57 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
       .then((ts) => { setTypes(ts); setTypeId((cur) => cur ?? ts[0]?.id) })
       .catch(() => {})
   }, [])
+  /// ★参会人候选 = 已选关联项目的成员并集★（2026-08-09 用户：「不要从其他项目导入成员，
+  /// 直接根据关联成员的并集多选即可」）。原来是「一个搜索框 + 一个『从其它项目导入』下拉」
+  /// 两截,既丑又绕:导入是个**批量动作**,却长得像个筛选器。
+  /// 现在关联项目一选定,能请的人就自动摆在这儿 —— ★选项目本来就已经回答了「有哪些人」★。
+  const projIds: number[] = Form.useWatch('project_ids', form) ?? []
+  const projKey = projIds.join(',')          // ← 依赖用字符串,数组每次渲染都是新引用
+  const [pool, setPool] = useState<UserOpt[]>([])
+  useEffect(() => {
+    const ids = projKey ? projKey.split(',').map(Number) : []
+    if (!ids.length) { setPool([]); return }
+    let dead = false
+    Promise.all(ids.map((id) => api<MemberList>(`/api/projects/${id}/members`).catch(() => null)))
+      .then((rs) => {
+        if (dead) return
+        // 并集:同一个人出现在多个项目里只留一次(★项目重叠是常态,不是例外★)
+        const seen = new Map<string, string | null | undefined>()
+        for (const r of rs) for (const m of r?.members ?? []) if (!seen.has(m.username)) seen.set(m.username, m.name)
+        setPool([...seen].map(([username, name]) => ({ username, name: name ?? null })))
+      })
+    return () => { dead = true }
+  }, [projKey])
+
+  /// 参会人下拉的候选:并集 + 我自己(发起人常常也参会,而他未必是成员表里的人)。
+  const peopleOpts = useMemo(() => {
+    const seen = new Set<string>()
+    const out: { value: string; label: string }[] = []
+    const push = (u: string, n?: string | null) => {
+      if (!u || seen.has(u)) return
+      seen.add(u); out.push({ value: u, label: showUser(u, n) })
+    }
+    if (me?.username) push(me.username, me.name)
+    for (const u of pool) push(u.username, u.name)
+    return out
+  }, [me, pool])
+
+  /// 当前时长(分钟);用来把选中的那颗快捷按钮点亮。
+  const durMin = useMemo(() => range
+    ? Math.round((new Date(range[1]).getTime() - new Date(range[0]).getTime()) / 60000)
+    : null, [range])
+
+  /// 按时长定结束时间。★没有开始时间就用「下一个整点」★(腾讯会议也是这么兜的)。
+  /// ⚠ 必须**同时**写 Form 和 range state:setFieldValue 不会触发 picker 的 onChange,
+  /// 只写 Form 的话右栏忙闲图会一直停在旧时段(而它正是用来判断这个时段行不行的)。
+  const setDuration = (mins: number) => {
+    const cur = form.getFieldValue('range') as [Dayjs, Dayjs] | undefined
+    const s = cur?.[0] ?? dayjs().add(1, 'hour').startOf('hour')
+    const e = s.add(mins, 'minute')
+    form.setFieldValue('range', [s, e])
+    setRange([s.toISOString(), e.toISOString()])
+  }
+
   const cap = types.find((t) => t.id === typeId)
   // ⚠ 类型还没拉回来时**按最严的算**（两样都要）——先松后紧会让人填到一半突然多出必填项。
   const needRecorder = cap?.has_minutes ?? true
@@ -167,31 +234,56 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           <Input placeholder="如：8 月第二次组会" />
         </Form.Item>
 
-        <Form.Item name="range" label="时间" rules={[{ required: true, message: '选时间' }]}>
-          {/* ★不让选过去的时间★(2026-08-07 用户):日期粒度禁掉今天以前,
-              时间粒度在「今天」这一天里禁掉已过去的小时/分钟。后端另有 5 分钟容差的真闸。 */}
-          <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }}
-            onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
-            disabledDate={(d) => !!d && d.isBefore(dayjs().startOf('day'))}
-            disabledTime={(d) => {
-              if (!d || !d.isSame(dayjs(), 'day')) return {}
-              const now = dayjs()
-              return {
-                disabledHours: () => Array.from({ length: now.hour() }, (_, i) => i),
-                disabledMinutes: (h: number) => h === now.hour()
-                  ? Array.from({ length: now.minute() }, (_, i) => i) : [],
-              }
-            }} />
+        <Form.Item label="时间" required>
+          <Form.Item name="range" noStyle rules={[{ required: true, message: '选时间' }]}>
+            {/* ★不让选过去的时间★(2026-08-07 用户):日期粒度禁掉今天以前,
+                时间粒度在「今天」这一天里禁掉已过去的小时/分钟。后端另有 5 分钟容差的真闸。
+                ★needConfirm={false}★(2026-08-09 用户):选完分钟就算数、光标自己跳到结束时间,
+                不再需要点一次「确定」。那一步是纯仪式 —— 时间已经选好了,再让人确认一遍
+                只是在问「你确定你刚才点的是你点的吗」。 */}
+            <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm"
+              style={{ width: '100%' }} needConfirm={false}
+              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
+              disabledDate={(d) => !!d && d.isBefore(dayjs().startOf('day'))}
+              disabledTime={(d) => {
+                const isToday = !!d && d.isSame(dayjs(), 'day')
+                const now = dayjs()
+                return {
+                  disabledHours: () => isToday ? Array.from({ length: now.hour() }, (_, i) => i) : [],
+                  // ★两条限制在这里合流★:不是 00/15/30 的分钟一律禁;今天的当前小时里,
+                  // 还要额外禁掉已经过去的那几个。漏掉后半句就能选出「过去的整点」。
+                  disabledMinutes: (h: number) => isToday && h === now.hour()
+                    ? [...new Set([...BAD_MINUTES, ...Array.from({ length: now.minute() }, (_, i) => i)])]
+                    : BAD_MINUTES,
+                }
+              }} />
+          </Form.Item>
+          {/* ★持续时长快捷★(2026-08-09 用户,参考腾讯会议):点一下就把结束时间算出来。
+              ★还没选开始时间时也能用★ —— 那就默认从「下一个整点」起算,
+              这是最常见的意图(「现在建个一小时的会」),比逼人先去点日历少两步。 */}
+          <Space size={4} wrap style={{ marginTop: 8 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>持续</Typography.Text>
+            {DURATIONS.map((d) => (
+              <Button key={d.m} size="small" type={durMin === d.m ? 'primary' : 'default'}
+                onClick={() => setDuration(d.m)}>{d.label}</Button>
+            ))}
+          </Space>
         </Form.Item>
 
         <Form.Item
           name="project_ids" label="关联项目"
           // ★必填与否由类型的 needs_project 决定★（ADR-0002），不再写死
           rules={needProject ? [{ required: true, message: '至少关联一个项目' }] : []}
-          extra={needProject ? '只列出你有编辑权的项目' : '这类活动可以不关联项目（关联了则材料进那个项目）'}
         >
+          {/* ★选完一个就收起下拉、已选的不再出现在候选里★（2026-08-09 用户）。
+              多选框默认「选完不关、已选项打个勾留在原地」,于是列表越用越长、
+              还要自己去分辨哪几个已经选过 —— 而**这台机器是知道的**。
+              想再选就点一下空白处,下拉重新展开(此时列表里只剩没选过的)。
+              ⚠ 已选项从 options 里摘掉后,它的中文名靠 rc-select 的 label 缓存显示;
+              缓存是它专为「options 变了但已选项还要显示」做的,不是我们在碰运气。 */}
           <Select mode="multiple" placeholder="选一个或多个项目" optionFilterProp="label"
-            options={projects.map((p) => ({ value: p.id, label: p.name }))} />
+            open={projOpen} onDropdownVisibleChange={setProjOpen} onSelect={() => setProjOpen(false)}
+            options={projects.filter((p) => !projIds.includes(p.id)).map((p) => ({ value: p.id, label: p.name }))} />
         </Form.Item>
 
         {/* ★不出纪要的类型直接隐藏这一项★（不是只去掉必填）：
@@ -199,7 +291,6 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
         {needRecorder && <Form.Item
           name="recorder" label="记录员"
           rules={needRecorder ? [{ required: true, message: '必须指定记录员' }] : []}
-          extra="纪要由他按模板整理"
         >
           <Select showSearch placeholder="谁来整理纪要（默认是你自己）" options={userOpts}
             onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
@@ -210,7 +301,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             **就是没有输入框** —— 于是它永远送空串,后端那一列永远是空。
             ★一个「字段声明了却接不到输入」的洞,类型检查看不见、E2E 也看不见★
             (E2E 自己在 data 里塞 agenda,走的不是表单)。只有对着原型看才照得出来。 */}
-        <Form.Item name="agenda" label="议题与议程" extra="一行一条；会写进纪要的议程部分">
+        <Form.Item name="agenda" label="议题与议程">
           <Input.TextArea rows={4} placeholder="一行一条" />
         </Form.Item>
 
@@ -227,21 +318,14 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           </Form.Item>
         </Space>
 
+        {/* ⚠★这里原来有两句说明,2026-08-09 用户点名删掉★:「全平台可见并旁听（仅活动信息）」
+            与开关打开后那句「公开的只是活动信息;材料仍然只有关联项目的成员能看」。
+            后一句当年是 PRD 专门为「公开」这个词的歧义加的 —— 现在按用户要求去掉,
+            **这条歧义的兜底只剩后端**(材料权限一律走项目成员身份,与 visibility 无关)。
+            记在这儿,免得下一个人以为是漏写的又给加回来。 */}
         <Form.Item label="公开活动">
-          <Space align="start">
-            <Switch checked={pub} onChange={setPub} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              全平台可见并旁听（仅活动信息）
-            </Typography.Text>
-          </Space>
+          <Switch checked={pub} onChange={setPub} />
         </Form.Item>
-        {pub && (
-          // ★这句不能删★:PRD 专门为「公开」这个词的歧义加过一条要求(有人以为资料也跟着公开了)。
-          // 但降成一行小字,不用 Alert 那么重。
-          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
-            公开的只是活动信息；<b>材料仍然只有关联项目的成员能看</b>。
-          </Typography.Text>
-        )}
 
         <Space>
           <Button type="primary" htmlType="submit" loading={busy}>创建活动</Button>
@@ -253,17 +337,23 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
     {/* ★右栏:参会人 + 忙闲★(原型 new 视图)。两者必须并排 ——
         选人和看他们忙不忙是**同一个决策**,分开就得来回切。 */}
     <div style={{ width: 420, flexShrink: 0 }}>
-      <Card size="small" title={`参会人（${people.length}）`} style={{ marginBottom: 12 }}>
-        {/* ★id 是给测试用的★:这个 Select 不在 Form 里,拿不到 Form 自动生成的 id,
-            而 AntD 的 placeholder 是个被交互层盖住的 <span>、类名又跟着版本变 ——
-            E2E 里唯一稳的锚就是我们自己写的 id。**可测性是产品的一部分**,不是测试的私事。 */}
-        <Select id="participants-picker" mode="tags" value={people} onChange={setPeople} onSearch={search}
-          filterOption={false} style={{ width: '100%' }} notFoundContent={null}
-          placeholder="输入用户名（没搜到也能直接输入）" options={userOpts} />
-        <Space style={{ marginTop: 8 }} wrap>
-          <ImportFromProject projects={projects} onPick={(us) =>
-            setPeople((cur) => [...new Set([...cur, ...us])])} />
-        </Space>
+      <Card size="small" title={`参会人（${people.length}）`} style={{ marginBottom: 12 }}
+        // ★批量请人只留这一颗按钮★:候选本来就是「关联项目成员的并集」,
+        // 「全请」就是这张卡片最常见的一次点击(一场组会的参会人往往正好是组里所有人)。
+        extra={peopleOpts.length > 0 && (
+          <Button type="link" size="small" onClick={() => setPeople(peopleOpts.map((o) => o.value))}>
+            全选 {peopleOpts.length} 人
+          </Button>
+        )}>
+        {/* ★候选 = 关联项目成员的并集★(2026-08-09 用户):选完项目,能请谁就已经确定了。
+            ★仍然是 tags 模式★ —— 不关联项目的活动类型(needs_project=false)候选是空的,
+            那时只能靠手输用户名;去掉 tags 会让这类活动**一个人都请不了**。
+            (平台不提供用户搜索接口,手输的真伪由后端 ensure_platform_user 判。) */}
+        <Select id="participants-picker" mode="tags" value={people} onChange={setPeople}
+          filterOption={(input, opt) => (opt?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+          style={{ width: '100%' }} notFoundContent={null}
+          placeholder={projIds.length ? '从关联项目成员里选，或直接输用户名' : '先选关联项目，或直接输用户名'}
+          options={peopleOpts} />
       </Card>
       <FreeBusyPanel users={people} range={range} />
     </div>
@@ -271,27 +361,10 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   )
 }
 
-/// 从其它项目导入成员(原型「从其它项目导入成员」)。
-/// ★为什么值得有★:一场会的参会人往往就是某个项目的组员 —— 一个个敲名字既慢又容易漏人。
-function ImportFromProject({ projects, onPick }: {
-  projects: Project[]; onPick: (usernames: string[]) => void
-}) {
-  const { message } = AntdApp.useApp()
-  const [busy, setBusy] = useState(false)
-  return (
-    <Select size="small" style={{ width: 220 }} placeholder="从其它项目导入成员" value={null}
-      loading={busy} options={projects.map((p) => ({ value: p.id, label: p.name }))}
-      onChange={async (pid) => {
-        setBusy(true)
-        try {
-          const r = await api<{ members: { username: string }[] }>(`/api/projects/${pid}/members`)
-          const us = r.members.map((m) => m.username)
-          onPick(us)
-          message.success(`已导入 ${us.length} 人`)
-        } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-      }} />
-  )
-}
+// ⚠★「从其它项目导入成员」这个控件 2026-08-09 删掉了★(用户:「不要从其他项目导入成员,
+// 直接根据关联成员的并集多选即可」)。它做的事现在由**候选列表本身**承担 ——
+// 关联项目一选定,那些人就已经在下拉里了,不需要再有一个「导入」动作。
+// 它原来批量请人的价值由卡片右上角的「全选 N 人」接手,一次点击,没有丢。
 
 /// 忙闲图(D1 的正面补偿)。
 ///
@@ -330,24 +403,36 @@ function FreeBusyPanel({ users, range }: { users: string[]; range: [string, stri
 
   return (
     <Card size="small" title="忙闲" extra={loading && <Spin size="small" />}>
-      {/* 时间刻度 */}
+      {/* 时间刻度。★最后一个刻度靠右贴齐★:它的位置是 left:100%,
+          按 left 定位会整块跑到轨道**外面**去(截图里「20:00」溢出到卡片外)。 */}
       <div style={{ display: 'flex', marginBottom: 4 }}>
         <div style={{ width: 72, flexShrink: 0 }} />
         <div style={{ position: 'relative', flex: 1, height: 14 }}>
-          {ticks().map((t) => (
-            <span key={t.h} style={{ position: 'absolute', left: t.left, fontSize: 11, color: '#bfbfbf' }}>
-              {t.h}:00
-            </span>
+          {ticks().map((t, i, arr) => (
+            <span key={t.h} style={{
+              position: 'absolute', fontSize: 11, color: '#bfbfbf', whiteSpace: 'nowrap',
+              ...(i === arr.length - 1 ? { right: 0 } : { left: t.left }),
+            }}>{t.h}:00</span>
           ))}
         </div>
       </div>
 
       {users.map((u) => (
         <div key={u} style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-          <div style={{ width: 72, flexShrink: 0, fontSize: 12, textAlign: 'right', paddingRight: 8, overflow: 'hidden' }}>
+          {/* ★用户名列要能省略★:手输的用户名可以很长,不截断就把轨道挤出卡片。 */}
+          <div style={{
+            width: 72, flexShrink: 0, fontSize: 12, textAlign: 'right', paddingRight: 8,
+            overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+          }} title={u}>
             {u}
           </div>
-          <div style={{ position: 'relative', flex: 1, height: 18, background: '#fafafa', borderRadius: 3 }}>
+          {/* ★轨道自己兜住越界★(2026-08-09 用户「其他人的忙闲超出了边界」):
+              toBar 已经把坐标夹在 0–100% 里,这里再加一层 overflow:hidden ——
+              坐标算错时宁可**画不全**,也不要糊到卡片外面去。 */}
+          <div style={{
+            position: 'relative', flex: 1, minWidth: 0, height: 18,
+            background: '#fafafa', borderRadius: 3, overflow: 'hidden',
+          }}>
             {(fb[u] ?? []).map((sp, i) => {
               const b = toBar(sp, day, pick)
               if (!b) return null
@@ -371,10 +456,9 @@ function FreeBusyPanel({ users, range }: { users: string[]; range: [string, stri
         <span><i style={{ display: 'inline-block', width: 12, height: 8, background: '#ffa39e' }} /> 冲突</span>
         <span><i style={{ display: 'inline-block', width: 12, height: 8, background: 'rgba(13,148,136,.18)', border: '1px solid #0d9488' }} /> 本次</span>
       </Space>
-      {/* ★这句不能省★:图上空着不代表真空 */}
-      <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
-        只显示{DAY_START_H}–{DAY_END_H} 点。<b>空着不等于一定有空</b>——私密项目的安排不占忙闲。
-      </Typography.Text>
+      {/* ⚠★2026-08-09 用户点名删掉「只显示 8–20 点。空着不等于一定有空——私密项目的安排不占忙闲」★。
+          那句话描述的事实没变:图上空着**仍然**不代表真空(私密项目的安排不进忙闲,D1),
+          「建议改期」依旧是这条限制唯一的结构化出口。只是这句话不再写在界面上。 */}
     </Card>
   )
 }

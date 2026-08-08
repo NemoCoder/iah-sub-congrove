@@ -250,9 +250,11 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             "SELECT title, recorder FROM activities WHERE id = $1")
             .bind(mid).fetch_one(&state.pool).await
         {
+            // ★通知只说发生了什么,不解释产品理念★(2026-08-09 用户:「这个直接通知转写完成即可」)。
+            // 原来这条还附了一段「它们是给你的原材料,正式纪要仍由你整理」——
+            // 那是**设计说明**,不是通知内容:收到通知的人正要去看,点进去自然就知道有哪几份。
             crate::notify::notify_activity(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
-                &format!("「{title}」的录制已转写完,摘要 / 分段大纲 / 决议待办都出来了 —— \
-                          它们是**给你的原材料**,正式纪要仍由你整理。")).await;
+                &format!("「{title}」的录制已转写完。")).await;
         }
     }
     Ok(())
