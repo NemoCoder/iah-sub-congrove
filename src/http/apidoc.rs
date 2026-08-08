@@ -249,7 +249,10 @@ pub async fn openapi(
 }
 
 /// 生成本体(纯函数,好单测)。
-fn build_openapi() -> serde_json::Value {
+///
+/// ★`pub` 是为了 `src/bin/openapi-dump.rs`★:接口面门禁(oasdiff)要能**离线**拿到契约,
+/// 不依赖跑起来的服务器 —— 那样它才进得了 CI,也才不用平台令牌/内网 CA。
+pub fn build_openapi() -> serde_json::Value {
     use serde_json::json;
     let mut paths = serde_json::Map::new();
     for a in APIS {
