@@ -36,8 +36,8 @@ async function nav(page: Page, name: '日程' | '项目' | '会议') {
 test.describe('M1 验收:一个人能不能把会约成', () => {
   test('★建项目 → 拉人 → 发会 → 在日历上看到它 → 点开看到链接★', async ({ page }) => {
     const tag = stamp()
-    const pname = `验收-项目-${tag}`
-    const mtitle = `验收-会议-${tag}`
+    const pname = `E2E-验收-项目-${tag}`
+    const mtitle = `E2E-验收-会议-${tag}`
     const url = `https://meeting.tencent.com/acc-${tag}`
 
     await page.goto('/')
