@@ -16,7 +16,7 @@ perm.rs 有效角色判定(**唯一推导**,别在 handler 重写角色合并)�
 (内部端点自用 + 外部端点专签预签名,checksum WhenRequired 闸)、0001 迁移(§4 全表)、
 /healthz /readyz /api/me、web/ 登录态壳(IAH 品牌页眉在 `web/src/iah-header.tsx`,保留勿删)。
 **P1 已上**(v0.2.0):空间/组/成员/授权 CRUD、内容树(防环校验)、文档在线编辑+版本历史+恢复、
-文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、**每空间配额默认 10GiB**(0002 迁移,超管 PUT /api/admin/spaces/{id}/quota 可调)、拉人/按用户授权走平台 users/exists 校验(Keycloak 真相源,可拉未登录用户;registry 不可达降级本地 app_user;拉人/授权投站内信,0094)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
+文件上传(**流式 multipart,单文件不限大小**,v0.3.0)/流式下载、配额(★M0 起按**人**算,不按项目★:`user_quota`,超管 `PUT /api/admin/users/{username}/quota`)、拉人/按用户授权走平台 users/exists 校验(Keycloak 真相源,可拉未登录用户;registry 不可达降级本地 app_user;拉人/授权投站内信,0094)、审计、超管面;自有 logo(汇流入林,web/src/logo.tsx,
 favicon 在 index.html **两处同步**)。**P2 已上**(v0.3.5):>100MB/视频浏览器直传 Garage(begin 签全部 part→分片 PUT 收 ETag→服务端 complete;失败 abort+24h 兜底清扫;501 回退后端流式);video 面板 <video> 播放(/play 判权 302 预签名 GET,Range 拖动)。
 **P2 收尾**(v0.3.33):**断点续传**——items 记 `upload_fp`(大小+改动时间+文件名)与 `upload_id`(迁移 0009),
 begin 带指纹来就认领「本人 24h 内没传完的同一个文件」,已传分片问 S3 的 ListParts 要、前端只补缺的;
@@ -52,30 +52,53 @@ complete 的分片清单**以 ListParts 为准**(续传时前端手里没有旧�
 以及**整个公开分享面**全漏 —— 结果是「删进回收站的材料,墙外的公开链接照样列得出、下得到」。
 v0.3.55 一次补齐 11 处。以后新增任何读 items 的查询,先问这一句加了没有。
 
-## ★下一步是一次产品转向:知识库 → 项目 + 会议协同(2026-08-06 需求已确认)★
+## ★v0.5 M0 已上线(2026-08-09,v0.4.59)——「会议」→「活动」重构完成★
 
-**先读 `docs/` 三份文档再动任何与此相关的代码**:
+**先读 `docs/adr/README.md`,它是决策的索引**(5 份 ADR,每份一到两页)。
+实施顺序与各 PR 门禁在 `docs/M0-PLAN.md`;原型对照结论在 `docs/PROTOTYPE-DIFF-M0.md`。
+⚠ 老的 `TECH-DESIGN-v0.5-M0.md` 已删 —— 它是那份送审八轮、涨到 1131 行的文档,
+教训写在 `docs/adr/README.md` 的「不写什么」一节:★关于代码的断言不写进文档,写成可执行门禁★。
 
-| 文档 | 是什么 |
+M0 改了什么(全部已上线):
+
+| ADR | 决策 |
 |---|---|
-| `docs/PRD-meetings.md` | 需求文档 v0.3,**17 个设计决策 D0~D16**,含被否决的备选与理由 |
-| `docs/STORY-MAP.md` | 用户故事地图,八站旅程 + 五期切片(M1~M5),每期都是能走通的闭环 |
-| `docs/PRD-decisions-log.md` | 沿八站**逐条确认**的记录(用户亲口拍板的结论,不记论证) |
+| 0001 | ★上线前每次部署清库重建★,`migrations/` 永远只有一个 `0001_init.sql`,可以随便改 |
+| 0002 | 「会议」→「活动」;新增 `activity_types` + 三个能力位,★类型决定表单★ |
+| 0003 | 「补录」判据存 `notified_at` **事实**,不用会随改期翻转的推导 |
+| 0004 | ★配额从项目挪到人★(`user_quota`),用量算 owner 名下所有项目、同 owner 按 blob 去重 |
+| 0005 | 项目分 `team`/`materials`;材料区隔离靠 `effective_role` **单点否决** |
 
-**新增能力**:日历/会议/邀请应答/忙闲冲突、会前材料与线上链接、会议讨论区、
-**会议记录员 + 固定模板纪要 + LaTeX 出 PDF**、归档到项目、统计、搜索。
+★另外两条语义换了定义,读老代码/老文档时注意★:
+- `is_private` = **活动自己的** `visibility != 'public'`(不再是「所有关联项目都不 public」);
+- 忙闲判据 = **活动自己的 `busy`**(不再是「有没有关联到公开项目」)。
+  `projects.visibility` 这一列**已删** —— 它原本兼着「内容给谁看」与「占不占忙闲」两件正交的事。
 
-★**三条会推翻现有实现的重构,必须在 M1 一次做完、不留兼容层**★:
+## ★五道机械门禁(改代码前先知道它们存在)★
 
-1. **`spaces` → `projects`**(D0):「空间」更名并重构为「项目」,新增**唯一 owner**(主持人);
-   项目分 **team / personal** 两类(D1)——个人项目的日程**不产生忙闲、对外完全隐形**。
-2. **删掉 `groups` / `group_members`**(D12):权限**只到具体的人**,
-   `perm.rs` 的 `max(直接授权, 组授权)` 简化为一次成员表查询。
-3. **权限唯一来源 = 当前项目成员身份**(D3):加入即可见全部历史,离开即失去全部
-   (**含他本人参与过的会议**)。★因此绝不能加「授权生效时间」字段★,那会把模型退回历史累积;
-   ★移出成员时必须连带撤销他创建的公开分享链接★,否则 R1 有后门。
+| 闸 | 命令 | 判据 |
+|---|---|---|
+| SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) |
+| schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` |
+| 旧命名 | `scripts/no-meeting.sh --all` | 非注释、未豁免的 `meeting` 残留归零(★已进 CI★) |
+| 响应体 | `node e2e/golden-diff.mjs <before> <after>` | 差异逐字节等于 `e2e/golden/expected.diff` |
+| 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` |
 
-**平台侧已立项配合**:共享 LaTeX 编译服务(群消息 #119),congrove **镜像不用装 TeX**,只提交 tex。
+连库:`source ~/.config/iah/congrove-dev.env`(DSN + 口令,**仓库外**)。
+★`--pre` 是 PREPARE 闸最值钱的用法★:先施加 schema 变更、跑全量检查、最后 ROLLBACK,
+于是「这个改动会打断哪些 SQL」由**数据库穷举** —— M0 全程没手数过一次清单。
+
+⚠★两条使用纪律★:①进不了 CI 的闸(要活库/内网 CA)必须在 PR 里**如实标注人工验证**,
+不许标成「CI 绿」;②★每道闸都要能证明自己跑起来了★ —— 本仓库栽过五次
+「工具没跑 → 输出为空 → 报绿」,详见 `docs/M0-PLAN.md`。
+
+## 待平台的三条(卡着才补得上)
+
+| # | 问题 | 挡住什么 |
+|---|---|---|
+| O2 | CI 挂一个测试 PG | PREPARE 闸与 schema 闸进不了 CI ——★五道闸现在只有一道在 CI 里★ |
+| O4 | 共享 runner 装 `oasdiff` | 接口面闸**本来就能进 CI**(离线生成契约、不连库),卡在没这个二进制 |
+| O3b | 两个专用 E2E 账号 | 「加入即可见/离开即失去」等 2 条 E2E 暂跳过 |
 
 ## 命令
 
@@ -92,13 +115,32 @@ cd web && pnpm typecheck             # ⚠ 平台构建管道零类型检查,改
 `POST registry.ruciah.com/api/subsystems/congrove/deploy` 首次部署 + `autobuild:true` 挂 webhook,
 之后 push 到通道分支即自动构建。构建失败唯一入口 `GET .../build-log?channel=dev`(不进 Loki);
 dev 库改 schema 可走 `POST .../db/sql`(dev-only,prod 403)。API 都带个人令牌(门户「日志」页生成)。
-**迁移纪律:只增不改**(sqlx::migrate! 校验和,改已应用的文件 = 全部实例启动失败),变更开新文件写 ALTER。
-★2026-08-05 重建过一次★:用户把部署连同 PG/OSS 全删后,0001~0009 压成了单个 `0001_init.sql`
-(那是唯一能破例的时刻——没有任何实例的 `_sqlx_migrations` 里还有记录)。**从那版起纪律恢复**,
-以后一律开新文件写 ALTER,别再想着「反正能重建」。当前:0001 建表 / 0002 分享令牌 /
-0003 公开分享(share_links·share_visits)/ 0004 软删除+去重(share_items)/ 0005 sha_verified+upload_key /
-0006 提取码失败计数(share_visits.ok)。
-sqlx 全用 runtime 查询(无 `query!` 宏):SQL 错误只在运行时炸,加字段后手动核对 FromRow/类型。
+★**迁移纪律已变**(ADR-0001,2026-08-08 liaoruili 定)★:上线前**每次部署都清库重建**,
+`migrations/` 里**永远只有一个 `0001_init.sql`**,它可以随便改;不写 0002、不写 ALTER。
+理由是 congrove 还没有 prod 通道、没有任何要保护的数据,而「只增不改」这条纪律
+**存在的唯一理由**就是保护已有实例的数据。清库是**五条**不是两条,少一条 pod 起不来:
+
+```sql
+DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+GRANT ALL ON SCHEMA public TO sub_congrove_dev;      -- ★app 角色★
+ALTER SCHEMA public OWNER TO sub_congrove_dev;       -- ★交回去★
+GRANT ALL ON SCHEMA public TO sub_congrove_dev_cli;  -- 门禁脚本还要连
+```
+⚠ 后两条是承重的:清库用的是 `_cli` 角色,`CREATE SCHEMA` 会让新 schema 归它所有,
+app 角色一点权限都没有 → `no schema has been selected to create in` → CrashLoopBackOff。
+★报错文案指向 search_path,真凶是 ACL。★
+
+⚠★用特性分支部 dev 之后必须把 ref 改回 `dev`★:`POST /deploy {ref:...}` 会把记录里的 ref
+改掉并留在那里,之后 CI 的 `ci-deploy` 沿用它 —— **每次合并到 dev 构建的都是那个过期分支**,
+而且完全静默(gate 绿、deploy 绿、构建成功,只有线上版本不变)。
+
+★prod 通道一旦开出来,ADR-0001 当场失效★,立刻回到「只增不改」。
+
+sqlx 全用 runtime 查询(无 `query!` 宏)→ **改 SQL 编译器不报错**。
+★但这已经不是「只能靠人肉核对」了★:`scripts/sql-prepare-check.py` 把全部 SQL 字面量
+抽出来逐条对真库 `PREPARE`,覆盖率 100% 且不依赖测试覆盖到哪些路径。改完 SQL 跑它。
+⚠ 它**抓不到** Rust 侧解码类型与列类型不匹配(`query_as::<_, (String,String)>` 拿到 int8
+仍会运行时炸)—— 加字段后 FromRow/元组元数仍要手工核对。
 
 ## 架构决策(详证据见 DESIGN.md §3,别重新论证)
 
