@@ -187,7 +187,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         {d.can_edit && !canceled && (
           <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
             onConfirm={async () => {
-              try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load() } catch (e) { /* 失败由下方错误区呈现 */ }
+              try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load(true) } catch (e) { /* 失败由下方错误区呈现 */ }
             }}>
             <Button size="small" danger>取消活动</Button>
           </Popconfirm>
@@ -324,13 +324,17 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
-              canHost={!!d.can_edit && !canceled} onDone={load} />
+              // ★静默刷新★(2026-08-09 liaoruili:「参会人点击催办的时候页面抖动」):
+              // 催办 / 移出 / 加人 全走这一个回调,而 `load()` 不带参数 = 非静默,
+              // 于是整块详情被 <Spin/> 换掉再换回来。★这是同一个根因的第三处★
+              // (前两处:点开关、点转写)—— 「刷新数据」和「重建界面」是两件事。
+              canHost={!!d.can_edit && !canceled} onDone={() => load(true)} />
           )}
           {/* ★发起人不出「我的答复」★(2026-08-09 用户):他是定这个时间的人,
               create 时就是 accepted。让他答复等于允许「拒绝自己发起的活动」这种
               自相矛盾的状态。想改时间直接改、去不了就取消 —— 后端也会拒。 */}
           {!canceled && m.my_status && m.organizer !== me
-            && <RespondCard id={id} mine={m.my_status} onDone={load} />}
+            && <RespondCard id={id} mine={m.my_status} onDone={() => load(true)} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
         </div>
       </div>
@@ -602,6 +606,11 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
   const [kind, setKind] = useState<'attendee' | 'guest'>('attendee')
   const [found, setFound] = useState<{ username: string; name: string | null }[]>([])
   const [busy, setBusy] = useState(false)
+  /// ★选中/回车之后收起下拉★(2026-08-09 liaoruili:「添加参会人 回车后,下拉框还不消失」)。
+  /// tags 模式默认「加完一个继续开着」,那是为连着输很多人准备的;
+  /// 但候选列表挂在输入框下面**盖住了「参会人 / 临时参会人」那个下拉和确定按钮** ——
+  /// 加完一个人还得先点一下别处才能继续。与关联项目那处用同一套做法。
+  const [dropOpen, setDropOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const search = (kw: string) => {
@@ -630,6 +639,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
     <Modal open title="添加参会人" onCancel={() => setOpen(false)} onOk={submit} confirmLoading={busy} okText="添加">
       <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
         <Select mode="tags" value={picked} onChange={setPicked} onSearch={search} filterOption={false}
+          open={dropOpen} onDropdownVisibleChange={setDropOpen} onSelect={() => setDropOpen(false)}
           style={{ width: '100%' }} placeholder="输入用户名（没搜到也能直接输入）" notFoundContent={null}
           options={found.map((u) => ({ value: u.username, label: showUser(u.username, u.name) }))} />
         <Select value={kind} onChange={setKind} style={{ width: '100%' }}

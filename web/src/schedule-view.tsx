@@ -102,8 +102,10 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
     [items, nightOpen, ],
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /// `silent=true` 不掀 loading —— 见 activity-detail 里同名函数的那段。
+  /// ★「待我处理」就地答复走的就是它★:不静默的话答一条整页塌一下(2026-08-09 同一族)。
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       // ⚠★原来这里写死 7 天★:月视图于是只加载了一周的数据,后面三周永远是空的
       //   —— 而它看起来「就是没安排」,没有任何报错。(2026-08-09 改月视图时发现。)
@@ -114,7 +116,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
       message.error((e as Error).message)
       setItems([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [days, message])
   useEffect(() => { void load() }, [load])
@@ -394,7 +396,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
 
       {/* 右栏:待我处理 + 公开活动广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load()} style={{ width: 320 }} />
+      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load(true)} style={{ width: 320 }} />
 
       <PublicBoard onOpen={onOpenActivity} />
       </div>
