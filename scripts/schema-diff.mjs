@@ -38,6 +38,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 
 const TOKEN = process.env.IAH_TOKEN
 if (!TOKEN) { console.error('缺 IAH_TOKEN（门户「日志」页生成的个人令牌）'); process.exit(2) }
@@ -57,18 +58,18 @@ async function sql(text) {
 
 // ── 改名映射：长的先替，否则 `meeting_id` 会被 `meeting` 的规则先啃掉 ──
 const RENAMES = [
-  ['meeting_id', 'activity_id'],
-  ['meeting_projects', 'activity_projects'],
-  ['meeting_participants', 'activity_participants'],
-  ['meeting_messages', 'activity_messages'],
-  ['meeting_minutes', 'activity_minutes'],
-  ['meeting_reads', 'activity_reads'],
-  ['meeting_link_history', 'activity_link_history'],
-  ['meetings', 'activities'],
+  ['meeting_id', 'activity_id'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_projects', 'activity_projects'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_participants', 'activity_participants'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_messages', 'activity_messages'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_minutes', 'activity_minutes'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_reads', 'activity_reads'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meeting_link_history', 'activity_link_history'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
+  ['meetings', 'activities'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
   // 索引/约束名里的缩写
   ['idx_mpj_', 'idx_apj_'], ['idx_mp_', 'idx_ap_'], ['idx_mm_', 'idx_am_'],
   ['idx_mlh_', 'idx_alh_'], ['idx_mr_', 'idx_ar_'],
-  ['meeting', 'activity'],
+  ['meeting', 'activity'],   // no-meeting:allow —— ★改名映射表本身，改了映射就没了★
 ]
 const rn = (s) => RENAMES.reduce((a, [x, y]) => a.split(x).join(y), s)
 
@@ -155,8 +156,12 @@ async function snapshot(schema) {
 
 console.error(`老 schema（★取自 ${BASE_SHA}★）：${OLD.length} 个迁移`)
 console.error(`新 schema（工作树）：${NEW.length} 个迁移`)
-if (OLD.length === NEW.length && OLD.every((f, i) => f === NEW[i]) && BASE_SHA === 'HEAD') {
-  console.error('⚠ 两侧同源，这次比对没有意义'); process.exit(2)
+// ★同源守卫比**内容**，不比参数长什么样★：原来写的是 `BASE_SHA === 'HEAD'`，
+//   于是 `SCHEMA_BASE_SHA=$(git rev-parse HEAD)` 就绕过去了、空绿。
+{
+  const h = (x) => crypto.createHash('sha256').update(x).digest('hex')
+  const oldH = h(OLD.map(readOld).join('\0')), newH = h(NEW.map(readNew).join('\0'))
+  if (oldH === newH) { console.error('⚠ 两侧内容完全相同，这次比对没有意义'); process.exit(2) }
 }
 let A0, B0
 try {
@@ -174,6 +179,26 @@ try {
 //    「归一化必须对称」这条，两个脚本各踩一次，记在这里免得第三次。
 const norm = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [rn(k), rn(v)]))
 const A = norm(A0), B = norm(B0)
+
+// ══════ ★「你什么都没做」也必须红★（2026-08-08 评审抓出来的，这是本脚本最大的盲区）══════
+//
+// 这个脚本的比对是**改名归一化之后**做的（`rn()` 两侧都过），所以
+// ★「你根本没改名」在归一化之后完全不可见★ —— 把 0001~0007 原样 cat 成一个 0001、
+// 一处不改名、一张新表不建，它照样打印「门禁通过」。实测确认过。
+//
+// 根因是它的判定形状：**只能证明「你没弄丢东西」，永远证明不了「你做了你说要做的事」。**
+// 所以要另外加两条正向断言：
+//   ① 新侧必须**真的**出现每一条 EXPECTED_ADDS（三张新表、新列、新索引一个都不能少）；
+//   ② 新侧必须**不再**出现改名前的表名（`meetings`/`meeting_*`）。
+function positiveChecks(B) {
+  const miss = []
+  for (const e of EXPECTED_ADDS) {
+    if (!Object.keys(B).some((k) => e.m.test(bare(k)))) miss.push(`${e.m}  —— ${e.why}`)
+  }
+  // 新侧还留着旧表名 = 根本没改名
+  const stale = Object.keys(B).filter((k) => /(^|[^a-z])meetings?([^a-z]|$)/i.test(bare(k)))
+  return { miss, stale }
+}
 
 const bare = (k) => k.replace(/^(列|索引|约束) /, '')
 const dropped = [], added = [], changed = [], ok = []
@@ -193,7 +218,18 @@ show('只在老库有 —— 你把它弄丢了', dropped, ([k, a]) => `${k}\n  
 show('只在新库有 —— 没写进 EXPECTED_ADDS', added, ([k, b]) => `${k}\n      新: ${b}`)
 show('定义变了 —— 没写进 EXPECTED_CHANGES', changed, ([k, a, b]) => `${k}\n      老: ${a}\n      新: ${b}`)
 
-const bad = dropped.length + added.length + changed.length
+// ★正向断言：光「没丢东西」不算过★
+const { miss, stale } = positiveChecks(B0)   // ★用**未归一化**的新侧★，否则旧表名会被 rn() 抹掉
+if (miss.length) {
+  console.error(`\n★${miss.length} 条 EXPECTED_ADDS **在新 schema 里根本不存在**★（= 你没建它们）：`)
+  for (const m of miss) console.error('  ✗ ' + m)
+}
+if (stale.length) {
+  console.error(`\n★新 schema 里还留着 ${stale.length} 处改名前的表名★（= 你没改名）：`)
+  for (const k of stale.slice(0, 10)) console.error('  ✗ ' + k)
+}
+
+const bad = dropped.length + added.length + changed.length + miss.length + stale.length
 if (bad) {
   console.error(`\n★${bad} 项未声明的差异 —— 门禁不通过★`)
   console.error('「只在老库有」优先看：它默认就是「重写建表脚本时弄丢了东西」，')
