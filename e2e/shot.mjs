@@ -47,7 +47,7 @@ if (Array.isArray(ps)) for (const x of ps) if (/^(E2E-|演示)/.test(x.name)) aw
 const pid = (await call('/api/projects', { method: 'POST', data: { name: '演示·课题组 计量经济学', visibility: 'public' } }))?.id
 await call('/api/projects', { method: 'POST', data: { name: '演示·私下组队', visibility: 'private' } })
 const now = Date.now()
-const mk = (title, hOffset, durH, extra = {}) => call('/api/activities', { method: 'POST', data: {
+const mk = (title, hOffset, durH, extra = {}) => call('/api/activities', { method: 'POST', data: { type_id: 1,
   title, recorder: 'e2e', project_ids: [pid],
   starts_at: new Date(now + hOffset * 3600e3).toISOString(),
   ends_at: new Date(now + (hOffset + durH) * 3600e3).toISOString(),

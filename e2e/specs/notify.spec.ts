@@ -7,6 +7,7 @@
 //   ② ★通知点进去要能到那场会★ —— `?activity=<id>` 深链落地在活动上，
 //      而不是首页让人自己去找是哪一场（那样通知只完成了一半）。
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -20,6 +21,7 @@ async function newActivity(req: APIRequestContext, pid: number, title: string) {
   const now = Date.now()
   const r = await req.post('/api/activities', {
     data: {
+      type_id: 会议,
       title, recorder: 'e2e',
       starts_at: new Date(now + 3600_000).toISOString(),
       ends_at: new Date(now + 7200_000).toISOString(),
@@ -123,6 +125,7 @@ test.describe('公开活动广场:只列我还没有关系的会', () => {
     const now = Date.now()
     const r = await request.post('/api/activities', {
       data: {
+        type_id: 会议,
         title: `E2E 我发起的公开会 ${now}`, recorder: 'e2e', visibility: 'public',
         starts_at: new Date(now + 3600_000).toISOString(),
         ends_at: new Date(now + 7200_000).toISOString(),

@@ -118,6 +118,8 @@ const prvPid = must((await j(R.post(`${BASE}/api/projects`, { data: { name: `${t
 
 const mk = async (title, projectIds, extra) => must((await j(R.post(`${BASE}/api/activities`, {
   data: {
+    // ★预置「会议」类型★（id 见 specs/_presets.ts 的说明：部署纪律保证它恒为 1）
+    type_id: 1,
     title: `${tag}-${title}`, recorder: 'e2e', project_ids: projectIds,
     starts_at: iso(3600e3), ends_at: iso(7200e3),
     agenda: '议题一\n议题二', location: '明德 1016', online_url: 'https://activity.example/x',
@@ -206,11 +208,11 @@ await shot('share.visitor', `/pub/share/${share.token}`)               // ★访
 await shot('apis', '/api/_dev/apis')                                  // e2e 非超管 → 403，钉住这个事实
 
 // ── 「该被拒」的（★错误码与文案也是契约★，而且它们是 M0 明确要改的，见 golden-diff 的白名单）──
-await shot('deny.activity.past', '/api/activities', post({
+await shot('deny.activity.past', '/api/activities', post({ type_id: 1,
   title: `${tag}-过去`, recorder: 'e2e', project_ids: [pubPid],
   starts_at: iso(-86400e3), ends_at: iso(-82800e3),
 }))
-await shot('deny.activity.noproject', '/api/activities', post({
+await shot('deny.activity.noproject', '/api/activities', post({ type_id: 1,
   title: `${tag}-无项目`, recorder: 'e2e', project_ids: [],
   starts_at: iso(3600e3), ends_at: iso(7200e3),
 }))

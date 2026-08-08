@@ -39,7 +39,12 @@ test.describe('发起活动表单', () => {
   test('关联项目只列出我有编辑权的', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('button', { name: /发起活动/ }).click()
-    await page.locator('.ant-form-item').filter({ hasText: '关联项目' }).locator('.ant-select').click()
+    // ⚠★别用 hasText 定位表单项★(2026-08-08 踩的):M0-4 给「活动类型」加了能力位徽章,
+    //   徽章文字是「须关联项目 / 可不关联项目」—— 也含「关联项目」,于是这个定位器
+    //   同时命中两栏、strict mode 直接报错。按 **label 精确匹配**才稳。
+    await page.locator('.ant-form-item')
+      .filter({ has: page.getByText('关联项目', { exact: true }) })
+      .locator('.ant-select').click()
     // 至少要有候选 —— 一个都没有的话,这个必填项同样会把人卡死
     await expect(page.locator('.ant-select-dropdown:visible .ant-select-item-option').first()).toBeVisible()
   })

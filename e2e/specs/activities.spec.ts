@@ -6,6 +6,7 @@
 // 前置:E2E key(第一层)+ congrove v0.3.60 起的第二层(信任平台注入的身份头)。
 // 身份固定是 `e2e` 这个用户,由平台网关注入;它在 congrove 里是普通用户(除非进了超管白名单)。
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -21,6 +22,7 @@ async function newActivity(req: APIRequestContext, projectIds: number[], extra: 
   const now = Date.now()
   const r = await req.post('/api/activities', {
     data: {
+      type_id: 会议,
       title: `E2E 活动 ${now}`,
       recorder: 'e2e',
       starts_at: new Date(now + 3600_000).toISOString(),
@@ -152,23 +154,32 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
     expect(body).not.toContain('这个标题不该出现在忙闲里')
   })
 
-  test('★私密项目的会完全隐形★', async ({ request }) => {
+  // ★2026-08-08 M0-1 换判据（PRD A4）★：忙闲不再看「项目公不公开」，看**活动自己的 `busy`**。
+  //
+  // 旧行为是「私密项目的会完全隐形」。它把两件**正交**的事绑成了一件 ——
+  // 「内容给谁看」与「我这个时段有没有空」。后者本来就不泄露任何内容，
+  // 而绑在一起的后果是：私密项目的会不占忙闲成了默认，别人永远约得到你、你却真在开会。
+  // 新模型：占不占由用户**逐条**控制（类型给初值），想隐身就把 `busy` 关掉。
+  test('★忙闲由活动自己的 busy 决定，与项目可见性无关★', async ({ request }) => {
     const { from, to } = window_()
     const before = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
+    // 「私密」项目（该列已删，传了也是空操作）里的会，照样产生忙块 —— 因为 busy 默认 true
     const pid = await newProject(request, `E2E-私密忙闲-${Date.now()}`, 'private')
     const m = await newActivity(request, [pid])
     expect(m.status()).toBe(200)
     const after = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
-    // 私事连「我忙」这件事都不该暴露 —— 别人看到的是「空闲」。
-    // ★这不是漏洞是刻意的★,代价由「建议改期」与当事人侧的标红提醒兜住(D1 三条硬要求)。
-    expect(after.busy.e2e.length, '私密项目的会产生了忙闲 = D1 的隐私分流失效').toBe(before.busy.e2e.length)
+    expect(
+      after.busy.e2e.length,
+      '★项目「私密」不该再让活动隐身★（A4：忙闲归活动自己的 busy）',
+    ).toBeGreaterThan(before.busy.e2e.length)
   })
 
   test('★列表要正确标出私密/公开★(is_private 必须由 SQL 算出来)', async ({ request }) => {
-    const priv = await newProject(request, `E2E-标色私密-${Date.now()}`, 'private')
-    const pub = await newProject(request, `E2E-标色公开-${Date.now()}`, 'public')
-    const { id: mPriv } = await (await newActivity(request, [priv])).json()
-    const { id: mPub } = await (await newActivity(request, [pub])).json()
+    // ★判据换成活动自己的 visibility★（M0-1，PRD J4）：项目那一列已删，
+    // 所以这里改成造**两个可见性不同的活动**，而不是两个可见性不同的项目。
+    const pid = await newProject(request, `E2E-标色-${Date.now()}`)
+    const { id: mPriv } = await (await newActivity(request, [pid], { visibility: 'private' })).json()
+    const { id: mPub } = await (await newActivity(request, [pid], { visibility: 'public' })).json()
     const from = new Date(Date.now() - 3600_000).toISOString()
     const to = new Date(Date.now() + 86400_000).toISOString()
     const list = await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()
@@ -176,8 +187,8 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
     // ★这条防的是一个静默 bug★:字段在结构体里声明了、SQL 却没算,
     // #[sqlx(default)] 会安静地给 false —— 于是私密项目的会在日历上显示成公开色,
     // D1 的隐私提示当场失效,而且没有任何报错。2026-08-07 我就这么写错过一次。
-    expect(f(mPriv)?.is_private, '私密项目的会没被标成私密').toBe(true)
-    expect(f(mPub)?.is_private, '公开项目的会被误标成私密').toBe(false)
+    expect(f(mPriv)?.is_private, '私密活动没被标成私密').toBe(true)
+    expect(f(mPub)?.is_private, '公开活动被误标成私密').toBe(false)
   })
 
   test('忙闲查询要挡住离谱参数', async ({ request }) => {

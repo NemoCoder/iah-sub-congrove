@@ -1,0 +1,661 @@
+{
+  "me": {
+    "status": 200,
+    "body": {
+      "direct_upload_endpoint": "https://s3api.ruciah.com",
+      "email": null,
+      "is_super": false,
+      "name": "e2e",
+      "username": "e2e"
+    }
+  },
+  "projects": {
+    "status": 200,
+    "body": {
+      "<len>": 4,
+      "<of>": [
+        {
+          "archived_at": null,
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "description": "",
+          "hotwords": "",
+          "id": "<id>",
+          "my_role": "admin",
+          "name": "<gen>",
+          "no_download": false,
+          "quota_bytes": 10737418240,
+          "used_bytes": 0
+        },
+        {
+          "archived_at": null,
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "description": "",
+          "hotwords": "",
+          "id": "<id>",
+          "my_role": "admin",
+          "name": "<gen>",
+          "no_download": false,
+          "quota_bytes": 10737418240,
+          "used_bytes": 7000
+        },
+        {
+          "archived_at": null,
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "description": "",
+          "hotwords": "",
+          "id": "<id>",
+          "my_role": "admin",
+          "name": "<gen>",
+          "no_download": false,
+          "quota_bytes": 10737418240,
+          "used_bytes": 9000
+        }
+      ]
+    }
+  },
+  "project.detail": {
+    "status": 200,
+    "body": {
+      "created_at": "<ts>",
+      "created_by": "e2e",
+      "description": "",
+      "id": "<id>",
+      "my_role": "admin",
+      "name": "<gen>",
+      "pending_transfer": null
+    }
+  },
+  "project.members": {
+    "status": 200,
+    "body": {
+      "members": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "added_at": "<ts>",
+            "added_by": "e2e",
+            "name": "e2e",
+            "role": "admin",
+            "username": "e2e"
+          }
+        ]
+      },
+      "owner": "e2e"
+    }
+  },
+  "project.stats": {
+    "status": 200,
+    "body": {
+      "accept_rate": 0,
+      "accepted": 0,
+      "activities": 0,
+      "avg_hours_per_person": null,
+      "dedup_note": "一场会可关联多个项目,本数字按「活动 × 项目」展开;跨项目求总数须按活动去重(D6)",
+      "hours": 0,
+      "hours_by_source": {
+        "manual": 0,
+        "recording": 0,
+        "scheduled": 0
+      },
+      "invited": 0,
+      "minutes_done": 0,
+      "range": "quarter"
+    }
+  },
+  "project.items": {
+    "status": 200,
+    "body": {
+      "<len>": 2,
+      "<of>": [
+        {
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "id": "<id>",
+          "kind": "file",
+          "mime": "text/plain",
+          "name": "a.txt",
+          "parent_id": null,
+          "size": 5000,
+          "updated_at": "<ts>"
+        },
+        {
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "id": "<id>",
+          "kind": "file",
+          "mime": "text/plain",
+          "name": "b.txt",
+          "parent_id": null,
+          "size": 3000,
+          "updated_at": "<ts>"
+        }
+      ]
+    }
+  },
+  "project.trash": {
+    "status": 200,
+    "body": {
+      "<len>": 1,
+      "<of>": [
+        {
+          "deleted_at": "<ts>",
+          "deleted_by": "e2e",
+          "id": "<id>",
+          "kind": "file",
+          "mime": "text/plain",
+          "name": "c.txt",
+          "size": 1000
+        }
+      ]
+    }
+  },
+  "activities.list": {
+    "status": 200,
+    "body": {
+      "<len>": 4,
+      "<of>": [
+        {
+          "actual_minutes": null,
+          "agenda": "议题一\n议题二",
+          "created_at": "<ts>",
+          "ends_at": "<ts>",
+          "id": "<id>",
+          "is_private": false,
+          "location": "明德 1016",
+          "minutes_status": null,
+          "my_status": "accepted",
+          "no_download": false,
+          "no_share": false,
+          "online_url": "https://activity.example/x",
+          "organizer": "e2e",
+          "participant_count": 1,
+          "projects": {
+            "<len>": 1,
+            "<of>": [
+              {
+                "id": "<id>",
+                "name": "<gen>"
+              }
+            ]
+          },
+          "recorder": "e2e",
+          "starts_at": "<ts>",
+          "status": "active",
+          "timezone": "Asia/Shanghai",
+          "title": "<gen>",
+          "visibility": "public"
+        },
+        {
+          "actual_minutes": null,
+          "agenda": "议题一\n议题二",
+          "created_at": "<ts>",
+          "ends_at": "<ts>",
+          "id": "<id>",
+          "is_private": false,
+          "location": "明德 1016",
+          "minutes_status": null,
+          "my_status": "accepted",
+          "no_download": false,
+          "no_share": true,
+          "online_url": "https://activity.example/x",
+          "organizer": "e2e",
+          "participant_count": 1,
+          "projects": {
+            "<len>": 1,
+            "<of>": [
+              {
+                "id": "<id>",
+                "name": "<gen>"
+              }
+            ]
+          },
+          "recorder": "e2e",
+          "starts_at": "<ts>",
+          "status": "active",
+          "timezone": "Asia/Shanghai",
+          "title": "<gen>",
+          "visibility": "public"
+        },
+        {
+          "actual_minutes": null,
+          "agenda": "议题一\n议题二",
+          "created_at": "<ts>",
+          "ends_at": "<ts>",
+          "id": "<id>",
+          "is_private": true,
+          "location": "明德 1016",
+          "minutes_status": null,
+          "my_status": "accepted",
+          "no_download": false,
+          "no_share": false,
+          "online_url": "https://activity.example/x",
+          "organizer": "e2e",
+          "participant_count": 1,
+          "projects": {
+            "<len>": 1,
+            "<of>": [
+              {
+                "id": "<id>",
+                "name": "<gen>"
+              }
+            ]
+          },
+          "recorder": "e2e",
+          "starts_at": "<ts>",
+          "status": "active",
+          "timezone": "Asia/Shanghai",
+          "title": "<gen>",
+          "visibility": "private"
+        },
+        {
+          "actual_minutes": null,
+          "agenda": "议题一\n议题二",
+          "created_at": "<ts>",
+          "ends_at": "<ts>",
+          "id": "<id>",
+          "is_private": true,
+          "location": "明德 1016",
+          "minutes_status": null,
+          "my_status": "accepted",
+          "no_download": true,
+          "no_share": false,
+          "online_url": "https://activity.example/x",
+          "organizer": "e2e",
+          "participant_count": 1,
+          "projects": {
+            "<len>": 1,
+            "<of>": [
+              {
+                "id": "<id>",
+                "name": "<gen>"
+              }
+            ]
+          },
+          "recorder": "e2e",
+          "starts_at": "<ts>",
+          "status": "active",
+          "timezone": "Asia/Shanghai",
+          "title": "<gen>",
+          "visibility": "private"
+        }
+      ]
+    }
+  },
+  "activity.detail": {
+    "status": 200,
+    "body": {
+      "activity": {
+        "actual_minutes": null,
+        "agenda": "议题一\n议题二",
+        "created_at": "<ts>",
+        "ends_at": "<ts>",
+        "id": "<id>",
+        "is_private": true,
+        "location": "明德 1016",
+        "minutes_status": null,
+        "my_status": "accepted",
+        "no_download": true,
+        "no_share": false,
+        "online_url": "https://activity.example/x",
+        "organizer": "e2e",
+        "participant_count": 0,
+        "projects": null,
+        "recorder": "e2e",
+        "starts_at": "<ts>",
+        "status": "active",
+        "timezone": "Asia/Shanghai",
+        "title": "<gen>",
+        "visibility": "private"
+      },
+      "can_edit": true,
+      "participants": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "counter_ends_at": null,
+            "counter_reason": null,
+            "counter_starts_at": null,
+            "kind": "attendee",
+            "name": "e2e",
+            "required": true,
+            "responded_at": "<ts>",
+            "status": "accepted",
+            "username": "e2e"
+          }
+        ]
+      },
+      "projects": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "id": "<id>",
+            "name": "<gen>"
+          }
+        ]
+      }
+    }
+  },
+  "activity.detail.b": {
+    "status": 200,
+    "body": {
+      "activity": {
+        "actual_minutes": null,
+        "agenda": "议题一\n议题二",
+        "created_at": "<ts>",
+        "ends_at": "<ts>",
+        "id": "<id>",
+        "is_private": false,
+        "location": "明德 1016",
+        "minutes_status": null,
+        "my_status": "accepted",
+        "no_download": false,
+        "no_share": true,
+        "online_url": "https://activity.example/x",
+        "organizer": "e2e",
+        "participant_count": 0,
+        "projects": null,
+        "recorder": "e2e",
+        "starts_at": "<ts>",
+        "status": "active",
+        "timezone": "Asia/Shanghai",
+        "title": "<gen>",
+        "visibility": "public"
+      },
+      "can_edit": true,
+      "participants": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "counter_ends_at": null,
+            "counter_reason": null,
+            "counter_starts_at": null,
+            "kind": "attendee",
+            "name": "e2e",
+            "required": true,
+            "responded_at": "<ts>",
+            "status": "accepted",
+            "username": "e2e"
+          }
+        ]
+      },
+      "projects": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "id": "<id>",
+            "name": "<gen>"
+          }
+        ]
+      }
+    }
+  },
+  "activity.detail.c": {
+    "status": 200,
+    "body": {
+      "activity": {
+        "actual_minutes": null,
+        "agenda": "议题一\n议题二",
+        "created_at": "<ts>",
+        "ends_at": "<ts>",
+        "id": "<id>",
+        "is_private": true,
+        "location": "明德 1016",
+        "minutes_status": null,
+        "my_status": "accepted",
+        "no_download": false,
+        "no_share": false,
+        "online_url": "https://activity.example/x",
+        "organizer": "e2e",
+        "participant_count": 0,
+        "projects": null,
+        "recorder": "e2e",
+        "starts_at": "<ts>",
+        "status": "canceled",
+        "timezone": "Asia/Shanghai",
+        "title": "<gen>",
+        "visibility": "private"
+      },
+      "can_edit": true,
+      "participants": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "counter_ends_at": null,
+            "counter_reason": null,
+            "counter_starts_at": null,
+            "kind": "attendee",
+            "name": "e2e",
+            "required": true,
+            "responded_at": "<ts>",
+            "status": "accepted",
+            "username": "e2e"
+          }
+        ]
+      },
+      "projects": {
+        "<len>": 1,
+        "<of>": [
+          {
+            "id": "<id>",
+            "name": "<gen>"
+          }
+        ]
+      }
+    }
+  },
+  "activity.items": {
+    "status": 200,
+    "body": {
+      "<len>": 1,
+      "<of>": [
+        {
+          "created_at": "<ts>",
+          "created_by": "e2e",
+          "id": "<id>",
+          "is_recording": false,
+          "kind": "file",
+          "mime": "text/plain",
+          "name": "a.txt",
+          "size": 5000
+        }
+      ]
+    }
+  },
+  "activity.minutes": {
+    "status": 200,
+    "body": {
+      "can_edit": true,
+      "minutes": null
+    }
+  },
+  "activity.messages": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "activity.linkhist": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "activities.public": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "freebusy": {
+    "status": 200,
+    "body": {
+      "busy": {
+        "e2e": {
+          "<len>": 19,
+          "<of>": [
+            {
+              "end": "<ts>",
+              "start": "<ts>"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "me.stats": {
+    "status": 200,
+    "body": {
+      "by_project": {
+        "<len>": 0,
+        "<of>": []
+      },
+      "hosting": {
+        "<len>": 4,
+        "<of>": [
+          {
+            "archived": false,
+            "id": "<id>",
+            "members": 1,
+            "minutes_pending": 0,
+            "name": "<gen>"
+          }
+        ]
+      },
+      "member_of": 0,
+      "range": "quarter",
+      "totals": {
+        "activities": 0,
+        "hours": 0,
+        "hours_by_source": {
+          "manual": 0,
+          "recording": 0,
+          "scheduled": 0
+        },
+        "minutes_todo": 0,
+        "projects": 0
+      }
+    }
+  },
+  "me.unread": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "me.transfers": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "shares.mine": {
+    "status": 200,
+    "body": {
+      "<len>": 1,
+      "<of>": [
+        {
+          "allow_download": true,
+          "created_at": "<ts>",
+          "expires_at": null,
+          "has_code": false,
+          "item_count": 1,
+          "item_deleted": false,
+          "item_id": "<id>",
+          "kind": "file",
+          "last_visit_at": null,
+          "max_visits": null,
+          "mime": "text/plain",
+          "name": "a.txt",
+          "revoked_at": null,
+          "space": "<gen>",
+          "token": "<token>",
+          "visits": 0
+        }
+      ]
+    }
+  },
+  "item.detail": {
+    "status": 200,
+    "body": {
+      "created_at": "<ts>",
+      "created_by": "e2e",
+      "id": "<id>",
+      "kind": "file",
+      "mime": "text/plain",
+      "name": "a.txt",
+      "parent_id": null,
+      "project_id": "<id>",
+      "size": 5000,
+      "updated_at": "<ts>"
+    }
+  },
+  "item.versions": {
+    "status": 200,
+    "body": {
+      "<len>": 0,
+      "<of>": []
+    }
+  },
+  "item.deleted": {
+    "status": 404,
+    "body": {
+      "error": "not found"
+    }
+  },
+  "share.visitor": {
+    "status": 200,
+    "body": {
+      "needs_code": false
+    }
+  },
+  "apis": {
+    "status": 403,
+    "body": {
+      "error": "forbidden: 权限不足"
+    }
+  },
+  "deny.activity.past": {
+    "status": 400,
+    "body": {
+      "error": "活动开始时间不能早于现在"
+    }
+  },
+  "deny.activity.noproject": {
+    "status": 400,
+    "body": {
+      "error": "这类活动必须关联至少一个项目（材料权限来自项目成员身份）"
+    }
+  },
+  "deny.stats.range": {
+    "status": 400,
+    "body": {
+      "error": "range 只能是 month / quarter / year"
+    }
+  },
+  "deny.item.404": {
+    "status": 404,
+    "body": {
+      "error": "not found"
+    }
+  },
+  "deny.download.nodownload": {
+    "status": 400,
+    "body": {
+      "error": "这场活动的材料已设为禁止下载原件(可在线预览/播放)"
+    }
+  },
+  "deny.trashed.download": {
+    "status": 404,
+    "body": {
+      "error": "not found"
+    }
+  }
+}

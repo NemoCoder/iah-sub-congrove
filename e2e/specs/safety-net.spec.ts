@@ -14,6 +14,7 @@
 // ⚠ 这一组**刻意不测 UI**，只打接口：它要在改名前后各跑一遍做对照，
 // 而 UI 在 M1 本来就要变，掺进来会让对照失去意义。
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -48,6 +49,7 @@ async function newActivity(req: APIRequestContext, pid: number, extra: Record<st
   const now = Date.now()
   const r = await req.post('/api/activities', {
     data: {
+      type_id: 会议,
       title: `E2E-网-活动-${tag()}`, recorder: 'e2e', project_ids: [pid],
       starts_at: new Date(now + 3600_000).toISOString(),
       ends_at: new Date(now + 7200_000).toISOString(),
@@ -277,14 +279,25 @@ test.describe('安全网·活动材料与纪要', () => {
 // 下面这条现在断言的是**旧定义**（它现在必须是绿的）。M0-3 换定义时，
 // 实现者必须**有意识地**把期望值改成新定义 —— 那一刻判反就会当场变红。
 test.describe('安全网·is_private 语义', () => {
+  // ★2026-08-08 M0-1 换定义（PRD J4）★：从「所有关联项目都不 public」
+  // 改成「**活动自己的** visibility 不是 public」。四个组合的期望值因此变成：
+  //   项目 public + 活动 private → 旧 false / ★新 true★
+  //   项目 private + 活动 public → 旧 true  / ★新 false★
+  // 另两个组合新旧同值 —— ★所以只造那两个是抓不住「判反」的，四个都要留★
+  //（这一课是 2026-08-08 实测得出的：前两个组合恰好是「旧定义」与「判反的新定义」
+  //  结果重合的组合。）
+  //
+  // ⚠ 项目那一列**保留但已无语义**：`projects.visibility` M0-1 已删，
+  //   `newProject` 传它等于空操作。留着是为了证明★项目可见性不再影响 is_private★ ——
+  //   同一个活动可见性下，两种项目必须给出同一个值。
   const COMBOS = [
-    { proj: 'public' as const, act: 'private' as const, old: false },
-    { proj: 'private' as const, act: 'public' as const, old: true },
-    { proj: 'private' as const, act: 'private' as const, old: true },
-    { proj: 'public' as const, act: 'public' as const, old: false },
+    { proj: 'public' as const, act: 'private' as const, want: true },
+    { proj: 'private' as const, act: 'public' as const, want: false },
+    { proj: 'private' as const, act: 'private' as const, want: true },
+    { proj: 'public' as const, act: 'public' as const, want: false },
   ]
 
-  test('★四个组合逐个对★（旧定义 = 所有关联项目都不 public）', async ({ request }) => {
+  test('★四个组合逐个对★（新定义 = 活动自己的 visibility）', async ({ request }) => {
     const from = new Date(Date.now() - 864e5).toISOString()
     const to = new Date(Date.now() + 30 * 864e5).toISOString()
     for (const c of COMBOS) {
@@ -296,8 +309,8 @@ test.describe('安全网·is_private 语义', () => {
       expect(row, `活动 ${mid} 应当在日历里`).toBeTruthy()
       expect(
         row!.is_private,
-        `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.old}`,
-      ).toBe(c.old)
+        `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.want}`,
+      ).toBe(c.want)
     }
   })
 })

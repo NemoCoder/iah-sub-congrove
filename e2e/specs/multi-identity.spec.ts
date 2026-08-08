@@ -18,6 +18,7 @@
 //   伪造 X-Forwarded-Preferred-Username    → 仍是 e2e（网关剥掉）
 //   用户名非法（空格/非 ASCII/CRLF）        → 400（防头注入）
 import { expect, request as pwRequest, test, type APIRequestContext } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -91,6 +92,7 @@ test.describe('权限·旁听者不得提权', () => {
     const now = Date.now()
     const r = await organizer.post('/api/activities', {
       data: {
+        type_id: 会议,
         title: `E2E-旁听-公开会-${T}`, recorder: 'e2e-host', project_ids: [pid], visibility: 'public',
         starts_at: new Date(now + 3600e3).toISOString(), ends_at: new Date(now + 7200e3).toISOString(),
         agenda: '这段议程旁听者看得到', location: '明德 1016',
