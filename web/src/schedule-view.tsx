@@ -9,9 +9,9 @@
 //
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
 //   公开项目的会 = 青色实框 / 私密项目的会 = 紫色虚框 / 待你应答 = 红色。
-import { App as AntdApp, Button, Card, DatePicker, Empty, Input, Modal, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Activity, type Project } from './api'
+import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, layout } from './schedule-layout'
 
@@ -69,23 +69,34 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
   const { message } = AntdApp.useApp()
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()))
   /// 视图模式(原型:日/周/月/列表)。★周是默认★——排会看的是一周。
-  const [mode, setMode] = useState<'day' | 'week' | 'month' | 'list'>('week')
+  const [mode, setMode] = useState<'week' | 'month' | 'list'>('week')
   const [items, setItems] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
 
-  /// 一屏显示几天 + 翻页步长。★月视图不做成 6×7 网格★:那是另一套布局,
-  /// 而这一页的价值在「看得清每个小时」;月按 4 周连排,仍然是同一套时间轴。
-  const span = mode === 'day' ? 1 : mode === 'month' ? 28 : 7
+  /// 一屏显示几天 + 翻页步长。
+  /// ★月视图就是月历★(2026-08-09 用户改的):原来它把 28 天塞进同一套小时时间轴,
+  /// 于是「看一个月」变成「横着滚 28 列」—— 月视图要回答的是「哪天有事、有几件」,
+  /// 不是「几点到几点」。所以格子里★只显示数量★,细节点进去看。。
+  /// 月视图从「anchor 所在月的 1 号」起铺满整月(前后补齐到整周)。
+  const monthStart = useMemo(() => new Date(anchor.getFullYear(), anchor.getMonth(), 1), [anchor])
+  const gridStart = useMemo(() => startOfWeek(monthStart), [monthStart])
+  const span = mode === 'month' ? 42 : 7   // 6 周 × 7 天,任何月份都装得下
+  /// ★月视图按「月」翻,不按天★:span=42 是为了铺满 6 周,拿它当步长会一次跳过一个半月。
+  const stepMonth = (n: number) => setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + n, 1))
   const step = span
-  const [quickOpen, setQuickOpen] = useState(false)
-  const days = useMemo(() => Array.from({ length: span }, (_, i) => addDays(anchor, i)), [anchor, span])
+  const days = useMemo(
+    () => Array.from({ length: span }, (_, i) => addDays(mode === 'month' ? gridStart : anchor, i)),
+    [anchor, gridStart, mode, span],
+  )
   const today = new Date()
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const from = anchor.toISOString()
-      const to = addDays(anchor, 7).toISOString()
+      // ⚠★原来这里写死 7 天★:月视图于是只加载了一周的数据,后面三周永远是空的
+      //   —— 而它看起来「就是没安排」,没有任何报错。(2026-08-09 改月视图时发现。)
+      const from = days[0].toISOString()
+      const to = addDays(days[days.length - 1], 1).toISOString()
       setItems(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
     } catch (e) {
       message.error((e as Error).message)
@@ -93,13 +104,15 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
     } finally {
       setLoading(false)
     }
-  }, [anchor, message])
+  }, [days, message])
   useEffect(() => { void load() }, [load])
 
   // 「待我处理」的筛选与排序搬进 TodoCard —— ★两页共用同一张卡★,
   // 免得日程页和活动页各筛一套(此前就是各写各的,连能不能就地答复都不一样)。
 
-  const title = `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月 ${anchor.getDate()} – ${addDays(anchor, 6).getDate()} 日`
+  const title = mode === 'month'
+    ? `${monthStart.getFullYear()} 年 ${monthStart.getMonth() + 1} 月`
+    : `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月 ${anchor.getDate()} – ${addDays(anchor, 6).getDate()} 日`
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -107,23 +120,69 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
       <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
         <Space wrap style={{ marginBottom: 12, width: '100%' }}>
           <Typography.Text strong style={{ fontSize: 15 }}>{title}</Typography.Text>
-          <Button size="small" onClick={() => setAnchor(addDays(anchor, -step))}>‹</Button>
+          <Button size="small" onClick={() => (mode === 'month' ? stepMonth(-1) : setAnchor(addDays(anchor, -step)))}>‹</Button>
           <Button size="small" onClick={() => setAnchor(startOfWeek(new Date()))}>今天</Button>
-          <Button size="small" onClick={() => setAnchor(addDays(anchor, step))}>›</Button>
+          <Button size="small" onClick={() => (mode === 'month' ? stepMonth(1) : setAnchor(addDays(anchor, step)))}>›</Button>
           <Segmented size="small" value={mode} onChange={(v) => setMode(v as typeof mode)}
             options={[
-              { value: 'day', label: '日' }, { value: 'week', label: '周' },
+              // ★没有「日」视图★(2026-08-09 用户):周视图本来就是一天一列,
+              // 单看一天只是把同样的东西放大;多一个模式就多一处要维护、要测。
+              { value: 'week', label: '周' },
               { value: 'month', label: '月' }, { value: 'list', label: '列表' },
             ]} />
           <span style={{ flex: 1 }} />
-          {/* ★+ 个人日程★(原型):私事不该走「发起活动」那套(要选项目、指记录员、邀请人)。
-              它落在「我的日程」私密项目里 —— 不产生忙闲、对别人完全隐形(D1)。 */}
-          <Button size="small" onClick={() => setQuickOpen(true)}>+ 个人日程</Button>
+          {/* ★「+ 个人日程」已删★(2026-08-09 用户):它和「发起活动」是同一件事 ——
+              M0 之后「个人日程」只是**一个活动类型**(不要纪要、不要项目、不占忙闲),
+              在发起活动那张表单里选类型就到了。留两个入口等于让人先猜「我这事算哪种」,
+              而那个判断本来就该由类型下拉承担。 */}
           <Button size="small" type="primary" onClick={onNewActivity}>+ 发起活动</Button>
         </Space>
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
+        ) : mode === 'month' ? (
+          /* ★月视图 = 整月日历,格子里只显示活动数量★（2026-08-09 用户）。
+             一个月的信息量放不进小时刻度，硬塞只会变成横向滚动；月这一层要回答的是
+             「哪天有事、有几件」，细节点进去看。 */
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', marginBottom: 4 }}>
+              {WEEK_LABEL.map((w) => (
+                <div key={w} style={{ textAlign: 'center', fontSize: 12, color: '#8c8c8c', padding: '4px 0' }}>{w}</div>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, background: '#f0f0f0' }}>
+              {days.map((d) => {
+                const inMonth = d.getMonth() === monthStart.getMonth()
+                const isToday = d.toDateString() === today.toDateString()
+                const of = items.filter((m) => new Date(m.starts_at).toDateString() === d.toDateString())
+                const pending = of.filter((m) => m.my_status === 'pending').length
+                return (
+                  <div key={d.toISOString()} style={{
+                    background: '#fff', minHeight: 78, padding: '6px 8px',
+                    // ★本月之外的日子淡化但**不隐藏**★：整周对齐比「只画本月」更好读，
+                    // 而完全空着会让人以为那几天加载失败了。
+                    opacity: inMonth ? 1 : 0.38,
+                    cursor: of.length ? 'pointer' : 'default',
+                  }} onClick={() => { if (of.length === 1) onOpenActivity(of[0].id); else if (of.length) { setAnchor(startOfWeek(d)); setMode('week') } }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: isToday ? 700 : 500,
+                      color: isToday ? '#0d9488' : '#111827',
+                    }}>{d.getDate()}</div>
+                    {of.length > 0 && (
+                      <div style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <Tag color="cyan" style={{ margin: 0 }}>{of.length} 项</Tag>
+                        {/* 待应答单独标出来：它是唯一**需要我动手**的状态 */}
+                        {pending > 0 && <Tag color="red" style={{ margin: 0 }}>待答 {pending}</Tag>}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+              点一天：只有一项直接打开，多项跳到那一周
+            </Typography.Text>
+          </div>
         ) : mode === 'list' ? (
           /* ★列表视图★:日程密的时候网格反而难读 —— 一行一条按时间排,一眼看完 */
           <div>
@@ -170,7 +229,12 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
             </div>
 
             {/* 网格:★0–24 点全展开,不滚动★ */}
-            <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
+            {/* ⚠★列宽必须和上面表头那行一致(92px)★:原来这里是 48px 而表头是 92px ——
+                两层网格对不齐,更要命的是时间轴只有 48px,于是「上午」(left:6)与「8:00」(right:6)
+                ★叠在一起★,截图里读作「上午8:00」。
+                ★注释里明明写着「列宽相应加到 74px」「92px 是量出来的」—— 那件事从没执行过★,
+                只有注释在描述意图。(2026-08-09 用户截图指出;和「设计了 ≠ 执行了」是同一族。) */}
+            <div style={{ display: 'grid', gridTemplateColumns: `92px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               {/* 时间轴 */}
               <div style={{ position: 'relative', height: DAY_PX }}>
                 {/* ★时段名并进刻度文字★(2026-08-07 截图核对后改):
@@ -276,7 +340,6 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
       <PublicBoard onOpen={onOpenActivity} />
       </div>
 
-      {quickOpen && <QuickPersonal onClose={() => setQuickOpen(false)} onDone={() => { setQuickOpen(false); void load() }} />}
     </div>
   )
 }
@@ -361,65 +424,5 @@ function LegendDot({ style, text }: { style: React.CSSProperties; text: string }
       <i style={{ width: 12, height: 12, borderRadius: 2, display: 'inline-block', ...style }} />
       {text}
     </span>
-  )
-}
-
-/// 快速建个人日程(原型「+ 个人日程」)。
-///
-/// ★为什么不复用「发起活动」★:私事不需要选项目成员、指记录员、发邀请 —— 那套表单对
-/// 「下午三点去医院」这种事太重,★重到人宁可不记★,而不记就等于让别人以为你有空。
-/// 这里只问三件:叫什么、什么时候、放哪个项目。
-///
-/// ★放进私密项目才隐形★(D1):个人日程不产生忙闲、对别人完全看不见。
-/// 所以下面那句提示不能省 —— 选了公开项目,这条私事就变成了别人眼里的「忙」。
-function QuickPersonal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const { message } = AntdApp.useApp()
-  const [projects, setProjects] = useState<Project[]>([])
-  const [pid, setPid] = useState<number | null>(null)
-  const [title, setTitle] = useState('')
-  const [range, setRange] = useState<[string, string] | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    api<Project[]>('/api/projects')
-      .then((ps) => {
-        const mine = ps.filter((p) => !p.archived_at && (p.my_role === 'editor' || p.my_role === 'admin'))
-        setProjects(mine)
-        setPid((cur) => cur ?? mine[0]?.id ?? null)
-      })
-      .catch(() => setProjects([]))
-  }, [])
-
-  const submit = async () => {
-    if (!title.trim() || !range || !pid) { message.warning('填标题、选时间、选项目'); return }
-    setBusy(true)
-    try {
-      // 记录员填自己:后端要求非空(D14),而个人日程本来就没有别的记录员
-      const me = await api<{ username: string }>('/api/me')
-      await api('/api/activities', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: title.trim(), agenda: '', recorder: me.username,
-          starts_at: range[0], ends_at: range[1], project_ids: [pid], participants: [],
-        }),
-      })
-      message.success('已加入日程')
-      onDone()
-    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-  }
-
-  return (
-    <Modal open title="加一条个人日程" onCancel={onClose} onOk={submit} confirmLoading={busy} okText="加入">
-      <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
-        <Input placeholder="做什么，如：去医院 / 读书会" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <DatePicker.RangePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }}
-          onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
-        <Select style={{ width: '100%' }} value={pid} onChange={setPid} placeholder="放进哪个项目"
-          options={projects.map((p) => ({ value: p.id, label: p.name }))} />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          放进<b>私密项目</b>的日程不占别人眼里的忙闲，对他人完全隐形。
-        </Typography.Text>
-      </Space>
-    </Modal>
   )
 }

@@ -55,14 +55,21 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
   /// ★所有字段走同一个 PUT★:就地编辑的统一保存口,省得每个字段各写一份请求。
   const patch = async (body: Record<string, unknown>) => {
     await api(`/api/activities/${id}`, { method: 'PUT', body: JSON.stringify(body) })
-    await load()
+    // ★静默刷新★:不走 loading 态 —— 见 load() 的注释
+    await load(true)
   }
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /// `silent=true` 时**不切 loading 态**。
+  ///
+  /// ⚠★这就是「点开关页面会抖」的原因★(2026-08-09 用户):原来任何改动都走同一个
+  /// `load()`,它 `setLoading(true)` → 整块详情被换成 Spin → 再换回来,
+  /// 页面**塌一下又撑开**。首屏加载该有 loading,而「切一个开关」不该 ——
+  /// 用户已经在看着内容了,把内容抽走再放回去是纯粹的噪声。
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try { setD(await api<ActivityDetail>(`/api/activities/${id}`)); setErr(null) }
     catch (e) { setErr((e as Error).message) }
-    finally { setLoading(false) }
+    finally { if (!silent) setLoading(false) }
   }, [id])
   useEffect(() => { void load() }, [load])
 
@@ -118,11 +125,9 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
             <Button size="small">取消旁听</Button>
           </Popconfirm>
         )}
-        {/* ★纪要入口★(原型评审时用户问「整理活动纪要的入口是不是还没有」)。
-            旁听者拿不到纪要,所以跟着 participants 一起判断有没有这块。 */}
-        {d.participants && (
-          <Button size="small" type="primary" ghost onClick={() => onOpenMinutes(id)}>活动纪要</Button>
-        )}
+        {/* ★纪要入口已挪到材料卡片的第三个 tab★(2026-08-09 用户):
+            同一件事原来有三个入口(顶栏「活动纪要」、右上角「整理纪要」、原型里的 tab),
+            留一个就够。旁听者拿不到纪要 —— 那块卡片本来就只对参会人渲染。 */}
         {d.can_edit && !canceled && (
           <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
             onConfirm={async () => {
@@ -193,11 +198,6 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
               placeholder="（双击填写议题与议程，一行一条）"
               style={{ minHeight: 160, fontSize: 13, lineHeight: 1.8 }}
               onSave={(v) => patch({ agenda: v })} />
-            {m.visibility === 'public' && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                这是公开活动,议程对全平台可见 —— ★但材料不公开★,只有关联项目的成员能看。
-              </Typography.Text>
-            )}
           </Card>
 
           {/* ★线上活动区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
@@ -225,7 +225,7 @@ export function ActivityDetailView({ id, onBack, onOpenMinutes, backLabel = '返
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
-              canHost={!!d.can_edit && !canceled} onDone={load} isPublic={m.visibility === 'public'} />
+              canHost={!!d.can_edit && !canceled} onDone={load} />
           )}
           {!canceled && m.my_status && <RespondCard id={id} mine={m.my_status} onDone={load} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
@@ -419,18 +419,23 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
             </div>
           ))}
       </div>
-      <Select size="small" value={to} onChange={setTo} style={{ width: '100%', marginBottom: 6 }}
-        options={[
-          { value: 'public', label: '所有参会人' },
-          // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
-          { value: organizer, label: `私聊 ${organizer}（发起人）` },
-          ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
-        ]} />
       <Input.TextArea rows={2} value={text} placeholder="说点什么…（Enter 发送）"
         onChange={(e) => setText(e.target.value)}
         onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void send() } }} />
-      <Button size="small" type="primary" block style={{ marginTop: 8 }} loading={busy}
-        disabled={!text.trim()} onClick={send}>发送</Button>
+      {/* ★「发给谁」和「发送」并排★(2026-08-09 用户):它们是同一个动作的两半 ——
+          「发给谁 + 发」。分成上下两截时,选择器顶在输入框上方,读起来像一个独立的筛选器,
+          而且发送按钮通栏占了整行宽度,视觉分量比它该有的重。 */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Select size="small" value={to} onChange={setTo} style={{ flex: 1, minWidth: 0 }}
+          options={[
+            { value: 'public', label: '所有参会人' },
+            // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
+            { value: organizer, label: `私聊 ${organizer}（发起人）` },
+            ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
+          ]} />
+        <Button size="small" type="primary" loading={busy}
+          disabled={!text.trim()} onClick={send}>发送</Button>
+      </div>
     </Card>
   )
 }
@@ -444,10 +449,9 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
 /// ★旁听那一栏**没人时也显示**★(2026-08-07 用户:「加个想要旁听人的显示」):
 /// 只在有人时才出现的区块,发起人根本不知道这个位置存在,也就不会去看 ——
 /// 公开活动开出去之后「有没有人要来听」是他真正关心的事。
-function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
+function PeopleCard({ people, mid, organizer, canHost, onDone }: {
   people: Participant[]; mid: number; organizer: string; canHost: boolean; onDone: () => void
   /// 私密活动不会有人旁听(D9),空栏的文案要说清是「还没人来」还是「本来就不会有」
-  isPublic: boolean
 }) {
   const joined = people.filter((p) => p.kind !== 'observer')
   const observers = people.filter((p) => p.kind === 'observer')
@@ -460,15 +464,10 @@ function PeopleCard({ people, mid, organizer, canHost, onDone, isPublic }: {
         ))}
       </Space>
       <div style={{ margin: '12px 0 6px', fontSize: 12, color: '#8c8c8c', borderTop: '1px solid #f0f0f0', paddingTop: 10 }}>
-        想旁听的人（{observers.length}）
-        <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
-          自己来听的，不用答复，也看不到材料
-        </Typography.Text>
+        旁听（{observers.length}）
       </div>
       {observers.length === 0 ? (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {isPublic ? '还没有人来听' : '这是私密活动，只有公开活动才会有人来旁听'}
-        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>
       ) : (
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
           {observers.map((p) => (
@@ -616,11 +615,17 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   return (
     <Card size="small" style={{ marginBottom: 12 }}
       styles={{ body: { paddingTop: 4 } }}>
-      <Tabs size="small" activeKey={tab} onChange={setTab}
+      <Tabs size="small" activeKey={tab}
         items={[
           { key: 'mat', label: `材料 ${mats.length}`, children: table(mats, '还没有材料') },
           { key: 'rec', label: `录制 ${recs.length}`, children: table(recs, '还没有录屏或录音') },
+          // ★纪要是第三个 tab★（2026-08-09 用户）：它和材料/录制是同一层的东西 ——
+          // 「这场活动留下了什么」。原来做成右上角一个「整理纪要」按钮，读起来像个动作，
+          // 而它其实是**一块内容**。⚠ 点它跳到纪要页（纪要有自己一整页，塞不进这个卡片），
+          // 所以 tab 本身不承载 children —— 靠 onChange 拦截。
+          { key: 'min', label: '纪要', children: null },
         ]}
+        onChange={(k) => { if (k === 'min') onOpenMinutes(id); else setTab(k) }}
         tabBarExtraContent={canEdit && (
           <Space size={6}>
             {/* ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
@@ -640,7 +645,6 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
                 {tab === 'rec' ? '上传录屏 / 录音' : '上传材料'}
               </Button>
             </Upload>
-            <Button size="small" onClick={() => onOpenMinutes(id)}>整理纪要</Button>
           </Space>
         )} />
       {/* ★活动粒度的材料策略★(PRD 6.3.2):「这次会涉及敏感内容,想让大家能看但不能下载」——
@@ -658,9 +662,6 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
                 onChange={(v: boolean) => onPolicy({ no_share: v })} />
               <Typography.Text style={{ fontSize: 12 }}>禁止对外分享</Typography.Text>
             </Space>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              仍可在线预览 / 播放；与项目级设置<b>叠加</b>，任一禁了就禁
-            </Typography.Text>
           </Space>
         </div>
       )}

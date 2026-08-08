@@ -77,6 +77,17 @@ export function App() {
   return (
     <div style={{ minHeight: '100vh', background: '#f4f4f7' }}>
       <IahHeader
+        nav={
+          <Segmented
+            value={view}
+            onChange={(v) => { setView(v as View); setActivityId(null); setMinutesOf(null) }}
+            options={[
+              { value: 'schedule', label: '日程' },
+              { value: 'projects', label: '项目' },
+              { value: 'activities', label: '活动' },
+            ]}
+          />
+        }
         extra={
           <Dropdown menu={{
             items: [
@@ -100,18 +111,6 @@ export function App() {
         }
       />
       <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
-        <Segmented
-          value={view}
-          onChange={(v) => { setView(v as View); setActivityId(null); setMinutesOf(null) }}
-          // ★按原型只放三个主视图★(docs/prototype-m1.html 的导航就是「日程 | 项目 | 活动」)。
-          // 「我的分享」「开发者」是低频入口,收进右上用户菜单 —— 主导航是给天天用的东西的。
-          options={[
-            { value: 'schedule', label: '日程' },
-            { value: 'projects', label: '项目' },
-            { value: 'activities', label: '活动' },
-          ]}
-          style={{ marginBottom: 16 }}
-        />
         {view === 'schedule' ? (
           minutesOf != null ? (
             <ActivityMinutesView activityId={minutesOf} onBack={() => setMinutesOf(null)} />
