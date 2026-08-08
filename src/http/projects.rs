@@ -19,7 +19,8 @@ pub struct ProjectRow {
     pub description: String,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub quota_bytes: i64,
+    // ★没有 quota_bytes 了★（ADR-0004）：额度挂在**人**身上（`user_quota`），不挂在项目上。
+    // `used_bytes` 留着 —— 它是「这个项目占了多少」，信息性，不是判据。
     pub no_download: bool,
     /// 本空间的转写术语表(空格/换行分隔;迁移 0007)。人名与专业词按组不同,由项目管理员维护。
     pub hotwords: String,
@@ -84,7 +85,7 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<ProjectRow> =
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, quota_bytes, no_download, hotwords, archived_at \
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at \
                             FROM projects WHERE deleted_at IS NULL ORDER BY archived_at NULLS FIRST, id")
                 .fetch_all(&state.pool)
                 .await?;
@@ -98,10 +99,10 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     // ★权限只到人(D12)★:一条 JOIN 就够,不再有「我属于哪些组、那些组有什么授权」这一层。
     // ★排序:进行中在前,归档的沉到后面★(D17)——列表默认是「我手头的活」,
     // 归档的还在同一份数据里(前端可切换筛选),但不该抢占视线。
-    type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, i64, bool, String, String,
+    type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, bool, String, String,
                 Option<chrono::DateTime<chrono::Utc>>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.quota_bytes, s.no_download, s.hotwords, g.role, s.archived_at
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
           WHERE s.deleted_at IS NULL
           ORDER BY s.archived_at NULLS FIRST, s.id",
@@ -111,8 +112,8 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     .await?;
     // 一个人在一个项目里只有一行,不再需要跨行合并取 max。
     Ok(Json(rows.into_iter()
-        .map(|(pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords, role, archived_at)| ProjectRow {
-            id: pid, name, description, created_by, created_at, quota_bytes, no_download, hotwords,
+        .map(|(pid, name, description, created_by, created_at, no_download, hotwords, role, archived_at)| ProjectRow {
+            id: pid, name, description, created_by, created_at, no_download, hotwords,
             my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0), archived_at,
         }).collect()))
 }
@@ -128,9 +129,6 @@ pub struct ProjectIn {
     /// 转写术语表:Some 才更新,空字符串 = 清空。
     #[serde(default)]
     pub hotwords: Option<String>,
-    /// 可见性 public/private(D1)。★只影响忙闲★,与资料可见性无关。
-    #[serde(default)]
-    pub visibility: Option<String>,
     /// 禁止对外分享。★开启时连带撤销本项目已有的公开链接★,否则这个开关是空的(⑨.2)。
     #[serde(default)]
     pub no_share: Option<bool>,
@@ -156,12 +154,11 @@ pub async fn create(
     // ★建者自动成为主持人(owner)且是 admin 成员★(D0)。
     // owner 是项目上的字段,admin 是成员表里的角色,两者都要写——owner 不进成员表就进不了自己的项目。
     let pid: i64 = sqlx::query_scalar(
-        "INSERT INTO projects (name, description, visibility, owner, created_by)
-         VALUES ($1,$2,COALESCE($4,'public'),$3,$3) RETURNING id")
+        "INSERT INTO projects (name, description, owner, created_by)
+         VALUES ($1,$2,$3,$3) RETURNING id")
         .bind(name)
         .bind(&input.description)
         .bind(username)
-        .bind(input.visibility.as_deref())
         .fetch_one(&mut *tx)
         .await?;
     sqlx::query("INSERT INTO project_members (project_id, username, role, added_by) VALUES ($1,$2,'admin',$2)")
@@ -210,21 +207,12 @@ pub async fn update(
     Json(input): Json<ProjectIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
-    // ★改可见性只有主持人能做★(D0):它决定本项目的会议要不要占成员的忙闲,影响面超出单个项目。
-    if input.visibility.is_some() {
-        let v = input.visibility.as_deref().unwrap_or("");
-        if v != "public" && v != "private" {
-            return Err(AppError::BadRequest("visibility 必须是 public 或 private".into()));
-        }
-        crate::perm::require_owner(&state.pool, &id, pid).await?;
-    }
     let mut tx = state.pool.begin().await?;
     let n = sqlx::query(
         "UPDATE projects SET name = $1, description = $2,
             no_download = COALESCE($3, no_download),
             hotwords    = COALESCE($5, hotwords),
-            visibility  = COALESCE($6, visibility),
-            no_share    = COALESCE($7, no_share)
+            no_share    = COALESCE($6, no_share)
           WHERE id = $4 AND deleted_at IS NULL")
         .bind(input.name.trim())
         .bind(&input.description)
@@ -232,7 +220,6 @@ pub async fn update(
         .bind(pid)
         // 术语表规范化:空白/换行统一成单空格(平台契约是空格分隔),顺手去重留原序。
         .bind(input.hotwords.as_deref().map(normalize_hotwords))
-        .bind(input.visibility.as_deref())
         .bind(input.no_share)
         .execute(&mut *tx)
         .await?
@@ -424,7 +411,7 @@ pub async fn member_put(
 ///   ① 他上传的材料**全部留在项目里**、署名保留 —— 材料是项目资产,不随人走;
 ///   ② ★连带撤销他创建的、指向本项目内容的公开分享链接★ ——
 ///      公开链接是**绕过项目成员身份**的独立通道,不撤销的话「离开即失去全部」就有后门;
-///   ③ 本项目的会议从他的时间线上消失(时间线只是索引,权限仍按成员身份判)。
+///   ③ 本项目的活动从他的时间线上消失(时间线只是索引,权限仍按成员身份判)。
 pub async fn member_delete(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -596,7 +583,7 @@ pub async fn transfer_cancel(
 
 /// POST /api/projects/{id}/archive —— 归档 / 取消归档(D17,2026-08-07)。
 ///
-/// ★归档 = 「做完了,留着备查」,不是「不要了」★:材料/会议/纪要全保留、可读可下载,
+/// ★归档 = 「做完了,留着备查」,不是「不要了」★:材料/活动/纪要全保留、可读可下载,
 /// 只是不能再往里加东西。配额仍然占着 —— 东西还在盘上,不算数就成了绕过配额的口子。
 ///
 /// **只有主持人能做**(与删项目同档):它影响所有成员能不能继续写,不是某个 admin 的日常操作。
@@ -629,7 +616,7 @@ pub async fn archive(
 ///
 /// ★为什么不是在项目页里看★:被转让人可能**压根不会打开那个项目**——
 /// 一个躺着的请求要是只在项目内部可见,它多半永远不会被答复。
-/// 所以它归到「待我处理」那张卡里,和会议邀请、私聊未读并列:
+/// 所以它归到「待我处理」那张卡里,和活动邀请、私聊未读并列:
 /// 那张卡的定义就是「需要我动作的事」,这条完全符合。
 pub async fn my_transfers(
     State(state): State<AppState>,

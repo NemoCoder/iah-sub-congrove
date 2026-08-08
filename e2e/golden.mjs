@@ -9,8 +9,8 @@
 //
 // ══════ ★这个脚本第一版是负价值的，下面这段是它的验尸报告★ ══════
 //
-// 四路同行评审实测：第一版的 fixture 是「项目 public + 会议 private」，
-// 于是基线里 `meetings.list[0].is_private = false`。而 M0 要把 is_private 换定义
+// 四路同行评审实测：第一版的 fixture 是「项目 public + 活动 private」，
+// 于是基线里 `activities.list[0].is_private = false`。而 M0 要把 is_private 换定义
 // （从「所有关联项目都不 public」改成「活动自己的 visibility != 'public'」）：
 //   · 实现**对**了 → 该值变 true → 指纹**红**，还要写解释；
 //   · 实现**反**了（写成 `== 'public'`）→ 仍是 false → 指纹**干干净净**。
@@ -116,11 +116,13 @@ const iso = (ms) => new Date(now + ms).toISOString()
 const pubPid = must((await j(R.post(`${BASE}/api/projects`, { data: { name: `${tag}-项目公开`, visibility: 'public' } })))?.id, '公开项目')
 const prvPid = must((await j(R.post(`${BASE}/api/projects`, { data: { name: `${tag}-项目私密`, visibility: 'private' } })))?.id, '私密项目')
 
-const mk = async (title, projectIds, extra) => must((await j(R.post(`${BASE}/api/meetings`, {
+const mk = async (title, projectIds, extra) => must((await j(R.post(`${BASE}/api/activities`, {
   data: {
+    // ★预置「会议」类型★（id 见 specs/_presets.ts 的说明：部署纪律保证它恒为 1）
+    type_id: 1,
     title: `${tag}-${title}`, recorder: 'e2e', project_ids: projectIds,
     starts_at: iso(3600e3), ends_at: iso(7200e3),
-    agenda: '议题一\n议题二', location: '明德 1016', online_url: 'https://meeting.example/x',
+    agenda: '议题一\n议题二', location: '明德 1016', online_url: 'https://activity.example/x',
     ...extra,
   },
 })))?.id, `活动 ${title}`)
@@ -149,11 +151,11 @@ const midB = await mk('活动B公开', [prvPid], { visibility: 'public' })    //
 const midD = await mk('活动D双私', [prvPid], { visibility: 'private' })   // 旧 true  = 新 true（判反→false）
 const midE = await mk('活动E双公', [pubPid], { visibility: 'public' })    // 旧 false = 新 false（判反→true）
 const midC = await mk('活动C取消', [pubPid], {})
-await R.delete(`${BASE}/api/meetings/${midC}`)          // DELETE = 取消（不是删除），status → canceled
+await R.delete(`${BASE}/api/activities/${midC}`)          // DELETE = 取消（不是删除），status → canceled
 
 // 材料策略布尔的两个方向：A 禁下载、B 禁分享
-await R.put(`${BASE}/api/meetings/${midA}`, post({ no_download: true }))
-await R.put(`${BASE}/api/meetings/${midB}`, post({ no_share: true }))
+await R.put(`${BASE}/api/activities/${midA}`, post({ no_download: true }))
+await R.put(`${BASE}/api/activities/${midB}`, post({ no_share: true }))
 
 /// 固定字节数 → `size` / `used_bytes` 变成可比的常量（配套 norm 保留数值）
 const upload = async (pid, name, bytes, qs = '') => await j(R.post(`${BASE}/api/projects/${pid}/upload${qs}`, {
@@ -161,8 +163,8 @@ const upload = async (pid, name, bytes, qs = '') => await j(R.post(`${BASE}/api/
 }))
 
 // 三个文件，各钉一条判据：
-const withAct = must((await upload(pubPid, 'a.txt', 5000, `?meeting_id=${midA}`))?.id, '带活动的材料')
-// ★不带 activity_id 的文件★：抓「会议材料区/材料区的过滤失效」——
+const withAct = must((await upload(pubPid, 'a.txt', 5000, `?activity_id=${midA}`))?.id, '带活动的材料')
+// ★不带 activity_id 的文件★：抓「活动材料区/材料区的过滤失效」——
 //   过滤写漏时它会混进活动材料列表，而第一版的 fixture 里根本没有这种行，测不出来。
 const noAct = must((await upload(pubPid, 'b.txt', 3000))?.id, '不带活动的材料')
 // ★已软删的文件★：抓 `deleted_at IS NULL` 漏过滤（v0.3.55 补过 11 处、v0.4.28 补过 5 处，M0 是第三轮）
@@ -182,19 +184,25 @@ await shot('project.members', `/api/projects/${pubPid}/members`)
 await shot('project.stats', `/api/projects/${pubPid}/stats?range=quarter`)
 await shot('project.items', `/api/projects/${pubPid}/items`)
 await shot('project.trash', `/api/projects/${pubPid}/trash`)          // 软删的那份应当在这里
-await shot('meetings.list', `/api/meetings?from=${from}&to=${to}`)     // ★A/B 两条方向相反的 is_private★
-await shot('meeting.detail', `/api/meetings/${midA}`)
-await shot('meeting.detail.b', `/api/meetings/${midB}`)
-// ★取消态★：`meetings.list` 的长度（2 而不是 3）已经钉住「取消的不进日历」，
+await shot('activities.list', `/api/activities?from=${from}&to=${to}`)     // ★A/B 两条方向相反的 is_private★
+await shot('activity.detail', `/api/activities/${midA}`)
+await shot('activity.detail.b', `/api/activities/${midB}`)
+// ★取消态★：`activities.list` 的长度（2 而不是 3）已经钉住「取消的不进日历」，
 //   这一条钉的是另一半 ——「取消 ≠ 删除，它照样读得到」。M0 给活动新加了软删除，
 //   两个状态正交，最容易被合并成一个，所以两边都要有快照。
-await shot('meeting.detail.c', `/api/meetings/${midC}`)
-await shot('meeting.items', `/api/meetings/${midA}/items`)             // ★不该含 noAct 那份★
-await shot('meeting.minutes', `/api/meetings/${midA}/minutes`)
-await shot('meeting.messages', `/api/meetings/${midA}/messages`)
-await shot('meeting.linkhist', `/api/meetings/${midA}/link-history`)
-await shot('meetings.public', '/api/meetings/public')
-await shot('freebusy', `/api/freebusy?users=e2e&from=${from}&to=${to}`)
+await shot('activity.detail.c', `/api/activities/${midC}`)
+await shot('activity.items', `/api/activities/${midA}/items`)             // ★不该含 noAct 那份★
+await shot('activity.minutes', `/api/activities/${midA}/minutes`)
+await shot('activity.messages', `/api/activities/${midA}/messages`)
+await shot('activity.linkhist', `/api/activities/${midA}/link-history`)
+await shot('activities.public', '/api/activities/public')
+// ★忙闲要在**没人用的远期窗口**里采★（2026-08-09 踩的）：
+// 原来用的是 `from=-1天 to=+30天`，那会把**别的 spec 造的活动**全网罗进来 ——
+// 忙块条数于是随「这一轮跑了多少测试」变化，golden 每次都红，而且红在一个
+// **不是回归**的地方。`<len>` 这类计数只有在窗口里只有自己的东西时才有意义。
+const fbA = await mk('忙闲取样', [pubPid], { starts_at: iso(20 * 86400e3), ends_at: iso(20 * 86400e3 + 3600e3) })
+const fbFrom = iso(20 * 86400e3 - 3600e3), fbTo = iso(20 * 86400e3 + 7200e3)
+await shot('freebusy', `/api/freebusy?users=e2e&from=${fbFrom}&to=${fbTo}`)
 await shot('me.stats', '/api/me/stats?range=quarter')
 await shot('me.unread', '/api/me/unread')
 await shot('me.transfers', '/api/me/transfers')
@@ -206,11 +214,11 @@ await shot('share.visitor', `/pub/share/${share.token}`)               // ★访
 await shot('apis', '/api/_dev/apis')                                  // e2e 非超管 → 403，钉住这个事实
 
 // ── 「该被拒」的（★错误码与文案也是契约★，而且它们是 M0 明确要改的，见 golden-diff 的白名单）──
-await shot('deny.meeting.past', '/api/meetings', post({
+await shot('deny.activity.past', '/api/activities', post({ type_id: 1,
   title: `${tag}-过去`, recorder: 'e2e', project_ids: [pubPid],
   starts_at: iso(-86400e3), ends_at: iso(-82800e3),
 }))
-await shot('deny.meeting.noproject', '/api/meetings', post({
+await shot('deny.activity.noproject', '/api/activities', post({ type_id: 1,
   title: `${tag}-无项目`, recorder: 'e2e', project_ids: [],
   starts_at: iso(3600e3), ends_at: iso(7200e3),
 }))
@@ -225,15 +233,19 @@ await shot('deny.trashed.download', `/api/items/${delItem}/download`)      // �
 // 都非零退出 —— 否则「少了三个快照」这种事会混在几百行改名 churn 里，没人看得出来。
 const EXPECT = [
   'me', 'projects', 'project.detail', 'project.members', 'project.stats', 'project.items', 'project.trash',
-  'meetings.list', 'meeting.detail', 'meeting.detail.b', 'meeting.detail.c', 'meeting.items', 'meeting.minutes',
-  'meeting.messages', 'meeting.linkhist', 'meetings.public', 'freebusy',
+  'activities.list', 'activity.detail', 'activity.detail.b', 'activity.detail.c', 'activity.items', 'activity.minutes',
+  'activity.messages', 'activity.linkhist', 'activities.public', 'freebusy',
   'me.stats', 'me.unread', 'me.transfers', 'shares.mine',
   'item.detail', 'item.versions', 'item.deleted', 'share.visitor', 'apis',
-  'deny.meeting.past', 'deny.meeting.noproject', 'deny.stats.range', 'deny.item.404',
+  'deny.activity.past', 'deny.activity.noproject', 'deny.stats.range', 'deny.item.404',
   'deny.download.nodownload', 'deny.trashed.download',
 ]
 
 // ★自己清自己★：这个脚本**不走 Playwright**，`teardown.ts` 的全局清理轮不到它。
+// ⚠★活动也要清★（2026-08-09 踩的）：原来只删项目，而活动**不随项目级联删** ——
+//   于是每跑一次 golden 就在库里多留几场，下一次采 `freebusy` 的 `<len>` 就多一个。
+//   症状是 golden 门禁红在一个**不是回归**的地方，且每跑一次红得不一样。
+for (const m of [midA, midB, midD, midE, fbA]) await R.delete(`${BASE}/api/activities/${m}`).catch(() => {})
 for (const p of [pubPid, prvPid]) await R.delete(`${BASE}/api/projects/${p}`).catch(() => {})
 await b.close()
 

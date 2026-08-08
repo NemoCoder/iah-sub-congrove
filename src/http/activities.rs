@@ -1,12 +1,12 @@
-//! 会议与日程(M1)—— 需求见 `docs/PRD-meetings.md`,判权全走 `perm.rs`,handler 里不重写。
+//! 活动与日程(M1)—— 需求见 `docs/PRD-activities.md`,判权全走 `perm.rs`,handler 里不重写。
 //!
-//! ★贯穿本模块的一条线:**会议参与 ≠ 资料权限**★(D3/D8/D9)。
-//! 这里的每个接口只管**会议元信息**(标题/议程/时间/地点/链接/名单/讨论);
+//! ★贯穿本模块的一条线:**活动参与 ≠ 资料权限**★(D3/D8/D9)。
+//! 这里的每个接口只管**活动元信息**(标题/议程/时间/地点/链接/名单/讨论);
 //! 材料一律走项目那套(`require_role` + 项目成员身份),与「是不是参会人」无关。
 //! 把两者混起来 = 「参会即获得资料权限」= 权限退回历史累积,而 R1 要的是当前状态的函数。
 //!
 //! 三个容易写错的地方,都在下面各自的注释里标了 ★:
-//!   · 忙闲按**项目可见性**分流(D1),不是按会议;
+//!   · 忙闲按**项目可见性**分流(D1),不是按活动;
 //!   · 「建议改期」是私事冲突**唯一的结构化出口**(D2),不是可选的便利功能;
 //!   · 改线上链接要留痕(开会前十分钟改链接是真实场景)。
 
@@ -17,15 +17,15 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::perm::{meeting_view, require_meeting_host, MeetingView};
+use crate::perm::{activity_view, require_activity_host, ActivityView};
 use crate::state::AppState;
-use crate::notify::{fmt_when, notify_meeting, notify_targets};
+use crate::notify::{fmt_when, notify_activity, notify_targets};
 use crate::{audit, perm};
 
 type Ts = chrono::DateTime<chrono::Utc>;
 
 #[derive(Serialize, sqlx::FromRow)]
-pub struct MeetingRow {
+pub struct ActivityRow {
     pub id: i64,
     pub title: String,
     pub agenda: String,
@@ -42,13 +42,13 @@ pub struct MeetingRow {
     /// 会后补录的实际时长(分钟,D5 第 2 级)。null = 没填过。
     #[sqlx(default)]
     pub actual_minutes: Option<i32>,
-    /// 会议粒度的材料策略(PRD 6.3.2)
+    /// 活动粒度的材料策略(PRD 6.3.2)
     #[sqlx(default)] pub no_download: bool,
     #[sqlx(default)] pub no_share: bool,
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
-    /// 关联项目(id+名字),会议列表要显示项目标签(原型 meets 视图)。
+    /// 关联项目(id+名字),活动列表要显示项目标签(原型 meets 视图)。
     /// ★列表里一并带出,不让前端为每场会再打一次详情★(23 场会 = 23 个请求)。
     #[sqlx(default)]
     pub projects: Option<serde_json::Value>,
@@ -69,24 +69,27 @@ pub struct MeetingRow {
 }
 
 #[derive(Deserialize)]
-pub struct MeetingIn {
+pub struct ActivityIn {
+    /// 活动类型（ADR-0002）。★必填★：三个能力位（要不要纪要/项目/占忙闲）都从它来。
+    pub type_id: i64,
     pub title: String,
     #[serde(default)] pub agenda: String,
-    /// ★记录员必填(D14)★:正式纪要由他按固定模板整理,AI 转写只是原材料。
-    pub recorder: String,
+    /// 记录员。★是否必填由类型的 `has_minutes` 决定★(D14:正式纪要由他按模板整理) ——
+    /// 原来写死在 create 里,于是「个人日程」这类活动根本建不出来。
+    #[serde(default)] pub recorder: String,
     pub starts_at: Ts,
     pub ends_at: Ts,
     #[serde(default)] pub timezone: Option<String>,
     #[serde(default)] pub location: String,
     #[serde(default)] pub online_url: String,
     #[serde(default)] pub visibility: Option<String>,
-    /// ★至少一个★:材料权限来自项目成员身份,没有项目就没人管得了它的材料。
-    pub project_ids: Vec<i64>,
+    /// 关联项目。★是否必填由类型的 `needs_project` 决定★(材料权限来自项目成员身份,D3)。
+    #[serde(default)] pub project_ids: Vec<i64>,
     /// 一并邀请的人(可空,之后再加)。
     #[serde(default)] pub participants: Vec<String>,
 }
 
-/// GET /api/meetings —— 时间线入口(D7):我参与的 + 我所在项目的会议,按时间排。
+/// GET /api/activities —— 时间线入口(D7):我参与的 + 我所在项目的活动,按时间排。
 /// `from`/`to` 不给则默认「今天起 60 天」——日历页一次拉一屏,不要全量。
 #[derive(Deserialize)]
 pub struct RangeQ {
@@ -100,60 +103,57 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Query(q): Query<RangeQ>,
-) -> AppResult<Json<Vec<MeetingRow>>> {
+) -> AppResult<Json<Vec<ActivityRow>>> {
     let username = id.require_username()?;
     let from = q.from.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
     let to = q.to.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::days(60));
-    // 可见性三条来源与 meeting_view 同源(参会人 / 关联项目成员 / 超管),这里是它的**集合版**。
-    // ⚠ public 会议**不进这个列表**:列表是「我的日程」,不是全平台公告板;
-    //    旁听要靠拿到具体会议 id 去看详情(D9 给的是「可访问」,不是「推给你」)。
-    let rows: Vec<MeetingRow> = sqlx::query_as(
+    // 可见性三条来源与 activity_view 同源(参会人 / 关联项目成员 / 超管),这里是它的**集合版**。
+    // ⚠ public 活动**不进这个列表**:列表是「我的日程」,不是全平台公告板;
+    //    旁听要靠拿到具体活动 id 去看详情(D9 给的是「可访问」,不是「推给你」)。
+    let rows: Vec<ActivityRow> = sqlx::query_as(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                m.visibility <> 'public' AS is_private,
                 -- 列表要显示的三样,都在这条 SQL 里一次取全:
                 -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
-                   FROM meeting_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
-                  WHERE mp2.meeting_id = m.id AND p2.deleted_at IS NULL) AS projects,
-                (SELECT count(*) FROM meeting_participants x WHERE x.meeting_id = m.id) AS participant_count,
-                (SELECT mm.status FROM meeting_minutes mm WHERE mm.meeting_id = m.id) AS minutes_status
-           FROM meetings m
-           LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
+                   FROM activity_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
+                  WHERE mp2.activity_id = m.id AND p2.deleted_at IS NULL) AS projects,
+                (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
+                (SELECT mm.status FROM activity_minutes mm WHERE mm.activity_id = m.id) AS minutes_status
+           FROM activities m
+           LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
             AND ($4::bigint IS NULL OR EXISTS (
-                  SELECT 1 FROM meeting_projects x WHERE x.meeting_id = m.id AND x.project_id = $4))
+                  SELECT 1 FROM activity_projects x WHERE x.activity_id = m.id AND x.project_id = $4))
             -- 可见性:参会人 / 关联项目成员 / 超管,三选一
             -- ⚠★这三条必须包在同一对括号里★(2026-08-07 事故):加归档过滤时我把括号提前闭合了,
             --   超管那条掉进了下面 NOT EXISTS 的子查询里 → 对超管而言子查询 WHERE 恒真
-            --   → 只要会议关联了任何项目就被 NOT EXISTS 滤掉 → ★超管一场会都看不到★。
+            --   → 只要活动关联了任何项目就被 NOT EXISTS 滤掉 → ★超管一场会都看不到★。
             --   非超管完全不受影响,所以 24 条 E2E 全绿而用户(超管)的界面是空的。
             AND (mp.username IS NOT NULL
-                 OR EXISTS (SELECT 1 FROM meeting_projects mpj
+                 OR EXISTS (SELECT 1 FROM activity_projects mpj
                               JOIN project_members pm ON pm.project_id = mpj.project_id
                               JOIN projects p ON p.id = mpj.project_id AND p.deleted_at IS NULL
-                             WHERE mpj.meeting_id = m.id AND pm.username = $1)
+                             WHERE mpj.activity_id = m.id AND pm.username = $1)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
             -- ★关联项目**全部**被删则这场会不再出现★(2026-08-07,Playwright 截图里肉眼看出来的):
-            -- 项目软删除不动 meeting_projects 也不动成员表,所以删掉项目之后它的会议照样躺在日历上,
+            -- 项目软删除不动 activity_projects 也不动成员表,所以删掉项目之后它的活动照样躺在日历上,
             -- 还因为「找不到未删的公开项目」被误标成**私密**(紫色虚框)。
-            -- 会议必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。
-            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+            -- 活动必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。
+            AND EXISTS (SELECT 1 FROM activity_projects mpd
                           JOIN projects pd ON pd.id = mpd.project_id
-                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
+                         WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
             -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
-            -- 塞满已结题项目的历史会议会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
+            -- 塞满已结题项目的历史活动会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
             -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
-            AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
+            AND NOT (EXISTS (SELECT 1 FROM activity_projects mpj
                                JOIN projects p ON p.id = mpj.project_id
-                              WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL)
-                     AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
+                              WHERE mpj.activity_id = m.id AND p.archived_at IS NOT NULL)
+                     AND NOT EXISTS (SELECT 1 FROM activity_projects m2
                                        JOIN projects p2 ON p2.id = m2.project_id
-                                      WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL))
+                                      WHERE m2.activity_id = m.id AND p2.archived_at IS NULL))
           ORDER BY m.starts_at",
     )
     .bind(username).bind(from).bind(to).bind(q.project_id)
@@ -165,23 +165,27 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-    Json(input): Json<MeetingIn>,
+    Json(input): Json<ActivityIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let username = id.require_username()?;
     let title = input.title.trim();
-    if title.is_empty() { return Err(AppError::BadRequest("会议标题不能为空".into())) }
-    if input.recorder.trim().is_empty() { return Err(AppError::BadRequest("必须指定记录员(D14:纪要由他整理)".into())) }
+    if title.is_empty() { return Err(AppError::BadRequest("活动标题不能为空".into())) }
+    // ★校验按类型的能力位走,不再写死★(ADR-0002)。
+    let caps: crate::http::activity_types::Caps = sqlx::query_as(
+        "SELECT has_minutes, needs_project, busy_default FROM activity_types
+          WHERE id = $1 AND deleted_at IS NULL AND (owner IS NULL OR owner = $2)")
+        .bind(input.type_id).bind(username).fetch_optional(&state.pool).await?
+        .ok_or_else(|| AppError::BadRequest("活动类型不存在,或者不是你的".into()))?;
+    crate::http::activity_types::check_caps(&caps, &input.recorder, &input.project_ids)
+        .map_err(|m| AppError::BadRequest(m.into()))?;
     if input.ends_at <= input.starts_at { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
     // ★不能发起已经过去的会★(2026-08-07 用户)。
     // ⚠ 留 5 分钟容差:填表本身要花时间,选了「最近的整点」再慢慢填完议程,提交时那个点可能刚过 ——
     // 卡死到秒会让人白填一轮。容差只对**创建**放,改期(update)不限,那是修正历史记录的正当场景。
     if input.starts_at < chrono::Utc::now() - chrono::Duration::minutes(5) {
-        return Err(AppError::BadRequest("会议开始时间不能早于现在".into()));
+        return Err(AppError::BadRequest("活动开始时间不能早于现在".into()));
     }
-    if input.project_ids.is_empty() {
-        return Err(AppError::BadRequest("会议必须关联至少一个项目(材料权限来自项目成员身份)".into()));
-    }
-    // ★每个关联项目都要 ≥editor★:把会议挂到一个项目上等于往那个项目里塞东西(纪要/材料最终落在那)。
+    // ★每个关联项目都要 ≥editor★:把活动挂到一个项目上等于往那个项目里塞东西(纪要/材料最终落在那)。
     // 逐个校验而不是只验第一个——多项目关联时,漏验的那个就是越权入口(D4)。
     for pid in &input.project_ids {
         perm::require_role(&state.pool, &id, *pid, perm::Role::Editor).await?;
@@ -190,60 +194,66 @@ pub async fn create(
 
     let mut tx = state.pool.begin().await?;
     let mid: i64 = sqlx::query_scalar(
-        "INSERT INTO meetings (title, agenda, organizer, recorder, starts_at, ends_at, timezone,
-                               location, online_url, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10) RETURNING id")
+        // busy 取类型的 busy_default 作初值(A3);用户想改逐条改,不改类型。
+        "INSERT INTO activities (title, agenda, organizer, recorder, starts_at, ends_at, timezone,
+                               location, online_url, visibility, type_id, busy)
+         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12) RETURNING id")
         .bind(title).bind(&input.agenda).bind(username).bind(input.recorder.trim())
         .bind(input.starts_at).bind(input.ends_at).bind(input.timezone.as_deref())
         .bind(&input.location).bind(&input.online_url).bind(vis)
+        .bind(input.type_id).bind(caps.busy_default)
         .fetch_one(&mut *tx).await?;
     for pid in &input.project_ids {
-        sqlx::query("INSERT INTO meeting_projects (meeting_id, project_id) VALUES ($1,$2)")
+        sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)")
             .bind(mid).bind(pid).execute(&mut *tx).await?;
     }
     // 发起人与记录员自动进名单(发起人 accepted:他自己定的时间,不用再答复一次)。
-    sqlx::query("INSERT INTO meeting_participants (meeting_id, username, status, responded_at)
-                 VALUES ($1,$2,'accepted',now()) ON CONFLICT DO NOTHING")
+    // 发起人 notified_at=now():他自己定的时间,不存在「不知情」
+    sqlx::query("INSERT INTO activity_participants (activity_id, username, status, responded_at, notified_at)
+                 VALUES ($1,$2,'accepted',now(),now()) ON CONFLICT DO NOTHING")
         .bind(mid).bind(username).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO meeting_participants (meeting_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
-        .bind(mid).bind(input.recorder.trim()).execute(&mut *tx).await?;
+    // ⚠★记录员可能为空★(ADR-0002:`has_minutes=false` 的类型不要记录员)。
+    //   不守这一下的话会往名单里插一行**空用户名** —— 它不属于任何人,
+    //   却会出现在参与人列表、进忙闲、还占一个「未答复」名额。
+    if !input.recorder.trim().is_empty() {
+        sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+            .bind(mid).bind(input.recorder.trim()).execute(&mut *tx).await?;
+    }
     for u in &input.participants {
         let u = u.trim();
         if u.is_empty() { continue }
-        sqlx::query("INSERT INTO meeting_participants (meeting_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
             .bind(mid).bind(u).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    audit::record(&state.pool, username, "meeting.create", &mid.to_string(), title).await;
+    audit::record(&state.pool, username, "activity.create", &mid.to_string(), title).await;
     // ★约完就通知★:没有这一步,「我约了你」这件事只存在于我的屏幕上
     let who = notify_targets(&state.pool, mid, username).await;
-    notify_meeting(&state, mid, &who, "有人约你开会",
+    notify_activity(&state, mid, &who, "有人约你开会",
         &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at))).await;
+    mark_notified(&state.pool, mid, &who).await?;
     Ok(Json(json!({ "id": mid })))
 }
 
-/// GET /api/meetings/{id} —— 详情。★旁听者拿到的是**裁剪版**★(D9):
+/// GET /api/activities/{id} —— 详情。★旁听者拿到的是**裁剪版**★(D9):
 /// 只有标题/议程/时间/地点/链接,没有参会名单,更没有材料入口。
 pub async fn detail(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let view = meeting_view(&state.pool, &id, mid).await?;
-    let m: MeetingRow = sqlx::query_as(
+    let view = activity_view(&state.pool, &id, mid).await?;
+    let m: ActivityRow = sqlx::query_as(
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private
-           FROM meetings m
-           LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $2
+                m.visibility <> 'public' AS is_private
+           FROM activities m
+           LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $2
           WHERE m.id = $1")
         .bind(mid).bind(id.require_username()?)
         .fetch_optional(&state.pool).await?
         .ok_or(AppError::NotFound)?;
-    if view == MeetingView::Observer {
-        // ★逐字段挑出来给★,不是把 MeetingRow 塞进去删两个键——后者在加字段时会**默认泄露**。
+    if view == ActivityView::Observer {
+        // ★逐字段挑出来给★,不是把 ActivityRow 塞进去删两个键——后者在加字段时会**默认泄露**。
         return Ok(Json(json!({
             "id": m.id, "title": m.title, "agenda": m.agenda,
             "starts_at": m.starts_at, "ends_at": m.ends_at, "timezone": m.timezone,
@@ -255,17 +265,17 @@ pub async fn detail(
     let parts: Vec<Participant> = sqlx::query_as(
         "SELECT p.username, u.name, p.kind, p.required, p.status, p.counter_starts_at, p.counter_ends_at,
                 p.counter_reason, p.responded_at
-           FROM meeting_participants p LEFT JOIN app_user u ON u.username = p.username
-          WHERE p.meeting_id = $1 ORDER BY p.invited_at")
+           FROM activity_participants p LEFT JOIN app_user u ON u.username = p.username
+          WHERE p.activity_id = $1 ORDER BY p.invited_at")
         .bind(mid).fetch_all(&state.pool).await?;
     let projects: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT p.id, p.name FROM meeting_projects mp JOIN projects p ON p.id = mp.project_id
-          WHERE mp.meeting_id = $1 AND p.deleted_at IS NULL")
+        "SELECT p.id, p.name FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
+          WHERE mp.activity_id = $1 AND p.deleted_at IS NULL")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(json!({
-        "meeting": m, "participants": parts,
+        "activity": m, "participants": parts,
         "projects": projects.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect::<Vec<_>>(),
-        "can_edit": require_meeting_host(&state.pool, &id, mid).await.is_ok(),
+        "can_edit": require_activity_host(&state.pool, &id, mid).await.is_ok(),
     })))
 }
 
@@ -288,7 +298,7 @@ pub struct Participant {
 }
 
 #[derive(Deserialize)]
-pub struct MeetingPatch {
+pub struct ActivityPatch {
     pub title: Option<String>,
     pub agenda: Option<String>,
     pub recorder: Option<String>,
@@ -297,7 +307,7 @@ pub struct MeetingPatch {
     pub location: Option<String>,
     pub online_url: Option<String>,
     pub visibility: Option<String>,
-    /// 会议粒度的材料策略(PRD 6.3.2)。⚠ 与项目级**叠加不是覆盖**:两处任一禁了就禁。
+    /// 活动粒度的材料策略(PRD 6.3.2)。⚠ 与项目级**叠加不是覆盖**:两处任一禁了就禁。
     pub no_download: Option<bool>,
     pub no_share: Option<bool>,
     /// ★会后补录的实际时长★(D5 三级回退的第 2 级,单位**分钟**)。
@@ -310,34 +320,34 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-    Json(p): Json<MeetingPatch>,
+    Json(p): Json<ActivityPatch>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
-    // ★改「公开/私密」比改别的重★(PRD 6.1.7:「只有项目主持人或会议发起人能切换」):
+    require_activity_host(&state.pool, &id, mid).await?;
+    // ★改「公开/私密」比改别的重★(PRD 6.1.7:「只有项目主持人或活动发起人能切换」):
     // 一旦公开,议题与议程对**全平台**可见 —— 这不是记录员该有的权限,
-    // 而 require_meeting_host 是把记录员算进去的(他要整理纪要,所以能改标题议程)。
-    // ⚠ 判「项目主持人」用**任一关联项目的 owner**:会议可以挂多个项目,任何一个的主持人都算。
+    // 而 require_activity_host 是把记录员算进去的(他要整理纪要,所以能改标题议程)。
+    // ⚠ 判「项目主持人」用**任一关联项目的 owner**:活动可以挂多个项目,任何一个的主持人都算。
     if p.visibility.is_some() {
         let who = id.require_username()?;
         let ok: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM meetings WHERE id = $1 AND organizer = $2)
-                 OR EXISTS (SELECT 1 FROM meeting_projects mp
+            "SELECT EXISTS (SELECT 1 FROM activities WHERE id = $1 AND organizer = $2)
+                 OR EXISTS (SELECT 1 FROM activity_projects mp
                               JOIN projects pr ON pr.id = mp.project_id AND pr.deleted_at IS NULL
-                             WHERE mp.meeting_id = $1 AND pr.owner = $2)
+                             WHERE mp.activity_id = $1 AND pr.owner = $2)
                  OR EXISTS (SELECT 1 FROM app_user WHERE username = $2 AND is_super)")
             .bind(mid).bind(who).fetch_one(&state.pool).await?;
         if !ok {
             return Err(AppError::Forbidden);
         }
     }
-    let cur: (Ts, Ts, String) = sqlx::query_as("SELECT starts_at, ends_at, online_url FROM meetings WHERE id=$1")
+    let cur: (Ts, Ts, String) = sqlx::query_as("SELECT starts_at, ends_at, online_url FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let (s, e) = (p.starts_at.unwrap_or(cur.0), p.ends_at.unwrap_or(cur.1));
     if e <= s { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "UPDATE meetings SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
+        "UPDATE activities SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
                 recorder=COALESCE($4,recorder), starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
                 visibility=COALESCE($9,visibility),
@@ -355,7 +365,7 @@ pub async fn update(
     // ★改线上链接留痕★:开会前十分钟换链接是真实场景,事后要能追溯「谁何时改成什么」。
     if let Some(new) = p.online_url.as_deref() {
         if new != cur.2 {
-            sqlx::query("INSERT INTO meeting_link_history (meeting_id, old_url, new_url, changed_by)
+            sqlx::query("INSERT INTO activity_link_history (activity_id, old_url, new_url, changed_by)
                          VALUES ($1,$2,$3,$4)")
                 .bind(mid).bind(&cur.2).bind(new).bind(id.require_username()?)
                 .execute(&mut *tx).await?;
@@ -365,53 +375,57 @@ pub async fn update(
     // 留着它等于替人答应了一个他没看过的时间。发起人与记录员除外(改的人自己知道)。
     if (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1) {
         sqlx::query(
-            "UPDATE meeting_participants SET status='pending', responded_at=NULL,
+            "UPDATE activity_participants SET status='pending', responded_at=NULL,
                     counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-              WHERE meeting_id=$1 AND username <> $2")
+              WHERE activity_id=$1 AND username <> $2")
             .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "meeting.update", &mid.to_string(), "").await;
+    audit::record(&state.pool, actor, "activity.update", &mid.to_string(), "").await;
     // 改时间和改链接是**两件不同的急事**,所以分开通知、正文不一样:
     //   · 改时间 → 所有人的答复已被清回 pending,他们必须重新答复;
     //   · 改链接 → 不用重新答复,但**到点前必须看到**(开会前十分钟换链接是真实场景)。
-    // 其余改动(标题/议程/地点)不发信:够不上打扰所有人的分量,他们打开会议页就看得到。
+    // 其余改动(标题/议程/地点)不发信:够不上打扰所有人的分量,他们打开活动页就看得到。
     let time_changed = (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1);
     let link_changed = p.online_url.as_deref().is_some_and(|n| n != cur.2);
     if time_changed || link_changed {
         let who = notify_targets(&state.pool, mid, actor).await;
-        let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+        let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
             .bind(mid).fetch_one(&state.pool).await?;
         if time_changed {
-            notify_meeting(&state, mid, &who, "会议时间已改",
+            notify_activity(&state, mid, &who, "活动时间已改",
                 &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s))).await;
         }
         if link_changed {
-            notify_meeting(&state, mid, &who, "线上会议链接已改",
-                &format!("「{mtitle}」({})的线上链接已更换,开会前请从会议页重新点开。", fmt_when(s))).await;
+            notify_activity(&state, mid, &who, "线上活动链接已改",
+                &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s))).await;
         }
+        // ★ADR-0003 边界①:补录 → 改到未来,必须补发邀请**并置位**★。
+        // 上面那两条通知就是「补发邀请」;这里把事实记下来 —— 否则一条从没通知过的活动
+        // 被改到未来、通知也发了,库里却仍是「他不知情」,后续判定全错。
+        mark_notified(&state.pool, mid, &who).await?;
     }
     Ok(Json(json!({ "ok": true })))
 }
 
-/// DELETE /api/meetings/{id} —— ★取消不是删除★:置 status='canceled' 留档。
-/// 会议是协作事实(谁邀了谁、谁拒了),真删掉之后没人说得清当时发生过什么。
+/// DELETE /api/activities/{id} —— ★取消不是删除★:置 status='canceled' 留档。
+/// 活动是协作事实(谁邀了谁、谁拒了),真删掉之后没人说得清当时发生过什么。
 pub async fn cancel(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
-    let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+    require_activity_host(&state.pool, &id, mid).await?;
+    let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    sqlx::query("UPDATE meetings SET status='canceled', updated_at=now() WHERE id=$1")
+    sqlx::query("UPDATE activities SET status='canceled', updated_at=now() WHERE id=$1")
         .bind(mid).execute(&state.pool).await?;
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "meeting.cancel", &mid.to_string(), "").await;
+    audit::record(&state.pool, actor, "activity.cancel", &mid.to_string(), "").await;
     // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
     let who = notify_targets(&state.pool, mid, actor).await;
-    notify_meeting(&state, mid, &who, "会议已取消",
+    notify_activity(&state, mid, &who, "活动已取消",
         &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts))).await;
     Ok(Json(json!({ "ok": true })))
 }
@@ -431,14 +445,31 @@ pub struct InviteIn {
     #[serde(default)] pub required: Option<bool>,
 }
 
-/// PUT /api/meetings/{id}/participants —— ★批量★邀请(删组之后,一场会拉 20 人不能点 20 次)。
+/// 把「这些人已经被通知过」这个**事实**落库(ADR-0003)。
+///
+/// ★只在真的发出了通知之后调用★ —— 它是事实记录,不是状态标记。
+/// 已经有值的不覆盖(`notified_at IS NULL` 才写):第一次知情的时刻才有意义,
+/// 后续每次改期都刷新的话,「他到底知不知道这场活动」就答不了了。
+///
+/// ⚠ 谁**不该**进来:旁听者(observe 是自助的,他自己加的自己知道,但那不是「被通知」)。
+async fn mark_notified(pool: &sqlx::PgPool, mid: i64, users: &[String]) -> AppResult<()> {
+    if users.is_empty() { return Ok(()) }
+    sqlx::query(
+        "UPDATE activity_participants SET notified_at = now()
+          WHERE activity_id = $1 AND username = ANY($2) AND notified_at IS NULL",
+    )
+    .bind(mid).bind(users).execute(pool).await?;
+    Ok(())
+}
+
+/// PUT /api/activities/{id}/participants —— ★批量★邀请(删组之后,一场会拉 20 人不能点 20 次)。
 pub async fn invite(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(input): Json<InviteIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     // ★邀请恒为 attendee★:旁听不是「被邀请」出来的,它是自己跑来听(D9);
     // 老前端可能还在传 kind,直接忽略 —— 比报错温和,而且语义上确实只有这一种。
     let kind = "attendee";
@@ -448,45 +479,46 @@ pub async fn invite(
         if u.is_empty() { continue }
         // 与拉项目成员同一条校验:用户名以平台 Keycloak 为准(registry 不可达时降级本地表)。
         crate::http::projects::ensure_platform_user(&state, u).await?;
-        sqlx::query("INSERT INTO meeting_participants (meeting_id, username, kind, required)
+        sqlx::query("INSERT INTO activity_participants (activity_id, username, kind, required)
                      VALUES ($1,$2,$3,COALESCE($4,true))
-                     ON CONFLICT (meeting_id, username)
+                     ON CONFLICT (activity_id, username)
                      DO UPDATE SET kind=EXCLUDED.kind, required=EXCLUDED.required")
             .bind(mid).bind(u).bind(kind).bind(input.required).execute(&state.pool).await?;
         n += 1;
     }
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "meeting.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
+    audit::record(&state.pool, actor, "activity.invite", &mid.to_string(), &format!("{n} 人 kind={kind}")).await;
     // ★只通知这一批新加的人★,不打扰早就在名单里的人(他们什么都没变)。
     // 旁听者也不通知:observer 是自助加进来的(D9),他自己知道。
     {
-        let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+        let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
             .bind(mid).fetch_one(&state.pool).await?;
         let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && u != actor).collect();
-        notify_meeting(&state, mid, &fresh, "有人约你开会",
+        notify_activity(&state, mid, &fresh, "有人约你开会",
             &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts))).await;
+        mark_notified(&state.pool, mid, &fresh).await?;
     }
     Ok(Json(json!({ "ok": true, "invited": n })))
 }
 
-/// DELETE /api/meetings/{id}/participants —— 移出参会人。
+/// DELETE /api/activities/{id}/participants —— 移出参会人。
 pub async fn uninvite(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     let u = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim();
     if u.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
     // 发起人不能被移出——他被移出就没人能改这场会了(记录员可以,他还在)。
-    let org: String = sqlx::query_scalar("SELECT organizer FROM meetings WHERE id=$1")
+    let org: String = sqlx::query_scalar("SELECT organizer FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     if org == u { return Err(AppError::BadRequest("不能移出发起人".into())) }
-    sqlx::query("DELETE FROM meeting_participants WHERE meeting_id=$1 AND username=$2")
+    sqlx::query("DELETE FROM activity_participants WHERE activity_id=$1 AND username=$2")
         .bind(mid).bind(u).execute(&state.pool).await?;
-    audit::record(&state.pool, id.require_username()?, "meeting.uninvite", &mid.to_string(), u).await;
+    audit::record(&state.pool, id.require_username()?, "activity.uninvite", &mid.to_string(), u).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -500,7 +532,7 @@ pub struct RespondIn {
     #[serde(default)] pub counter_reason: Option<String>,
 }
 
-/// POST /api/meetings/{id}/respond —— 答复邀请。
+/// POST /api/activities/{id}/respond —— 答复邀请。
 ///
 /// ★「建议改期」(counter)不是便利功能,是私事冲突**唯一的结构化出口**(D2)★:
 /// 私密项目的日程对发起人完全隐形,他根本不知道我忙,只能由我主动提。
@@ -512,23 +544,23 @@ pub async fn respond(
     Json(r): Json<RespondIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let username = id.require_username()?;
-    // ★只有名单里的人能答复★:旁听者(public 会议路人)看得见这场会,但不能给自己投一票。
+    // ★只有名单里的人能答复★:旁听者(public 活动路人)看得见这场会,但不能给自己投一票。
     //
     // ⚠★2026-08-08 修:这句 SQL 此前不看 kind,于是上面这行注释描述的闸根本不存在★。
     //   `observe`(自助旁听)往这张表插的正是一行 `kind='observer'`,所以旁听者
     //   `listed` 必然是 Some → 闸放行 → 他能提交 `counter`(建议改期),
     //   而 counter **是唯一会给发起人发站内信的分支**(见下面 D2 那段)。
-    //   也就是:任何看得到某场公开会议的人,点一下旁听就能给发起人投递消息。
-    //   同一个根因(「表里有行」≠「是正式参会人」)在 `perm.rs::meeting_view` 里
+    //   也就是:任何看得到某场公开活动的人,点一下旁听就能给发起人投递消息。
+    //   同一个根因(「表里有行」≠「是正式参会人」)在 `perm.rs::activity_view` 里
     //   还造成过一次真正的提权,两处同一批修。
     //   ★判据以 kind 为准★——统计(:1142)与答复进度(:1330)一直是这么写的,是这两处漏了。
     let listed: Option<String> = sqlx::query_scalar(
-        "SELECT username FROM meeting_participants
-          WHERE meeting_id=$1 AND username=$2 AND kind='attendee'")
+        "SELECT username FROM activity_participants
+          WHERE activity_id=$1 AND username=$2 AND kind='attendee'")
         .bind(mid).bind(username).fetch_optional(&state.pool).await?;
     if listed.is_none() {
-        // 会议存在但我不在名单 → 403;会议根本看不见 → meeting_view 会给 404
-        meeting_view(&state.pool, &id, mid).await?;
+        // 活动存在但我不在名单 → 403;活动根本看不见 → activity_view 会给 404
+        activity_view(&state.pool, &id, mid).await?;
         return Err(AppError::Forbidden);
     }
     let st = match r.status.as_str() {
@@ -540,35 +572,35 @@ pub async fn respond(
             return Err(AppError::BadRequest("建议改期必须给出提议的起止时间(只说不行等于把问题丢回去)".into()));
         };
         if e <= s { return Err(AppError::BadRequest("提议的结束时间必须晚于开始时间".into())) }
-        // ★会议开始后不再允许「建议改期」★(PRD 6.1.4 验收标准):会已经在开了,
+        // ★活动开始后不再允许「建议改期」★(PRD 6.1.4 验收标准):会已经在开了,
         // 改期这个动作没有意义 —— 它要么是误点,要么是想表达「我没去」,而那该用「拒绝」。
         // ⚠ 其余三态(接受/拒绝/待定)**照常允许**:会后补一个「我其实没去」是正当的(D11 的雏形)。
-        let started: bool = sqlx::query_scalar("SELECT starts_at <= now() FROM meetings WHERE id=$1")
+        let started: bool = sqlx::query_scalar("SELECT starts_at <= now() FROM activities WHERE id=$1")
             .bind(mid).fetch_one(&state.pool).await?;
         if started {
-            return Err(AppError::BadRequest("会议已经开始,不能再建议改期(可以标记拒绝)".into()));
+            return Err(AppError::BadRequest("活动已经开始,不能再建议改期(可以标记拒绝)".into()));
         }
     }
     sqlx::query(
-        "UPDATE meeting_participants
+        "UPDATE activity_participants
             SET status=$3, responded_at=now(),
                 counter_starts_at=$4, counter_ends_at=$5, counter_reason=$6
-          WHERE meeting_id=$1 AND username=$2")
+          WHERE activity_id=$1 AND username=$2")
         .bind(mid).bind(username).bind(st)
         .bind(r.counter_starts_at).bind(r.counter_ends_at).bind(r.counter_reason.as_deref())
         .execute(&state.pool).await?;
     // ★「建议改期」必须通知发起人★(D2):私密项目的日程对他完全隐形,他不知道我为什么忙,
     // 这条建议就是他能收到的**唯一**信号。它躺在数据库里没人看 = 这个出口不存在。
-    // 其余三态(接受/拒绝/待定)不发信 —— 发起人在会议页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
+    // 其余三态(接受/拒绝/待定)不发信 —— 发起人在活动页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
     if st == "counter" {
         let (mtitle, organizer): (String, String) =
-            sqlx::query_as("SELECT title, organizer FROM meetings WHERE id=$1")
+            sqlx::query_as("SELECT title, organizer FROM activities WHERE id=$1")
                 .bind(mid).fetch_one(&state.pool).await?;
         if organizer != username {
             let when = r.counter_starts_at.map(fmt_when).unwrap_or_else(|| "(未给具体时间)".into());
             let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
                 .map(|x| format!(",理由:{x}")).unwrap_or_default();
-            notify_meeting(&state, mid, &[organizer], "有人建议改期",
+            notify_activity(&state, mid, &[organizer], "有人建议改期",
                 &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
         }
     }
@@ -585,7 +617,7 @@ pub struct FreeBusyQ {
 
 /// GET /api/freebusy —— 忙闲查询(D1)。★只回时间段,不回任何内容★。
 ///
-/// ★分流按**项目可见性**,不是按会议★:
+/// ★分流按**项目可见性**,不是按活动★:
 ///   · 关联了任一**公开**项目的会 → 产生忙闲(别人看到「忙」,但看不到标题);
 ///   · 只关联**私密**项目的会 → ★完全隐形★,别人看到的是「空闲」。
 /// 这是刻意的:私事连「我忙」这件事都不该暴露。代价是发起人可能排到你头上,
@@ -603,18 +635,31 @@ pub async fn freebusy(
     if users.len() > 200 { return Err(AppError::BadRequest("一次最多查 200 人".into())) }
     let rows: Vec<(String, Ts, Ts)> = sqlx::query_as(
         "SELECT mp.username, m.starts_at, m.ends_at
-           FROM meeting_participants mp
-           JOIN meetings m ON m.id = mp.meeting_id
+           FROM activity_participants mp
+           JOIN activities m ON m.id = mp.activity_id
           WHERE mp.username = ANY($1) AND m.status='active'
             AND mp.status <> 'declined'
+            -- ★没通知过的人不进忙闲★(ADR-0003):他对这场活动自始至终不知情,
+            -- 却因此在别人眼里显示「忙」—— 那是凭空占用他的时间。
+            AND mp.notified_at IS NOT NULL
             AND m.starts_at < $3 AND m.ends_at > $2
-            AND EXISTS (SELECT 1 FROM meeting_projects mpj
-                          JOIN projects p ON p.id = mpj.project_id
-                         WHERE mpj.meeting_id = m.id
-                           AND p.visibility = 'public' AND p.deleted_at IS NULL
-                           -- ★归档项目不再产生忙闲★(D17):项目结题了,它的历史会议
-                           -- 不该继续把人显示成「忙」——那会让别人永远约不到你。
-                           AND p.archived_at IS NULL)
+            -- ★判据是活动自己的 busy(PRD A4),不再是「有没有关联到公开项目」★
+            --   旧判据把「内容给谁看」和「时间占不占别人」绑成一件事,后果有二:
+            --   ① 不关联项目的活动**一个忙块都出不来**(A4 要的正是这种活动);
+            --   ② 私密项目的会不占忙闲 —— 而「我这个时段没空」本来就不泄露任何内容。
+            AND m.busy
+            -- ★归档项目不再产生忙闲★(D17):项目结题了,它的历史活动不该继续把人显示成「忙」。
+            -- 判据从「存在公开且未归档的关联项目」收成「不是所有关联项目都归档了」——
+            -- 没有关联项目的活动(A4)不受这条影响。
+            -- ⚠★这对括号是承重的★:`AND` 比 `OR` 结合得紧,少了它就变成
+            --   `(… AND m.busy AND NOT EXISTS(…)) OR EXISTS(…)` —— OR 那支会**绕过前面全部条件**,
+            --   包括 `username = ANY($1)` 和时间窗,于是任何关联了未归档项目的会
+            --   都给**所有人、任何时段**产生忙块。写这段时当场踩了,PREPARE 抓不到(语法合法)。
+            AND (NOT EXISTS (SELECT 1 FROM activity_projects mpj WHERE mpj.activity_id = m.id)
+                 OR EXISTS (SELECT 1 FROM activity_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.activity_id = m.id
+                               AND p.deleted_at IS NULL AND p.archived_at IS NULL))
           ORDER BY mp.username, m.starts_at")
         .bind(&users).bind(q.from).bind(q.to)
         .fetch_all(&state.pool).await?;
@@ -637,7 +682,7 @@ pub struct MessageRow {
     pub peer: Option<String>, pub body: String, pub created_at: Ts,
 }
 
-/// GET /api/meetings/{id}/messages —— 会议讨论区(D13)。
+/// GET /api/activities/{id}/messages —— 活动讨论区(D13)。
 /// public 频道:参会人可见;private:仅双方可见。★旁听者一律不给★。
 pub async fn messages(
     State(state): State<AppState>,
@@ -645,8 +690,8 @@ pub async fn messages(
     Path(mid): Path<i64>,
     Query(q): Query<MsgQ>,
 ) -> AppResult<Json<Vec<MessageRow>>> {
-    // ★讨论区是 Inside 专属★:D9 给旁听者的是「知道会议存在与议程」,不含听人聊天。
-    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+    // ★讨论区是 Inside 专属★:D9 给旁听者的是「知道活动存在与议程」,不含听人聊天。
+    if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
     }
     let username = id.require_username()?;
@@ -656,15 +701,15 @@ pub async fn messages(
             if peer.is_empty() { return Err(AppError::BadRequest("私聊须指定 peer".into())) }
             // 只取「我与他」这一对的,两个方向都要。
             sqlx::query_as(
-                "SELECT id, sender, channel, peer, body, created_at FROM meeting_messages
-                  WHERE meeting_id=$1 AND channel='private'
+                "SELECT id, sender, channel, peer, body, created_at FROM activity_messages
+                  WHERE activity_id=$1 AND channel='private'
                     AND ((sender=$2 AND peer=$3) OR (sender=$3 AND peer=$2))
                   ORDER BY created_at")
                 .bind(mid).bind(username).bind(&peer).fetch_all(&state.pool).await?
         }
         _ => sqlx::query_as(
-                "SELECT id, sender, channel, peer, body, created_at FROM meeting_messages
-                  WHERE meeting_id=$1 AND channel='public' ORDER BY created_at")
+                "SELECT id, sender, channel, peer, body, created_at FROM activity_messages
+                  WHERE activity_id=$1 AND channel='public' ORDER BY created_at")
                 .bind(mid).fetch_all(&state.pool).await?,
     };
     Ok(Json(rows))
@@ -673,7 +718,7 @@ pub async fn messages(
 #[derive(Deserialize)]
 pub struct MsgIn { pub body: String, #[serde(default)] pub channel: Option<String>, #[serde(default)] pub peer: Option<String> }
 
-/// POST /api/meetings/{id}/messages —— 发言。
+/// POST /api/activities/{id}/messages —— 发言。
 /// ★私聊对象只限发起人与记录员★(D13):不做任意点对点,否则这里会长成一个 IM。
 pub async fn send_message(
     State(state): State<AppState>,
@@ -681,7 +726,7 @@ pub async fn send_message(
     Path(mid): Path<i64>,
     Json(m): Json<MsgIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+    if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
     }
     let username = id.require_username()?;
@@ -693,8 +738,8 @@ pub async fn send_message(
             let peer = m.peer.as_deref().unwrap_or("").trim().to_string();
             if peer.is_empty() { return Err(AppError::BadRequest("私聊须指定 peer".into())) }
             let hosts: Vec<String> = sqlx::query_scalar(
-                "SELECT organizer FROM meetings WHERE id=$1
-                 UNION SELECT recorder FROM meetings WHERE id=$1")
+                "SELECT organizer FROM activities WHERE id=$1
+                 UNION SELECT recorder FROM activities WHERE id=$1")
                 .bind(mid).fetch_all(&state.pool).await?;
             if !hosts.iter().any(|h| h == &peer) {
                 return Err(AppError::BadRequest("私聊只能发给发起人或记录员(D13:不做任意点对点)".into()));
@@ -704,20 +749,20 @@ pub async fn send_message(
         _ => ("public", None),
     };
     let id_: i64 = sqlx::query_scalar(
-        "INSERT INTO meeting_messages (meeting_id, sender, channel, peer, body) VALUES ($1,$2,$3,$4,$5) RETURNING id")
+        "INSERT INTO activity_messages (activity_id, sender, channel, peer, body) VALUES ($1,$2,$3,$4,$5) RETURNING id")
         .bind(mid).bind(username).bind(channel).bind(peer.as_deref()).bind(body)
         .fetch_one(&state.pool).await?;
     Ok(Json(json!({ "id": id_ })))
 }
 
-// ── 会议纪要(D14)────────────────────────────────────────────────────────
+// ── 活动纪要(D14)────────────────────────────────────────────────────────
 // ★AI 只是原材料,记录员才是作者★:`/api/items/{id}/analysis` 出的转写与摘要是**给他看的**,
 // 这里存的是**他整理过的正式纪要**。两者刻意不打通——一键把 AI 稿写进纪要,
 // 等于让「记录员按模板整理」这条决策名存实亡(D14 反复确认过)。
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Minutes {
-    pub meeting_id: i64,
+    pub activity_id: i64,
     pub status: String,
     /// 到场/列席/缺席:★会后补录的**事实**★(D11),不是邀请时的名单——
     /// 谁接受了邀请和谁真的来了是两件事,统计口径按这个。
@@ -734,21 +779,21 @@ pub struct Minutes {
     pub updated_at: Ts,
 }
 
-/// GET /api/meetings/{id}/minutes —— 取纪要(没有则回一份空的,前端不用判 404)。
+/// GET /api/activities/{id}/minutes —— 取纪要(没有则回一份空的,前端不用判 404)。
 pub async fn minutes_get(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    // ★纪要是会议内容,旁听者不给★(与讨论区同档):D9 给旁听者的是「知道有这个会」。
-    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+    // ★纪要是活动内容,旁听者不给★(与讨论区同档):D9 给旁听者的是「知道有这个会」。
+    if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
     }
-    let m: Option<Minutes> = sqlx::query_as("SELECT * FROM meeting_minutes WHERE meeting_id = $1")
+    let m: Option<Minutes> = sqlx::query_as("SELECT * FROM activity_minutes WHERE activity_id = $1")
         .bind(mid).fetch_optional(&state.pool).await?;
     // 谁能编辑:记录员(本职)或发起人。★不是「参会人都能改」★——纪要要有唯一作者,
     // 否则「按固定模板整理」会变成谁都能覆盖一遍的公共草稿。
-    let can_edit = require_meeting_host(&state.pool, &id, mid).await.is_ok();
+    let can_edit = require_activity_host(&state.pool, &id, mid).await.is_ok();
     Ok(Json(json!({ "minutes": m, "can_edit": can_edit })))
 }
 
@@ -765,37 +810,37 @@ pub struct MinutesIn {
     pub status: Option<String>,
 }
 
-/// PUT /api/meetings/{id}/minutes —— 记录员保存纪要(upsert)。
+/// PUT /api/activities/{id}/minutes —— 记录员保存纪要(upsert)。
 pub async fn minutes_put(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(p): Json<MinutesIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     let status = match p.status.as_deref() {
         Some("done") => "done",
         Some("draft") | None => "draft",
         _ => return Err(AppError::BadRequest("状态须为 draft/done".into())),
     };
     sqlx::query(
-        "INSERT INTO meeting_minutes
-           (meeting_id, status, attendees, observers, absentees, agenda_text, content_md, resolutions, todos,
+        "INSERT INTO activity_minutes
+           (activity_id, status, attendees, observers, absentees, agenda_text, content_md, resolutions, todos,
             completed_at, updated_at)
          VALUES ($1,$2,COALESCE($3,''),COALESCE($4,''),COALESCE($5,''),COALESCE($6,''),
                  COALESCE($7,''),COALESCE($8,''),COALESCE($9,''),
                  CASE WHEN $2='done' THEN now() END, now())
-         ON CONFLICT (meeting_id) DO UPDATE SET
+         ON CONFLICT (activity_id) DO UPDATE SET
            status=EXCLUDED.status,
-           attendees=COALESCE($3, meeting_minutes.attendees),
-           observers=COALESCE($4, meeting_minutes.observers),
-           absentees=COALESCE($5, meeting_minutes.absentees),
-           agenda_text=COALESCE($6, meeting_minutes.agenda_text),
-           content_md=COALESCE($7, meeting_minutes.content_md),
-           resolutions=COALESCE($8, meeting_minutes.resolutions),
-           todos=COALESCE($9, meeting_minutes.todos),
+           attendees=COALESCE($3, activity_minutes.attendees),
+           observers=COALESCE($4, activity_minutes.observers),
+           absentees=COALESCE($5, activity_minutes.absentees),
+           agenda_text=COALESCE($6, activity_minutes.agenda_text),
+           content_md=COALESCE($7, activity_minutes.content_md),
+           resolutions=COALESCE($8, activity_minutes.resolutions),
+           todos=COALESCE($9, activity_minutes.todos),
            -- ★定稿时间只记第一次★:之后补录到场情况不该把「什么时候定的稿」冲掉
-           completed_at=CASE WHEN $2='done' THEN COALESCE(meeting_minutes.completed_at, now()) ELSE NULL END,
+           completed_at=CASE WHEN $2='done' THEN COALESCE(activity_minutes.completed_at, now()) ELSE NULL END,
            updated_at=now()")
         .bind(mid).bind(status)
         .bind(p.attendees.as_deref()).bind(p.observers.as_deref()).bind(p.absentees.as_deref())
@@ -806,49 +851,49 @@ pub async fn minutes_put(
     Ok(Json(json!({ "ok": true, "status": status })))
 }
 
-// ── 会议材料 / 改动历史 / 催办 / 采纳改期 ──────────────────────────────────
+// ── 活动材料 / 改动历史 / 催办 / 采纳改期 ──────────────────────────────────
 // 对应原型 meet 视图右侧与中部的几块(docs/UI-GAP.md)。
 
 #[derive(Serialize, sqlx::FromRow)]
-pub struct MeetingItem {
+pub struct ActivityItem {
     pub id: i64,
     pub name: String,
     pub kind: String,
     pub size: Option<i64>,
     pub mime: Option<String>,
-    /// ★录制 ≠ 材料★(D5):只有 is_recording 的文件会被转写、并作为会议时长依据。
+    /// ★录制 ≠ 材料★(D5):只有 is_recording 的文件会被转写、并作为活动时长依据。
     pub is_recording: bool,
     pub created_by: String,
     pub created_at: Ts,
 }
 
-/// GET /api/meetings/{id}/items —— 会议的材料与录制。
-/// 前端分两个 tab 显示;★这是会议的「只读区」★(D10):唯一写入口是会议详情页,
+/// GET /api/activities/{id}/items —— 活动的材料与录制。
+/// 前端分两个 tab 显示;★这是活动的「只读区」★(D10):唯一写入口是活动详情页,
 /// 在项目树里不允许对它改名/移动/删除。
-pub async fn meeting_items(
+pub async fn activity_items(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<Vec<MeetingItem>>> {
-    // ★材料按项目成员身份判权,不是按参会身份★(D8):临时参会人看得到会议,看不到材料。
-    // 所以这里不能只用 meeting_view —— 要求他在**任一关联项目**里至少是 viewer。
+) -> AppResult<Json<Vec<ActivityItem>>> {
+    // ★材料按项目成员身份判权,不是按参会身份★(D8):临时参会人看得到活动,看不到材料。
+    // 所以这里不能只用 activity_view —— 要求他在**任一关联项目**里至少是 viewer。
     let username = id.require_username()?;
     let ok: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM meeting_projects mp
+        "SELECT 1 FROM activity_projects mp
            JOIN project_members pm ON pm.project_id = mp.project_id
            JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
-          WHERE mp.meeting_id = $1 AND pm.username = $2
+          WHERE mp.activity_id = $1 AND pm.username = $2
           UNION ALL SELECT 1 FROM app_user WHERE username = $2 AND is_super
           LIMIT 1")
         .bind(mid).bind(username).fetch_optional(&state.pool).await?;
     if ok.is_none() {
-        // 看得见会议但不是项目成员 → 403(他知道有这场会,只是拿不到材料);完全看不见 → 404
-        meeting_view(&state.pool, &id, mid).await?;
+        // 看得见活动但不是项目成员 → 403(他知道有这场会,只是拿不到材料);完全看不见 → 404
+        activity_view(&state.pool, &id, mid).await?;
         return Err(AppError::Forbidden);
     }
-    let rows: Vec<MeetingItem> = sqlx::query_as(
+    let rows: Vec<ActivityItem> = sqlx::query_as(
         "SELECT id, name, kind, size, mime, coalesce(is_recording,false) AS is_recording, created_by, created_at
-           FROM items WHERE meeting_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
+           FROM items WHERE activity_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
           ORDER BY is_recording, created_at")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(rows))
@@ -862,24 +907,24 @@ pub struct LinkChange {
     pub changed_at: Ts,
 }
 
-/// GET /api/meetings/{id}/link-history —— 线上会议链接的改动历史。
+/// GET /api/activities/{id}/link-history —— 线上活动链接的改动历史。
 /// 开会前十分钟改链接是真实场景,事后要能追溯「谁何时改成什么」。
 pub async fn link_history(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
 ) -> AppResult<Json<Vec<LinkChange>>> {
-    if meeting_view(&state.pool, &id, mid).await? != MeetingView::Inside {
+    if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
     }
     let rows: Vec<LinkChange> = sqlx::query_as(
-        "SELECT old_url, new_url, changed_by, changed_at FROM meeting_link_history
-          WHERE meeting_id = $1 ORDER BY changed_at DESC")
+        "SELECT old_url, new_url, changed_by, changed_at FROM activity_link_history
+          WHERE activity_id = $1 ORDER BY changed_at DESC")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }
 
-/// POST /api/meetings/{id}/remind —— 催办未应答的人(发起人/记录员)。
+/// POST /api/activities/{id}/remind —— 催办未应答的人(发起人/记录员)。
 /// ★只催「还没答复」的★:已接受/已拒绝的人不该再被打扰。
 pub async fn remind(
     State(state): State<AppState>,
@@ -887,16 +932,16 @@ pub async fn remind(
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     let only = body.get("username").and_then(|v| v.as_str()).map(str::to_string);
     let targets: Vec<String> = sqlx::query_scalar(
-        "SELECT username FROM meeting_participants
-          WHERE meeting_id = $1 AND status = 'pending' AND ($2::text IS NULL OR username = $2)")
+        "SELECT username FROM activity_participants
+          WHERE activity_id = $1 AND status = 'pending' AND ($2::text IS NULL OR username = $2)")
         .bind(mid).bind(only.as_deref()).fetch_all(&state.pool).await?;
     if targets.is_empty() {
         return Err(AppError::BadRequest("没有需要催的人(都已答复)".into()));
     }
-    let (title, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM meetings WHERE id=$1")
+    let (title, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
         .bind(mid).fetch_one(&state.pool).await?;
     // 站内信走平台 registry;不可达时降级为「只记审计不发信」——催办失败不该让接口报错。
     let mut sent = 0;
@@ -904,16 +949,16 @@ pub async fn remind(
         for u in &targets {
             let body = format!("「{title}」将于 {} 开始,你还没有答复。", starts.format("%m-%d %H:%M"));
             // notify 是 best-effort(不返回 Result):站内信发不出去不该让催办接口失败
-            reg.notify(u, "会议待你答复", &body, None, Some(&format!("meeting:{mid}"))).await;
+            reg.notify(u, "活动待你答复", &body, None, Some(&format!("activity:{mid}"))).await;
             sent += 1;
         }
     }
-    audit::record(&state.pool, id.require_username()?, "meeting.remind", &mid.to_string(),
+    audit::record(&state.pool, id.require_username()?, "activity.remind", &mid.to_string(),
                   &format!("{} 人", targets.len())).await;
     Ok(Json(json!({ "ok": true, "targets": targets.len(), "sent": sent })))
 }
 
-/// POST /api/meetings/{id}/reject-counter —— 驳回某人的改期建议。
+/// POST /api/activities/{id}/reject-counter —— 驳回某人的改期建议。
 /// ★驳回后他回到 pending 而不是 declined★:发起人拒绝的是**这个时间提议**,
 /// 不代表替他决定「不来」—— 让他重新答复(接受原时间 / 拒绝 / 再提一个)。
 pub async fn reject_counter(
@@ -922,68 +967,68 @@ pub async fn reject_counter(
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
     let n = sqlx::query(
-        "UPDATE meeting_participants
+        "UPDATE activity_participants
             SET status='pending', responded_at=NULL,
                 counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-          WHERE meeting_id=$1 AND username=$2 AND status='counter'")
+          WHERE activity_id=$1 AND username=$2 AND status='counter'")
         .bind(mid).bind(&who).execute(&state.pool).await?.rows_affected();
     if n == 0 { return Err(AppError::BadRequest("这个人没有待处理的改期建议".into())) }
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "meeting.reject-counter", &mid.to_string(), &who).await;
+    audit::record(&state.pool, actor, "activity.reject-counter", &mid.to_string(), &who).await;
     // 提了建议就该知道结果 —— 尤其驳回后他回到 pending、**还欠一次答复**,不说他不会知道
-    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
         .bind(mid).fetch_one(&state.pool).await?;
-    notify_meeting(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
+    notify_activity(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
         &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。")).await;
     Ok(Json(json!({ "ok": true })))
 }
 
-/// POST /api/meetings/{id}/accept-counter —— 采纳某人的改期建议。
-/// ★采纳 = 把会议时间改成他提议的时间★,随后所有人的答复清回 pending(与改时间同一套语义)。
+/// POST /api/activities/{id}/accept-counter —— 采纳某人的改期建议。
+/// ★采纳 = 把活动时间改成他提议的时间★,随后所有人的答复清回 pending(与改时间同一套语义)。
 pub async fn accept_counter(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_meeting_host(&state.pool, &id, mid).await?;
+    require_activity_host(&state.pool, &id, mid).await?;
     let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
     let row: Option<(Option<Ts>, Option<Ts>)> = sqlx::query_as(
-        "SELECT counter_starts_at, counter_ends_at FROM meeting_participants
-          WHERE meeting_id=$1 AND username=$2 AND status='counter'")
+        "SELECT counter_starts_at, counter_ends_at FROM activity_participants
+          WHERE activity_id=$1 AND username=$2 AND status='counter'")
         .bind(mid).bind(&who).fetch_optional(&state.pool).await?;
     let Some((Some(s), Some(e))) = row else {
         return Err(AppError::BadRequest("这个人没有提出改期建议".into()));
     };
     let mut tx = state.pool.begin().await?;
-    sqlx::query("UPDATE meetings SET starts_at=$2, ends_at=$3, updated_at=now() WHERE id=$1")
+    sqlx::query("UPDATE activities SET starts_at=$2, ends_at=$3, updated_at=now() WHERE id=$1")
         .bind(mid).bind(s).bind(e).execute(&mut *tx).await?;
     // 时间变了,所有人的答复都得重来 —— 包括提议者本人:他提的是时间,不等于他一定能来。
     sqlx::query(
-        "UPDATE meeting_participants SET status='pending', responded_at=NULL,
+        "UPDATE activity_participants SET status='pending', responded_at=NULL,
                 counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-          WHERE meeting_id=$1 AND username <> $2")
+          WHERE activity_id=$1 AND username <> $2")
         .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
     tx.commit().await?;
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "meeting.accept-counter", &mid.to_string(), &who).await;
-    // 采纳 = 会议时间真的变了 → ★通知全员★(和 update 改时间同理:别人的答复已被清回 pending),
+    audit::record(&state.pool, actor, "activity.accept-counter", &mid.to_string(), &who).await;
+    // 采纳 = 活动时间真的变了 → ★通知全员★(和 update 改时间同理:别人的答复已被清回 pending),
     // 提议人本人也要收到,他要知道自己的建议被采纳了。
-    let mtitle: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id=$1")
+    let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
         .bind(mid).fetch_one(&state.pool).await?;
     let all = notify_targets(&state.pool, mid, actor).await;
-    notify_meeting(&state, mid, &all, "会议时间已改",
+    notify_activity(&state, mid, &all, "活动时间已改",
         &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s))).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
 
-// ── 公开会议广场 / 旁听(D9)──────────────────────────────────────────────
-// ★这是 D9 明确要求、我一度漏做的入口★:公开会议若没有列表页,「全平台可旁听」就是一句空话
+// ── 公开活动广场 / 旁听(D9)──────────────────────────────────────────────
+// ★这是 D9 明确要求、我一度漏做的入口★:公开活动若没有列表页,「全平台可旁听」就是一句空话
 // —— 没人知道有哪些会可以听(2026-08-07 用户提出,查 PRD 确认是遗漏)。
 
 #[derive(Deserialize)]
@@ -992,62 +1037,59 @@ pub struct PublicQ {
     pub days: Option<i64>,
 }
 
-/// GET /api/meetings/public —— 公开会议广场。
+/// GET /api/activities/public —— 公开活动广场。
 /// ★只列**还没结束**的★:旁听的意义是「我要去听」,已经开完的会列出来只是噪音
-/// (要查历史去会议页搜)。
+/// (要查历史去活动页搜)。
 pub async fn public_list(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Query(q): Query<PublicQ>,
-) -> AppResult<Json<Vec<MeetingRow>>> {
+) -> AppResult<Json<Vec<ActivityRow>>> {
     let username = id.require_username()?;
     let days = q.days.filter(|d| *d > 0);
-    let rows: Vec<MeetingRow> = sqlx::query_as(
+    let rows: Vec<ActivityRow> = sqlx::query_as(
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                m.visibility <> 'public' AS is_private,
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
-                   FROM meeting_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
-                  WHERE mp2.meeting_id = m.id AND p2.deleted_at IS NULL) AS projects,
-                (SELECT count(*) FROM meeting_participants x WHERE x.meeting_id = m.id) AS participant_count,
+                   FROM activity_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
+                  WHERE mp2.activity_id = m.id AND p2.deleted_at IS NULL) AS projects,
+                (SELECT count(*) FROM activity_participants x WHERE x.activity_id = m.id) AS participant_count,
                 NULL::text AS minutes_status
-           FROM meetings m
-           LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $1
+           FROM activities m
+           LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
-            -- ★只列我**还没有关系**的会★(2026-08-07 用户:「公开会议明明是我发起的,
+            -- ★只列我**还没有关系**的会★(2026-08-07 用户:「公开活动明明是我发起的,
             --   为啥会有取消旁听…应该显示我没参与也没旁听的才对」)。
             --   广场是**发现**的入口:我已经参与或已经旁听的会**早就在我的日历里了**,
             --   再在右边提醒一遍是纯噪音 —— 更荒谬的是自己发起的会出现在这里,
             --   还配一个「取消旁听」按钮(我从来就不是旁听)。
-            AND NOT EXISTS (SELECT 1 FROM meeting_participants mpx
-                             WHERE mpx.meeting_id = m.id AND mpx.username = $1)
+            AND NOT EXISTS (SELECT 1 FROM activity_participants mpx
+                             WHERE mpx.activity_id = m.id AND mpx.username = $1)
             AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
             -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)
-            AND EXISTS (SELECT 1 FROM meeting_projects mpd
+            AND EXISTS (SELECT 1 FROM activity_projects mpd
                           JOIN projects pd ON pd.id = mpd.project_id
-                         WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
+                         WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
             -- 归档项目的会不进广场(与日历同一条口径:它不该再出现在「接下来要做什么」里)
-            AND NOT (EXISTS (SELECT 1 FROM meeting_projects mpj
+            AND NOT (EXISTS (SELECT 1 FROM activity_projects mpj
                                JOIN projects p ON p.id = mpj.project_id
-                              WHERE mpj.meeting_id = m.id AND p.archived_at IS NOT NULL)
-                     AND NOT EXISTS (SELECT 1 FROM meeting_projects m2
+                              WHERE mpj.activity_id = m.id AND p.archived_at IS NOT NULL)
+                     AND NOT EXISTS (SELECT 1 FROM activity_projects m2
                                        JOIN projects p2 ON p2.id = m2.project_id
-                                      WHERE m2.meeting_id = m.id AND p2.archived_at IS NULL))
+                                      WHERE m2.activity_id = m.id AND p2.archived_at IS NULL))
           ORDER BY m.starts_at LIMIT 200")
         .bind(username).bind(days)
         .fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }
 
-/// POST /api/meetings/{id}/observe —— 我要旁听 / 取消旁听(body: {observe: bool})。
+/// POST /api/activities/{id}/observe —— 我要旁听 / 取消旁听(body: {observe: bool})。
 ///
-/// ★旁听是**自助**的★(D9):不需要发起人同意 —— 会议既然标了 public,就是邀请全平台来听。
+/// ★旁听是**自助**的★(D9):不需要发起人同意 —— 活动既然标了 public,就是邀请全平台来听。
 /// 旁听后这场会进入我的个人日历(list 接口本来就包含「我是参会人」的会)。
 ///
-/// ⚠ 旁听**不给材料**:kind='observer' 在 meeting_items 那里过不了项目成员判权(D9 与 D3 正交)。
+/// ⚠ 旁听**不给材料**:kind='observer' 在 activity_items 那里过不了项目成员判权(D9 与 D3 正交)。
 pub async fn observe(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -1057,25 +1099,25 @@ pub async fn observe(
     let username = id.require_username()?;
     let on = body.get("observe").and_then(|v| v.as_bool()).unwrap_or(true);
     let vis: Option<String> = sqlx::query_scalar(
-        "SELECT visibility FROM meetings WHERE id = $1 AND status = 'active'")
+        "SELECT visibility FROM activities WHERE id = $1 AND status = 'active'")
         .bind(mid).fetch_optional(&state.pool).await?;
     match vis.as_deref() {
         Some("public") => {}
-        // 私密会议对无关的人本就 404(不泄露存在性);已取消的会也没什么可旁听的
+        // 私密活动对无关的人本就 404(不泄露存在性);已取消的会也没什么可旁听的
         _ => return Err(AppError::NotFound),
     }
     if on {
         // ★已经是参会人就别降级成旁听★:被正式邀请的人点了旁听按钮不该丢掉自己的答复状态。
         let n = sqlx::query(
-            "INSERT INTO meeting_participants (meeting_id, username, kind, status, responded_at)
-             VALUES ($1,$2,'observer','accepted',now()) ON CONFLICT (meeting_id, username) DO NOTHING")
+            "INSERT INTO activity_participants (activity_id, username, kind, status, responded_at)
+             VALUES ($1,$2,'observer','accepted',now()) ON CONFLICT (activity_id, username) DO NOTHING")
             .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
         return Ok(Json(json!({ "ok": true, "observing": true, "added": n == 1 })));
     }
-    // 取消旁听:★只删自己的 observer 行★——正式参会人不能用这个接口把自己从会议里摘掉
+    // 取消旁听:★只删自己的 observer 行★——正式参会人不能用这个接口把自己从活动里摘掉
     // (那是发起人的事,走 uninvite)。
     let n = sqlx::query(
-        "DELETE FROM meeting_participants WHERE meeting_id=$1 AND username=$2 AND kind='observer'")
+        "DELETE FROM activity_participants WHERE activity_id=$1 AND username=$2 AND kind='observer'")
         .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
     Ok(Json(json!({ "ok": true, "observing": false, "removed": n })))
 }
@@ -1127,31 +1169,34 @@ pub async fn my_stats(
                COALESCE(
                  (SELECT max(t.duration_sec)/3600.0
                     FROM items i JOIN transcripts t ON t.item_id = i.id
-                   WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                  m.actual_minutes/60.0,
                  EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
                ) AS hours,
                CASE
                  WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
-                               WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
                                  AND t.duration_sec IS NOT NULL) THEN 'recording'
                  WHEN m.actual_minutes IS NOT NULL THEN 'manual'
                  ELSE 'scheduled'
                END AS src
-        FROM meetings m
+        FROM activities m
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
           -- ★关联项目全被删的会不计入★(2026-08-07,从个人面板的图上看出来的):
           -- 少了这一句,totals 会说「参会 1 次」而下面的分项目表是空的 ——
           -- 因为分项目那条 JOIN 了 projects 判 deleted_at,总数却没判。
           -- ★两个数字自相矛盾比两个都错更糟★:看的人会以为是自己看错了。
-          AND EXISTS (SELECT 1 FROM meeting_projects mpd
+          AND EXISTS (SELECT 1 FROM activity_projects mpd
                         JOIN projects pd ON pd.id = mpd.project_id
-                       WHERE mpd.meeting_id = m.id AND pd.deleted_at IS NULL)
+                       WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
           AND (m.organizer = $1
-               OR EXISTS (SELECT 1 FROM meeting_participants p
-                          WHERE p.meeting_id = m.id AND p.username = $1
-                            AND p.kind = 'attendee' AND p.status <> 'declined')))" } }
+               OR EXISTS (SELECT 1 FROM activity_participants p
+                          WHERE p.activity_id = m.id AND p.username = $1
+                            -- ★口径只认 accepted★(ADR-0003 边界②):原来是 `status <> 'declined'`,
+                            -- 于是「建未来的会拉上张三 → 他被通知一次 → 改成昨天 9:00–18:00」
+                            -- **两步就能给他的季度统计塞 9 小时**。
+                            AND p.kind = 'attendee' AND p.status = 'accepted')))" } }
 
     let (cnt, hours, h_rec, h_man, h_sch, projects, todo): (i64, f64, f64, f64, f64, i64, i64) =
         sqlx::query_as(concat!(mine_cte!(), "
@@ -1160,36 +1205,36 @@ pub async fn my_stats(
                 COALESCE(SUM(hours) FILTER (WHERE src = 'recording'), 0)::float8,
                 COALESCE(SUM(hours) FILTER (WHERE src = 'manual'), 0)::float8,
                 COALESCE(SUM(hours) FILTER (WHERE src = 'scheduled'), 0)::float8,
-                (SELECT count(DISTINCT mp.project_id) FROM meeting_projects mp
-                   WHERE mp.meeting_id IN (SELECT id FROM mine))::bigint,
+                (SELECT count(DISTINCT mp.project_id) FROM activity_projects mp
+                   WHERE mp.activity_id IN (SELECT id FROM mine))::bigint,
                 (SELECT count(*) FROM mine x WHERE x.recorder = $1
-                   AND NOT EXISTS (SELECT 1 FROM meeting_minutes mm
-                                   WHERE mm.meeting_id = x.id AND mm.status = 'done'))::bigint
+                   AND NOT EXISTS (SELECT 1 FROM activity_minutes mm
+                                   WHERE mm.activity_id = x.id AND mm.status = 'done'))::bigint
          FROM mine"))
         .bind(who).bind(range).fetch_one(&state.pool).await?;
 
-    let by_project: Vec<(i64, String, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
-         SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+    let by_project: Vec<(i64, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
+         SELECT p.id, p.name, p.archived_at IS NOT NULL,
                 count(*)::bigint, COALESCE(SUM(x.hours), 0)::float8,
                 count(*) FILTER (WHERE mm.status = 'done')::bigint
          FROM mine x
-         JOIN meeting_projects mp ON mp.meeting_id = x.id
+         JOIN activity_projects mp ON mp.activity_id = x.id
          JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
-         LEFT JOIN meeting_minutes mm ON mm.meeting_id = x.id
-         GROUP BY p.id, p.name, p.visibility, p.archived_at
+         LEFT JOIN activity_minutes mm ON mm.activity_id = x.id
+         GROUP BY p.id, p.name, p.archived_at
          ORDER BY count(*) DESC, p.name"))
         .bind(who).bind(range).fetch_all(&state.pool).await?;
 
     // 我主持的项目(原型下半张卡)。「N 份纪要待整理」是**项目视角**的:
     // 只要这项目里有开完却没完成纪要的会就算,不论记录员是谁 —— 主持人要的是「我这摊子有没有欠账」。
-    let hosting: Vec<(i64, String, String, bool, i64, i64)> = sqlx::query_as(
-        "SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+    let hosting: Vec<(i64, String, bool, i64, i64)> = sqlx::query_as(
+        "SELECT p.id, p.name, p.archived_at IS NOT NULL,
                 (SELECT count(*) FROM project_members pm WHERE pm.project_id = p.id)::bigint,
-                (SELECT count(*) FROM meetings m
-                   JOIN meeting_projects mp ON mp.meeting_id = m.id
+                (SELECT count(*) FROM activities m
+                   JOIN activity_projects mp ON mp.activity_id = m.id
                   WHERE mp.project_id = p.id AND m.status = 'active' AND m.ends_at <= now()
-                    AND NOT EXISTS (SELECT 1 FROM meeting_minutes mm
-                                    WHERE mm.meeting_id = m.id AND mm.status = 'done'))::bigint
+                    AND NOT EXISTS (SELECT 1 FROM activity_minutes mm
+                                    WHERE mm.activity_id = m.id AND mm.status = 'done'))::bigint
          FROM projects p WHERE p.owner = $1 AND p.deleted_at IS NULL
          ORDER BY p.archived_at IS NOT NULL, p.name")
         .bind(who).fetch_all(&state.pool).await?;
@@ -1209,16 +1254,16 @@ pub async fn my_stats(
         "range": range,
         "member_of": member_of,
         "totals": {
-            "meetings": cnt, "hours": r1(hours), "projects": projects, "minutes_todo": todo,
+            "activities": cnt, "hours": r1(hours), "projects": projects, "minutes_todo": todo,
             // ★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证
             "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
         },
-        "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
-            "id": id, "name": name, "visibility": vis, "archived": arch,
+        "by_project": by_project.iter().map(|(id, name, arch, c, h, done)| json!({
+            "id": id, "name": name, "archived": arch,
             "count": c, "hours": r1(*h), "minutes_done": done,
         })).collect::<Vec<_>>(),
-        "hosting": hosting.iter().map(|(id, name, vis, arch, mem, pend)| json!({
-            "id": id, "name": name, "visibility": vis, "archived": arch,
+        "hosting": hosting.iter().map(|(id, name, arch, mem, pend)| json!({
+            "id": id, "name": name, "archived": arch,
             "members": mem, "minutes_pending": pend,
         })).collect::<Vec<_>>(),
     })))
@@ -1226,7 +1271,7 @@ pub async fn my_stats(
 
 // ── 待我处理:私聊未读(原型 me 之外那张 🔔 卡的第二类条目)────────────────────
 
-/// GET /api/me/unread —— 有谁在会议里私聊了我、我还没看。
+/// GET /api/me/unread —— 有谁在活动里私聊了我、我还没看。
 ///
 /// ★只算 private 频道且 peer 是我的★:公开讨论区的新消息不进这张卡 ——
 /// 那是「群里有人说话」,不是「有人找我」;混进来会让这张卡天天有红点,
@@ -1242,51 +1287,51 @@ pub async fn my_unread(
     let rows: Vec<(i64, String, String, String, Ts, i64)> = sqlx::query_as(
         "SELECT m.id, m.title, x.sender, x.body, x.created_at, x.cnt
          FROM (
-            SELECT DISTINCT ON (mm.meeting_id) mm.meeting_id, mm.sender, mm.body, mm.created_at,
-                   count(*) OVER (PARTITION BY mm.meeting_id) AS cnt
-            FROM meeting_messages mm
-            LEFT JOIN meeting_reads r ON r.meeting_id = mm.meeting_id AND r.username = $1
+            SELECT DISTINCT ON (mm.activity_id) mm.activity_id, mm.sender, mm.body, mm.created_at,
+                   count(*) OVER (PARTITION BY mm.activity_id) AS cnt
+            FROM activity_messages mm
+            LEFT JOIN activity_reads r ON r.activity_id = mm.activity_id AND r.username = $1
             WHERE mm.channel = 'private' AND mm.peer = $1 AND mm.sender <> $1
               AND (r.read_at IS NULL OR mm.created_at > r.read_at)
-            ORDER BY mm.meeting_id, mm.created_at DESC
+            ORDER BY mm.activity_id, mm.created_at DESC
          ) x
-         JOIN meetings m ON m.id = x.meeting_id AND m.status = 'active'
+         JOIN activities m ON m.id = x.activity_id AND m.status = 'active'
          ORDER BY x.created_at DESC LIMIT 20")
         .bind(who).fetch_all(&state.pool).await?;
 
     Ok(Json(json!(rows.iter().map(|(mid, title, sender, body, at, cnt)| json!({
-        "meeting_id": mid, "title": title, "sender": sender, "body": body, "created_at": at, "count": cnt,
+        "activity_id": mid, "title": title, "sender": sender, "body": body, "created_at": at, "count": cnt,
     })).collect::<Vec<_>>())))
 }
 
 #[derive(Deserialize)]
 pub struct ReadBody {
     /// 不给 = 全部标记已读(原型右上角那个链接);给了 = 只清这一场会的。
-    pub meeting_id: Option<i64>,
+    pub activity_id: Option<i64>,
 }
 
 /// POST /api/me/unread/read —— 标记已读。
 ///
 /// ★把 read_at 推到 now() 而不是「最后一条消息的时间」★:两者在正常情况下等价,
 /// 但并发时不是 —— 若取最后一条的时间,恰好此刻发来的消息会被一起标成已读并**永远消失**。
-/// 推到 now() 最坏只是把刚发来的那条也算读了,而它还在会议页里躺着,不会丢。
+/// 推到 now() 最坏只是把刚发来的那条也算读了,而它还在活动页里躺着,不会丢。
 pub async fn mark_read(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(b): Json<ReadBody>,
 ) -> AppResult<Json<serde_json::Value>> {
     let who = id.require_username()?;
-    let n = match b.meeting_id {
+    let n = match b.activity_id {
         Some(mid) => sqlx::query(
-            "INSERT INTO meeting_reads (meeting_id, username) VALUES ($1, $2)
-             ON CONFLICT (meeting_id, username) DO UPDATE SET read_at = now()")
+            "INSERT INTO activity_reads (activity_id, username) VALUES ($1, $2)
+             ON CONFLICT (activity_id, username) DO UPDATE SET read_at = now()")
             .bind(mid).bind(who).execute(&state.pool).await?.rows_affected(),
         // 全部:只针对**确实有私聊给我**的会,不给全库每场会都塞一行
         None => sqlx::query(
-            "INSERT INTO meeting_reads (meeting_id, username)
-             SELECT DISTINCT mm.meeting_id, $1 FROM meeting_messages mm
+            "INSERT INTO activity_reads (activity_id, username)
+             SELECT DISTINCT mm.activity_id, $1 FROM activity_messages mm
               WHERE mm.channel = 'private' AND mm.peer = $1 AND mm.sender <> $1
-             ON CONFLICT (meeting_id, username) DO UPDATE SET read_at = now()")
+             ON CONFLICT (activity_id, username) DO UPDATE SET read_at = now()")
             .bind(who).execute(&state.pool).await?.rows_affected(),
     };
     Ok(Json(json!({ "marked": n })))
@@ -1294,14 +1339,14 @@ pub async fn mark_read(
 
 // ── 项目统计(PRD 6.5.2 + D6)────────────────────────────────────────────
 
-/// GET /api/projects/{id}/stats —— 项目视角的会议统计。
+/// GET /api/projects/{id}/stats —— 项目视角的活动统计。
 ///
 /// ★与个人统计(`/api/me/stats`)的口径差别写在这里,别各算各的★:
 ///   · 个人统计问的是「**我**花了多少时间开会」→ 只算我参与且没拒绝的;
-///   · 项目统计问的是「**这个项目**开了多少会」→ 算项目的全部会议,与我参没参加无关。
+///   · 项目统计问的是「**这个项目**开了多少会」→ 算项目的全部活动,与我参没参加无关。
 ///
 /// D6 的去重规则在这一层体现为:本接口返回的就是**单个项目**的数字(分组展开的那一份),
-/// 「总计按会议去重」发生在把多个项目的数字加起来的时候 —— ★所以这里给的 count
+/// 「总计按活动去重」发生在把多个项目的数字加起来的时候 —— ★所以这里给的 count
 /// 不能被前端直接相加当总数★,响应里带 `dedup_note` 把这句话说出来。
 ///
 /// 参会率 = 接受人数 / 邀请人数(旁听者不算 —— 他不是被邀请的,把他计进分母会稀释这个比例)。
@@ -1312,7 +1357,7 @@ pub async fn project_stats(
     Query(q): Query<StatsQ>,
 ) -> AppResult<Json<serde_json::Value>> {
     // ★要 viewer 就够★:统计是「这个项目开了多少会」,属于项目内的公开事实;
-    // 但它**只对成员**开放 —— 会议次数与时长本身也是信息(D3:权限来自当前成员身份)。
+    // 但它**只对成员**开放 —— 活动次数与时长本身也是信息(D3:权限来自当前成员身份)。
     perm::require_role(&state.pool, &id, pid, perm::Role::Viewer).await?;
     let range = match q.range.as_deref().unwrap_or("quarter") {
         "month" => "month", "quarter" => "quarter", "year" => "year",
@@ -1326,25 +1371,25 @@ pub async fn project_stats(
                COALESCE(
                  (SELECT max(t.duration_sec)/3600.0
                     FROM items i JOIN transcripts t ON t.item_id = i.id
-                   WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                  m.actual_minutes/60.0,
                  EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
                ) AS hours,
                CASE
                  WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
-                               WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
                                  AND t.duration_sec IS NOT NULL) THEN 'recording'
                  WHEN m.actual_minutes IS NOT NULL THEN 'manual'
                  ELSE 'scheduled'
                END AS src,
-               (SELECT count(*) FROM meeting_participants p
-                 WHERE p.meeting_id = m.id AND p.kind = 'attendee') AS invited,
-               (SELECT count(*) FROM meeting_participants p
-                 WHERE p.meeting_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted') AS accepted,
-               EXISTS (SELECT 1 FROM meeting_minutes mm
-                        WHERE mm.meeting_id = m.id AND mm.status = 'done') AS minutes_done
-        FROM meetings m
-        JOIN meeting_projects mp ON mp.meeting_id = m.id AND mp.project_id = $1
+               (SELECT count(*) FROM activity_participants p
+                 WHERE p.activity_id = m.id AND p.kind = 'attendee') AS invited,
+               (SELECT count(*) FROM activity_participants p
+                 WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted') AS accepted,
+               EXISTS (SELECT 1 FROM activity_minutes mm
+                        WHERE mm.activity_id = m.id AND mm.status = 'done') AS minutes_done
+        FROM activities m
+        JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
         -- ★取消的场次不计入★(PRD 6.5.2 验收标准):它没发生过
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now()))
@@ -1361,25 +1406,25 @@ pub async fn project_stats(
         (i64, f64, f64, f64, f64, i64, i64, i64) =
         sqlx::query_as(sql).bind(pid).bind(range).fetch_one(&state.pool).await?;
 
-    // 人均时长:总时长 × 接受人数 / 会议数……不对。★人均 = Σ(每场时长 × 该场接受人数) / 人次★
-    // 简化成「总时长 / 会议数 × 参会率」会在各场人数差异大时明显失真,所以直接按人次算。
+    // 人均时长:总时长 × 接受人数 / 活动数……不对。★人均 = Σ(每场时长 × 该场接受人数) / 人次★
+    // 简化成「总时长 / 活动数 × 参会率」会在各场人数差异大时明显失真,所以直接按人次算。
     let per_person: Option<f64> = sqlx::query_scalar(
         "SELECT SUM(h * acc) / NULLIF(SUM(acc), 0) FROM (
            SELECT COALESCE(
                     (SELECT max(t.duration_sec)/3600.0 FROM items i JOIN transcripts t ON t.item_id = i.id
-                      WHERE i.meeting_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                      WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                     m.actual_minutes/60.0,
                     EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
-                  (SELECT count(*) FROM meeting_participants p
-                    WHERE p.meeting_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
-             FROM meetings m JOIN meeting_projects mp ON mp.meeting_id = m.id AND mp.project_id = $1
+                  (SELECT count(*) FROM activity_participants p
+                    WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
+             FROM activities m JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
             WHERE m.status = 'active' AND m.ends_at <= now() AND m.starts_at >= date_trunc($2, now())
          ) x")
         .bind(pid).bind(range).fetch_one(&state.pool).await?;
 
     Ok(Json(json!({
         "range": range,
-        "meetings": cnt,
+        "activities": cnt,
         "hours": r1(hours),
         "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
         "invited": invited,
@@ -1389,7 +1434,7 @@ pub async fn project_stats(
         "avg_hours_per_person": per_person.map(r1),
         "minutes_done": done,
         // ★D6★:这是「分组展开」的数字,把多个项目的加起来 ≠ 总数
-        "dedup_note": "一场会可关联多个项目,本数字按「会议 × 项目」展开;跨项目求总数须按会议去重(D6)",
+        "dedup_note": "一场会可关联多个项目,本数字按「活动 × 项目」展开;跨项目求总数须按活动去重(D6)",
     })))
 }
 

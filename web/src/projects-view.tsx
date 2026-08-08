@@ -30,7 +30,7 @@ const PARENT_ROW_ID = -1_000_000
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
 import { effectiveScope, showScopeSwitch } from './project-filter'
-import type { Meeting } from './api'
+import type { Activity } from './api'
 import { ShareModal } from './share-modal'
 import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
@@ -312,7 +312,7 @@ export function ProjectsView({ me }: { me: Me | null }) {
           // ★确认框的说明不能删★:它是决策点,删了就是让人盲选。但压到两行 ——
           // 「变成什么」和「不是什么」,其余(配额/日历/忙闲)在文档里,不在这个弹窗里。
           content: on
-            ? <span>变成<b>只读存档</b>：内容全部保留、可查可下载，但不能再上传或建会议。随时可恢复。<br />
+            ? <span>变成<b>只读存档</b>：内容全部保留、可查可下载，但不能再上传或建活动。随时可恢复。<br />
                 <b>这不是删除</b>——要清理空间请用「删除项目」。</span>
             : '恢复后就能继续往里加东西了。',
           okText: on ? '归档' : '恢复',
@@ -441,19 +441,17 @@ export function ProjectsView({ me }: { me: Me | null }) {
             </AntSpace>
           }
           extra={
-            <Tooltip title={`已用 ${fmtSize(cur.used_bytes)} / 配额 ${fmtSize(cur.quota_bytes)}`}>
-              <span style={{ width: 130, display: 'inline-block' }}>
-                <Progress
-                  percent={Math.min(100, Math.round((cur.used_bytes / Math.max(1, cur.quota_bytes)) * 100))}
-                  size="small" status={cur.used_bytes >= cur.quota_bytes ? 'exception' : 'normal'}
-                />
-              </span>
+            /* ★配额条去掉了★（ADR-0004）：额度不再挂在项目上，挂在**人**身上。
+               这里只显示「这个项目占了多少」—— 一个项目的占用除以**别人的**总额度
+               画出来的进度条，是在误导人。总额度看「个人面板」的 /api/me/quota。 */
+            <Tooltip title="这个项目占用的空间；总额度按人算，见个人面板">
+              <span style={{ color: '#888', fontSize: 12 }}>占用 {fmtSize(cur.used_bytes)}</span>
             </Tooltip>
           }
         >
-          {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 会议 / 设置。
-              此前只有「内容」,成员藏在弹窗里、★项目的会议根本没有入口★ ——
-              而 D7 明说材料有两个入口(项目 与 时间线),会议同理。 */}
+          {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 活动 / 设置。
+              此前只有「内容」,成员藏在弹窗里、★项目的活动根本没有入口★ ——
+              而 D7 明说材料有两个入口(项目 与 时间线),活动同理。 */}
           <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
             {
               key: 'items', label: '内容',
@@ -644,8 +642,8 @@ export function ProjectsView({ me }: { me: Me | null }) {
                 onChanged={loadProjects} inline />,
             },
             {
-              key: 'meetings', label: '会议',
-              children: <ProjectMeetings projectId={cur.id} />,
+              key: 'activities', label: '活动',
+              children: <ProjectActivities projectId={cur.id} />,
             },
             {
               key: 'settings', label: '设置',
@@ -918,7 +916,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
               <Popconfirm
                 title={`把 ${m.username} 移出项目？`}
                 description={<div style={{ maxWidth: 320, fontSize: 12 }}>
-                  · 他将立刻看不到本项目全部资料，包括他自己参与过的会议<br />
+                  · 他将立刻看不到本项目全部资料，包括他自己参与过的活动<br />
                   · 他上传的材料<b>全部留下</b>，署名保留<br />
                   · <b>他创建的、指向本项目的公开链接会被一并撤销</b>
                 </div>}
@@ -1055,18 +1053,18 @@ function AudioPanel({ item }: { item: Item }) {
 /// 公开分享对话框(2026-08-05,对标百度网盘)。
 /// ★这是把内容送出墙外的入口,所以文案要把边界说清楚★:链接一旦发出去,拿到的人**不需要**是
 /// 本项目成员;提取码/有效期/次数上限是仅有的三道闸,撤销是唯一的后悔药。
-/// 项目的会议(原型 proj 视图的「会议」tab)。
-/// ★D7 说材料有两个入口:项目 与 时间线★——会议同理:在项目里就该看得到「这个项目开过哪些会」,
-/// 而不是只能去日程/会议页按项目筛。后端 `/api/meetings?project_id=` 早就支持,只是没有入口。
+/// 项目的活动(原型 proj 视图的「活动」tab)。
+/// ★D7 说材料有两个入口:项目 与 时间线★——活动同理:在项目里就该看得到「这个项目开过哪些会」,
+/// 而不是只能去日程/活动页按项目筛。后端 `/api/activities?project_id=` 早就支持,只是没有入口。
 type ProjStats = {
-  range: string; meetings: number; hours: number
+  range: string; activities: number; hours: number
   hours_by_source: { recording: number; manual: number; scheduled: number }
   invited: number; accepted: number; accept_rate: number
   avg_hours_per_person: number | null; minutes_done: number
 }
 
-function ProjectMeetings({ projectId }: { projectId: number }) {
-  const [rows, setRows] = useState<Meeting[]>([])
+function ProjectActivities({ projectId }: { projectId: number }) {
+  const [rows, setRows] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState<ProjStats | null>(null)
   const [range, setRange] = useState('quarter')
@@ -1079,7 +1077,7 @@ function ProjectMeetings({ projectId }: { projectId: number }) {
     // 前后各半年:项目页看的是「这个项目开过/要开哪些会」,不是当周日程
     const from = new Date(Date.now() - 183 * 864e5).toISOString()
     const to = new Date(Date.now() + 183 * 864e5).toISOString()
-    api<Meeting[]>(`/api/meetings?project_id=${projectId}&from=${from}&to=${to}`)
+    api<Activity[]>(`/api/activities?project_id=${projectId}&from=${from}&to=${to}`)
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
   }, [projectId])
 
@@ -1087,18 +1085,18 @@ function ProjectMeetings({ projectId }: { projectId: number }) {
   return (
     <>
     {/* ★项目统计★(PRD 6.5.2):「作为组负责人,我想知道 AI 组这季度开了多少会」。
-        放在会议 tab 顶上而不是单开一页 —— 看统计的人下一步多半就是想看是哪些会。 */}
+        放在活动 tab 顶上而不是单开一页 —— 看统计的人下一步多半就是想看是哪些会。 */}
     {stats && (
       <div style={{ background: '#fafafa', borderRadius: 6, padding: '10px 14px', marginBottom: 12 }}>
         <AntSpace size={16} wrap align="center">
           <Segmented size="small" value={range} onChange={(v) => setRange(v as string)}
             options={[{ value: 'month', label: '本月' }, { value: 'quarter', label: '本季度' }, { value: 'year', label: '本年' }]} />
-          <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.meetings}</b> 次会议</span>
+          <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.activities}</b> 次活动</span>
           <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.hours}</b> 小时</span>
           <span>参会率 <b>{Math.round(stats.accept_rate * 100)}%</b>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{stats.accepted}/{stats.invited}）</Typography.Text></span>
           {stats.avg_hours_per_person != null && <span>人均 <b>{stats.avg_hours_per_person}</b> h</span>}
-          <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.meetings}</span>
+          <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.activities}</span>
         </AntSpace>
         {stats.hours > 0 && (
           <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 6 }}>
@@ -1110,14 +1108,14 @@ function ProjectMeetings({ projectId }: { projectId: number }) {
               <Typography.Text type="warning" style={{ fontSize: 12 }}>{stats.hours_by_source.scheduled} h 按排程估算</Typography.Text>
             )}
             {/* ★D6★:不说这句,有人会把几个项目的数字相加当总数 */}
-            <span style={{ marginLeft: 12 }}>· 一场会可关联多个项目，跨项目求总数需按会议去重</span>
+            <span style={{ marginLeft: 12 }}>· 一场会可关联多个项目，跨项目求总数需按活动去重</span>
           </div>
         )}
       </div>
     )}
-    <Table<Meeting> size="small" rowKey="id" dataSource={rows} loading={loading}
+    <Table<Activity> size="small" rowKey="id" dataSource={rows} loading={loading}
       pagination={{ pageSize: 15, hideOnSinglePage: true }}
-      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个项目还没有会议" /> }}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个项目还没有活动" /> }}
       columns={[
         {
           title: '时间', width: 150,

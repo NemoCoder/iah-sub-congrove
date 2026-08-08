@@ -1,4 +1,4 @@
-// 全局 teardown:把本轮测试造的项目与会议清掉。
+// 全局 teardown:把本轮测试造的项目与活动清掉。
 //
 // ★为什么必须自清理★(2026-08-07 用户提):每跑一轮 spec 就造十几个项目,
 // 一天下来 dev 的项目列表被 80 多个 `E2E-xxx-<时间戳>` 淹没,真实项目根本找不到。
@@ -9,7 +9,7 @@
 // 前缀扫描是幂等的:漏了这次,下次照样清掉。
 import { request } from '@playwright/test'
 
-/// 测试造的项目/会议一律用这些前缀。
+/// 测试造的项目/活动一律用这些前缀。
 ///
 /// ★2026-08-08 的教训:别指望「新增 spec 时记得加进来」★。
 /// 我先后写了三个新东西,每个都自己起了前缀 —— safety-net 用 `网-`、
@@ -28,7 +28,7 @@ export default async function teardown() {
   //   在此之前它用默认身份 `e2e` 调 `GET /api/projects`，于是
   //   `multi-identity.spec.ts` 造的、owner 是 `e2e-host`/`e2e-owner` 的项目
   //   按 D3「非成员一律 404」根本看不见 → ★一个都清不掉，而它照常打印「已清理 N 个」★。
-  //   实测漏了 8 个项目 / 5 场会议。
+  //   实测漏了 8 个项目 / 5 场活动。
   //   ⚠ 这跟本文件开头记的那次事故是**同一个失败模式**（当时是前缀对不上，这次是可见性不够），
   //     所以修法要针对「前提」而不是针对「这一次的成因」：★让扫描真的能看到全部★。
   //   `X-IAH-E2E-User` 到位之后这件事才做得到（此前只有 `e2e` 一个身份）。
@@ -39,16 +39,16 @@ export default async function teardown() {
     extraHTTPHeaders: { 'X-IAH-E2E-Key': KEY, 'X-IAH-E2E-User': ADMIN },
   })
   try {
-    // 会议:先清(它引用项目,留着会挡住项目删除)
+    // 活动:先清(它引用项目,留着会挡住项目删除)
     const from = new Date(Date.now() - 30 * 864e5).toISOString()
     const to = new Date(Date.now() + 30 * 864e5).toISOString()
-    const ms = await (await ctx.get(`/api/meetings?from=${from}&to=${to}`)).json().catch(() => [])
+    const ms = await (await ctx.get(`/api/activities?from=${from}&to=${to}`)).json().catch(() => [])
     let nm = 0
     for (const m of Array.isArray(ms) ? ms : []) {
-      // 会议标题的花样比项目多(断言用例会起「这个标题不该出现在忙闲里」这种),
+      // 活动标题的花样比项目多(断言用例会起「这个标题不该出现在忙闲里」这种),
       // 所以额外认它们关联的项目名 —— 但列表接口不返回项目,退而求其次按标题白名单。
-      if (MINE.test(m.title) || /^(E2E 会议|每周组会|模型评审|数据对齐|数据治理周会|读书会|健身|这个标题不该出现在忙闲里)/.test(m.title)) {
-        await ctx.delete(`/api/meetings/${m.id}`).catch(() => {})
+      if (MINE.test(m.title) || /^(E2E 活动|每周组会|模型评审|数据对齐|数据治理周会|读书会|健身|这个标题不该出现在忙闲里)/.test(m.title)) {
+        await ctx.delete(`/api/activities/${m.id}`).catch(() => {})
         nm++
       }
     }
@@ -58,7 +58,7 @@ export default async function teardown() {
     for (const p of Array.isArray(ps) ? ps : []) {
       if (MINE.test(p.name)) { await ctx.delete(`/api/projects/${p.id}`).catch(() => {}); np++ }
     }
-    if (nm || np) console.log(`\n[teardown] 清理测试数据:会议 ${nm} 场、项目 ${np} 个`)
+    if (nm || np) console.log(`\n[teardown] 清理测试数据:活动 ${nm} 场、项目 ${np} 个`)
   } finally {
     await ctx.dispose()
   }

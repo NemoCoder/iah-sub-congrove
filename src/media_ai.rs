@@ -1,7 +1,7 @@
-//! 录屏自动转写 + 会议纪要(docs/VIDEO-SUMMARY.md 的 P1 实现)。
+//! 录屏自动转写 + 活动纪要(docs/VIDEO-SUMMARY.md 的 P1 实现)。
 //!
 //! 形态定案(五路调研):**ASR 转写为主干,摘要走平台 LLM 网关**——不用视频大模型直喂
-//! (视频模型长视频得分大半来自字幕;通用模型中文会议 CER 19% 而专用 ASR 4~6%;成本差 50~80 倍)。
+//! (视频模型长视频得分大半来自字幕;通用模型中文活动 CER 19% 而专用 ASR 4~6%;成本差 50~80 倍)。
 //! 关键帧 VLM 旁路留到 P3。
 //!
 //! 流水线:S3 取录屏 → ffmpeg 抽 16k/mono 音轨 → 按时长切段 → ASR → 拼逐字稿 → LLM 出三份纪要。
@@ -220,11 +220,11 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     let timed = timed_transcript(&full_text, &segments, &char_ts);
     let condensed = condense(state, &timed, &end_user).await.context("压缩长转写")?;
     for (kind, prompt, label, prog) in [
-        ("brief", "用中文写一段 150~300 字的会议摘要,直接给结论,不要客套和小标题。", "生成摘要", 84),
+        ("brief", "用中文写一段 150~300 字的活动摘要,直接给结论,不要客套和小标题。", "生成摘要", 84),
         ("outline", "用中文列出分段大纲,按时间顺序,不超过 15 行。★每行必须以原文里出现过的时间戳开头★,\
 格式:`[mm:ss] 议题 — 要点`。时间戳只能从原文抄,**绝对不许自己编**(原文每段开头的 [mm:ss] 就是它的真实时间);\
 一行一个议题,行与行之间用换行分隔,不要写成一段。", "生成分段大纲", 90),
-        ("decisions", "用中文列出这次会议的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
+        ("decisions", "用中文列出这次活动的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
     ] {
         stage(&state.pool, job_id, label, prog).await;
         let content = chat(state, prompt, &condensed, &end_user).await.with_context(|| format!("生成 {kind}"))?;
@@ -240,17 +240,17 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 转写 + 三份纪要要跑好几分钟,★没人会守着页面等★ —— 不通知的话这份东西就静静躺在那里,
     // 等到有人想起来「那次会的录屏传了吧?」才被发现,而那通常是几天后。
     //
-    // 只在**这个材料属于某场会议**时发(会议之外的音视频转写不打扰任何人),
+    // 只在**这个材料属于某场活动**时发(活动之外的音视频转写不打扰任何人),
     // 且**只通知记录员**:纪要是他的活(D14——AI 只是原材料,他才是作者),
     // 全员通知等于告诉一屋子人「有件不归你们管的事完成了」。
-    if let Some(mid) = sqlx::query_scalar::<_, Option<i64>>("SELECT meeting_id FROM items WHERE id = $1")
+    if let Some(mid) = sqlx::query_scalar::<_, Option<i64>>("SELECT activity_id FROM items WHERE id = $1")
         .bind(item_id).fetch_optional(&state.pool).await?.flatten()
     {
         if let Ok((title, recorder)) = sqlx::query_as::<_, (String, String)>(
-            "SELECT title, recorder FROM meetings WHERE id = $1")
+            "SELECT title, recorder FROM activities WHERE id = $1")
             .bind(mid).fetch_one(&state.pool).await
         {
-            crate::notify::notify_meeting(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
+            crate::notify::notify_activity(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
                 &format!("「{title}」的录制已转写完,摘要 / 分段大纲 / 决议待办都出来了 —— \
                           它们是**给你的原材料**,正式纪要仍由你整理。")).await;
         }
@@ -645,7 +645,7 @@ async fn condense(state: &AppState, full: &str, end_user: &str) -> anyhow::Resul
     let mut parts = Vec::new();
     for c in chars.chunks(MAP_CHUNK_CHARS) {
         let piece: String = c.iter().collect();
-        parts.push(chat(state, "把这段会议转写压缩成要点(中文,保留人名/数字/结论,去掉口水话),不要加评论。", &piece, end_user).await?);
+        parts.push(chat(state, "把这段活动转写压缩成要点(中文,保留人名/数字/结论,去掉口水话),不要加评论。", &piece, end_user).await?);
     }
     Ok(parts.join("\n\n"))
 }
@@ -678,7 +678,7 @@ async fn chat_once(state: &AppState, system: &str, user: &str, end_user: &str) -
     let body = serde_json::json!({
         "model": state.config.llm_model,
         "messages": [
-            {"role": "system", "content": format!("你是会议纪要助手。{system}")},
+            {"role": "system", "content": format!("你是活动纪要助手。{system}")},
             {"role": "user", "content": user},
         ],
         "temperature": 0.3,

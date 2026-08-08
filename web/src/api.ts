@@ -30,15 +30,17 @@ export type Me = {
   direct_upload_endpoint: string | null
 }
 export type Role = 'viewer' | 'editor' | 'admin'
-/// 项目(原「项目」)。visibility ★只影响忙闲★:public 的会议让成员显示「忙」,
-/// private 完全不占忙闲(可多人私下组队)。两者的**资料**都只有成员能看。
+/// 项目。★没有 visibility★(M0-1 删):它原本兼着「内容给谁看」与「会不会占忙闲」两件正交的事,
+/// 后者已挪到**活动自己的** `busy`(PRD A4)。项目的资料可见性由成员身份唯一决定(D3)。
 export type Project = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
-  quota_bytes: number; used_bytes: number; no_download: boolean
+  /// ★没有 quota_bytes★（ADR-0004）：额度挂在**人**身上，见 `/api/me/quota`。
+  /// `used_bytes` 是「这个项目占了多少」，信息性，不是判据。
+  used_bytes: number; no_download: boolean
   /// 本项目的转写术语表(空格分隔),项目管理员维护
   hotwords: string
   /// 归档时间;非空 = ★只读存档★(D17)。归档 ≠ 删除:材料全保留、可读可下载,
-  /// 只是不能再往里加东西;它的会议也不再进日历、不产生忙闲。
+  /// 只是不能再往里加东西;它的活动也不再进日历、不产生忙闲。
   archived_at?: string | null
 }
 /// 权限诊断:★判定链只剩两段★(超管? 成员表里什么角色?)。
@@ -71,18 +73,18 @@ export const showUser = (username: string, name?: string | null) =>
 export type MemberList = { owner: string | null; members: Member[] }
 export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }
 
-// ── 会议与日程(M1)────────────────────────────────────────────────────────
+// ── 活动与日程(M1)────────────────────────────────────────────────────────
 /// 答复状态。★counter=建议改期★:私密项目的日程对发起人完全隐形,他不知道我忙,
 /// 所以这是私事冲突**唯一的结构化出口**(D2),不是可有可无的便利功能。
 export type RespondStatus = 'pending' | 'accepted' | 'declined' | 'tentative' | 'counter'
-export type Meeting = {
+export type Activity = {
   id: number; title: string; agenda: string
   organizer: string; recorder: string
   starts_at: string; ends_at: string; timezone: string
   /// 会后补录的实际时长(分钟)。★D5 三级回退的第 2 级★:录制 > **手工** > 排程。
   /// null = 没填过 —— 统计会退到排程时长,而排程常常离谱(排 2 小时、20 分钟散会)。
   actual_minutes?: number | null
-  /// 会议粒度的材料策略(PRD 6.3.2)。★与项目级叠加不是覆盖★:两处任一禁了就禁。
+  /// 活动粒度的材料策略(PRD 6.3.2)。★与项目级叠加不是覆盖★:两处任一禁了就禁。
   no_download?: boolean
   no_share?: boolean
   location: string; online_url: string
@@ -110,26 +112,26 @@ export type Participant = {
   counter_starts_at: string | null; counter_ends_at: string | null; counter_reason: string | null
   responded_at: string | null
 }
-export type MeetingDetail = {
-  meeting: Meeting
+export type ActivityDetail = {
+  activity: Activity
   participants: Participant[]
   projects: { id: number; name: string }[]
   can_edit: boolean
   /// 旁听者拿到的是裁剪版(无名单、无材料入口),后端会带这个标记
   observer?: boolean
 }
-export type MeetingMessage = {
+export type ActivityMessage = {
   id: number; sender: string; channel: 'public' | 'private'
   peer: string | null; body: string; created_at: string
 }
 /// 忙闲:★只有时间段,没有任何内容★(D1)。私密项目的会完全不在里面。
 export type FreeBusy = { busy: Record<string, { start: string; end: string }[]> }
 
-/// 会议纪要(D14):★AI 转写只是原材料,记录员才是作者★。
+/// 活动纪要(D14):★AI 转写只是原材料,记录员才是作者★。
 /// 字段就是「固定模板」本身 —— 到场/列席/缺席是**会后补录的事实**(D11),
 /// 与邀请时的答复是两回事(答复了不等于真来了)。
 export type Minutes = {
-  meeting_id: number
+  activity_id: number
   status: 'draft' | 'done'
   attendees: string; observers: string; absentees: string
   agenda_text: string; content_md: string
@@ -139,11 +141,26 @@ export type Minutes = {
   updated_at: string
 }
 
-/// 会议材料 / 录制。★录制 ≠ 材料★(D5):只有 is_recording 的会被转写、并作为会议时长依据。
-export type MeetingItem = {
+/// 活动材料 / 录制。★录制 ≠ 材料★(D5):只有 is_recording 的会被转写、并作为活动时长依据。
+export type ActivityItem = {
   id: number; name: string; kind: Item['kind']; size: number | null
   mime: string | null; is_recording: boolean; created_by: string; created_at: string
 }
-/// 线上会议链接的改动历史
+/// 线上活动链接的改动历史
 /// 会后补录的实际时长(分钟)。D5 三级回退的第 2 级:录制 > **手工** > 排程。
 export type LinkChange = { old_url: string; new_url: string; changed_by: string; changed_at: string }
+
+/// 活动类型（ADR-0002）。三个能力位决定表单显示什么、后端校验什么。
+/// `owner === null` = 系统预置（不可改不可删）。
+export type ActivityType = {
+  id: number; owner: string | null; name: string
+  /// 有正式纪要与记录员 → 记录员必填
+  has_minutes: boolean
+  /// 必须关联项目 → 关联项目必填（材料权限来自项目成员身份）
+  needs_project: boolean
+  /// 默认占不占忙闲（自建类型时唯一开放的开关）
+  busy_default: boolean
+}
+
+/// 我的额度与已用量（ADR-0004）。★用量算我**名下所有项目**之和★，不是我上传的东西。
+export type MyQuota = { quota_bytes: number; used_bytes: number }

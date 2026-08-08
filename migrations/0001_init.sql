@@ -1,6 +1,6 @@
 -- 0001_init:congrove 全量 schema。
 --
--- ★2026-08-06 第二次重建★:用户决定本版完全重构(知识库 → 项目 + 会议协同),
+-- ★2026-08-06 第二次重建★:用户决定本版完全重构(知识库 → 项目 + 活动协同),
 -- 并把 dev/prod 的库与 S3 桶一起删干净下线 —— 没有任何实例的 `_sqlx_migrations` 里还留着记录,
 -- 这是「只增不改」唯一可以破例的时刻。于是把 0001~0006 六个文件连同本次重构压成这一份完整 schema
 -- (列一个不少,各自的「为什么」都保留在下面的注释里)。上一次破例是 2026-08-05。
@@ -9,11 +9,11 @@
 -- 改动**已经应用过**的文件 = 所有实例启动直接失败(不是跳过、不是告警,是起不来)。
 -- 之后任何 schema 变更一律开 0002、0003… 写 ALTER,并在文件头写清「这次加了什么、为解决什么」。
 --
--- 本版相对上一版的三条结构性变化(依据 docs/PRD-meetings.md 的 D0/D3/D12):
+-- 本版相对上一版的三条结构性变化(依据 docs/PRD-activities.md 的 D0/D3/D12):
 --   ① 「空间」重构为「项目」:spaces → projects,新增唯一主持人 owner 与 visibility。
 --   ② ★删掉 groups / group_members★:权限**只到具体的人**,不再有「按组授权」这一层。
 --      有效权限因此从 max(直接授权, 所属各组授权) 简化为「查一次成员表」。
---   ③ 新增会议模块:meetings / 参与关系 / 讨论 / 纪要。
+--   ③ 新增活动模块:activities / 参与关系 / 讨论 / 纪要。
 
 -- 身份:登录即 upsert;preferred_username 为主键(决策 A:全平台一致的用户标识,
 -- citeroot/textleaf/registry 全都认它)。sub 仅记录备查,不作键。
@@ -28,14 +28,16 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 
 -- ── 项目(原「空间」)与成员 ──────────────────────────────────────────────
--- 项目是组织的基本单位:资料、会议、权限全挂在它下面。
+-- 项目是组织的基本单位:资料、活动、权限全挂在它下面。
 --
 -- ★可见性规则(D3/R1)★:**此刻是成员 ⟺ 看得到本项目全部资料**(含他加入之前的历史);
--- 移出即失去全部(**含他本人参与过的会议**)。权限是「当前状态的函数」而非「历史事件的累积」。
+-- 移出即失去全部(**含他本人参与过的活动**)。权限是「当前状态的函数」而非「历史事件的累积」。
 --
---   visibility  (D1):**只影响忙闲**。public 的会议让成员在别人眼里显示「忙」(仅忙/空,不含标题);
---                    private 完全不占忙闲,别人看到的是空闲 —— 私事、以及**几个人私下组队**。
---                    ⚠ 两者的**资料**都只有成员能看,项目名与成员名单也都不公开。随时可改。
+--   ★项目没有 visibility★(M0-1 删):它原本兼着两件**正交**的事 ——「内容给谁看」与
+--   「会不会占别人的忙闲」。后者已挪到**活动自己的** `busy`(PRD A4,用户逐条可控);
+--   前者由成员身份唯一决定(D3)——资料、项目名、成员名单一律只有成员能看,本来就没有第二档。
+--   合在一个字段里的后果是「私密项目的会不占忙闲」成了默认,而「我这个时段没空」
+--   本来就不泄露任何内容。
 --                    ★不叫「团队/个人」★:那个命名把人数与隐私绑死,表达不了「多人但不公开」。
 --   owner       (D0):唯一主持人。只有他能指定/撤销管理员、转移主持人、删除项目。
 --                    转移需**对方接受**才生效;主持人须先转移才能退出;销号则自动转最早的管理员。
@@ -48,18 +50,32 @@ CREATE TABLE IF NOT EXISTS projects (
   id           bigserial PRIMARY KEY,
   name         text NOT NULL,
   description  text NOT NULL DEFAULT '',
-  visibility   text NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+  -- ⚠★没有 visibility★（M0-1 删）：它原本兼着两件正交的事 ——「内容给谁看」与「会不会占忙闲」，
+  --   而后者已经挪到活动自己的 `busy`（PRD A4）。内容可见性由项目成员身份唯一决定（D3）。
   owner        text NOT NULL,
   created_by   text NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
-  quota_bytes  bigint  NOT NULL DEFAULT 10737418240,
   no_download  boolean NOT NULL DEFAULT false,
   no_share     boolean NOT NULL DEFAULT false,
   hotwords     text    NOT NULL DEFAULT '',
   deleted_at   timestamptz,
-  deleted_by   text
+  deleted_by   text,
+  -- 项目分两类(ADR-0005):team = 正常协作项目;materials = ★每人一个的私人材料区★。
+  -- 材料区**只有 owner 有任何角色**,别人一律无角色 —— 隔离在 perm.rs 单点否决,不靠逐个入口设防。
+  kind         text NOT NULL DEFAULT 'team' CHECK (kind IN ('team','materials')),
+  -- 归档(原 0002):归档 = 只读封存,不是删除。★排在最后是有意的★——
+  -- 老库里这两列是 ALTER ADD COLUMN 加的,PG 只能加在表尾且不支持调列序,
+  -- 写在中间会让新旧库列序不同(schema 门禁看得见)。
+  archived_at  timestamptz,
+  archived_by  text
 );
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects (owner);
+-- 列表默认只看「活着且没归档」的(原 0002)
+CREATE INDEX IF NOT EXISTS idx_projects_active ON projects (id) WHERE archived_at IS NULL AND deleted_at IS NULL;
+-- ★每人至多一个材料区★:在**库里**堵死,不靠应用层先查后插(那中间有并发窗口)。
+-- ⚠ 必须是**部分唯一索引**(带 WHERE),不能写成 UNIQUE 约束 —— 约束不支持 partial,
+--   而不带 WHERE 的话每人就只能有一个项目了。
+CREATE UNIQUE INDEX idx_proj_materials ON projects (owner) WHERE kind = 'materials' AND deleted_at IS NULL;
 
 -- 项目成员:★只到具体的人,没有「组」这一层(D12)★。
 -- 角色展示名:admin=管理员(副手) / editor=成员 / viewer=只读成员;主持人在 projects.owner 单列。
@@ -75,58 +91,123 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members (username);
 
--- ── 会议 ────────────────────────────────────────────────────────────────
--- ★会议必须关联至少一个项目★(应用层保证):材料权限来自项目成员身份(D3),
+-- ══════ 每人的偏好与配额（ADR-0004）══════
+--
+-- ★拆成两张表，理由是写权限不同★：偏好由**用户自己**改，配额**只有超管**能改。
+-- 放同一张表意味着一条 UPDATE 路径要在字段级分权 —— 那是漏权的经典长法。
+CREATE TABLE user_prefs (
+  username    text PRIMARY KEY,
+  -- ★可空且无默认★（PRD E0「不设默认北京」）：没有行 = 没有默认，
+  -- 由前端按浏览器时区显示，服务端不猜。
+  timezone    text,
+  default_remind_minutes int,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE user_quota (
+  username    text PRIMARY KEY,
+  -- ⚠ 与 config.rs 的 DEFAULT_QUOTA_BYTES **必须同步**（两处写死同一个数，是已知的重复）。
+  -- ★没有行 = 用系统默认，不是 0★ —— 新用户不该一上来就超额。
+  quota_bytes bigint NOT NULL DEFAULT 10737418240,
+  updated_by  text,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- ══════ 活动类型（ADR-0002）══════
+-- ★一条活动必须有类型★：「会议」这个词原本把三件事绑死了 —— 必须有纪要、必须关联项目、
+-- 必然占忙闲。而「个人日程」三条都不该有。与其加一串布尔开关，不如把「这是哪种活动」
+-- 提成一等概念，开关挂在类型上：加一种活动 = 加一行数据，不是改表 + 改所有判定分支。
+--
+-- ⚠ ★必须建在 activities 之前★：activities.type_id 外键指向它。
+CREATE TABLE activity_types (
+  id          bigserial PRIMARY KEY,
+  owner       text,                              -- NULL = 系统预置；否则这人自建（A2）
+  name        text NOT NULL,
+  has_minutes   boolean NOT NULL DEFAULT false,  -- 正式纪要与记录员（决定 recorder 是否必填）
+  needs_project boolean NOT NULL DEFAULT false,  -- 必须关联项目（材料权限归属，D3）
+  busy_default  boolean NOT NULL DEFAULT true,   -- 默认占不占忙闲（自建时唯一开放的开关 A3）
+  deleted_at  timestamptz,                       -- 软删（L1）：历史活动照常显示类型名
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- 自建类型不得与预置或自己已有的重名。COALESCE(owner,'') 让预置行（owner IS NULL）也参与唯一。
+CREATE UNIQUE INDEX idx_atype_name ON activity_types (COALESCE(owner,''), name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_atype_owner ON activity_types (owner) WHERE deleted_at IS NULL;
+-- ★预置行永不 DELETE★：activities.type_id 是 NOT NULL 外键，删了 = 历史活动失去类型名。
+-- 下线走软删；预置行连软删也不允许（守卫在 types.rs）。
+INSERT INTO activity_types (owner, name, has_minutes, needs_project, busy_default) VALUES
+  (NULL, '会议',     true,  true,  true),
+  (NULL, '个人日程', false, false, false);   -- ★busy_default=false★（O4，liaoruili 2026-08-08 拍板）
+
+
+-- ── 活动 ────────────────────────────────────────────────────────────────
+-- ★活动必须关联至少一个项目★(应用层保证):材料权限来自项目成员身份(D3),
 -- 没有项目就没人管得了它的材料。
-CREATE TABLE IF NOT EXISTS meetings (
+CREATE TABLE IF NOT EXISTS activities (
   id         bigserial PRIMARY KEY,
   title      text NOT NULL,
-  -- 议题与议程。★公开会议时这段对全平台所有人可见(D9)★,所以它是**文本字段**而不是上传的文件
+  -- 议题与议程。★公开活动时这段对全平台所有人可见(D9)★,所以它是**文本字段**而不是上传的文件
   -- ——传成文件的议程属于「材料」,旁听者看不到,与「旁听者能看议程」的要求相悖。
   agenda     text NOT NULL DEFAULT '',
   organizer  text NOT NULL,
-  -- ★记录员:发起会议时必填(D14)★。正式纪要由他按固定模板整理;
+  -- ★记录员:发起活动时必填(D14)★。正式纪要由他按固定模板整理;
   --   AI 转写/摘要只是**给他的原材料**,不是成品。
   recorder   text NOT NULL,
   starts_at  timestamptz NOT NULL,
   ends_at    timestamptz NOT NULL,
-  -- ★存 IANA 名而不是固定偏移★:周期会议按偏移展开会在 DST 之后整体漂一小时。
+  -- ★存 IANA 名而不是固定偏移★:周期活动按偏移展开会在 DST 之后整体漂一小时。
   --   中国无夏令时,但一旦有跨时区参会人就会踩到。
   timezone   text NOT NULL DEFAULT 'Asia/Shanghai',
   location   text NOT NULL DEFAULT '',          -- 线下地点
-  online_url text NOT NULL DEFAULT '',          -- 线上会议链接
+  online_url text NOT NULL DEFAULT '',          -- 线上活动链接
   -- private=仅被邀请者知道这个会存在;public=全平台可见、可旁听(D9)。
-  -- ⚠ 公开**只放开会议元信息**(标题/议程/地点/链接),★材料一律 404★,不因公开而放宽。
+  -- ⚠ 公开**只放开活动元信息**(标题/议程/地点/链接),★材料一律 404★,不因公开而放宽。
   visibility text NOT NULL DEFAULT 'private' CHECK (visibility IN ('private','public')),
   status     text NOT NULL DEFAULT 'active'    CHECK (status IN ('active','canceled')),
-  -- M2 的周期会议(RFC5545 RRULE)。M1 恒 NULL —— 先建列,免得 M2 再动表。
+  -- M2 的周期活动(RFC5545 RRULE)。M1 恒 NULL —— 先建列,免得 M2 再动表。
   rrule      text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  -- 占不占忙闲（PRD A4，M0-1 加）：★由活动自己决定，用户逐条可改★。
+  -- 以前的判据是「有没有关联到公开项目」—— 那把「内容可见」和「时间可见」绑成了一件事，
+  -- 于是「私密项目的会不占别人忙闲」这种明显错的行为成了默认。
+  -- 默认 true 与旧行为里的「活动」一致；M0-2 起由活动类型的 busy_default 决定初值。
+  busy       boolean NOT NULL DEFAULT true,
+  -- 活动类型（ADR-0002）。★NOT NULL★：没有「无类型的活动」这种东西 ——
+  -- 允许为空的话，每个读它的地方都要写一遍「空了算什么」，而那正是类型表要消灭的分支。
+  -- ⚠ 不给默认值：默认值会让「忘了传 type_id」变成静默落进某一类，而不是响亮报错。
+  type_id    bigint NOT NULL REFERENCES activity_types(id),
+  -- 实际时长(原 0006):排期是计划,这是事实。统计按事实算。
+  actual_minutes integer CHECK (actual_minutes IS NULL OR (actual_minutes > 0 AND actual_minutes <= 24 * 60)),
+  actual_by      text,
+  -- 活动粒度的材料策略(原 0007):「这次会涉及敏感内容,想让大家能看但不能下载」。
+  -- ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。
+  no_download boolean NOT NULL DEFAULT false,
+  no_share    boolean NOT NULL DEFAULT false,
   CHECK (ends_at > starts_at)
 );
 -- 忙闲与日历都按时间窗查,且只关心未取消的。
-CREATE INDEX IF NOT EXISTS idx_meetings_time ON meetings (starts_at, ends_at) WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS idx_meetings_organizer ON meetings (organizer, starts_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activities_time ON activities (starts_at, ends_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_activities_organizer ON activities (organizer, starts_at DESC);
 
--- 会议 × 项目(多对多):一次会可同时讨论多个项目,材料整份进每个关联项目。
-CREATE TABLE IF NOT EXISTS meeting_projects (
-  meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+-- 活动 × 项目(多对多):一次会可同时讨论多个项目,材料整份进每个关联项目。
+CREATE TABLE IF NOT EXISTS activity_projects (
+  activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  PRIMARY KEY (meeting_id, project_id)
+  PRIMARY KEY (activity_id, project_id)
 );
-CREATE INDEX IF NOT EXISTS idx_mpj_project ON meeting_projects (project_id);
+CREATE INDEX IF NOT EXISTS idx_mpj_project ON activity_projects (project_id);
 
 -- 参与关系。⚠★这张表不承载任何资料权限(D3)★——它只管「谁被邀请、答复是什么」。
 --   kind  : attendee=参会人 / guest=临时参会人(D8,能看时间议程链接,**看不到任何材料**)
---           / observer=旁听者(D9,公开会议的路人,同样看不到材料)
+--           / observer=旁听者(D9,公开活动的路人,同样看不到材料)
 --   status: 四态并列 —— 待定 / 接受 / 拒绝 / **建议改期**。
 --           ★「建议改期」不是便利功能★:private 项目的日程对发起人完全隐形,他根本不知道我忙,
 --           所以这是私事冲突**唯一的结构化出口**。
-CREATE TABLE IF NOT EXISTS meeting_participants (
-  meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS activity_participants (
+  activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   username   text NOT NULL,
-  kind       text NOT NULL DEFAULT 'attendee' CHECK (kind IN ('attendee','guest','observer')),
+  -- ⚠ ★没有 guest 档★(原 0005 删掉的):它和 observer 的可见面完全一样,
+  --   两个名字装同一件事,只会让判权的人以为有区别。
+  kind       text NOT NULL DEFAULT 'attendee' CHECK (kind IN ('attendee','observer')),
   status     text NOT NULL DEFAULT 'pending'
              CHECK (status IN ('pending','accepted','declined','tentative','counter')),
   counter_starts_at timestamptz,
@@ -134,17 +215,25 @@ CREATE TABLE IF NOT EXISTS meeting_participants (
   counter_reason    text,
   responded_at timestamptz,
   invited_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (meeting_id, username)
+  -- 必到 / 可选(原 0007):冲突检测只对必到的人报警。
+  required     boolean NOT NULL DEFAULT true,
+  -- ★「这个人有没有被通知过」——存事实,不推导★(ADR-0003)。
+  -- NULL = 从没通知过 = 他对这场活动**自始至终不知情**(补录场景,PRD L0b)。
+  -- 为什么不用「created_at > starts_at」那种推导:★它会随改期翻转★ ——
+  -- 建一场未来的会(不是补录)→ 改到昨天 → 判据翻成「是补录」,而那个人早就被通知过、
+  -- 也确实参加了。缺陷在判据本身,不在实现方式,即使「现算不存」也一样翻转。
+  notified_at  timestamptz,
+  PRIMARY KEY (activity_id, username)
 );
 -- 忙闲是最热路径:按人 + 时间窗查。
-CREATE INDEX IF NOT EXISTS idx_mp_user ON meeting_participants (username);
+CREATE INDEX IF NOT EXISTS idx_mp_user ON activity_participants (username);
 
--- 会议讨论区(D13)。两个频道:public(参会人可见)/ private(仅双方)。
+-- 活动讨论区(D13)。两个频道:public(参会人可见)/ private(仅双方)。
 -- ★私聊对象只限发起人与项目主持人★,不做任意点对点——否则会长成一个 IM。
--- 聊天记录留在会议详情页,**不进材料**(不占项目目录,权限跟会议走)。
-CREATE TABLE IF NOT EXISTS meeting_messages (
+-- 聊天记录留在活动详情页,**不进材料**(不占项目目录,权限跟活动走)。
+CREATE TABLE IF NOT EXISTS activity_messages (
   id         bigserial PRIMARY KEY,
-  meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   sender     text NOT NULL,
   channel    text NOT NULL CHECK (channel IN ('public','private')),
   peer       text,                              -- channel='private' 时的对方
@@ -152,18 +241,18 @@ CREATE TABLE IF NOT EXISTS meeting_messages (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK (channel = 'public' OR peer IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS idx_mm_meeting ON meeting_messages (meeting_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mm_activity ON activity_messages (activity_id, created_at);
 
 -- 线上链接改动历史:开会前十分钟改链接是真实场景,要能追溯「谁何时改成什么」。
-CREATE TABLE IF NOT EXISTS meeting_link_history (
+CREATE TABLE IF NOT EXISTS activity_link_history (
   id         bigserial PRIMARY KEY,
-  meeting_id bigint NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   old_url    text NOT NULL DEFAULT '',
   new_url    text NOT NULL DEFAULT '',
   changed_by text NOT NULL,
   changed_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_mlh_meeting ON meeting_link_history (meeting_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mlh_activity ON activity_link_history (activity_id, changed_at DESC);
 
 -- ── 内容 ────────────────────────────────────────────────────────────────
 -- 内容项:文件夹/文档/文件/录屏,挂项目下,parent_id 成树。
@@ -181,13 +270,13 @@ CREATE INDEX IF NOT EXISTS idx_mlh_meeting ON meeting_link_history (meeting_id, 
 --   upload_key    :★直传期间该用哪个 key★。内容寻址后不能再按 项目/条目 现拼——
 --                  分片是按 blobs/<sha> 建的,拼错 key 会让 ListParts 永远失败,
 --                  表现为「断点续传每次都静默重传」(v0.3.55 才查出来,此前对所有上传都没生效过)。
---   meeting_id    :非空表示这是某次会议的**只读区**文件夹或其中的材料(D10)。
---                  ★只读★:不允许在项目树里对它上传/改名/移动/删除,唯一写入口是会议详情页;
---                  可做的只有 看/下载/复制到自由区/分享。复制出去的副本 meeting_id 置空(独立)。
---   is_recording  :★录制 ≠ 材料★。只有它为真的文件会被**转写**、并作为**会议时长**的依据(D5)。
+--   activity_id    :非空表示这是某次活动的**只读区**文件夹或其中的材料(D10)。
+--                  ★只读★:不允许在项目树里对它上传/改名/移动/删除,唯一写入口是活动详情页;
+--                  可做的只有 看/下载/复制到自由区/分享。复制出去的副本 activity_id 置空(独立)。
+--   is_recording  :★录制 ≠ 材料★。只有它为真的文件会被**转写**、并作为**活动时长**的依据(D5)。
 --                  ★判据是「传到哪个入口」,不是「是不是视频文件」★——同一个 mp4,
 --                  传进「录制」是这场会的记录,传进「材料」是会上讨论的素材。
---                  不做这个区分,系统就分不清 1.8G 的录屏和 200M 的演示视频哪个代表会议长度。
+--                  不做这个区分,系统就分不清 1.8G 的录屏和 200M 的演示视频哪个代表活动长度。
 CREATE TABLE IF NOT EXISTS items (
   id           bigserial PRIMARY KEY,
   project_id   bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -205,7 +294,7 @@ CREATE TABLE IF NOT EXISTS items (
   upload_fp    text,
   upload_id    text,
   upload_key   text,
-  meeting_id   bigint REFERENCES meetings(id) ON DELETE SET NULL,
+  activity_id   bigint REFERENCES activities(id) ON DELETE SET NULL,
   is_recording boolean NOT NULL DEFAULT false,
   deleted_at   timestamptz,
   deleted_by   text
@@ -217,8 +306,8 @@ CREATE INDEX IF NOT EXISTS idx_items_sha   ON items (sha256) WHERE sha256 IS NOT
 CREATE INDEX IF NOT EXISTS idx_items_s3key ON items (s3_key) WHERE s3_key IS NOT NULL;
 -- 找「我上次没传完的那个文件」:同项目 + 同人 + 未完成 + 指纹。
 CREATE INDEX IF NOT EXISTS idx_items_resume ON items (project_id, created_by, upload_fp) WHERE s3_key IS NULL;
--- 会议只读区:按会议列它的材料。
-CREATE INDEX IF NOT EXISTS idx_items_meeting ON items (meeting_id) WHERE meeting_id IS NOT NULL;
+-- 活动只读区:按活动列它的材料。
+CREATE INDEX IF NOT EXISTS idx_items_activity ON items (activity_id) WHERE activity_id IS NOT NULL;
 
 -- 文档/文件版本历史:S3 内容寻址按 sha256,旧版本天然免费。
 -- ⚠ 同一 sha 可能被多行引用(items 当前版 + 多条 item_versions):删对象前必须查引用计数,
@@ -236,15 +325,15 @@ CREATE TABLE IF NOT EXISTS item_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_item_versions_item ON item_versions (item_id);
 
--- 会议纪要(D14)。M3 起用,M1 先建表——建表比事后加列便宜。
+-- 活动纪要(D14)。M3 起用,M1 先建表——建表比事后加列便宜。
 -- ★正式纪要是人写的★:记录员对照录制与 AI 参考稿,按**唯一一种通用模板**整理。
--- 字段要通用到能覆盖各类会议,用不上的留空即可,**不为某类会议做特化**(否则第二种模板很快被逼出来)。
+-- 字段要通用到能覆盖各类活动,用不上的留空即可,**不为某类活动做特化**(否则第二种模板很快被逼出来)。
 --   attendees/observers/absentees:系统带出邀请名单,**记录员核对修改**——这就是「补录实际到场」。
 --   todos    :★先当普通文本★,不做结构化任务系统(一旦做成任务就要跟踪/提醒/统计完成率,是另一个产品)。
 --   pdf_item_id:点「完成」时经 LaTeX 生成 PDF 存档为一条 items(可下载/分享/进版本历史)。
 --              ★内容冻结★:事后改纪要不会悄悄改变已经发出去的那份 PDF。
-CREATE TABLE IF NOT EXISTS meeting_minutes (
-  meeting_id  bigint PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS activity_minutes (
+  activity_id  bigint PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
   status      text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','done')),
   attendees   text NOT NULL DEFAULT '',
   observers   text NOT NULL DEFAULT '',
@@ -356,7 +445,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
 
 -- AI 参考稿:一个录制多种产出(摘要/大纲/决议待办),各存一行,重跑覆盖。
 -- ⚠★这不是正式纪要★(D14):它是**给记录员核对整理用的原材料**。
---   正式纪要在 meeting_minutes,由记录员按模板写、有明确责任人。
+--   正式纪要在 activity_minutes,由记录员按模板写、有明确责任人。
 CREATE TABLE IF NOT EXISTS summaries (
   item_id    bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   kind       text   NOT NULL CHECK (kind IN ('brief','outline','decisions')),
@@ -376,3 +465,36 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log (ts);
+
+-- ══════ 讨论区已读位（原 0003）══════
+-- ★存「读到哪儿」而不是逐条已读标记★：逐条要为每人 × 每条消息写一行，一场会几百条讨论
+--   就是几百行 × 人数，而它唯一的用途是「有没有我还没看的」—— 一个时间戳就答得了。
+-- ⚠ 没有记录 = 一条都没读过（而不是全读过）：新人加入项目后能看到历史讨论，
+--   若默认全读过，那些讨论就悄悄地永远不会提醒他了。
+CREATE TABLE activity_reads (
+  activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+  username   text   NOT NULL,
+  read_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (activity_id, username)
+);
+CREATE INDEX idx_mr_user ON activity_reads (username);
+
+-- ══════ 主持人转移（原 0004）══════
+-- ★留全部历史而不是只存当前那条★：谁在什么时候想把项目甩给谁、对方拒没拒，是治理事实。
+-- 和活动「取消不是删除」同一条道理 —— 真删掉之后没人说得清当时发生过什么。
+CREATE TABLE owner_transfers (
+  id         bigserial PRIMARY KEY,
+  project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  from_user  text NOT NULL,
+  to_user    text NOT NULL,
+  status     text NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','accepted','declined','canceled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  settled_at timestamptz
+);
+-- ★同一项目同时只允许一条 pending★：并发发起两条会造成「两个人都以为自己接手了」，
+-- 而 owner 只有一个 —— 后点的那个人会莫名其妙地什么都不是。
+-- 用部分唯一索引在**库里**堵死，不靠应用层先查后插（那中间有窗口）。
+CREATE UNIQUE INDEX idx_ot_one_pending ON owner_transfers (project_id) WHERE status = 'pending';
+-- 被转让人打开项目时要查「有没有等我答复的」
+CREATE INDEX idx_ot_to ON owner_transfers (to_user) WHERE status = 'pending';

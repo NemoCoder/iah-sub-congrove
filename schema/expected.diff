@@ -1,0 +1,303 @@
+--- baseline
++++ current
+@@ -1,3 +1,120 @@
++TABLE activities
++  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activities_id_seq'::regclass)
++  COL   2 title                  text                           NOT NULL
++  COL   3 agenda                 text                           NOT NULL DEFAULT ''::text
++  COL   4 organizer              text                           NOT NULL
++  COL   5 recorder               text                           NOT NULL
++  COL   6 starts_at              timestamp with time zone       NOT NULL
++  COL   7 ends_at                timestamp with time zone       NOT NULL
++  COL   8 timezone               text                           NOT NULL DEFAULT 'Asia/Shanghai'::text
++  COL   9 location               text                           NOT NULL DEFAULT ''::text
++  COL  10 online_url             text                           NOT NULL DEFAULT ''::text
++  COL  11 visibility             text                           NOT NULL DEFAULT 'private'::text
++  COL  12 status                 text                           NOT NULL DEFAULT 'active'::text
++  COL  13 rrule                  text                          
++  COL  14 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL  15 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL  16 busy                   boolean                        NOT NULL DEFAULT true
++  COL  17 type_id                bigint                         NOT NULL
++  COL  18 actual_minutes         integer                       
++  COL  19 actual_by              text                          
++  COL  20 no_download            boolean                        NOT NULL DEFAULT false
++  COL  21 no_share               boolean                        NOT NULL DEFAULT false
++  CON activities_actual_minutes_check    CHECK (((actual_minutes IS NULL) OR ((actual_minutes > 0) AND (actual_minutes <= (24 * 60)))))
++  CON activities_check                   CHECK ((ends_at > starts_at))
++  CON activities_pkey                    PRIMARY KEY (id)
++  CON activities_status_check            CHECK ((status = ANY (ARRAY['active'::text, 'canceled'::text])))
++  CON activities_type_id_fkey            FOREIGN KEY (type_id) REFERENCES activity_types(id)
++  CON activities_visibility_check        CHECK ((visibility = ANY (ARRAY['private'::text, 'public'::text])))
++  IDX CREATE INDEX idx_activities_organizer ON public.activities USING btree (organizer, starts_at DESC)
++  IDX CREATE INDEX idx_activities_time ON public.activities USING btree (starts_at, ends_at) WHERE (status = 'active'::text)
++SEQ activities_id_seq
++TABLE activity_link_history
++  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activity_link_history_id_seq'::regclass)
++  COL   2 activity_id            bigint                         NOT NULL
++  COL   3 old_url                text                           NOT NULL DEFAULT ''::text
++  COL   4 new_url                text                           NOT NULL DEFAULT ''::text
++  COL   5 changed_by             text                           NOT NULL
++  COL   6 changed_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON activity_link_history_activity_id_ FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_link_history_pkey         PRIMARY KEY (id)
++  IDX CREATE INDEX idx_mlh_activity ON public.activity_link_history USING btree (activity_id, changed_at DESC)
++SEQ activity_link_history_id_seq
++TABLE activity_messages
++  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activity_messages_id_seq'::regclass)
++  COL   2 activity_id            bigint                         NOT NULL
++  COL   3 sender                 text                           NOT NULL
++  COL   4 channel                text                           NOT NULL
++  COL   5 peer                   text                          
++  COL   6 body                   text                           NOT NULL
++  COL   7 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON activity_messages_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_messages_channel_check    CHECK ((channel = ANY (ARRAY['public'::text, 'private'::text])))
++  CON activity_messages_check            CHECK (((channel = 'public'::text) OR (peer IS NOT NULL)))
++  CON activity_messages_pkey             PRIMARY KEY (id)
++  IDX CREATE INDEX idx_mm_activity ON public.activity_messages USING btree (activity_id, created_at)
++SEQ activity_messages_id_seq
++TABLE activity_minutes
++  COL   1 activity_id            bigint                         NOT NULL
++  COL   2 status                 text                           NOT NULL DEFAULT 'draft'::text
++  COL   3 attendees              text                           NOT NULL DEFAULT ''::text
++  COL   4 observers              text                           NOT NULL DEFAULT ''::text
++  COL   5 absentees              text                           NOT NULL DEFAULT ''::text
++  COL   6 agenda_text            text                           NOT NULL DEFAULT ''::text
++  COL   7 content_md             text                           NOT NULL DEFAULT ''::text
++  COL   8 resolutions            text                           NOT NULL DEFAULT ''::text
++  COL   9 todos                  text                           NOT NULL DEFAULT ''::text
++  COL  10 pdf_item_id            bigint                        
++  COL  11 completed_at           timestamp with time zone      
++  COL  12 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON activity_minutes_activity_id_fkey  FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_minutes_pdf_item_id_fkey  FOREIGN KEY (pdf_item_id) REFERENCES items(id) ON DELETE SET NULL
++  CON activity_minutes_pkey              PRIMARY KEY (activity_id)
++  CON activity_minutes_status_check      CHECK ((status = ANY (ARRAY['draft'::text, 'done'::text])))
++TABLE activity_participants
++  COL   1 activity_id            bigint                         NOT NULL
++  COL   2 username               text                           NOT NULL
++  COL   3 kind                   text                           NOT NULL DEFAULT 'attendee'::text
++  COL   4 status                 text                           NOT NULL DEFAULT 'pending'::text
++  COL   5 counter_starts_at      timestamp with time zone      
++  COL   6 counter_ends_at        timestamp with time zone      
++  COL   7 counter_reason         text                          
++  COL   8 responded_at           timestamp with time zone      
++  COL   9 invited_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL  10 required               boolean                        NOT NULL DEFAULT true
++  COL  11 notified_at            timestamp with time zone      
++  CON activity_participants_activity_id_ FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_participants_kind_check   CHECK ((kind = ANY (ARRAY['attendee'::text, 'observer'::text])))
++  CON activity_participants_pkey         PRIMARY KEY (activity_id, username)
++  CON activity_participants_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'accepted'::text, 'declined'::text, 'tentative'::text, 'counter'::text])))
++  IDX CREATE INDEX idx_mp_user ON public.activity_participants USING btree (username)
++TABLE activity_projects
++  COL   1 activity_id            bigint                         NOT NULL
++  COL   2 project_id             bigint                         NOT NULL
++  CON activity_projects_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_projects_pkey             PRIMARY KEY (activity_id, project_id)
++  CON activity_projects_project_id_fkey  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
++  IDX CREATE INDEX idx_mpj_project ON public.activity_projects USING btree (project_id)
++TABLE activity_reads
++  COL   1 activity_id            bigint                         NOT NULL
++  COL   2 username               text                           NOT NULL
++  COL   3 read_at                timestamp with time zone       NOT NULL DEFAULT now()
++  CON activity_reads_activity_id_fkey    FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
++  CON activity_reads_pkey                PRIMARY KEY (activity_id, username)
++  IDX CREATE INDEX idx_mr_user ON public.activity_reads USING btree (username)
++TABLE activity_types
++  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activity_types_id_seq'::regclass)
++  COL   2 owner                  text                          
++  COL   3 name                   text                           NOT NULL
++  COL   4 has_minutes            boolean                        NOT NULL DEFAULT false
++  COL   5 needs_project          boolean                        NOT NULL DEFAULT false
++  COL   6 busy_default           boolean                        NOT NULL DEFAULT true
++  COL   7 deleted_at             timestamp with time zone      
++  COL   8 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON activity_types_pkey                PRIMARY KEY (id)
++  IDX CREATE INDEX idx_atype_owner ON public.activity_types USING btree (owner) WHERE (deleted_at IS NULL)
++  IDX CREATE UNIQUE INDEX idx_atype_name ON public.activity_types USING btree (COALESCE(owner, ''::text), name) WHERE (deleted_at IS NULL)
++SEQ activity_types_id_seq
+ TABLE app_user
+   COL   1 username               text                           NOT NULL
+   COL   2 sub                    text                          
+@@ -47,17 +164,17 @@
+   COL  14 upload_fp              text                          
+   COL  15 upload_id              text                          
+   COL  16 upload_key             text                          
+-  COL  17 meeting_id             bigint                        
++  COL  17 activity_id            bigint                        
+   COL  18 is_recording           boolean                        NOT NULL DEFAULT false
+   COL  19 deleted_at             timestamp with time zone      
+   COL  20 deleted_by             text                          
++  CON items_activity_id_fkey             FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE SET NULL
+   CON items_kind_check                   CHECK ((kind = ANY (ARRAY['folder'::text, 'doc'::text, 'file'::text, 'video'::text])))
+-  CON items_meeting_id_fkey              FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE SET NULL
+   CON items_parent_id_fkey               FOREIGN KEY (parent_id) REFERENCES items(id) ON DELETE CASCADE
+   CON items_pkey                         PRIMARY KEY (id)
+   CON items_project_id_fkey              FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
++  IDX CREATE INDEX idx_items_activity ON public.items USING btree (activity_id) WHERE (activity_id IS NOT NULL)
+   IDX CREATE INDEX idx_items_live ON public.items USING btree (project_id, parent_id) WHERE (deleted_at IS NULL)
+-  IDX CREATE INDEX idx_items_meeting ON public.items USING btree (meeting_id) WHERE (meeting_id IS NOT NULL)
+   IDX CREATE INDEX idx_items_resume ON public.items USING btree (project_id, created_by, upload_fp) WHERE (s3_key IS NULL)
+   IDX CREATE INDEX idx_items_s3key ON public.items USING btree (s3_key) WHERE (s3_key IS NOT NULL)
+   IDX CREATE INDEX idx_items_sha ON public.items USING btree (sha256) WHERE ((sha256 IS NOT NULL) AND (deleted_at IS NULL))
+@@ -78,106 +195,6 @@
+   CON media_jobs_status_check            CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text])))
+   IDX CREATE UNIQUE INDEX idx_media_jobs_active ON public.media_jobs USING btree (item_id) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))
+ SEQ media_jobs_id_seq
+-TABLE meeting_link_history
+-  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('meeting_link_history_id_seq'::regclass)
+-  COL   2 meeting_id             bigint                         NOT NULL
+-  COL   3 old_url                text                           NOT NULL DEFAULT ''::text
+-  COL   4 new_url                text                           NOT NULL DEFAULT ''::text
+-  COL   5 changed_by             text                           NOT NULL
+-  COL   6 changed_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  CON meeting_link_history_meeting_id_fk FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_link_history_pkey          PRIMARY KEY (id)
+-  IDX CREATE INDEX idx_mlh_meeting ON public.meeting_link_history USING btree (meeting_id, changed_at DESC)
+-SEQ meeting_link_history_id_seq
+-TABLE meeting_messages
+-  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('meeting_messages_id_seq'::regclass)
+-  COL   2 meeting_id             bigint                         NOT NULL
+-  COL   3 sender                 text                           NOT NULL
+-  COL   4 channel                text                           NOT NULL
+-  COL   5 peer                   text                          
+-  COL   6 body                   text                           NOT NULL
+-  COL   7 created_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  CON meeting_messages_channel_check     CHECK ((channel = ANY (ARRAY['public'::text, 'private'::text])))
+-  CON meeting_messages_check             CHECK (((channel = 'public'::text) OR (peer IS NOT NULL)))
+-  CON meeting_messages_meeting_id_fkey   FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_messages_pkey              PRIMARY KEY (id)
+-  IDX CREATE INDEX idx_mm_meeting ON public.meeting_messages USING btree (meeting_id, created_at)
+-SEQ meeting_messages_id_seq
+-TABLE meeting_minutes
+-  COL   1 meeting_id             bigint                         NOT NULL
+-  COL   2 status                 text                           NOT NULL DEFAULT 'draft'::text
+-  COL   3 attendees              text                           NOT NULL DEFAULT ''::text
+-  COL   4 observers              text                           NOT NULL DEFAULT ''::text
+-  COL   5 absentees              text                           NOT NULL DEFAULT ''::text
+-  COL   6 agenda_text            text                           NOT NULL DEFAULT ''::text
+-  COL   7 content_md             text                           NOT NULL DEFAULT ''::text
+-  COL   8 resolutions            text                           NOT NULL DEFAULT ''::text
+-  COL   9 todos                  text                           NOT NULL DEFAULT ''::text
+-  COL  10 pdf_item_id            bigint                        
+-  COL  11 completed_at           timestamp with time zone      
+-  COL  12 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  CON meeting_minutes_meeting_id_fkey    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_minutes_pdf_item_id_fkey   FOREIGN KEY (pdf_item_id) REFERENCES items(id) ON DELETE SET NULL
+-  CON meeting_minutes_pkey               PRIMARY KEY (meeting_id)
+-  CON meeting_minutes_status_check       CHECK ((status = ANY (ARRAY['draft'::text, 'done'::text])))
+-TABLE meeting_participants
+-  COL   1 meeting_id             bigint                         NOT NULL
+-  COL   2 username               text                           NOT NULL
+-  COL   3 kind                   text                           NOT NULL DEFAULT 'attendee'::text
+-  COL   4 status                 text                           NOT NULL DEFAULT 'pending'::text
+-  COL   5 counter_starts_at      timestamp with time zone      
+-  COL   6 counter_ends_at        timestamp with time zone      
+-  COL   7 counter_reason         text                          
+-  COL   8 responded_at           timestamp with time zone      
+-  COL   9 invited_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL  10 required               boolean                        NOT NULL DEFAULT true
+-  CON meeting_participants_kind_check    CHECK ((kind = ANY (ARRAY['attendee'::text, 'observer'::text])))
+-  CON meeting_participants_meeting_id_fk FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_participants_pkey          PRIMARY KEY (meeting_id, username)
+-  CON meeting_participants_status_check  CHECK ((status = ANY (ARRAY['pending'::text, 'accepted'::text, 'declined'::text, 'tentative'::text, 'counter'::text])))
+-  IDX CREATE INDEX idx_mp_user ON public.meeting_participants USING btree (username)
+-TABLE meeting_projects
+-  COL   1 meeting_id             bigint                         NOT NULL
+-  COL   2 project_id             bigint                         NOT NULL
+-  CON meeting_projects_meeting_id_fkey   FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_projects_pkey              PRIMARY KEY (meeting_id, project_id)
+-  CON meeting_projects_project_id_fkey   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+-  IDX CREATE INDEX idx_mpj_project ON public.meeting_projects USING btree (project_id)
+-TABLE meeting_reads
+-  COL   1 meeting_id             bigint                         NOT NULL
+-  COL   2 username               text                           NOT NULL
+-  COL   3 read_at                timestamp with time zone       NOT NULL DEFAULT now()
+-  CON meeting_reads_meeting_id_fkey      FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+-  CON meeting_reads_pkey                 PRIMARY KEY (meeting_id, username)
+-  IDX CREATE INDEX idx_mr_user ON public.meeting_reads USING btree (username)
+-TABLE meetings
+-  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('meetings_id_seq'::regclass)
+-  COL   2 title                  text                           NOT NULL
+-  COL   3 agenda                 text                           NOT NULL DEFAULT ''::text
+-  COL   4 organizer              text                           NOT NULL
+-  COL   5 recorder               text                           NOT NULL
+-  COL   6 starts_at              timestamp with time zone       NOT NULL
+-  COL   7 ends_at                timestamp with time zone       NOT NULL
+-  COL   8 timezone               text                           NOT NULL DEFAULT 'Asia/Shanghai'::text
+-  COL   9 location               text                           NOT NULL DEFAULT ''::text
+-  COL  10 online_url             text                           NOT NULL DEFAULT ''::text
+-  COL  11 visibility             text                           NOT NULL DEFAULT 'private'::text
+-  COL  12 status                 text                           NOT NULL DEFAULT 'active'::text
+-  COL  13 rrule                  text                          
+-  COL  14 created_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL  15 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL  16 actual_minutes         integer                       
+-  COL  17 actual_by              text                          
+-  COL  18 no_download            boolean                        NOT NULL DEFAULT false
+-  COL  19 no_share               boolean                        NOT NULL DEFAULT false
+-  CON meetings_actual_minutes_check      CHECK (((actual_minutes IS NULL) OR ((actual_minutes > 0) AND (actual_minutes <= (24 * 60)))))
+-  CON meetings_check                     CHECK ((ends_at > starts_at))
+-  CON meetings_pkey                      PRIMARY KEY (id)
+-  CON meetings_status_check              CHECK ((status = ANY (ARRAY['active'::text, 'canceled'::text])))
+-  CON meetings_visibility_check          CHECK ((visibility = ANY (ARRAY['private'::text, 'public'::text])))
+-  IDX CREATE INDEX idx_meetings_organizer ON public.meetings USING btree (organizer, starts_at DESC)
+-  IDX CREATE INDEX idx_meetings_time ON public.meetings USING btree (starts_at, ends_at) WHERE (status = 'active'::text)
+-SEQ meetings_id_seq
+ TABLE owner_transfers
+   COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
+   COL   2 project_id             bigint                         NOT NULL
+@@ -214,22 +231,22 @@
+   COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
+   COL   2 name                   text                           NOT NULL
+   COL   3 description            text                           NOT NULL DEFAULT ''::text
+-  COL   4 visibility             text                           NOT NULL DEFAULT 'public'::text
+-  COL   5 owner                  text                           NOT NULL
+-  COL   6 created_by             text                           NOT NULL
+-  COL   7 created_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL   8 quota_bytes            bigint                         NOT NULL DEFAULT '10737418240'::bigint
+-  COL   9 no_download            boolean                        NOT NULL DEFAULT false
+-  COL  10 no_share               boolean                        NOT NULL DEFAULT false
+-  COL  11 hotwords               text                           NOT NULL DEFAULT ''::text
+-  COL  12 deleted_at             timestamp with time zone      
+-  COL  13 deleted_by             text                          
+-  COL  14 archived_at            timestamp with time zone      
+-  COL  15 archived_by            text                          
++  COL   4 owner                  text                           NOT NULL
++  COL   5 created_by             text                           NOT NULL
++  COL   6 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL   7 no_download            boolean                        NOT NULL DEFAULT false
++  COL   8 no_share               boolean                        NOT NULL DEFAULT false
++  COL   9 hotwords               text                           NOT NULL DEFAULT ''::text
++  COL  10 deleted_at             timestamp with time zone      
++  COL  11 deleted_by             text                          
++  COL  12 kind                   text                           NOT NULL DEFAULT 'team'::text
++  COL  13 archived_at            timestamp with time zone      
++  COL  14 archived_by            text                          
++  CON projects_kind_check                CHECK ((kind = ANY (ARRAY['team'::text, 'materials'::text])))
+   CON projects_pkey                      PRIMARY KEY (id)
+-  CON projects_visibility_check          CHECK ((visibility = ANY (ARRAY['public'::text, 'private'::text])))
+   IDX CREATE INDEX idx_projects_active ON public.projects USING btree (id) WHERE ((archived_at IS NULL) AND (deleted_at IS NULL))
+   IDX CREATE INDEX idx_projects_owner ON public.projects USING btree (owner)
++  IDX CREATE UNIQUE INDEX idx_proj_materials ON public.projects USING btree (owner) WHERE ((kind = 'materials'::text) AND (deleted_at IS NULL))
+ SEQ projects_id_seq
+ TABLE share_items
+   COL   1 token                  text                           NOT NULL
+@@ -286,3 +303,15 @@
+   COL   8 fine                   jsonb                         
+   CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+   CON transcripts_pkey                   PRIMARY KEY (item_id)
++TABLE user_prefs
++  COL   1 username               text                           NOT NULL
++  COL   2 timezone               text                          
++  COL   3 default_remind_minutes integer                       
++  COL   4 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON user_prefs_pkey                    PRIMARY KEY (username)
++TABLE user_quota
++  COL   1 username               text                           NOT NULL
++  COL   2 quota_bytes            bigint                         NOT NULL DEFAULT '10737418240'::bigint
++  COL   3 updated_by             text                          
++  COL   4 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON user_quota_pkey                    PRIMARY KEY (username)

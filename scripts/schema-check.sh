@@ -63,8 +63,15 @@ sim-diff)
   # 新迁移建出来的 schema vs 冻结基线 —— 部署之前就能逐行看差异
   [ -n "${2:-}" ] || { echo "用法: $0 sim-diff <迁移文件>"; exit 2; }
   T=$(mktemp); simulate "$2" > "$T" || { rm -f "$T"; exit 1; }
-  diff -u $BASE "$T"; rc=$?; rm -f "$T"
+  diff -u --label baseline --label simulated $BASE "$T"; rc=$?; rm -f "$T"
   [ $rc -eq 0 ] && echo "★与基线逐行相同★"; exit 0 ;;
+freeze)
+  # ★把当前差异冻成预期★（M0-5 真部署那次才做，见 M0-PLAN）
+  [ -f $BASE ] || { echo "没有基线，先跑 $0 baseline"; exit 2; }
+  T=$(mktemp); render > "$T" || exit 1
+  diff -u --label baseline --label current $BASE "$T" > $EXP; rm -f "$T"
+  echo "★已冻结 $(grep -c '^[+-][^+-]' $EXP) 处预期变更 → $EXP★"
+  echo "→ ★逐行读一遍★：每一行都该是你**打算**造成的 schema 变化。"; exit 0 ;;
 baseline)
   mkdir -p $DIR && render > $BASE || exit 1
   echo "★基线已冻结★ $BASE（$(wc -l < $BASE) 行 / $(grep -c '^TABLE ' $BASE) 张表）"
@@ -72,7 +79,7 @@ baseline)
 check)
   [ -f $BASE ] || { echo "没有基线，先跑 $0 baseline"; exit 2; }
   T=$(mktemp); render > "$T" || exit 1
-  A=$(mktemp); diff -u $BASE "$T" > "$A"; rm -f "$T"
+  A=$(mktemp); diff -u --label baseline --label current $BASE "$T" > "$A"; rm -f "$T"
   if [ ! -s "$A" ]; then
     # 无差异：只有在「本来就不该有差异」时才算过
     if [ -s $EXP ]; then
@@ -97,5 +104,5 @@ check)
   echo "（下面是「预期的差异」与「实际的差异」之间的差异；- 是预期里有而实际没有，+ 是冒出来的）"
   diff -u $EXP "$A" | tail -n +3
   rm -f "$A"; exit 1 ;;
-*) echo "用法: $0 {baseline|check|render|simulate <f>|sim-diff <f>}"; exit 2 ;;
+*) echo "用法: $0 {baseline|check|freeze|render|simulate <f>|sim-diff <f>}"; exit 2 ;;
 esac

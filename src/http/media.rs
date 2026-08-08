@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::http::items::project_quota_used;
+use crate::http::items::{owner_quota_used, project_owner};
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
@@ -69,7 +69,8 @@ pub async fn begin(
     if input.size <= 0 {
         return Err(AppError::BadRequest("size 必须为正(前端 File.size)".into()));
     }
-    let (quota, used) = project_quota_used(&state.pool, pid).await?;
+    // ★配额算项目 owner 的★（ADR-0004）：不是操作者的 —— 材料归项目，额度归主持人。
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + input.size > quota {
         return Err(AppError::BadRequest("超出空间配额,删些内容或找超管调配额".into()));
     }
@@ -320,7 +321,8 @@ pub async fn complete(
     // ★按实际大小复核配额★(2026-08-04 审计):begin 只按前端**申报**的 size 预判,
     // 而预签名 PUT 不限制单片实际字节数——申报 1MB 传 5GB 就把配额绕过去了。
     // 超了就地回滚(删对象 + 删行),不留既成事实。
-    let (quota, used) = project_quota_used(&state.pool, pid).await?;
+    // ★配额算项目 owner 的★（ADR-0004）：不是操作者的 —— 材料归项目，额度归主持人。
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + size > quota {
         // ⚠★2026-08-08 修:这里原来也是裸 `storage.delete(&key)` —— **同一个洞的第三处**★
         //   (前两处:v0.4.38 的 projects::remove、v0.4.40 的 items::upload 收尾复核)。

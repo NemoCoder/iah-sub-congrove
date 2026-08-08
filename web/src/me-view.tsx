@@ -1,6 +1,6 @@
 // 个人面板（原型 me 视图）—— 左侧名片 + 设置，右侧「我的投入」与「我主持的项目」。
 //
-// ★这一页的价值全在「我的投入」★：会议协同最容易变成「开了一堆会，年底说不清干了什么」。
+// ★这一页的价值全在「我的投入」★：活动协同最容易变成「开了一堆会，年底说不清干了什么」。
 // 它把时间摊开给本人看 —— 所以口径必须**保守**：只算已经开完的会、拒绝的不算。
 // 一个虚高的数字比没有数字更糟，因为它会被拿去汇报。
 //
@@ -10,14 +10,14 @@ import { Card, Empty, Segmented, Space, Spin, Table, Tag, Typography } from 'ant
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type Row = { id: number; name: string; visibility: string; archived: boolean; count: number; hours: number; minutes_done: number }
-type Host = { id: number; name: string; visibility: string; archived: boolean; members: number; minutes_pending: number }
+type Row = { id: number; name: string; archived: boolean; count: number; hours: number; minutes_done: number }
+type Host = { id: number; name: string; archived: boolean; members: number; minutes_pending: number }
 type Stats = {
   range: string
   /// 我是成员的项目数(当下的身份,与时间段无关)
   member_of: number
   totals: {
-    meetings: number; hours: number; projects: number; minutes_todo: number
+    activities: number; hours: number; projects: number; minutes_todo: number
     /// ★口径来源★(D5):这个数字会被拿去做季度汇报,来源不透明就会有争议
     hours_by_source: { recording: number; manual: number; scheduled: number }
   }
@@ -101,7 +101,7 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
           ) : (
             <>
               <div style={{ display: 'flex', background: '#fafafa', borderRadius: 6 }}>
-                <Stat n={data.totals.meetings} label="参会次数" />
+                <Stat n={data.totals.activities} label="参会次数" />
                 <Stat n={data.totals.hours} label="小时" />
                 <Stat n={data.totals.projects} label="涉及项目" />
                 <Stat n={data.totals.minutes_todo} label="待写纪要" warn />
@@ -115,7 +115,6 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                     title: '项目', dataIndex: 'name',
                     render: (v: string, r: Row) => <>
                       {v}
-                      {r.visibility === 'private' && <Tag color="purple" style={{ marginLeft: 6 }}>私密</Tag>}
                       {r.archived && <Tag style={{ marginLeft: 4 }}>已归档</Tag>}
                     </>,
                   },
@@ -162,9 +161,6 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                 dataIndex: 'name',
                 render: (v: string, r: Host) => <>
                   <b>{v}</b>
-                  <Tag color={r.visibility === 'private' ? 'purple' : 'cyan'} style={{ marginLeft: 6 }}>
-                    {r.visibility === 'private' ? '私密' : '公开'}
-                  </Tag>
                   {r.archived && <Tag style={{ marginLeft: 4 }}>已归档</Tag>}
                 </>,
               },

@@ -86,9 +86,9 @@ pub async fn precheck(
         return Ok(Json(json!({ "instant": false })));
     };
     // 配额照算:秒传省的是传输与存储,不是配额额度(否则同一份东西被反复「免费」摆进各空间)。
-    let (quota, used) = project_quota_used(&state.pool, pid).await?;
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + size.unwrap_or(input.size) > quota {
-        return Err(AppError::BadRequest("超出项目配额,删些内容或找超管调配额".into()));
+        return Err(AppError::BadRequest("超出配额,删些内容或找超管调额度".into()));
     }
     let name = { let n = input.name.trim(); if n.is_empty() { "unnamed" } else { n } };
     let mime = input.mime.or(mime).unwrap_or_else(|| "application/octet-stream".into());
@@ -105,25 +105,45 @@ pub async fn precheck(
     Ok(Json(json!({ "instant": true, "id": iid })))
 }
 
-/// 空间配额与已用量。已用 = items ∪ item_versions 的对象按 (s3_key,size) 去重求和
-/// (文档当前版与历史版共享同 sha 对象,去重后不重复计)。
-pub async fn project_quota_used(pool: &sqlx::PgPool, pid: i64) -> AppResult<(i64, i64)> {
-    let row: Option<(i64, i64)> = sqlx::query_as(
-        // 按 **key** 分组取 max(size),不是按 (key,size) 去重:同一个 key 若两行记了不同 size
-        // (历史行与当前行先后写入的窗口),DISTINCT (k,sz) 会把它算两遍(2026-08-04 审计)。
-        "SELECT s.quota_bytes,
+/// 某人的配额与已用量（ADR-0004）。★额度挂在人身上，不挂在项目上★。
+///
+/// 用量 = 这个人**名下所有项目**里的对象之和。三条判据都是有理由的：
+///
+/// ① ★算 owner，不算上传者★（口径改过一次，PRD L3）：按上传者的话，项目主持人可以
+///    拉一堆人来传东西，占的是**别人**的额度 —— 而材料是他的。
+/// ② ★同一 owner 内按 blob 去重★（`GROUP BY t.k`，**不带 project_id**，PRD J2）：
+///    内容寻址已经让同内容全库只存一份，同一个人把同一份材料放进两个项目还算两遍，
+///    是在收他没花的钱。跨 owner 不去重 —— 否则谁先传谁吃亏。
+/// ③ 按 **key** 分组取 `max(size)`，不是按 `(key,size)` 去重：同一个 key 若两行记了
+///    不同 size（历史行与当前行先后写入的窗口），`DISTINCT (k,sz)` 会把它算两遍（2026-08-04 审计）。
+///
+/// ★「没有 user_quota 行」= 用系统默认，不是 0★ —— 新用户不该一上来就超额。
+pub async fn owner_quota_used(pool: &sqlx::PgPool, owner: &str) -> AppResult<(i64, i64)> {
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE((SELECT q.quota_bytes FROM user_quota q WHERE q.username = $1), $2)::bigint,
                 COALESCE((SELECT sum(u.sz) FROM (
                     SELECT t.k, max(t.sz) sz FROM (
-                        SELECT s3_key k, size sz FROM items WHERE project_id = $1 AND s3_key IS NOT NULL
-                        UNION ALL SELECT v.s3_key, v.size FROM item_versions v
-                              JOIN items i ON i.id = v.item_id WHERE i.project_id = $1
-                    ) t GROUP BY t.k) u), 0)::bigint
-           FROM projects s WHERE s.id = $1",
+                        SELECT i.s3_key k, i.size sz FROM items i
+                          JOIN projects p ON p.id = i.project_id
+                         WHERE p.owner = $1 AND p.deleted_at IS NULL AND i.s3_key IS NOT NULL
+                        UNION ALL
+                        SELECT v.s3_key, v.size FROM item_versions v
+                          JOIN items i ON i.id = v.item_id
+                          JOIN projects p ON p.id = i.project_id
+                         WHERE p.owner = $1 AND p.deleted_at IS NULL
+                    ) t GROUP BY t.k) u), 0)::bigint",
     )
-    .bind(pid)
-    .fetch_optional(pool)
+    .bind(owner)
+    .bind(crate::config::DEFAULT_QUOTA_BYTES)
+    .fetch_one(pool)
     .await?;
-    row.ok_or(AppError::NotFound)
+    Ok(row)
+}
+
+/// 项目的 owner —— 配额判据要用它（额度算 owner 的，不算操作者的）。
+pub async fn project_owner(pool: &sqlx::PgPool, pid: i64) -> AppResult<String> {
+    sqlx::query_scalar("SELECT owner FROM projects WHERE id = $1 AND deleted_at IS NULL")
+        .bind(pid).fetch_optional(pool).await?.ok_or(AppError::NotFound)
 }
 
 /// item 所属空间(判权都要先拿它;不存在 = 404)。
@@ -600,9 +620,9 @@ pub async fn content_put(
         return Ok(Json(json!({ "ok": true, "unchanged": true })));
     }
     let size = bytes.len() as i64;
-    let (quota, used) = project_quota_used(&state.pool, pid).await?;
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + size > quota {
-        return Err(AppError::BadRequest("超出项目配额,删些内容或找超管调配额".into()));
+        return Err(AppError::BadRequest("超出配额,删些内容或找超管调额度".into()));
     }
     // ★统一走内容寻址★(2026-08-06 清库时收口):文档此前用 `spaces/{pid}/{iid}/{sha}` 前缀,
     // 与文件/录屏的 blobs/<sha> 是两套。同一份内容在不同文档里重复保存时,旧前缀会各存一份;
@@ -715,12 +735,12 @@ pub struct UploadQuery {
     /// 空串按 None 收(浏览器拼 `?parent_id=` 是常见形态,直接 400 太脆——2026-08-03 线上踩过)。
     #[serde(default, deserialize_with = "empty_as_none")]
     pub parent_id: Option<i64>,
-    /// ★会议材料★(D10):非空表示这份材料属于某次会议的只读区。
-    /// 上传落在**关联项目之一**(前端传 projects[0]),但靠 meeting_id 让**所有**关联项目的成员都看得到
-    /// —— 这就是 D4「一次会议多个项目、材料整份进所有关联项目」的实现方式(不复制文件)。
+    /// ★活动材料★(D10):非空表示这份材料属于某次活动的只读区。
+    /// 上传落在**关联项目之一**(前端传 projects[0]),但靠 activity_id 让**所有**关联项目的成员都看得到
+    /// —— 这就是 D4「一次活动多个项目、材料整份进所有关联项目」的实现方式(不复制文件)。
     #[serde(default, deserialize_with = "empty_as_none")]
-    pub meeting_id: Option<i64>,
-    /// ★录制 ≠ 材料★(D5):只有它为真的文件会被转写、并作为会议时长依据。
+    pub activity_id: Option<i64>,
+    /// ★录制 ≠ 材料★(D5):只有它为真的文件会被转写、并作为活动时长依据。
     #[serde(default)]
     pub is_recording: bool,
 }
@@ -751,7 +771,7 @@ pub async fn upload(
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     check_parent(&state.pool, pid, q.parent_id).await?;
-    let (quota, used) = project_quota_used(&state.pool, pid).await?;
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used >= quota {
         return Err(AppError::BadRequest("空间配额已满,删些内容或找超管调配额".into()));
     }
@@ -770,20 +790,22 @@ pub async fn upload(
         // 先插行拿 item_id(key 要用);kind 按 mime 粗分,失败路径统一删行。
         let kind = if mime.starts_with("video/") { "video" } else { "file" };
         let iid: i64 = sqlx::query_scalar(
-            // meeting_id / is_recording:会议材料走同一条上传路径(D10 说会议材料是只读区,
-            // 唯一写入口是会议详情页 —— 那指的是**入口**,不必为它另写一套 79 行的流式上传)。
-            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, meeting_id, is_recording)
+            // activity_id / is_recording:活动材料走同一条上传路径(D10 说活动材料是只读区,
+            // 唯一写入口是活动详情页 —— 那指的是**入口**,不必为它另写一套 79 行的流式上传)。
+            "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, activity_id, is_recording)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
         )
         .bind(pid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
-        .bind(q.meeting_id).bind(q.is_recording)
+        .bind(q.activity_id).bind(q.is_recording)
         .fetch_one(&state.pool)
         .await?;
         // ★先落临时 key,算完真实 sha 再按内容寻址归位★:边收边算哈希,收完才知道内容的 key。
         // 直接按客户端申报的 sha 写会给「内容投毒」开门(写坏别人引用着的同名对象)——
         // 服务端自己算出来的哈希才作数。
         let tmp_key = format!("tmp/{pid}-{iid}");
-        let (q_now, used_now) = project_quota_used(&state.pool, pid).await?;
+        // ★配额算项目 owner 的★（ADR-0004）：不是操作者的 —— 材料归项目，额度归主持人。
+        let owner = project_owner(&state.pool, pid).await?;
+        let (q_now, used_now) = owner_quota_used(&state.pool, &owner).await?;
         match stream_field_to_s3(&state, &mut field, &tmp_key, &mime, q_now - used_now).await {
             Ok((sha, total)) => {
                 // 归位:对象已存在就直接引用(哈希是我们自己算的,内容必然一致),否则服务端复制过去。
@@ -798,7 +820,7 @@ pub async fn upload(
                 let _ = state.storage.delete(&tmp_key).await;
                 // ★收尾复核配额★:开传前那次 used 是快照,同一空间并发上传各自都会读到它,
                 // 两个 9GiB 能一起过 10GiB 的闸。按落地时的真实总量再判一次,超了回滚。
-                let (q2, used2) = project_quota_used(&state.pool, pid).await?;
+                let (q2, used2) = owner_quota_used(&state.pool, &owner).await?;
                 if used2 + total > q2 {
                     // ⚠★2026-08-08 修:这里原来是 `storage.delete(&key)` —— 会打空别人的文件★
                     //   内容寻址之后 `blobs/<sha>` 是**全库共享**的:上面十行刚写着
@@ -950,7 +972,7 @@ pub async fn download(
         //   本该「禁下载」的人拿到的是 500 不是 403,本该能下载的 viewer 则一律下不了。
         //   ★为什么 13 条安全网 + 70 条 E2E 全绿也没发现★:两个原因叠加 ——
         //   ① 这个分支只在 `role == Viewer` 时才走,而测试用的都是 owner/admin 身份;
-        //   ② 现有的「禁下载」测试覆盖的全是**会议级** `meetings.no_download`(0007 加的),
+        //   ② 现有的「禁下载」测试覆盖的全是**活动级** `activities.no_download`(0007 加的),
         //      项目级这条一条都没有。
         //   抓到它的是 `scripts/sql-prepare-check.py`(全量 SQL 对真库 PREPARE)第一次跑 ——
         //   这正是它存在的理由:**冷门路径的 SQL 错,靠测试覆盖是等不到的**。
@@ -962,18 +984,18 @@ pub async fn download(
             return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
         }
     }
-    // ★会议粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
+    // ★活动粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
     // 说的是**这一次会**,不是把整个项目锁上(项目级那个太钝,会连带影响无关材料)。
     //
-    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(会议放开能盖过项目)
-    // 就成了「在会议上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
+    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(活动放开能盖过项目)
+    // 就成了「在活动上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
     // ⚠ 这一条**对所有角色生效**,不像项目那条只拦 viewer —— 发起人说「这次不许下载」
-    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(会议材料多半是 editor 传的)。
-    let meeting_blocked: Option<bool> = sqlx::query_scalar(
-        "SELECT m.no_download FROM items i JOIN meetings m ON m.id = i.meeting_id WHERE i.id = $1")
+    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(活动材料多半是 editor 传的)。
+    let activity_blocked: Option<bool> = sqlx::query_scalar(
+        "SELECT m.no_download FROM items i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
         .bind(iid).fetch_optional(&state.pool).await?;
-    if meeting_blocked == Some(true) {
-        return Err(AppError::BadRequest("这场会议的材料已设为禁止下载原件(可在线预览/播放)".into()));
+    if activity_blocked == Some(true) {
+        return Err(AppError::BadRequest("这场活动的材料已设为禁止下载原件(可在线预览/播放)".into()));
     }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =

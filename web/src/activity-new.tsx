@@ -1,4 +1,4 @@
-// 发起会议 —— 对应 docs/prototype-m1.html 的 `new` 视图。
+// 发起活动 —— 对应 docs/prototype-m1.html 的 `new` 视图。
 //
 // ★两个必填项都不是形式★,表单上要把「为什么」说出来,别让人以为是啰嗦的字段:
 //   · **关联项目(至少一个)**:材料权限来自项目成员身份(D3),没有项目就没人管得了这场会的材料;
@@ -6,13 +6,13 @@
 //
 // 参会人用 chips-combobox(输入即过滤、选中清空、★空输入时 Backspace 删最后一个 chip★),
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
-import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Spin, Switch, Typography } from 'antd'
+import { App as AntdApp, Button, Card, DatePicker, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs from 'dayjs'
-import { api, type FreeBusy, type Me, type Project, type UserOpt } from './api'
+import { api, type ActivityType, type FreeBusy, type Me, type Project, type UserOpt } from './api'
 import { DAY_END_H, DAY_START_H, ticks, toBar } from './freebusy-layout'
 
-export function MeetingNewView({ me, onCreated, onCancel }: {
+export function ActivityNewView({ me, onCreated, onCancel }: {
   me: Me | null
   onCreated: (id: number) => void
   onCancel: () => void
@@ -42,7 +42,7 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
 
   /// ★/api/users 是「输入即搜」的接口:不带 q 时返回空数组★(admin.rs user_options)。
   /// 2026-08-07 这里原本不带 q 调一次就把结果当全部候选,于是下拉框永远「暂无数据」——
-  /// 而记录员是**必填**,等于根本建不了会议。是用户在真实界面上点出来的。
+  /// 而记录员是**必填**,等于根本建不了活动。是用户在真实界面上点出来的。
   /// ⚠ 这类「前端把接口用错了」的 bug,API 层测试一条都抓不到(接口本身完全正常)。
   const search = useCallback((kw: string) => {
     if (timer.current) clearTimeout(timer.current)
@@ -73,6 +73,20 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
     return out
   }, [me, found, typed])
 
+  // ★活动类型决定这张表单长什么样★（ADR-0002）：
+  // 记录员与关联项目**是否必填**由类型的能力位决定，不再写死。
+  const [types, setTypes] = useState<ActivityType[]>([])
+  const [typeId, setTypeId] = useState<number | undefined>()
+  useEffect(() => {
+    api<ActivityType[]>('/api/activity-types')
+      .then((ts) => { setTypes(ts); setTypeId((cur) => cur ?? ts[0]?.id) })
+      .catch(() => {})
+  }, [])
+  const cap = types.find((t) => t.id === typeId)
+  // ⚠ 类型还没拉回来时**按最严的算**（两样都要）——先松后紧会让人填到一半突然多出必填项。
+  const needRecorder = cap?.has_minutes ?? true
+  const needProject = cap?.needs_project ?? true
+
   const submit = async (v: {
     title: string; agenda?: string; recorder: string
     range: [{ toISOString(): string }, { toISOString(): string }]
@@ -81,33 +95,75 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
   }) => {
     setBusy(true)
     try {
-      const r = await api<{ id: number }>('/api/meetings', {
+      const r = await api<{ id: number }>('/api/activities', {
         method: 'POST',
         body: JSON.stringify({
+          type_id: typeId,
           title: v.title,
           agenda: v.agenda ?? '',
-          recorder: v.recorder,
+          recorder: needRecorder ? v.recorder : '',
           starts_at: v.range[0].toISOString(),
           ends_at: v.range[1].toISOString(),
-          project_ids: v.project_ids,
+          project_ids: needProject ? v.project_ids : [],
           participants: people,
           location: v.location ?? '',
           online_url: v.online_url ?? '',
           visibility: pub ? 'public' : 'private',
         }),
       })
-      message.success('会议已创建')
+      message.success('活动已创建')
       onCreated(r.id)
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-    <Card title="发起会议" style={{ flex: 1, minWidth: 0 }}
+    <Card title="发起活动" style={{ flex: 1, minWidth: 0 }}
       extra={<Button size="small" onClick={onCancel}>取消</Button>}>
       <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 720 }}
         initialValues={{ recorder: me?.username }}>
-        <Form.Item name="title" label="会议标题" rules={[{ required: true, message: '写个标题' }]}>
+        {/* ★类型放在最前★：它决定下面哪些字段出现、哪些必填，放后面会让人先填后改。 */}
+        <Form.Item label="活动类型" required>
+          <Select
+            value={typeId}
+            // ⚠★守住 -1★：那是「＋ 新建类型…」这个入口项的哨兵值，不是真类型。
+            //   不守的话选它会把 typeId 设成 -1，表单当场废掉（提交必然 400）。
+            onChange={(v) => { if (v !== -1) setTypeId(v) }}
+            style={{ maxWidth: 260 }}
+            // ★下拉里带「＋ 新建类型…」入口★（原型）：想不起来先建类型再回来发起活动，
+            // 是很自然的顺序 —— 但**不能在这里直接建**（那要嵌一整套增删改），
+            // 所以指向管理页，并明说去哪。
+            options={[
+              ...types.map((t) => ({
+                value: t.id,
+                label: t.owner === null ? t.name : `${t.name}（我建的）`,
+              })),
+              { value: -1, label: '＋ 新建类型…（去「我的活动类型」）', disabled: false },
+            ]}
+            onSelect={(v) => {
+              if (v === -1) {
+                message.info('在右上角头像菜单里的「我的活动类型」新建，建完回来即可选到')
+              }
+            }}
+          />
+          {/* ★能力位徽章★（原型「新建活动」视图）：选了类型之后，
+              「这类活动要不要纪要 / 要不要项目 / 占不占忙闲」必须**一眼看见** ——
+              否则用户是靠「下面少了一栏」去猜的。 */}
+          {cap && (
+            <Space size={4} style={{ marginLeft: 10 }}>
+              <Tag color={cap.has_minutes ? 'blue' : undefined}>
+                {cap.has_minutes ? '有纪要' : '无纪要'}
+              </Tag>
+              <Tag color={cap.needs_project ? 'blue' : undefined}>
+                {cap.needs_project ? '须关联项目' : '可不关联项目'}
+              </Tag>
+              <Tag color={cap.busy_default ? 'orange' : undefined}>
+                {cap.busy_default ? '占忙闲' : '不占忙闲'}
+              </Tag>
+            </Space>
+          )}
+        </Form.Item>
+        <Form.Item name="title" label="活动标题" rules={[{ required: true, message: '写个标题' }]}>
           <Input placeholder="如：8 月第二次组会" />
         </Form.Item>
 
@@ -130,20 +186,32 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
 
         <Form.Item
           name="project_ids" label="关联项目"
-          rules={[{ required: true, message: '至少关联一个项目' }]}
-          extra="只列出你有编辑权的项目"
+          // ★必填与否由类型的 needs_project 决定★（ADR-0002），不再写死
+          rules={needProject ? [{ required: true, message: '至少关联一个项目' }] : []}
+          extra={needProject ? '只列出你有编辑权的项目' : '这类活动可以不关联项目（关联了则材料进那个项目）'}
         >
           <Select mode="multiple" placeholder="选一个或多个项目" optionFilterProp="label"
             options={projects.map((p) => ({ value: p.id, label: p.name }))} />
         </Form.Item>
 
-        <Form.Item
+        {/* ★不出纪要的类型直接隐藏这一项★（不是只去掉必填）：
+            留一个填了也没用的下拉在那儿，比不显示更让人困惑。 */}
+        {needRecorder && <Form.Item
           name="recorder" label="记录员"
-          rules={[{ required: true, message: '必须指定记录员' }]}
+          rules={needRecorder ? [{ required: true, message: '必须指定记录员' }] : []}
           extra="纪要由他按模板整理"
         >
           <Select showSearch placeholder="谁来整理纪要（默认是你自己）" options={userOpts}
             onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
+        </Form.Item>}
+
+        {/* ★议题与议程★（原型「新建活动」有这一栏，而代码里一直没有 —— 2026-08-09 并排对照才发现）。
+            ⚠ 这不是 M0 弄丢的:提交体里一直写着 `agenda: v.agenda ?? ''`、类型里也声明了,
+            **就是没有输入框** —— 于是它永远送空串,后端那一列永远是空。
+            ★一个「字段声明了却接不到输入」的洞,类型检查看不见、E2E 也看不见★
+            (E2E 自己在 data 里塞 agenda,走的不是表单)。只有对着原型看才照得出来。 */}
+        <Form.Item name="agenda" label="议题与议程" extra="一行一条；会写进纪要的议程部分">
+          <Input.TextArea rows={4} placeholder="一行一条" />
         </Form.Item>
 
         {/* ★参会人挪到右栏★(原型):这里只留一个隐藏字段与 Form 打通,
@@ -155,15 +223,15 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
             <Input placeholder="如：明德主楼 1016" />
           </Form.Item>
           <Form.Item name="online_url" label="线上链接" style={{ flex: 1 }}>
-            <Input placeholder="腾讯会议 / Zoom 链接" />
+            <Input placeholder="腾讯活动 / Zoom 链接" />
           </Form.Item>
         </Space>
 
-        <Form.Item label="公开会议">
+        <Form.Item label="公开活动">
           <Space align="start">
             <Switch checked={pub} onChange={setPub} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              全平台可见并旁听（仅会议信息）
+              全平台可见并旁听（仅活动信息）
             </Typography.Text>
           </Space>
         </Form.Item>
@@ -171,12 +239,12 @@ export function MeetingNewView({ me, onCreated, onCancel }: {
           // ★这句不能删★:PRD 专门为「公开」这个词的歧义加过一条要求(有人以为资料也跟着公开了)。
           // 但降成一行小字,不用 Alert 那么重。
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
-            公开的只是会议信息；<b>材料仍然只有关联项目的成员能看</b>。
+            公开的只是活动信息；<b>材料仍然只有关联项目的成员能看</b>。
           </Typography.Text>
         )}
 
         <Space>
-          <Button type="primary" htmlType="submit" loading={busy}>创建会议</Button>
+          <Button type="primary" htmlType="submit" loading={busy}>创建活动</Button>
           <Button onClick={onCancel}>取消</Button>
         </Space>
       </Form>
@@ -238,7 +306,7 @@ function FreeBusyPanel({ users, range }: { users: string[]; range: [string, stri
   useEffect(() => {
     if (!users.length || !range) { setFb({}); return }
     setLoading(true)
-    // 查所选那天的整天忙闲(不只是会议时段)——要看的是「这天他还有什么别的安排」
+    // 查所选那天的整天忙闲(不只是活动时段)——要看的是「这天他还有什么别的安排」
     const day = new Date(range[0])
     const from = new Date(day); from.setHours(0, 0, 0, 0)
     const to = new Date(day); to.setHours(23, 59, 59, 0)
@@ -289,7 +357,7 @@ function FreeBusyPanel({ users, range }: { users: string[]; range: [string, stri
                 background: b.clash ? '#ffa39e' : '#d9d9d9',
               }} />
             })}
-            {/* 本次会议时段:青色描边,压在最上层 */}
+            {/* 本次活动时段:青色描边,压在最上层 */}
             {pickBar && <div style={{
               position: 'absolute', top: 0, height: 18, left: pickBar.left, width: pickBar.width,
               border: '1px solid #0d9488', background: 'rgba(13,148,136,.18)', borderRadius: 3,

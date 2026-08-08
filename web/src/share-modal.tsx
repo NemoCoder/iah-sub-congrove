@@ -1,7 +1,7 @@
-// 分享对话框 —— ★项目页与会议详情页共用★（D7：材料有两个入口，分享自然也有两个）。
+// 分享对话框 —— ★项目页与活动详情页共用★（D7：材料有两个入口，分享自然也有两个）。
 //
-// 原本长在 projects-view 里，会议详情页的材料行因此没有分享按钮：同一份材料，
-// 从项目进能分享、从会议进不能，纯粹是代码住哪儿决定的，不是产品决定的。
+// 原本长在 projects-view 里，活动详情页的材料行因此没有分享按钮：同一份材料，
+// 从项目进能分享、从活动进不能，纯粹是代码住哪儿决定的，不是产品决定的。
 //
 // ★这是全系统唯一绕过项目授权的入口★（见 src/http/share.rs 头注），所以对话框顶上那条
 // 警告不能删：提取码 / 有效期 / 访问次数是仅有的三道闸，发出去之后唯一的后悔药是撤销。
@@ -9,7 +9,7 @@ import { Alert, App as AntdApp, Button, Input, Modal, Select, Space as AntSpace,
 import { useState } from 'react'
 import { api, type Item } from './api'
 
-/// ★只要这四个字段★:项目页传的是 Item、会议页传的是 MeetingItem,两者形状不同但
+/// ★只要这四个字段★:项目页传的是 Item、活动页传的是 ActivityItem,两者形状不同但
 /// 分享用得着的就这些。收窄到这里,两边都不用为了满足类型去 as 强转。
 export type ShareTarget = Pick<Item, 'id' | 'name' | 'kind' | 'mime'>
 import { ItemIcon } from './preview'
