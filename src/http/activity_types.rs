@@ -120,20 +120,47 @@ pub async fn create(
     Ok(Json(json!({ "id": nid })))
 }
 
-/// 取一行并判「这是不是我能改的」。★预置行谁都不能改★ —— 包括超管：
-/// 它们是全平台活动的语义底座，改一下所有人的历史活动跟着变意思。
-async fn mine_or_403(pool: &sqlx::PgPool, tid: i64, me: &str) -> AppResult<()> {
-    let owner: Option<Option<String>> =
-        sqlx::query_scalar("SELECT owner FROM activity_types WHERE id = $1 AND deleted_at IS NULL")
-            .bind(tid)
-            .fetch_optional(pool)
-            .await?;
+/// 一行的可改范围。★预置行与自建行不是「能改 / 不能改」两档★ ——
+/// 原型（相位 3 已签核）画得很清楚：
+///   · 「会议」行：占忙闲显示「✅ 固定」，末列 **不可改**；
+///   · 「个人日程」行：占忙闲是**可勾的 checkbox**，末列 **不可删**。
+/// ★措辞不同是有意的★：个人日程的 `busy_default` 可以改，只是不能删。
+#[derive(Debug, PartialEq, Eq)]
+pub enum TypeScope {
+    /// 自建的：改名 / 改忙闲 / 删，都行
+    Full,
+    /// 预置的简单型：★只能改 busy_default★，不能改名、不能删
+    BusyOnly,
+    /// 预置的全能力型：一点都不能动
+    None,
+}
+
+/// ★判据（从原型反推，与 O4 的理由一致）★：`has_minutes || needs_project` 的类型，
+/// 占忙闲**固定为 true 不可改** —— O4 拍板 `busy_default` 时的原话是
+/// 「占忙闲 = **影响别人**，而会议本来就是多人的事」。要出纪要、要挂项目的活动，
+/// 按定义就是多人的事，让人把它调成「不占」等于给「我开着会但别人约得到我」开门。
+/// 简单型（两位都 false）才可调 —— 自建类型全是简单型，所以它们天然可调。
+pub fn scope_of(owner: Option<&str>, me: &str, has_minutes: bool, needs_project: bool) -> TypeScope {
     match owner {
-        None => Err(AppError::NotFound),
-        // ★预置行（owner IS NULL）不可改不可删★
-        Some(None) => Err(AppError::BadRequest("预置的活动类型不能改，也不能删".into())),
-        Some(Some(o)) if o == me => Ok(()),
-        Some(Some(_)) => Err(AppError::Forbidden),
+        Some(o) if o == me => TypeScope::Full,
+        Some(_) => TypeScope::None,          // 别人自建的：看不到也动不了
+        None if has_minutes || needs_project => TypeScope::None,
+        None => TypeScope::BusyOnly,
+    }
+}
+
+async fn scope_or_err(pool: &sqlx::PgPool, tid: i64, me: &str) -> AppResult<TypeScope> {
+    let row: Option<(Option<String>, bool, bool)> = sqlx::query_as(
+        "SELECT owner, has_minutes, needs_project FROM activity_types
+          WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(tid).fetch_optional(pool).await?;
+    let Some((owner, hm, np)) = row else { return Err(AppError::NotFound) };
+    match scope_of(owner.as_deref(), me, hm, np) {
+        TypeScope::None if owner.is_none() =>
+            Err(AppError::BadRequest("这个预置类型不能改，也不能删".into())),
+        TypeScope::None => Err(AppError::Forbidden),
+        s => Ok(s),
     }
 }
 
@@ -145,10 +172,12 @@ pub async fn update(
     Json(input): Json<TypeIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    mine_or_403(&state.pool, tid, me).await?;
-    let name = clean_name(&input.name)?;
+    let scope = scope_or_err(&state.pool, tid, me).await?;
+    // ★预置的简单型只让改 busy_default★：改名会让所有人的历史活动跟着变名字。
+    let name = if scope == TypeScope::Full { Some(clean_name(&input.name)?) } else { None };
     sqlx::query(
-        "UPDATE activity_types SET name = $2, busy_default = COALESCE($3, busy_default)
+        "UPDATE activity_types SET name = COALESCE($2, name),
+                                   busy_default = COALESCE($3, busy_default)
           WHERE id = $1",
     )
     .bind(tid)
@@ -157,7 +186,7 @@ pub async fn update(
     .execute(&state.pool)
     .await
     .map_err(name_taken)?;
-    crate::audit::record(&state.pool, me, "atype.update", &tid.to_string(), name).await;
+    crate::audit::record(&state.pool, me, "atype.update", &tid.to_string(), name.unwrap_or("busy")).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -171,7 +200,10 @@ pub async fn remove(
     Path(tid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    mine_or_403(&state.pool, tid, me).await?;
+    // ★删只对自建的开放★：预置行删了 = 历史活动失去类型名（`type_id` 是 NOT NULL 外键）
+    if scope_or_err(&state.pool, tid, me).await? != TypeScope::Full {
+        return Err(AppError::BadRequest("预置的活动类型不能删".into()));
+    }
     sqlx::query("UPDATE activity_types SET deleted_at = now() WHERE id = $1")
         .bind(tid)
         .execute(&state.pool)
@@ -198,6 +230,33 @@ mod tests {
         // ★这条是类型表存在的理由★：旧代码把「必须有记录员 + 必须关联项目」写死在 create 里，
         // 于是「个人日程」这类活动根本建不出来。
         assert!(check_caps(&个人日程, "", &[]).is_ok());
+    }
+
+    // ══════ 可改范围（原型「我的活动类型」那一页）══════
+    #[test]
+    fn 预置的会议一点都不能动() {
+        // 「会议」有纪要且须关联项目 → 占忙闲固定，末列「不可改」
+        assert_eq!(scope_of(None, "alice", true, true), TypeScope::None);
+    }
+
+    #[test]
+    fn 预置的个人日程可以改忙闲但不能删() {
+        // ★原型措辞不同是有意的★：会议「不可改」，个人日程「不可删」
+        assert_eq!(scope_of(None, "alice", false, false), TypeScope::BusyOnly);
+    }
+
+    #[test]
+    fn 自建的全都能动_别人的一律不能() {
+        assert_eq!(scope_of(Some("alice"), "alice", false, false), TypeScope::Full);
+        assert_eq!(scope_of(Some("bob"), "alice", false, false), TypeScope::None);
+    }
+
+    #[test]
+    fn 只要沾一个能力位就固定忙闲() {
+        // 判据是 has_minutes || needs_project，不是「两个都要」——
+        // 要出纪要的活动即使不挂项目，也是多人的事
+        assert_eq!(scope_of(None, "alice", true, false), TypeScope::None);
+        assert_eq!(scope_of(None, "alice", false, true), TypeScope::None);
     }
 
     #[test]
