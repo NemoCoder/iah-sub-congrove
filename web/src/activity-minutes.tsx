@@ -14,7 +14,7 @@
 //
 // 用户在原型评审时定的两条交互仍然成立:**双击才进编辑**(不是一上来就是输入框)、
 // 播放器**不常驻**、切到「录制」标签才出现。
-import { App as AntdApp, Button, Card, Empty, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Popconfirm, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
@@ -214,6 +214,17 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
                 : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyWhy(job, '分段大纲')} />,
             },
             {
+              // ★决议与待办也要能在左栏直接读★（2026-08-09 用户：「这里少了 AI 决议，也少了 AI 代办」）。
+              // 此前这一份只能通过右栏的「带入」按钮**盲导**进正文 —— 记录员在按下那个按钮之前
+              // 根本没机会先看看它写了什么。★让人先读、再决定导不导，才是 D14 说的「他自己点」。★
+              // ⚠ 决议与待办是**同一份** AI 产物（media_ai.rs 的 `decisions` 一次生成两者），
+              //   拆成两个标签会得到两块一模一样的内容，所以这里是一个标签。
+              key: 'd', label: '决议·待办',
+              children: sum(K_DECISIONS)
+                ? <div style={{ fontSize: 13, lineHeight: 1.9, whiteSpace: 'pre-wrap', maxHeight: 460, overflow: 'auto' }}>{sum(K_DECISIONS)}</div>
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyWhy(job, '决议与待办')} />,
+            },
+            {
               key: 't', label: '逐字稿',
               children: ana?.transcript?.segments?.length
                 ? (
@@ -382,23 +393,66 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
   })
   return (
     <div>
+      {/* ⚠★播放器高度写死★(2026-08-09 用户:「选中后页面抖动」):原来是 `maxHeight: 220`,
+          没有下限 —— 换一段录制时 src 一变,浏览器把已加载的画面丢掉、回到
+          <video> 的默认 150px,等 metadata 到了再按新片子的宽高比撑回去。
+          ★于是每点一次列表,播放器都要塌一下再弹起来,底下整列跟着上下跳。★
+          高度固定 + object-fit: contain:画面比例不同就留黑边,但**框子不动**。 */}
       {playing && (
         <video id="minutes-player" controls preload="metadata" src={`/api/items/${playing.id}/play`}
-          style={{ width: '100%', maxHeight: 220, background: '#000', borderRadius: 6, marginBottom: 10 }} />
+          style={{
+            width: '100%', height: 220, objectFit: 'contain',
+            background: '#000', borderRadius: 6, marginBottom: 10, display: 'block',
+          }} />
       )}
       {canEdit && projectId && <div style={{ marginBottom: 10 }}>{up.button}</div>}
       {up.zone(
       <Table<ActivityItem> size="small" rowKey="id" dataSource={items} pagination={false} showHeader={false}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有录屏或录音" /> }}
-        onRow={(it) => ({ onClick: () => onPlay(it), style: { cursor: 'pointer' } })}
+        // ★选中的那一行要看得出来★(2026-08-09 用户:「选中后没有高亮」):
+        // 下面三份稿讲的是**哪一段**,全靠这一行的高亮回答 —— 没有它,
+        // 「AI 摘要」就又变回了那个「说不清是谁的摘要」的状态(刚修过的那个问题)。
+        onRow={(it) => ({
+          onClick: () => onPlay(it),
+          style: {
+            cursor: 'pointer',
+            background: playing?.id === it.id ? '#e6fffb' : undefined,
+            boxShadow: playing?.id === it.id ? 'inset 3px 0 0 #0d9488' : undefined,
+          },
+        })}
         columns={[
           {
+            // ★文件名只占一行,超出用 …★(2026-08-09 用户):录屏文件名普遍很长
+            // (日期 + 课程 + 主讲人 + 序号),换行会让每一行高度不等,
+            // ★一列高矮不齐的行,眼睛没法当列表扫★。完整名字给 title(悬停可见)。
             title: '', render: (_, it) => (
-              <span>
-                <ItemIcon it={it} />
-                <b>{it.name}</b>
+              <div style={{ minWidth: 0 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }} title={it.name}>
+                  <ItemIcon it={it} />
+                  <b style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</b>
+                </div>
                 <div style={{ fontSize: 12, color: '#8c8c8c' }}>{it.created_by} · {fmtSize(it.size)}</div>
-              </span>
+              </div>
+            ),
+          },
+          {
+            // ★录制也要能删★(2026-08-09 liaoruili):和材料同一条规则 ——
+            // 项目树里删不掉,唯一入口在活动这边。
+            title: '', width: 40,
+            render: (_, it) => canEdit && (
+              <Popconfirm title={`删除「${it.name}」？`} description="进项目回收站，30 天内可还原。"
+                okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
+                onConfirm={async () => {
+                  try {
+                    await api(`/api/activities/${activityId}/items/${it.id}`, { method: 'DELETE' })
+                    message.success('已删除'); onChanged()
+                  } catch (e) { message.error((e as Error).message) }
+                }}>
+                <a style={{ color: '#ff4d4f' }} onClick={(e) => e.stopPropagation()}>删除</a>
+              </Popconfirm>
             ),
           },
           {

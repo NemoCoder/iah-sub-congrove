@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{middleware, Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -79,6 +79,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/activities/{id}/minutes", get(activities::minutes_get).put(activities::minutes_put))
         // 活动详情页要的几块(docs/UI-GAP.md):材料与录制 / 线上链接改动历史 / 催办 / 采纳改期
         .route("/activities/{id}/items", get(activities::activity_items))
+        // ★删活动材料走这条,不走通用的 DELETE /items/{id}★:入口不同,接口就不同 ——
+        // 通用那条会拒绝带 activity_id 的 item(D10 的只读区,靠后端而不是靠前端藏按钮)。
+        .route("/activities/{mid}/items/{iid}", delete(activities::delete_activity_item))
         .route("/activities/{id}/link-history", get(activities::link_history))
         .route("/activities/{id}/remind", post(activities::remind))
         .route("/activities/{id}/accept-counter", post(activities::accept_counter))

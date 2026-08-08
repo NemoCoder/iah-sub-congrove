@@ -32,14 +32,16 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   const [kw, setKw] = useState('')
   const [proj, setProj] = useState<number | 'all'>('all')
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /// `silent=true` 不掀 loading（同 activity-detail / schedule-view）：
+  /// 右栏「待我处理」就地答复后只需要刷新数据，不需要把整页重建一次。
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       // ★范围要大★:这一页是「我的全部活动」,不是日历那一屏。前后各半年。
       const from = new Date(Date.now() - 183 * 864e5).toISOString()
       const to = new Date(Date.now() + 183 * 864e5).toISOString()
       setAll(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
-    } catch (e) { message.error((e as Error).message); setAll([]) } finally { setLoading(false) }
+    } catch (e) { message.error((e as Error).message); setAll([]) } finally { if (!silent) setLoading(false) }
   }, [message])
   useEffect(() => { void load() }, [load])
 
@@ -108,7 +110,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
         {/* ★待我应答 + 冲突提示 + 私聊未读★:与日程页**同一张卡**(todo-card.tsx)。
             此前两页各写各的 —— 日程页只能点进详情才答复、这页能就地答复,
             同一个动作两套交互,比丑更糟。 */}
-        <TodoCard all={all} onOpen={onOpen} onDone={load} style={{ marginBottom: 12 }} />
+        <TodoCard all={all} onOpen={onOpen} onDone={() => load(true)} style={{ marginBottom: 12 }} />
 
         <Card size="small" title="我负责的纪要">
           {myMinutes.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待整理的纪要" />

@@ -146,6 +146,51 @@ pub async fn project_owner(pool: &sqlx::PgPool, pid: i64) -> AppResult<String> {
         .bind(pid).fetch_optional(pool).await?.ok_or(AppError::NotFound)
 }
 
+/// 某场活动在某个项目里的**专属文件夹**(根下一层),没有就建一个,返回它的 item_id。
+///
+/// ★命名 = 日期 + 活动标题★(2026-08-09 liaoruili),如 `2026-08-09 组会`。
+/// 日期在前是为了**按名字排序就等于按时间排序** —— 一个项目开一年会之后,
+/// 这一条比什么都有用。
+///
+/// ★认领靠 activity_id,不靠名字★:活动改名之后仍然是同一个文件夹,
+/// 不会因为标题变了就又建一个、材料散成两处。
+/// (代价是文件夹名停在建它的那一刻 —— 可以接受:它记的是「那场会」,不是标题的最新值。)
+///
+/// ⚠ 并发同时传两个文件会各查各的、都查不到 → 建出两个同名文件夹。
+/// 这里靠**部分唯一索引**兜(见 0001_init.sql 的 `items_activity_folder_uniq`):
+/// 第二个 INSERT 冲突,回头再查一次拿到第一个建好的那个。
+async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> AppResult<i64> {
+    if let Some(fid) = find_activity_folder(&state.pool, pid, mid).await? {
+        return Ok(fid);
+    }
+    // 标题里的 `/` 之类不必转义:这是**数据库里的一行**,不是文件系统路径。
+    let (title, starts_at): (String, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT title, starts_at FROM activities WHERE id = $1")
+            .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    // ★按东八区取日期,不按 UTC★:UTC 下「8-09 早上 7 点的会」是 8-08,
+    // 文件夹名就会比会议日期早一天 —— 与 notify.rs 的 fmt_when 用同一个偏移。
+    let local = starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+    let name = format!("{} {}", local.format("%Y-%m-%d"), title.trim());
+    let made: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO items (project_id, parent_id, kind, name, created_by, activity_id)
+         VALUES ($1, NULL, 'folder', $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id")
+        .bind(pid).bind(&name).bind(actor).bind(mid)
+        .fetch_optional(&state.pool).await?;
+    match made {
+        Some(fid) => Ok(fid),
+        // 冲突 = 刚刚被另一个并发请求建好了,再查一次
+        None => find_activity_folder(&state.pool, pid, mid).await?.ok_or(AppError::NotFound),
+    }
+}
+
+async fn find_activity_folder(pool: &sqlx::PgPool, pid: i64, mid: i64) -> AppResult<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM items
+          WHERE project_id = $1 AND activity_id = $2 AND kind = 'folder' AND deleted_at IS NULL
+          LIMIT 1")
+        .bind(pid).bind(mid).fetch_optional(pool).await?)
+}
+
 /// item 所属空间(判权都要先拿它;不存在 = 404)。
 pub async fn project_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
     sqlx::query_scalar("SELECT project_id FROM items WHERE id = $1")
@@ -174,6 +219,12 @@ pub struct ItemRow {
     /// (2026-08-05 反馈)。
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// ★这一项是不是某场活动的材料★(D10 的只读区)。前端靠它决定**不画**改名/移动/删除 ——
+    /// 后端已经拒了(update/remove 里有判断),但界面上摆着一个必然失败的按钮
+    /// 等于**引导人去犯错**,而报错信息永远比按钮不出现更晚、更难懂。
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<i64>,
 }
 
 /// GET /api/projects/{pid}/items —— 整空间平铺一次拉全(≥viewer),前端组树。
@@ -188,7 +239,7 @@ pub async fn list(
     // 用于拼 S3 key,传完才回填 s3_key。不过滤的话「还没传完就出现在列表里」(2026-08-03 反馈),
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
-        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at
+        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id
            FROM items WHERE project_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     )
@@ -208,7 +259,7 @@ pub async fn detail(
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at
+        "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id
            FROM items WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(iid)
@@ -358,6 +409,18 @@ pub async fn update(
     let alive: Option<i64> = sqlx::query_scalar("SELECT id FROM items WHERE id = $1 AND deleted_at IS NULL")
         .bind(iid).fetch_optional(&state.pool).await?;
     if alive.is_none() { return Err(AppError::NotFound) }
+    // ★活动材料在项目树里不许改名/移动★(D10;2026-08-09 liaoruili 强调「项目文件夹中的会议
+    // 内容是不可修改的」)。
+    // ⚠ 这条规则 D10 从一开始就写着,`activities.rs` 的注释也写着「在项目树里不允许对它
+    //   改名/移动/删除」—— ★但 handler 里一个判断都没有,三年来只是**注释在描述一件没做的事**★。
+    //   (和 AI 摘要那个 kind、时间粒度只写进一处,是同一族问题:说过 ≠ 做了。)
+    // 为什么必须挡在**后端**:名字与位置是**从活动派生**的(日期+标题、根下独立文件夹) ——
+    // 允许改名就等于允许把「某场会的材料」伪装成别的东西,而活动页那边完全看不出来。
+    let from_activity: Option<i64> = sqlx::query_scalar(
+        "SELECT activity_id FROM items WHERE id = $1").bind(iid).fetch_one(&state.pool).await?;
+    if from_activity.is_some() {
+        return Err(AppError::BadRequest("活动材料的名称和位置由活动决定,不能在项目里改".into()));
+    }
     if let Some(new_parent) = p.parent_id {
         check_parent(&state.pool, pid, new_parent).await?;
         if let Some(np) = new_parent {
@@ -407,6 +470,15 @@ pub async fn remove(
 ) -> AppResult<Json<serde_json::Value>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
+    // ★项目树里删不掉活动材料★(D10;2026-08-09 liaoruili:「要去会议里面删除」)。
+    // ★入口不同,接口就该不同★ —— 后端看不见「用户点的是哪个页面」,
+    // 只靠前端藏按钮的话,这条规则等于没有(本仓库自己的原则:前端隐藏不是安全边界)。
+    // 想删就走 DELETE /api/activities/{mid}/items/{iid},那条路上删的人知道自己在删一场会的材料。
+    let from_activity: Option<i64> = sqlx::query_scalar(
+        "SELECT activity_id FROM items WHERE id = $1").bind(iid).fetch_one(&state.pool).await?;
+    if from_activity.is_some() {
+        return Err(AppError::BadRequest("活动材料请到活动页里删除".into()));
+    }
     let actor = id.require_username()?;
     let n = sqlx::query(
         "WITH RECURSIVE sub AS (
@@ -777,6 +849,16 @@ pub async fn upload(
     }
     let actor = id.require_username()?;
 
+    // ★活动材料落进「根下面一个属于这场活动的文件夹」★（2026-08-09 liaoruili:
+    // 「不应该根据开会的日期+会议标题存到文件夹下面吗?怎么直接放到这里了」
+    //  「而且是单独放到根下面的一个文件夹」）。
+    // 之前活动材料的 parent_id 一直是 NULL —— ★全都散在项目根目录，和人自己整理的文件混在一起★，
+    // 一场会传 4 段录屏就是根目录上 4 行,几场会之后项目文件页就没法看了。
+    let parent = match q.activity_id {
+        Some(mid) if q.parent_id.is_none() => Some(activity_folder(&state, pid, mid, actor).await?),
+        _ => q.parent_id,
+    };
+
     // 收**所有**文件字段(2026-08-04 审计):原来处理完第一个就 return,同一请求里的第二个文件
     // **连报错都没有、直接消失**。前端是一文件一请求,但接口不该静默丢数据。
     // 兼容:响应仍带首个文件的 id/sha256/size,另加 items 数组列全部。
@@ -795,7 +877,7 @@ pub async fn upload(
             "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, activity_id, is_recording)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
         )
-        .bind(pid).bind(q.parent_id).bind(kind).bind(&fname).bind(&mime).bind(actor)
+        .bind(pid).bind(parent).bind(kind).bind(&fname).bind(&mime).bind(actor)
         .bind(q.activity_id).bind(q.is_recording)
         .fetch_one(&state.pool)
         .await?;

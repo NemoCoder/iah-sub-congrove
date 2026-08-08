@@ -9,6 +9,16 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%230d9488'/%3E%3Cstop offset='1' stop-color='%2316a34a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M12 54 C 22 52 27 46 30 39 M52 54 C 42 52 37 46 34 39 M32 55 L32 34' fill='none' stroke='%23fff' stroke-width='4.5' stroke-linecap='round'/%3E%3Ccircle cx='21' cy='23' r='8.5' fill='%23fff'/%3E%3Ccircle cx='43' cy='23' r='8.5' fill='%23fff'/%3E%3Ccircle cx='32' cy='15.5' r='9.5' fill='%23fff'/%3E%3Ccircle cx='32' cy='21' r='4.5' fill='%2315803d'/%3E%3C/svg%3E"
     />
     <title>Congrove·汇流</title>
+    <!-- ★整站唯一的全局样式:把 body 的默认外边距清零★（2026-08-09 用户：「我的内容没有超出屏幕范围
+         为啥右边有个滚动条？」）。
+         根因是**全仓库从来没有过任何 CSS reset**:antd v5+ 走 CSS-in-JS,`<App>` 只重置它自己
+         那棵子树的字体/行高,**碰不到 body**;而浏览器给 body 的默认 `margin: 8px` 一直在。
+         于是文档高 = 8 + `min-height:100vh` 的那层 + 8 = ★100vh + 16px★ ——
+         ★内容再短也必然出现滚动条★,和页面上有多少东西完全无关。
+         (antd 6 的 dist 里也不再单独提供 reset.css,所以这一条得我们自己写。) -->
+    <style>
+      html, body { margin: 0; padding: 0; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

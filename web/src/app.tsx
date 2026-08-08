@@ -110,7 +110,11 @@ export function App() {
           </Dropdown>
         }
       />
-      <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 22px' }}>
+      {/* ⚠★用 padding 而不是上下 margin★:这一层是 `min-height:100vh` 那个容器的最后一个子元素,
+          而**外边距会从没有 padding/border 的父元素底边「逃出去」**(margin collapsing) ——
+          20px 不计进 100vh 的盒子里,却把文档撑到 100vh+20px,又是一条凭空多出来的滚动条。
+          padding 不会塌陷,视觉完全一样。(与 index.html 里那条 body reset 是同一个问题的两半。) */}
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 22px' }}>
         {view === 'schedule' ? (
           minutesOf != null ? (
             <ActivityMinutesView activityId={minutesOf} onBack={() => setMinutesOf(null)} />

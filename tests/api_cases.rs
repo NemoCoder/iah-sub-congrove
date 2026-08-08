@@ -282,6 +282,21 @@ const CASES: &[Case] = &[
        "我被邀请参会,但不是任何关联项目的成员",
        "GET .../items", "403 —— 他看得见这场会(能参会),但材料按★项目成员身份★判权(D3)。\
         D8 作废后这条不变:变的只是「不拿材料的人」不再单独分一类", "D3"),
+    // ── 活动材料的删除(2026-08-09):★只能从活动页删,项目树里是只读区★(D10)──
+    c!("DELETE", "/api/activities/{mid}/items/{iid}", "在活动页删掉一份材料",
+       "活动下有 1 份材料,我是关联项目的 editor",
+       "DELETE /api/activities/{mid}/items/{iid}",
+       "200;该材料 deleted_at 非空、进回收站;活动的 items 列表少一条;★活动文件夹本身还在★", "D10"),
+    c!(deny "DELETE", "/api/items/{id}", "★活动材料在项目树里删不掉★",
+       "项目根下有活动文件夹,里面一份录屏;我是项目 editor",
+       "DELETE /api/items/{那份录屏}",
+       "400「活动材料请到活动页里删除」——★这条规则以前只写在注释里,handler 里一个判断都没有★\
+        (2026-08-09 补);挡在后端而不是靠前端藏按钮,因为后端看不见调用方是哪个页面", "D10"),
+    c!(deny "DELETE", "/api/activities/{mid}/items/{iid}", "★不能借 A 活动删 B 活动的材料★",
+       "我是 A 活动关联项目的 editor;iid 属于 B 活动",
+       "DELETE /api/activities/{A}/items/{B 的材料}",
+       "404 —— SQL 里 activity_id 必须同时匹配路径上的 mid;\
+        少这一条就是「换个 mid 就能删别人的」这类典型越权", "D10"),
     c!("GET", "/api/activities/{id}/link-history", "线上链接改动可追溯", "链接改过 2 次",
        "GET .../link-history", "200,2 条,含 谁/何时/改成什么", ""),
     c!(deny "GET", "/api/activities/{id}/link-history", "旁听者看不到改动历史", "活动 public,我不是参会人",

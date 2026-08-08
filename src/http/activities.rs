@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::perm::{activity_view, require_activity_host, ActivityView};
+use crate::perm::{activity_view, require_activity_host, require_role, ActivityView, Role};
 use crate::state::AppState;
 use crate::notify::{fmt_when, notify_activity, notify_targets};
 use crate::{audit, perm};
@@ -939,6 +939,35 @@ pub async fn activity_items(
     Ok(Json(rows))
 }
 
+/// DELETE /api/activities/{mid}/items/{iid} —— 删一份活动材料/录制(≥editor)。
+///
+/// ★为什么不复用 DELETE /api/items/{iid}★(2026-08-09 liaoruili:「要去会议里面删除」):
+/// D10 说活动材料在**项目树里**是只读区,唯一入口是活动页。而后端看不见「用户点的是哪个页面」——
+/// ★只靠前端不画删除按钮,这条规则等于没有★(本仓库自己的原则:前端隐藏不是安全边界)。
+/// 所以拆成两条路:通用那条**拒绝**带 activity_id 的 item,这条只收活动材料。
+/// 接口的形状本身就说明了「你正在删的是某场活动的材料」。
+///
+/// ⚠ 只删**单份材料**,不删活动文件夹本身 —— 文件夹是结构,由活动决定,不该被手动删掉。
+pub async fn delete_activity_item(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path((mid, iid)): Path<(i64, i64)>,
+) -> AppResult<Json<serde_json::Value>> {
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    let actor = id.require_username()?;
+    // ★路径里的 mid 必须与这份材料实际归属的活动一致★:否则「在我能编辑的 A 活动下,
+    // 报一个属于 B 活动的 item id」就能删掉 B 的材料 —— 一个典型的越权形状。
+    let n = sqlx::query(
+        "UPDATE items SET deleted_at = now(), deleted_by = $3
+          WHERE id = $1 AND activity_id = $2 AND kind <> 'folder' AND deleted_at IS NULL")
+        .bind(iid).bind(mid).bind(actor).execute(&state.pool).await?.rows_affected();
+    if n == 0 { return Err(AppError::NotFound) }
+    audit::record(&state.pool, actor, "activity.item.delete", &iid.to_string(),
+        &format!("activity={mid} project={pid} 删除活动材料(进回收站)")).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct LinkChange {
     pub old_url: String,
@@ -1185,6 +1214,23 @@ pub struct StatsQ {
 ///   分项目按关联展开就会重复计。这不是 bug,但前端别拿它去反推总数。
 /// 小时数保留一位小数。★统计到处要用★,散在各处 round 迟早出现「12.3 和 12.30000000001」并存。
 fn r1(h: f64) -> f64 { (h * 10.0).round() / 10.0 }
+
+/// 参会率 —— ★返回的是**比例(0~1)**,不是百分数★。前端乘 100 显示。
+///
+/// ⚠★2026-08-09 这里曾经是十倍错★(liaoruili:「参会率 333%咋回事??」):
+/// 原式 `r1(accepted * 1000.0 / invited) / 100.0` —— 先放大 1000 倍取一位小数,
+/// 却只除回 100,于是 1/3 算成 **3.33**,前端 ×100 显示成 **333%**。
+/// ★这种错不报错、不越界、不 panic,只是数字不对★ —— 和 CODE-QUALITY.md 里
+/// 记的「ms vs 秒 1000× 静默错位」是同一族:**量纲错**只有测试挡得住,
+/// 类型检查看不见(两边都是 f64),PREPARE 也看不见(SQL 完全正常)。
+/// 所以这里从表达式抽成了函数,只为了**它能被单测钉住**。
+///
+/// 放大 1000 再除回 1000 = 比例保留 3 位小数 = 百分数保留 1 位小数。
+/// 分母不含旁听者:他不是被邀请的,计进去会稀释这个比例。
+pub fn accept_rate(accepted: i64, invited: i64) -> f64 {
+    if invited <= 0 { return 0.0 }
+    ((accepted as f64 * 1000.0 / invited as f64).round()) / 1000.0
+}
 
 pub async fn my_stats(
     State(state): State<AppState>,
@@ -1472,7 +1518,7 @@ pub async fn project_stats(
         "invited": invited,
         "accepted": accepted,
         // 参会率 = 接受 / 邀请。⚠ 分母不含旁听者:他不是被邀请的,计进去会稀释这个比例
-        "accept_rate": if invited > 0 { r1(accepted as f64 * 1000.0 / invited as f64) / 100.0 } else { 0.0 },
+        "accept_rate": accept_rate(accepted, invited),
         "avg_hours_per_person": per_person.map(r1),
         "minutes_done": done,
         // ★D6★:这是「分组展开」的数字,把多个项目的加起来 ≠ 总数
@@ -1484,6 +1530,36 @@ pub async fn project_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★参会率的复现测试★(2026-08-09 liaoruili 报「参会率 333%」)。
+    /// 3 人受邀 1 人接受 = 33.3%,前端拿到的必须是 **0.333**(它会 ×100 显示)。
+    /// 旧实现给的是 3.333 → 界面 333%。
+    ///
+    /// ★这条测试的价值不在「算得对」,在于把**量纲**钉死★:
+    /// 比例还是百分数,是这个函数唯一容易搞错的事,而搞错了不会报任何错。
+    #[test]
+    fn 参会率给的是比例不是百分数() {
+        let r = accept_rate(1, 3);
+        assert!((r - 0.333).abs() < 1e-9, "1/3 应为 0.333(比例),实得 {r}");
+        assert!(r <= 1.0, "★比例不可能大于 1★ —— 大于 1 就是又一次十倍错");
+        assert_eq!(accept_rate(3, 3), 1.0, "全员接受 = 1.0,不是 100.0");
+        assert_eq!(accept_rate(0, 5), 0.0);
+        // 没人受邀时不能除零(NaN 会让前端显示 NaN%)
+        assert_eq!(accept_rate(0, 0), 0.0);
+        assert_eq!(accept_rate(2, 0), 0.0);
+    }
+
+    /// 反向:任意输入都落在 [0,1]。★接受数不该超过邀请数,但真超了也不能吐出 >1★
+    /// (数据异常时界面显示 250% 只会让人以为统计坏了,而不是数据坏了)。
+    #[test]
+    fn 参会率永远落在0到1之间() {
+        for invited in 0..20i64 {
+            for accepted in 0..=invited {
+                let r = accept_rate(accepted, invited);
+                assert!((0.0..=1.0).contains(&r), "accept_rate({accepted},{invited}) = {r}");
+            }
+        }
+    }
 
     /// ★时区换算是站内信里最容易静默错的一格★:UTC 存、北京时间显示,
     /// 差 8 小时不会报错,只会让人在错的时间到场。星期也一起钉住 ——

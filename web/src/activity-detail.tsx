@@ -7,7 +7,7 @@
 //
 // ★旁听者(D9)拿到的是裁剪版★:后端就不返回 participants,这里也不能画出名单占位——
 // 「有个名单但看不到」比「压根没有这块」更容易让人以为是 bug。
-import { App as AntdApp, Alert, Button, Card, DatePicker, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography } from 'antd'
+import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
@@ -15,6 +15,7 @@ import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem,
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
 import { ShareModal } from './share-modal'
+import { QuarterRangePicker } from './time-range'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -170,7 +171,11 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           await patch({ starts_at: a.toISOString(), ends_at: b.toISOString() })
           setTimeEdit(null)
         }}>
-        <DatePicker.RangePicker showTime style={{ width: '100%' }} value={timeEdit}
+        {/* ⚠★这里原来是个裸 `showTime` 的 RangePicker★(2026-08-09 用户:「改时间怎么到了时分秒。。。。
+            我的 00 15 30 45 呢」):有秒、分钟 60 格、还要点一次确认 —— 因为「一刻钟粒度」
+            当初只写进了「发起活动」那一处。现在三处共用 time-range.tsx。
+            ★这里**不加** noPast★:后端只在创建时拒绝过去的时间,改时间还用来**补录**已经开过的会。 */}
+        <QuarterRangePicker style={{ width: '100%' }} value={timeEdit}
           onChange={(v) => setTimeEdit(v as [Dayjs, Dayjs] | null)} />
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
           ★所有人的答复会清回「待定」★，并收到一条改期通知。
@@ -182,7 +187,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         {d.can_edit && !canceled && (
           <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
             onConfirm={async () => {
-              try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load() } catch (e) { /* 失败由下方错误区呈现 */ }
+              try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load(true) } catch (e) { /* 失败由下方错误区呈现 */ }
             }}>
             <Button size="small" danger>取消活动</Button>
           </Popconfirm>
@@ -241,16 +246,26 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               // 而且那一栏摆在那里只会让人以为要预填。
               ...(new Date(m.ends_at).getTime() < Date.now() ? [{
                 key: 'am', label: '实际时长',
-                children: <span>
-                  <InlineEdit value={m.actual_minutes ? String(m.actual_minutes) : ''}
-                    canEdit={!!d.can_edit && !canceled} placeholder="（双击填分钟数）"
-                    onSave={(v) => patch({ actual_minutes: v.trim() ? Number(v.trim()) : null })}
-                    renderView={(v) => `${v} 分钟`} />
-                  <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                    {/* 说清它有什么用,否则没人会去填 */}
-                    没录屏时统计按这个算；都不填就按排程时长估
-                  </Typography.Text>
-                </span>,
+                // ⚠★双击后那句说明会掉到下一行★(2026-08-09 用户:「怎么点击后这段话在下面?」)。
+                //   原因:只读态是个 inline-block 的 <span>,说明跟在它右边;
+                //   一进编辑态换成 AntD 的 <Input> —— 它**默认占满整行宽度**,
+                //   于是把说明挤到了下面,整行还跟着变高。
+                //   ★根子是「只读态和编辑态的盒子宽度不一样」★ —— 给它一个固定宽度的格子,
+                //   两态都住在里面,外面用 flex 摆位,点不点它都不动。
+                children: (
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ width: 200, flexShrink: 0 }}>
+                      <InlineEdit value={m.actual_minutes ? String(m.actual_minutes) : ''}
+                        canEdit={!!d.can_edit && !canceled} placeholder="（双击填分钟数）"
+                        onSave={(v) => patch({ actual_minutes: v.trim() ? Number(v.trim()) : null })}
+                        renderView={(v) => `${v} 分钟`} />
+                    </div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {/* 说清它有什么用,否则没人会去填 */}
+                      没录屏时统计按这个算；都不填就按排程时长估
+                    </Typography.Text>
+                  </div>
+                ),
               }] : []),
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
               ...(m.type_name ? [{ key: 'ty', label: '类型', children: <Tag>{m.type_name}</Tag> }] : []),
@@ -309,13 +324,17 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
-              canHost={!!d.can_edit && !canceled} onDone={load} />
+              // ★静默刷新★(2026-08-09 liaoruili:「参会人点击催办的时候页面抖动」):
+              // 催办 / 移出 / 加人 全走这一个回调,而 `load()` 不带参数 = 非静默,
+              // 于是整块详情被 <Spin/> 换掉再换回来。★这是同一个根因的第三处★
+              // (前两处:点开关、点转写)—— 「刷新数据」和「重建界面」是两件事。
+              canHost={!!d.can_edit && !canceled} onDone={() => load(true)} />
           )}
           {/* ★发起人不出「我的答复」★(2026-08-09 用户):他是定这个时间的人,
               create 时就是 accepted。让他答复等于允许「拒绝自己发起的活动」这种
               自相矛盾的状态。想改时间直接改、去不了就取消 —— 后端也会拒。 */}
           {!canceled && m.my_status && m.organizer !== me
-            && <RespondCard id={id} mine={m.my_status} onDone={load} />}
+            && <RespondCard id={id} mine={m.my_status} onDone={() => load(true)} />}
           {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
         </div>
       </div>
@@ -447,8 +466,8 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
             发起人**看不到**你私密项目里的安排,所以他不知道你这个时段忙。
             给一个你方便的具体时间,比只说「不行」有用得多。
           </Typography.Paragraph>
-          <DatePicker.RangePicker
-            showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" size="small"
+          {/* 建议一个**将来**的时段才有意义,所以这里 noPast */}
+          <QuarterRangePicker noPast size="small"
             style={{ width: '100%', marginBottom: 8 }}
             onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
           />
@@ -587,6 +606,11 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
   const [kind, setKind] = useState<'attendee' | 'guest'>('attendee')
   const [found, setFound] = useState<{ username: string; name: string | null }[]>([])
   const [busy, setBusy] = useState(false)
+  /// ★选中/回车之后收起下拉★(2026-08-09 liaoruili:「添加参会人 回车后,下拉框还不消失」)。
+  /// tags 模式默认「加完一个继续开着」,那是为连着输很多人准备的;
+  /// 但候选列表挂在输入框下面**盖住了「参会人 / 临时参会人」那个下拉和确定按钮** ——
+  /// 加完一个人还得先点一下别处才能继续。与关联项目那处用同一套做法。
+  const [dropOpen, setDropOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const search = (kw: string) => {
@@ -615,6 +639,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
     <Modal open title="添加参会人" onCancel={() => setOpen(false)} onOk={submit} confirmLoading={busy} okText="添加">
       <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
         <Select mode="tags" value={picked} onChange={setPicked} onSearch={search} filterOption={false}
+          open={dropOpen} onDropdownVisibleChange={setDropOpen} onSelect={() => setDropOpen(false)}
           style={{ width: '100%' }} placeholder="输入用户名（没搜到也能直接输入）" notFoundContent={null}
           options={found.map((u) => ({ value: u.username, label: showUser(u.username, u.name) }))} />
         <Select value={kind} onChange={setKind} style={{ width: '100%' }}
@@ -757,6 +782,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   policy: { no_download?: boolean; no_share?: boolean } | null
   onPolicy: (p: { no_download?: boolean; no_share?: boolean }) => void
 }) {
+  const { message } = AntdApp.useApp()
   const [items, setItems] = useState<ActivityItem[]>([])
   const [tab, setTab] = useState('mat')
   // 要分享的那一项(D7:材料有两个入口,分享自然也有两个 —— 同一份材料
@@ -796,6 +822,22 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
             {/* ★分享只给能编辑的人★:建公开链接是**绕过项目授权**的动作(share.rs 头注),
                 只读成员不该有这个能力;后端也会再判一次(前端隐藏不是安全边界)。 */}
             {canEdit && <a onClick={() => setShareFor(it)}>分享</a>}
+            {/* ★删除只在这里★（2026-08-09 liaoruili:「要去会议里面删除」）:
+                项目树里那条通用删除接口会拒绝活动材料(D10 的只读区),
+                所以这份材料的唯一删除入口就是这一行。 */}
+            {canEdit && (
+              <Popconfirm title={`删除「${it.name}」？`}
+                description="进项目回收站，30 天内可由项目管理员还原。"
+                okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
+                onConfirm={async () => {
+                  try {
+                    await api(`/api/activities/${id}/items/${it.id}`, { method: 'DELETE' })
+                    message.success('已删除'); await load()
+                  } catch (e) { message.error((e as Error).message) }
+                }}>
+                <a style={{ color: '#ff4d4f' }}>删除</a>
+              </Popconfirm>
+            )}
           </Space>,
         },
       ]} />

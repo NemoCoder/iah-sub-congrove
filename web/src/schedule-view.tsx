@@ -102,8 +102,10 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
     [items, nightOpen, ],
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  /// `silent=true` 不掀 loading —— 见 activity-detail 里同名函数的那段。
+  /// ★「待我处理」就地答复走的就是它★:不静默的话答一条整页塌一下(2026-08-09 同一族)。
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       // ⚠★原来这里写死 7 天★:月视图于是只加载了一周的数据,后面三周永远是空的
       //   —— 而它看起来「就是没安排」,没有任何报错。(2026-08-09 改月视图时发现。)
@@ -114,7 +116,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
       message.error((e as Error).message)
       setItems([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [days, message])
   useEffect(() => { void load() }, [load])
@@ -130,11 +132,26 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       {/* 主体:日历 */}
       <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
-        <Space wrap style={{ marginBottom: 12, width: '100%' }}>
-          <Typography.Text strong style={{ fontSize: 15 }}>{title}</Typography.Text>
-          <Button size="small" onClick={() => (mode === 'month' ? stepMonth(-1) : setAnchor(addDays(anchor, -step)))}>‹</Button>
+        {/* ★工具栏按主流日历的排法★（2026-08-09 用户：「今天有个左右按键，目前这样的布局有点奇怪」）。
+            查了 Google Calendar 与 FullCalendar 的默认/常见配置，三者一致的一条是：
+            ★两个箭头**挨在一起**，「今天」在这一对旁边，而不是夹在中间★。
+            我们原来是 `‹ 今天 ›` —— 把一对方向键劈开，读起来像三个不相干的按钮；
+            而「上一页/下一页」是**同一个维度的两端**，视觉上就该是一组。
+            布局取 Google 那套：左边 `[今天][‹][›] 标题`，右边视图切换 + 主操作。
+
+            ⚠★顺带修掉一个真 bug★：原来整条工具栏是 `<Space>`，里面塞了个
+            `<span style={{flex:1}}/>` 想把右侧顶开 —— **不起作用**。Space 会把每个
+            子元素包进自己的 item 容器，flex:1 加在被包住的 span 上撑不开外面那层，
+            于是所有按钮全挤在左边（截图里就是这样）。改成普通 flex 容器。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           <Button size="small" onClick={() => setAnchor(startOfWeek(new Date()))}>今天</Button>
-          <Button size="small" onClick={() => (mode === 'month' ? stepMonth(1) : setAnchor(addDays(anchor, step)))}>›</Button>
+          {/* Space.Compact:两个箭头连成一体,中间不留缝 —— 它们是一组 */}
+          <Space.Compact size="small">
+            <Button size="small" onClick={() => (mode === 'month' ? stepMonth(-1) : setAnchor(addDays(anchor, -step)))}>‹</Button>
+            <Button size="small" onClick={() => (mode === 'month' ? stepMonth(1) : setAnchor(addDays(anchor, step)))}>›</Button>
+          </Space.Compact>
+          <Typography.Text strong style={{ fontSize: 15, marginLeft: 4 }}>{title}</Typography.Text>
+          <span style={{ flex: 1 }} />
           <Segmented size="small" value={mode} onChange={(v) => setMode(v as typeof mode)}
             options={[
               // ★没有「日」视图★(2026-08-09 用户):周视图本来就是一天一列,
@@ -142,13 +159,12 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
               { value: 'week', label: '周' },
               { value: 'month', label: '月' }, { value: 'list', label: '列表' },
             ]} />
-          <span style={{ flex: 1 }} />
           {/* ★「+ 个人日程」已删★(2026-08-09 用户):它和「发起活动」是同一件事 ——
               M0 之后「个人日程」只是**一个活动类型**(不要纪要、不要项目、不占忙闲),
               在发起活动那张表单里选类型就到了。留两个入口等于让人先猜「我这事算哪种」,
               而那个判断本来就该由类型下拉承担。 */}
           <Button size="small" type="primary" onClick={onNewActivity}>+ 发起活动</Button>
-        </Space>
+        </div>
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
@@ -168,17 +184,28 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                 const isToday = d.toDateString() === today.toDateString()
                 const of = items.filter((m) => new Date(m.starts_at).toDateString() === d.toDateString())
                 const pending = of.filter((m) => m.my_status === 'pending').length
+                // ★今天要整格高亮★（2026-08-09 用户）：原来只把日期数字染成青色，
+                // 在 42 个格子里那点色差根本找不到 —— ★「今天在哪」是月视图上唯一的锚点★，
+                // 没有它，人得先在心里数到第几周才知道自己站在哪儿。
+                // 做法照通用日历：底色 + 描边 + 日期数字反白成实心圆点。
                 return (
                   <div key={d.toISOString()} style={{
-                    background: '#fff', minHeight: 78, padding: '6px 8px',
+                    background: isToday ? '#e6fffb' : '#fff', minHeight: 78, padding: '6px 8px',
                     // ★本月之外的日子淡化但**不隐藏**★：整周对齐比「只画本月」更好读，
                     // 而完全空着会让人以为那几天加载失败了。
                     opacity: inMonth ? 1 : 0.38,
+                    boxShadow: isToday ? 'inset 0 0 0 2px #0d9488' : undefined,
                     cursor: of.length ? 'pointer' : 'default',
                   }} onClick={() => { if (of.length === 1) onOpenActivity(of[0].id); else if (of.length) { setAnchor(startOfWeek(d)); setMode('week') } }}>
                     <div style={{
                       fontSize: 12, fontWeight: isToday ? 700 : 500,
-                      color: isToday ? '#0d9488' : '#111827',
+                      color: isToday ? '#fff' : '#111827',
+                      // 实心圆点:和周视图表头的「· 今天」是同一套青色语言
+                      background: isToday ? '#0d9488' : undefined,
+                      width: isToday ? 20 : undefined, height: isToday ? 20 : undefined,
+                      borderRadius: isToday ? '50%' : undefined,
+                      display: isToday ? 'flex' : undefined,
+                      alignItems: 'center', justifyContent: 'center',
                     }}>{d.getDate()}</div>
                     {of.length > 0 && (
                       <div style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -369,7 +396,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
 
       {/* 右栏:待我处理 + 公开活动广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load()} style={{ width: 320 }} />
+      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load(true)} style={{ width: 320 }} />
 
       <PublicBoard onOpen={onOpenActivity} />
       </div>

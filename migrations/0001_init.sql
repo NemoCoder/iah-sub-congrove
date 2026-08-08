@@ -308,6 +308,13 @@ CREATE INDEX IF NOT EXISTS idx_items_s3key ON items (s3_key) WHERE s3_key IS NOT
 CREATE INDEX IF NOT EXISTS idx_items_resume ON items (project_id, created_by, upload_fp) WHERE s3_key IS NULL;
 -- 活动只读区:按活动列它的材料。
 CREATE INDEX IF NOT EXISTS idx_items_activity ON items (activity_id) WHERE activity_id IS NOT NULL;
+-- ★一场活动在一个项目里只有一个文件夹★(2026-08-09):活动材料落在
+-- 「根 / YYYY-MM-DD 活动标题」这个专属文件夹里,不再散在项目根目录。
+-- 这条唯一索引不只是约束,更是**并发兜底**:同时传两个文件时两边都查不到文件夹、
+-- 都要建,靠它让第二个 INSERT 冲突(ON CONFLICT DO NOTHING),回头再查就拿到第一个 ——
+-- 没有它就会出现两个同名文件夹,材料一半在这边一半在那边。
+CREATE UNIQUE INDEX IF NOT EXISTS items_activity_folder_uniq
+    ON items (project_id, activity_id) WHERE kind = 'folder' AND deleted_at IS NULL;
 
 -- 文档/文件版本历史:S3 内容寻址按 sha256,旧版本天然免费。
 -- ⚠ 同一 sha 可能被多行引用(items 当前版 + 多条 item_versions):删对象前必须查引用计数,
