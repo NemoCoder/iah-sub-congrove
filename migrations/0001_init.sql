@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS projects (
   hotwords     text    NOT NULL DEFAULT '',
   deleted_at   timestamptz,
   deleted_by   text,
+  -- 项目分两类(ADR-0005):team = 正常协作项目;materials = ★每人一个的私人材料区★。
+  -- 材料区**只有 owner 有任何角色**,别人一律无角色 —— 隔离在 perm.rs 单点否决,不靠逐个入口设防。
+  kind         text NOT NULL DEFAULT 'team' CHECK (kind IN ('team','materials')),
   -- 归档(原 0002):归档 = 只读封存,不是删除。★排在最后是有意的★——
   -- 老库里这两列是 ALTER ADD COLUMN 加的,PG 只能加在表尾且不支持调列序,
   -- 写在中间会让新旧库列序不同(schema 门禁看得见)。
@@ -70,6 +73,10 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects (owner);
 -- 列表默认只看「活着且没归档」的(原 0002)
 CREATE INDEX IF NOT EXISTS idx_projects_active ON projects (id) WHERE archived_at IS NULL AND deleted_at IS NULL;
+-- ★每人至多一个材料区★:在**库里**堵死,不靠应用层先查后插(那中间有并发窗口)。
+-- ⚠ 必须是**部分唯一索引**(带 WHERE),不能写成 UNIQUE 约束 —— 约束不支持 partial,
+--   而不带 WHERE 的话每人就只能有一个项目了。
+CREATE UNIQUE INDEX idx_proj_materials ON projects (owner) WHERE kind = 'materials' AND deleted_at IS NULL;
 
 -- 项目成员:★只到具体的人,没有「组」这一层(D12)★。
 -- 角色展示名:admin=管理员(副手) / editor=成员 / viewer=只读成员;主持人在 projects.owner 单列。
