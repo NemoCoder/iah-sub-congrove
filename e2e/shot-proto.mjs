@@ -13,7 +13,7 @@ const shot = async (id, name) => {
   console.log('✓', name)
 }
 await shot('cal', '1-日程')
-await shot('new1', '2-新建活动-会议')
+await shot('new1', '2-新建活动-活动')
 await shot('new2', '3-新建活动-读文献')
 await shot('act', '4-我的活动类型')
 await shot('mat', '5-我的活动材料')

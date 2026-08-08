@@ -18,7 +18,7 @@ import { expect, test, type Page } from '@playwright/test'
 // ★AntD 会给「两个汉字」的按钮自动插一个空格★:页面上是「新 建」「取 消」「确 定」「今 天」,
 // 不是「新建」「取消」。第一版 spec 全按我以为的文案写,于是每一个都定位不到 ——
 // 表现是超时 30s,看起来像页面没加载,最难查的那种失败。
-// ★所以这一组的按钮一律用允许空格的正则★。三个字以上不插空格(「创建会议」「发起会议」照常)。
+// ★所以这一组的按钮一律用允许空格的正则★。三个字以上不插空格(「创建活动」「发起活动」照常)。
 const btn = (s: string) => new RegExp(s.split('').join('\\s*'))
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
@@ -26,9 +26,9 @@ test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 const PEER = process.env.E2E_PEER ?? 'liaoruili'
 const stamp = () => String(Date.now()).slice(-8)
 
-/// 点顶部主导航。★用 exact 匹配★：「会议」在页面里到处都是（「发起会议」「公开会议」…），
+/// 点顶部主导航。★用 exact 匹配★：「活动」在页面里到处都是（「发起活动」「公开活动」…），
 /// 模糊匹配会点到别的东西上去——这类失败最难查，因为它看起来像是页面没加载。
-async function nav(page: Page, name: '日程' | '项目' | '会议') {
+async function nav(page: Page, name: '日程' | '项目' | '活动') {
   await page.getByText(name, { exact: true }).first().click()
   await page.waitForTimeout(700)
 }
@@ -37,7 +37,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
   test('★建项目 → 拉人 → 发会 → 在日历上看到它 → 点开看到链接★', async ({ page }) => {
     const tag = stamp()
     const pname = `E2E-验收-项目-${tag}`
-    const mtitle = `E2E-验收-会议-${tag}`
+    const mtitle = `E2E-验收-活动-${tag}`
     const url = `https://meeting.tencent.com/acc-${tag}`
 
     await page.goto('/')
@@ -69,15 +69,15 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await page.getByRole('button', { name: '批量添加' }).click()
     await expect(page.getByText(PEER).first()).toBeVisible({ timeout: 15_000 })
 
-    // ── ③ 发起会议 ──
+    // ── ③ 发起活动 ──
     await nav(page, '日程')
-    await page.getByRole('button', { name: /发起会议/ }).click()
+    await page.getByRole('button', { name: /发起活动/ }).click()
     await page.waitForTimeout(800)
 
     // 占位符照实物抄(e2e/probe.mjs 抓的清单),不凭印象写
     await page.getByPlaceholder('如：8 月第二次组会').fill(mtitle)
     // 线上链接 —— ★这是「按时开会」那一步的落点★：到点了人要从这里点进去
-    await page.getByPlaceholder('腾讯会议 / Zoom 链接').fill(url)
+    await page.getByPlaceholder('腾讯活动 / Zoom 链接').fill(url)
 
     // 时间：默认值可能是空的，明天这个点开一小时
     const start = new Date(Date.now() + 26 * 3600_000)
@@ -93,7 +93,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await page.waitForTimeout(500)
 
     // ★关联项目是必填★——第一版 spec 漏了这一步,表单正确地标红「至少关联一个项目」把我拦住了。
-    // 这条本身就是一次验收:后端的硬约束(会议必须关联项目,材料权限才有来源 D3)在前端有对应提示。
+    // 这条本身就是一次验收:后端的硬约束(活动必须关联项目,材料权限才有来源 D3)在前端有对应提示。
     // ★靠**表单字段 id** 定位★(与 ui.spec.ts 同一路子):AntD 的 Select 把 placeholder
     // 渲染成一个 <span>,点它会撞上「元素找到了但 not stable」——那个 span 被 Select 自己的
     // 交互层盖着。字段 id 来自 Form.Item 的 name,是**我们自己写的**,比任何类名都稳。
@@ -115,7 +115,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
 
-    await page.getByRole('button', { name: '创建会议' }).click()
+    await page.getByRole('button', { name: '创建活动' }).click()
     await page.waitForTimeout(2000)
 
     // ── ④ 日历上看得到 ──
@@ -133,7 +133,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await page.getByText(mtitle).first().click()
     await page.waitForTimeout(1200)
     await expect(page.getByText(url).first(),
-      '★会议详情里必须能看到线上链接★——M1 的流程就断在这一步上过(STORY-MAP 问题 1)').toBeVisible({ timeout: 15_000 })
+      '★活动详情里必须能看到线上链接★——M1 的流程就断在这一步上过(STORY-MAP 问题 1)').toBeVisible({ timeout: 15_000 })
 
     // 参会人卡在**右栏**（原型 meet 视图；2026-08-07 用户第二次指出我放错了位置）
     await expect(page.getByText(/参会人/).first()).toBeVisible()
@@ -141,10 +141,10 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await expect(page.getByText(/想旁听的人/).first()).toBeVisible()
   })
 
-  test('会议页的列表里也找得到（D7:两个入口）', async ({ page }) => {
+  test('活动页的列表里也找得到（D7:两个入口）', async ({ page }) => {
     await page.goto('/')
-    await nav(page, '会议')
-    // 会议页与日程页是同一批会的两个视图；列表为空只可能是「真没有会」
-    await expect(page.getByText(/即将进行|没有会议/).first()).toBeVisible({ timeout: 20_000 })
+    await nav(page, '活动')
+    // 活动页与日程页是同一批会的两个视图；列表为空只可能是「真没有会」
+    await expect(page.getByText(/即将进行|没有活动/).first()).toBeVisible({ timeout: 20_000 })
   })
 })

@@ -1,4 +1,4 @@
-// 会议模块的核心流程 —— 从 `iah_sub/congrove/tests/api_cases.rs` 的用例表翻过来。
+// 活动模块的核心流程 —— 从 `iah_sub/congrove/tests/api_cases.rs` 的用例表翻过来。
 //
 // ★挑的是那些标了 ★ 的规则★:它们要么是需求文档里被反复推翻后定下的(D1/D2/D3/D8/D9),
 // 要么是「写错了也不会报错、只会静静地泄露或误判」的那种 —— 单元测试覆不到,只能端到端打。
@@ -17,11 +17,11 @@ async function newProject(req: APIRequestContext, name: string, visibility: 'pub
   return (await r.json()).id as number
 }
 
-async function newMeeting(req: APIRequestContext, projectIds: number[], extra: Record<string, unknown> = {}) {
+async function newActivity(req: APIRequestContext, projectIds: number[], extra: Record<string, unknown> = {}) {
   const now = Date.now()
-  const r = await req.post('/api/meetings', {
+  const r = await req.post('/api/activities', {
     data: {
-      title: `E2E 会议 ${now}`,
+      title: `E2E 活动 ${now}`,
       recorder: 'e2e',
       starts_at: new Date(now + 3600_000).toISOString(),
       ends_at: new Date(now + 7200_000).toISOString(),
@@ -32,9 +32,9 @@ async function newMeeting(req: APIRequestContext, projectIds: number[], extra: R
   return r
 }
 
-test.describe('会议:建与关联项目', () => {
-  test('建会议必须关联至少一个项目', async ({ request }) => {
-    const r = await newMeeting(request, [])
+test.describe('活动:建与关联项目', () => {
+  test('建活动必须关联至少一个项目', async ({ request }) => {
+    const r = await newActivity(request, [])
     // ★材料权限来自项目成员身份,没有项目就没人管得了它的材料★(D3)
     expect(r.status()).toBe(400)
     expect(await r.text()).toContain('至少一个项目')
@@ -42,17 +42,17 @@ test.describe('会议:建与关联项目', () => {
 
   test('不填记录员不让建', async ({ request }) => {
     const pid = await newProject(request, `E2E-记录员-${Date.now()}`)
-    const r = await newMeeting(request, [pid], { recorder: '' })
+    const r = await newActivity(request, [pid], { recorder: '' })
     // ★纪要由记录员按模板整理,AI 转写只是原材料★(D14)
     expect(r.status()).toBe(400)
   })
 
-  test('建会议后发起人自动 accepted、记录员自动进名单', async ({ request }) => {
+  test('建活动后发起人自动 accepted、记录员自动进名单', async ({ request }) => {
     const pid = await newProject(request, `E2E-名单-${Date.now()}`)
-    const r = await newMeeting(request, [pid])
+    const r = await newActivity(request, [pid])
     expect(r.status()).toBe(200)
     const { id } = await r.json()
-    const d = await (await request.get(`/api/meetings/${id}`)).json()
+    const d = await (await request.get(`/api/activities/${id}`)).json()
     const me = d.participants.find((p: { username: string }) => p.username === 'e2e')
     // 他自己定的时间,不该再要求他答复一次
     expect(me?.status).toBe('accepted')
@@ -61,24 +61,24 @@ test.describe('会议:建与关联项目', () => {
   test('★多项目关联要逐个验权★:有一个没权限就整体拒绝', async ({ request }) => {
     const mine = await newProject(request, `E2E-多项目-${Date.now()}`)
     // 借一个不存在的项目 id 冒充「我没权限的项目」——效果等价(require_role 对无授权回 404)
-    const r = await newMeeting(request, [mine, 999_999_999])
+    const r = await newActivity(request, [mine, 999_999_999])
     // ★只验第一个的话,漏验的那个就是越权入口★(D4)
     expect([400, 403, 404]).toContain(r.status())
   })
 })
 
-test.describe('会议:答复与建议改期', () => {
+test.describe('活动:答复与建议改期', () => {
   test('接受邀请', async ({ request }) => {
     const pid = await newProject(request, `E2E-答复-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    const r = await request.post(`/api/meetings/${id}/respond`, { data: { status: 'accepted' } })
+    const { id } = await (await newActivity(request, [pid])).json()
+    const r = await request.post(`/api/activities/${id}/respond`, { data: { status: 'accepted' } })
     expect(r.status()).toBe(200)
   })
 
   test('★建议改期必须带具体的替代时间★', async ({ request }) => {
     const pid = await newProject(request, `E2E-改期-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    const r = await request.post(`/api/meetings/${id}/respond`, { data: { status: 'counter' } })
+    const { id } = await (await newActivity(request, [pid])).json()
+    const r = await request.post(`/api/activities/${id}/respond`, { data: { status: 'counter' } })
     // ★只说「我不行」等于把问题丢回给发起人★——私密项目的日程对发起人完全隐形,
     // 他根本不知道我忙,counter 是这个冲突唯一的结构化出口(D2)
     expect(r.status()).toBe(400)
@@ -86,49 +86,49 @@ test.describe('会议:答复与建议改期', () => {
 
   test('乱填答复状态要被拒', async ({ request }) => {
     const pid = await newProject(request, `E2E-乱答-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    const r = await request.post(`/api/meetings/${id}/respond`, { data: { status: 'whatever' } })
+    const { id } = await (await newActivity(request, [pid])).json()
+    const r = await request.post(`/api/activities/${id}/respond`, { data: { status: 'whatever' } })
     expect(r.status()).toBe(400)
   })
 
-  test('改了会议时间,已有答复清回 pending', async ({ request }) => {
+  test('改了活动时间,已有答复清回 pending', async ({ request }) => {
     const pid = await newProject(request, `E2E-改期清答-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
+    const { id } = await (await newActivity(request, [pid])).json()
     // 先接受
-    await request.post(`/api/meetings/${id}/respond`, { data: { status: 'accepted' } })
+    await request.post(`/api/activities/${id}/respond`, { data: { status: 'accepted' } })
     // 发起人改时间
     const t = Date.now() + 86400_000
-    const u = await request.put(`/api/meetings/${id}`, {
+    const u = await request.put(`/api/activities/${id}`, {
       data: { starts_at: new Date(t).toISOString(), ends_at: new Date(t + 3600_000).toISOString() },
     })
     expect(u.status()).toBe(200)
     // ⚠ 改时间的人是发起人自己,按实现他**不被**清回 pending(他知道自己改了什么)。
     //   这条用例验的是接口不报错 + 时间确实改了;「别人被清回 pending」要两个身份才测得了,
     //   ★E2E 通道只有 e2e 一个身份,测不了多人场景★——记在这里,别以为漏了。
-    const d = await (await request.get(`/api/meetings/${id}`)).json()
-    expect(new Date(d.meeting.starts_at).getTime()).toBe(t)
+    const d = await (await request.get(`/api/activities/${id}`)).json()
+    expect(new Date(d.activity.starts_at).getTime()).toBe(t)
   })
 })
 
-test.describe('会议:取消与留档', () => {
+test.describe('活动:取消与留档', () => {
   test('★取消不是删除★', async ({ request }) => {
     const pid = await newProject(request, `E2E-取消-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    expect((await request.delete(`/api/meetings/${id}`)).status()).toBe(200)
+    const { id } = await (await newActivity(request, [pid])).json()
+    expect((await request.delete(`/api/activities/${id}`)).status()).toBe(200)
     // 谁邀了谁、谁拒了是协作事实,真删掉之后没人说得清当时发生过什么
-    const d = await request.get(`/api/meetings/${id}`)
+    const d = await request.get(`/api/activities/${id}`)
     expect(d.status()).toBe(200)
-    expect((await d.json()).meeting.status).toBe('canceled')
+    expect((await d.json()).activity.status).toBe('canceled')
   })
 
   test('取消后不再产生忙闲', async ({ request }) => {
     const pid = await newProject(request, `E2E-取消忙闲-${Date.now()}`, 'public')
-    const { id } = await (await newMeeting(request, [pid])).json()
+    const { id } = await (await newActivity(request, [pid])).json()
     const from = new Date(Date.now() - 3600_000).toISOString()
     const to = new Date(Date.now() + 86400_000).toISOString()
     const before = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(before.busy.e2e.length).toBeGreaterThan(0)
-    await request.delete(`/api/meetings/${id}`)
+    await request.delete(`/api/activities/${id}`)
     const after = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(after.busy.e2e.length).toBeLessThan(before.busy.e2e.length)
   })
@@ -142,7 +142,7 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
 
   test('公开项目的会产生忙闲,且★只有时间没有内容★', async ({ request }) => {
     const pid = await newProject(request, `E2E-公开忙闲-${Date.now()}`, 'public')
-    await newMeeting(request, [pid], { title: '这个标题不该出现在忙闲里' })
+    await newActivity(request, [pid], { title: '这个标题不该出现在忙闲里' })
     const { from, to } = window_()
     const r = await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)
     expect(r.status()).toBe(200)
@@ -156,7 +156,7 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
     const { from, to } = window_()
     const before = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     const pid = await newProject(request, `E2E-私密忙闲-${Date.now()}`, 'private')
-    const m = await newMeeting(request, [pid])
+    const m = await newActivity(request, [pid])
     expect(m.status()).toBe(200)
     const after = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     // 私事连「我忙」这件事都不该暴露 —— 别人看到的是「空闲」。
@@ -167,11 +167,11 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
   test('★列表要正确标出私密/公开★(is_private 必须由 SQL 算出来)', async ({ request }) => {
     const priv = await newProject(request, `E2E-标色私密-${Date.now()}`, 'private')
     const pub = await newProject(request, `E2E-标色公开-${Date.now()}`, 'public')
-    const { id: mPriv } = await (await newMeeting(request, [priv])).json()
-    const { id: mPub } = await (await newMeeting(request, [pub])).json()
+    const { id: mPriv } = await (await newActivity(request, [priv])).json()
+    const { id: mPub } = await (await newActivity(request, [pub])).json()
     const from = new Date(Date.now() - 3600_000).toISOString()
     const to = new Date(Date.now() + 86400_000).toISOString()
-    const list = await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()
+    const list = await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()
     const f = (id: number) => list.find((m: { id: number }) => m.id === id)
     // ★这条防的是一个静默 bug★:字段在结构体里声明了、SQL 却没算,
     // #[sqlx(default)] 会安静地给 false —— 于是私密项目的会在日历上显示成公开色,
@@ -189,26 +189,26 @@ test.describe('忙闲:按项目可见性分流(D1)', () => {
   })
 })
 
-test.describe('会议讨论区(D13)', () => {
+test.describe('活动讨论区(D13)', () => {
   test('公开发言与读取', async ({ request }) => {
     const pid = await newProject(request, `E2E-讨论-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    const s = await request.post(`/api/meetings/${id}/messages`, { data: { body: '我可能晚十分钟' } })
+    const { id } = await (await newActivity(request, [pid])).json()
+    const s = await request.post(`/api/activities/${id}/messages`, { data: { body: '我可能晚十分钟' } })
     expect(s.status()).toBe(200)
-    const list = await (await request.get(`/api/meetings/${id}/messages`)).json()
+    const list = await (await request.get(`/api/activities/${id}/messages`)).json()
     expect(list.some((m: { body: string }) => m.body === '我可能晚十分钟')).toBe(true)
   })
 
   test('空内容不让发', async ({ request }) => {
     const pid = await newProject(request, `E2E-空发言-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    expect((await request.post(`/api/meetings/${id}/messages`, { data: { body: '   ' } })).status()).toBe(400)
+    const { id } = await (await newActivity(request, [pid])).json()
+    expect((await request.post(`/api/activities/${id}/messages`, { data: { body: '   ' } })).status()).toBe(400)
   })
 
   test('★私聊只能发给发起人或记录员★', async ({ request }) => {
     const pid = await newProject(request, `E2E-私聊-${Date.now()}`)
-    const { id } = await (await newMeeting(request, [pid])).json()
-    const r = await request.post(`/api/meetings/${id}/messages`, {
+    const { id } = await (await newActivity(request, [pid])).json()
+    const r = await request.post(`/api/activities/${id}/messages`, {
       data: { channel: 'private', peer: 'somebody-else', body: '私聊' },
     })
     // ★不做任意点对点,否则这里会长成一个 IM★(D13)
@@ -216,11 +216,11 @@ test.describe('会议讨论区(D13)', () => {
   })
 })
 
-test.describe('会议可见性(D9)', () => {
-  test('看不见的会议回 404 而不是 403', async ({ request }) => {
+test.describe('活动可见性(D9)', () => {
+  test('看不见的活动回 404 而不是 403', async ({ request }) => {
     // 用一个几乎不可能存在的 id:未授权与不存在必须**同一种回应**,
     // 否则按 id 爬一遍就成了存在性预言机。
-    const r = await request.get('/api/meetings/999999999')
+    const r = await request.get('/api/activities/999999999')
     expect(r.status()).toBe(404)
   })
 })
@@ -241,9 +241,9 @@ test.describe('项目归档(D17)', () => {
     // ★写:409 而不是 403★ —— 语义是「项目结束了」不是「你没权限」
     const w = await request.post(`/api/projects/${pid}/items`, { data: { name: '归档后', kind: 'folder' } })
     expect(w.status(), '归档后还能往里写 = 只读没生效').toBe(409)
-    // 建会议同样被挡(它也走 require_role(Editor))
-    const m = await newMeeting(request, [pid])
-    expect(m.status(), '归档项目还能建会议').toBe(409)
+    // 建活动同样被挡(它也走 require_role(Editor))
+    const m = await newActivity(request, [pid])
+    expect(m.status(), '归档项目还能建活动').toBe(409)
 
     // ★读:仍然 200★ —— 归档就是为了以后还能查,查不到就等于删了
     expect((await request.get(`/api/projects/${pid}/items`)).status(), '归档后读不到了 = 存档失去意义').toBe(200)
@@ -262,12 +262,12 @@ test.describe('项目归档(D17)', () => {
 
   test('★归档项目的会不进日历、不产生忙闲★', async ({ request }) => {
     const pid = await newProject(request, `E2E-归档日历-${Date.now()}`, 'public')
-    const { id: mid } = await (await newMeeting(request, [pid])).json()
+    const { id: mid } = await (await newActivity(request, [pid])).json()
     const from = new Date(Date.now() - 3600_000).toISOString()
     const to = new Date(Date.now() + 86400_000).toISOString()
 
     // 归档前:会在日历里,也产生忙闲
-    const before = await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()
+    const before = await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()
     expect(before.some((x: { id: number }) => x.id === mid)).toBe(true)
     const fbBefore = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(fbBefore.busy.e2e.length).toBeGreaterThan(0)
@@ -275,14 +275,14 @@ test.describe('项目归档(D17)', () => {
     await archive(request, pid)
 
     // 归档后:日历里没有了 —— 日历回答「接下来要做什么」,不是考古现场
-    const after = await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()
+    const after = await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()
     expect(after.some((x: { id: number }) => x.id === mid), '归档项目的会仍占着日历').toBe(false)
-    // 忙闲也没有了 —— 否则历史会议会让人永远约不到你
+    // 忙闲也没有了 —— 否则历史活动会让人永远约不到你
     const fbAfter = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(fbAfter.busy.e2e.length, '归档项目仍在产生忙闲').toBeLessThan(fbBefore.busy.e2e.length)
 
-    // ★但会议本身还查得到★:历史归历史,进项目页/直接开 id 都能看
-    expect((await request.get(`/api/meetings/${mid}`)).status(), '归档后历史会议查不到了').toBe(200)
+    // ★但活动本身还查得到★:历史归历史,进项目页/直接开 id 都能看
+    expect((await request.get(`/api/activities/${mid}`)).status(), '归档后历史活动查不到了').toBe(200)
   })
 
   test('项目列表带出归档状态,且归档的排在后面', async ({ request }) => {

@@ -70,8 +70,8 @@ test.describe('多身份通道自身', () => {
 
 // ════════ ★v0.4.39 修的旁听者提权 —— 终于能端到端验了★ ════════
 //
-// 缺陷：`observe`（自助旁听）往 meeting_participants 插一行 `kind='observer'`，
-// 而 `perm.rs::meeting_view` 与 `meetings.rs::respond` 两处判定都不看 `kind`
+// 缺陷：`observe`（自助旁听）往 activity_participants 插一行 `kind='observer'`，
+// 而 `perm.rs::activity_view` 与 `activities.rs::respond` 两处判定都不看 `kind`
 // → 点一下「旁听」就从 Observer 提权成 Inside，拿到参会人名单与讨论区（D9 明写都不给），
 //   还能提交 `counter`（建议改期）—— 而 counter 是**唯一会给发起人发站内信**的分支。
 //
@@ -89,7 +89,7 @@ test.describe('权限·旁听者不得提权', () => {
       data: { name: `E2E-旁听-项目-${T}`, visibility: 'public' },
     })).json()).id
     const now = Date.now()
-    const r = await organizer.post('/api/meetings', {
+    const r = await organizer.post('/api/activities', {
       data: {
         title: `E2E-旁听-公开会-${T}`, recorder: 'e2e-host', project_ids: [pid], visibility: 'public',
         starts_at: new Date(now + 3600e3).toISOString(), ends_at: new Date(now + 7200e3).toISOString(),
@@ -102,7 +102,7 @@ test.describe('权限·旁听者不得提权', () => {
   test.afterAll(async () => { await Promise.all([organizer.dispose(), outsider.dispose()]) })
 
   test('旁听前:路人只看得到元信息,看不到名单与讨论区', async () => {
-    const d = await outsider.get(`/api/meetings/${mid}`)
+    const d = await outsider.get(`/api/activities/${mid}`)
     expect(d.status(), '公开活动路人看得见').toBe(200)
     const body = await d.json()
     expect(body.title).toContain('E2E-旁听-公开会')
@@ -111,21 +111,21 @@ test.describe('权限·旁听者不得提权', () => {
   })
 
   test('★点了旁听之后**仍然**看不到名单与讨论区★（这就是被修掉的提权）', async () => {
-    const o = await outsider.post(`/api/meetings/${mid}/observe`, { data: {} })
+    const o = await outsider.post(`/api/activities/${mid}/observe`, { data: {} })
     expect(o.status(), await o.text()).toBe(200)
 
     // ★缺陷版在这里会返回完整名单★：observe 插的 kind='observer' 行让他被判成 Inside
-    const body = await (await outsider.get(`/api/meetings/${mid}`)).json()
+    const body = await (await outsider.get(`/api/activities/${mid}`)).json()
     expect(body.participants ?? null, '★旁听之后名单仍然不给★').toBeNull()
 
     // 讨论区同理（Inside 才给）
-    const msgs = await outsider.get(`/api/meetings/${mid}/messages`)
+    const msgs = await outsider.get(`/api/activities/${mid}/messages`)
     expect([403, 404], '★讨论区不给旁听者★').toContain(msgs.status())
   })
 
   test('★旁听者不能给自己投一票,更不能借 counter 给发起人发站内信★', async () => {
     const before = (await (await organizer.get('/api/me/unread')).json()) as unknown[]
-    const r = await outsider.post(`/api/meetings/${mid}/respond`, {
+    const r = await outsider.post(`/api/activities/${mid}/respond`, {
       data: {
         status: 'counter',
         counter_starts_at: new Date(Date.now() + 9 * 3600e3).toISOString(),
@@ -141,14 +141,14 @@ test.describe('权限·旁听者不得提权', () => {
 
   test('正式参会人照常能看名单、能答复（★证明上面拦的是旁听者,不是把所有人都拦了★）', async () => {
     test.skip(!PEER, '需要 IAH_E2E_PEER(平台上真实存在的第二个账号) —— 拉人要过 Keycloak 校验')
-    const inv = await organizer.put(`/api/meetings/${mid}/participants`, {
+    const inv = await organizer.put(`/api/activities/${mid}/participants`, {
       data: { usernames: [PEER], kind: 'attendee' },
     })
     expect(inv.status(), await inv.text()).toBe(200)
 
-    const body = await (await outsider.get(`/api/meetings/${mid}`)).json()
+    const body = await (await outsider.get(`/api/activities/${mid}`)).json()
     expect(body.participants, '★被正式邀请后名单就给了★').toBeTruthy()
-    expect((await outsider.post(`/api/meetings/${mid}/respond`, { data: { status: 'accepted' } })).status()).toBe(200)
+    expect((await outsider.post(`/api/activities/${mid}/respond`, { data: { status: 'accepted' } })).status()).toBe(200)
   })
 })
 

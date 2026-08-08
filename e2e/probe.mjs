@@ -22,5 +22,5 @@ await page.getByText('项目', { exact: true }).first().click(); await dump('项
 await page.getByRole('button', { name: /新\s*建/ }).first().click(); await dump('新建项目弹窗')
 await page.keyboard.press('Escape')
 await page.getByText('日程', { exact: true }).first().click(); await page.waitForTimeout(600)
-await page.getByRole('button', { name: /发起会议/ }).click(); await dump('发起会议页')
+await page.getByRole('button', { name: /发起活动/ }).click(); await dump('发起活动页')
 await b.close()

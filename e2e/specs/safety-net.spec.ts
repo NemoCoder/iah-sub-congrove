@@ -3,9 +3,9 @@
 // 起因：v0.5 的四路同行评审量出来一个数字——现有 50 条 E2E 只覆盖 84 个接口里的 **28 个（33%）**，
 // 而**完全没有覆盖**的恰恰是 M0 要动的那几块：
 //
-//   · 内容 items（17 个接口）—— `items.meeting_id → activity_id` 的改名点
+//   · 内容 items（17 个接口）—— `items.activity_id → activity_id` 的改名点
 //   · 直传 media（5 个）—— 配额预检就在这里
-//   · 公开分享（8 个）—— `share.rs` 里 JOIN meetings 取会议级 no_share
+//   · 公开分享（8 个）—— `share.rs` 里 JOIN activities 取活动级 no_share
 //   · 超管（4 个）—— 配额接口要被整个替换
 //
 // ★「行为不变」这个门禁承担不起它现在被赋予的分量★：配额是「钱」、禁下载禁分享是「权」，
@@ -44,11 +44,11 @@ async function usedBytes(req: APIRequestContext, pid: number) {
   return row!.used_bytes
 }
 
-async function newMeeting(req: APIRequestContext, pid: number, extra: Record<string, unknown> = {}) {
+async function newActivity(req: APIRequestContext, pid: number, extra: Record<string, unknown> = {}) {
   const now = Date.now()
-  const r = await req.post('/api/meetings', {
+  const r = await req.post('/api/activities', {
     data: {
-      title: `E2E-网-会议-${tag()}`, recorder: 'e2e', project_ids: [pid],
+      title: `E2E-网-活动-${tag()}`, recorder: 'e2e', project_ids: [pid],
       starts_at: new Date(now + 3600_000).toISOString(),
       ends_at: new Date(now + 7200_000).toISOString(),
       ...extra,
@@ -135,25 +135,25 @@ test.describe('安全网·配额', () => {
 // ════════ ③ 材料策略：禁下载 / 禁分享（「权」路径）════════
 
 test.describe('安全网·材料策略', () => {
-  test('★会议设了禁下载,材料就下不了(在线预览不拦)★', async ({ request }) => {
+  test('★活动设了禁下载,材料就下不了(在线预览不拦)★', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-禁下载-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?meeting_id=${mid}`)).json()).id as number
+    const mid = await newActivity(request, pid)
+    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?activity_id=${mid}`)).json()).id as number
     expect((await request.get(`/api/items/${iid}/download`)).status(), '设之前下得到').toBe(200)
 
-    expect((await request.put(`/api/meetings/${mid}`, { data: { no_download: true } })).status()).toBe(200)
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_download: true } })).status()).toBe(200)
     expect((await request.get(`/api/items/${iid}/download`)).status(), '★设之后下不了★').toBe(400)
-    // 判据是 items JOIN meetings —— 改名时这条 JOIN 一旦写错，闸就静默失效
+    // 判据是 items JOIN activities —— 改名时这条 JOIN 一旦写错，闸就静默失效
     expect((await request.get(`/api/items/${iid}`)).status(), '详情仍可看').toBe(200)
   })
 
-  test('★会议设了禁分享,建不了公开链接★', async ({ request }) => {
+  test('★活动设了禁分享,建不了公开链接★', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-禁分享-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?meeting_id=${mid}`)).json()).id as number
+    const mid = await newActivity(request, pid)
+    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?activity_id=${mid}`)).json()).id as number
     expect((await request.post(`/api/items/${iid}/shares`, { data: {} })).status(), '设之前建得了').toBe(200)
 
-    expect((await request.put(`/api/meetings/${mid}`, { data: { no_share: true } })).status()).toBe(200)
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_share: true } })).status()).toBe(200)
     const r = await request.post(`/api/items/${iid}/shares`, { data: {} })
     expect(r.status(), '★设之后后端必须拒★——前端隐藏不是安全边界').toBe(400)
   })
@@ -231,32 +231,32 @@ test.describe('安全网·公开分享', () => {
   })
 })
 
-// ════════ ⑤ 会议材料区与纪要（items.meeting_id 的改名点）════════
+// ════════ ⑤ 活动材料区与纪要（items.activity_id 的改名点）════════
 
-test.describe('安全网·会议材料与纪要', () => {
-  test('带 meeting_id 传的材料出现在会议材料区,录制单列', async ({ request }) => {
-    const pid = await newProject(request, `E2E-网-会议材料-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    await upload(request, pid, 'doc.txt', 'a', `?meeting_id=${mid}`)
-    await upload(request, pid, 'rec.txt', 'b', `?meeting_id=${mid}&is_recording=true`)
+test.describe('安全网·活动材料与纪要', () => {
+  test('带 activity_id 传的材料出现在活动材料区,录制单列', async ({ request }) => {
+    const pid = await newProject(request, `E2E-网-活动材料-${tag()}`)
+    const mid = await newActivity(request, pid)
+    await upload(request, pid, 'doc.txt', 'a', `?activity_id=${mid}`)
+    await upload(request, pid, 'rec.txt', 'b', `?activity_id=${mid}&is_recording=true`)
 
-    const items = await (await request.get(`/api/meetings/${mid}/items`)).json() as { is_recording: boolean }[]
+    const items = await (await request.get(`/api/activities/${mid}/items`)).json() as { is_recording: boolean }[]
     expect(items.length).toBe(2)
-    // ★录制 ≠ 材料★（D5）：只有录制会被转写、并作为会议时长依据
+    // ★录制 ≠ 材料★（D5）：只有录制会被转写、并作为活动时长依据
     expect(items.filter((i) => i.is_recording).length).toBe(1)
   })
 
   test('纪要:没写时回空而不是 404,写了能读回来', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-纪要-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const empty = await request.get(`/api/meetings/${mid}/minutes`)
+    const mid = await newActivity(request, pid)
+    const empty = await request.get(`/api/activities/${mid}/minutes`)
     expect(empty.status(), '★前端不该为「还没写」判 404★').toBe(200)
 
     const text = `决议-${tag()}`
-    expect((await request.put(`/api/meetings/${mid}/minutes`, {
+    expect((await request.put(`/api/activities/${mid}/minutes`, {
       data: { content_md: text, status: 'draft' },
     })).status()).toBe(200)
-    const got = await (await request.get(`/api/meetings/${mid}/minutes`)).json()
+    const got = await (await request.get(`/api/activities/${mid}/minutes`)).json()
     expect(got.minutes?.content_md).toBe(text)
   })
 })
@@ -289,8 +289,8 @@ test.describe('安全网·is_private 语义', () => {
     const to = new Date(Date.now() + 30 * 864e5).toISOString()
     for (const c of COMBOS) {
       const pid = await newProject(request, `E2E-网-isp-${c.proj}-${tag()}`, { visibility: c.proj })
-      const mid = await newMeeting(request, pid, { visibility: c.act })
-      const list = (await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()) as
+      const mid = await newActivity(request, pid, { visibility: c.act })
+      const list = (await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()) as
         { id: number; is_private: boolean }[]
       const row = list.find((m) => m.id === mid)
       expect(row, `活动 ${mid} 应当在日历里`).toBeTruthy()
