@@ -16,12 +16,24 @@
 ⚠ `ci.yml` 自己写着「前提：在 Gitea 仓库设置里把本检查设为分支保护的『必需状态检查』」——
 **门禁会跑 ≠ 门禁挡得住合并**。开工前给 `feat/v0.5-m0` 也配上分支保护（liaoruili 做，仓库设置）。
 
+## ★2026-08-08 改过一次拆分：门禁拓出三处耦合★
+
+原计划把改名拆成「M0-1 改 schema / M0-2 改代码」。**不成立** —— PREPARE 闸把两者绑死了：
+M0-1 部署后 DB 里是 `activities`，而 `src/` 里还全写着 `meetings`，全量 PREPARE 当场红。
+★这是门禁在告诉我们 PR 拆分错了，不是门禁有问题。★ 三处耦合：
+
+| # | 耦合 | 处置 |
+|---|---|---|
+| ① | 表名改动 ⇄ 代码里的 SQL | 改名必须 **schema + 后端同一个 PR**（合进 M0-2） |
+| ② | 删 `projects.visibility` ⇄ `is_private` | 现定义就是从项目 visibility 推的（`NOT EXISTS(关联项目 WHERE visibility='public')`），列一删语义无处可依 → PRD J4 换定义**必须同 PR**（进 M0-1） |
+| ③ | 删 `projects.visibility` ⇄ `freebusy` 判据 | 同上；而替代品 `activities.busy` 原计划在 M0-2 才有 → ★`busy` 列提前到 M0-1★（默认 true，与旧行为里的「会议」一致；M0-2 起由类型的 `busy_default` 定初值） |
+
 ## 七个 PR
 
 | PR | 内容 | 门禁 |
 |---|---|---|
-| **M0-1** | 重写 `0001_init.sql`（全表 / 新列 / 新索引 / 把 0002~0007 的产物迁进来）＋删 `migrations/0002~0007` 文件＋★删 `projects.visibility` 并同 PR 摘掉受影响的 SQL★ | `schema-check.sh check`（差异逐字节等于 `schema/expected.diff`）＋`sql-prepare-check.py`＋`no-meeting.sh --migrations`＋clippy/test/typecheck |
-| **M0-2** | 后端非路由改名＋`notified_at` 读写规则（ADR-0003）＋`recorder` 空值守卫＋`effective_role` 的 materials 单点否决（ADR-0005） | `sql-prepare-check.py`＋`no-meeting.sh --backend-core`＋clippy/test（含 `merge` 吃掉 BLOCK、`require_owner` 被短路这两条的回归单测） |
+| **M0-1** | 把 0002~0007 的产物合进 `0001_init.sql` ＋删那六个文件 ＋★删 `projects.visibility`★（连带 `is_private` 换定义、`freebusy` 改判据、新增 `meetings.busy`）。`quota_bytes` 留到 M0-6；`activity_types`/`user_prefs`/`user_quota` **跟各自的消费者走，不提前建空表**（提前建也验不了什么） | ★`schema-check.sh sim-diff`★（事务内建库，差异只剩有意的）＋★`sql-prepare-check.py --pre <新 schema>`★＋`api-check.sh`＋clippy/test/typecheck。⚠ **没有 `--migrations`**：本 PR 不改表名，那道闸留给 M0-2 |
+| **M0-2** | ★改名：`0001` 的表名 + 后端代码**同一个 PR**★（见上面的耦合①）＋原「后端非路由改名」的其余部分＋`notified_at` 读写规则（ADR-0003）＋`recorder` 空值守卫＋`effective_role` 的 materials 单点否决（ADR-0005） | `sql-prepare-check.py`＋`no-meeting.sh --backend-core`＋clippy/test（含 `merge` 吃掉 BLOCK、`require_owner` 被短路这两条的回归单测） |
 | **M0-3** | 路由与清单侧：路径改名＋`apidoc.rs`＋`api_cases.rs`＋`activity_types` 用起来＋能力位收口 | ★`api-check.sh check`（19 条 breaking 逐条声明）★＋`cargo test` 的清单比对＋`no-meeting.sh --backend-all` |
 | **M0-4** | 前端改名＋类型下拉＋表单按能力位显隐 | `pnpm typecheck`/`pnpm test`＋`no-meeting.sh --frontend`＋★对着 `prototype-v0.5.html` **逐视图并排截图**作为 PR 附件★ |
 | **M0-5** | ★首次把特性分支部到 dev★（配合 ADR-0001 的四步清库）＋跑 70 条 E2E＋采 golden 后像 | E2E 全绿（人工）＋`golden-diff.mjs` 差异逐字节等于 `e2e/golden/expected.diff` |
@@ -38,6 +50,19 @@
 | ① | `projects.quota_bytes`：M0-1 删列、M0-6 才改代码 → 中间项目列表/建项目/上传全 500，★而 M0-5 正要拿这个分支部到 dev 跑 E2E★ | **M0-1 保留这一列，M0-6 再删**（按 ADR-0001，`0001` 随时可改，零成本） |
 | ② | `projects.visibility` | M0-1 删列 **+ 同 PR 摘掉受影响的 SQL**，不留断裂。影响面由 `sql-prepare-check.py --pre` 穷举，不手数 |
 | ③ | `activities.type_id` 是 NOT NULL 无默认，而 `POST` 要到 M0-3 才接受 `type_id` | M0-2 里给 create 临时填「会议」预置类型的 id，M0-3 换成入参。hermetic 的 `cargo test` 看不见它，E2E 要等 M0-5 |
+
+## 未部署时怎么过闸（M0-1~M0-4 都适用）
+
+特性分支的 schema 还没部到 dev，所以打**现库**的两道闸必然对不上。用事务内模拟：
+
+```bash
+scripts/schema-check.sh sim-diff migrations/0001_init.sql          # 新 schema vs 冻结基线
+scripts/sql-prepare-check.py --pre <(printf 'SET client_min_messages=warning;\nDROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\n\\i migrations/0001_init.sql\n')
+```
+
+两条都在 `BEGIN…ROLLBACK` 里跑，对库零影响（实测跑完 `check` 仍与基线一致）。
+★`schema/expected.diff` 到 **M0-5 真部署那次**才冻★ —— 提前冻会让「声明了却没发生」这道
+正确的红灯一直亮到部署为止，反而训练人忽略它。
 
 ## 门禁的两条使用纪律
 

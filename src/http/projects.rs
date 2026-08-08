@@ -128,9 +128,6 @@ pub struct ProjectIn {
     /// 转写术语表:Some 才更新,空字符串 = 清空。
     #[serde(default)]
     pub hotwords: Option<String>,
-    /// 可见性 public/private(D1)。★只影响忙闲★,与资料可见性无关。
-    #[serde(default)]
-    pub visibility: Option<String>,
     /// 禁止对外分享。★开启时连带撤销本项目已有的公开链接★,否则这个开关是空的(⑨.2)。
     #[serde(default)]
     pub no_share: Option<bool>,
@@ -156,12 +153,11 @@ pub async fn create(
     // ★建者自动成为主持人(owner)且是 admin 成员★(D0)。
     // owner 是项目上的字段,admin 是成员表里的角色,两者都要写——owner 不进成员表就进不了自己的项目。
     let pid: i64 = sqlx::query_scalar(
-        "INSERT INTO projects (name, description, visibility, owner, created_by)
-         VALUES ($1,$2,COALESCE($4,'public'),$3,$3) RETURNING id")
+        "INSERT INTO projects (name, description, owner, created_by)
+         VALUES ($1,$2,$3,$3) RETURNING id")
         .bind(name)
         .bind(&input.description)
         .bind(username)
-        .bind(input.visibility.as_deref())
         .fetch_one(&mut *tx)
         .await?;
     sqlx::query("INSERT INTO project_members (project_id, username, role, added_by) VALUES ($1,$2,'admin',$2)")
@@ -210,21 +206,12 @@ pub async fn update(
     Json(input): Json<ProjectIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
-    // ★改可见性只有主持人能做★(D0):它决定本项目的会议要不要占成员的忙闲,影响面超出单个项目。
-    if input.visibility.is_some() {
-        let v = input.visibility.as_deref().unwrap_or("");
-        if v != "public" && v != "private" {
-            return Err(AppError::BadRequest("visibility 必须是 public 或 private".into()));
-        }
-        crate::perm::require_owner(&state.pool, &id, pid).await?;
-    }
     let mut tx = state.pool.begin().await?;
     let n = sqlx::query(
         "UPDATE projects SET name = $1, description = $2,
             no_download = COALESCE($3, no_download),
             hotwords    = COALESCE($5, hotwords),
-            visibility  = COALESCE($6, visibility),
-            no_share    = COALESCE($7, no_share)
+            no_share    = COALESCE($6, no_share)
           WHERE id = $4 AND deleted_at IS NULL")
         .bind(input.name.trim())
         .bind(&input.description)
@@ -232,7 +219,6 @@ pub async fn update(
         .bind(pid)
         // 术语表规范化:空白/换行统一成单空格(平台契约是空格分隔),顺手去重留原序。
         .bind(input.hotwords.as_deref().map(normalize_hotwords))
-        .bind(input.visibility.as_deref())
         .bind(input.no_share)
         .execute(&mut *tx)
         .await?

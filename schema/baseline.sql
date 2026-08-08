@@ -1,11 +1,3 @@
-TABLE _sqlx_migrations
-  COL   1 version                bigint                         NOT NULL
-  COL   2 description            text                           NOT NULL
-  COL   3 installed_on           timestamp with time zone       NOT NULL DEFAULT now()
-  COL   4 success                boolean                        NOT NULL
-  COL   5 checksum               bytea                          NOT NULL
-  COL   6 execution_time         bigint                         NOT NULL
-  CON _sqlx_migrations_pkey              PRIMARY KEY (version)
 TABLE app_user
   COL   1 username               text                           NOT NULL
   COL   2 sub                    text                          

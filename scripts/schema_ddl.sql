@@ -30,6 +30,9 @@ WITH t AS (
   SELECT c.oid, c.relname, c.relkind
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+     -- ★排除 `_sqlx_migrations`★:它是 sqlx **运行时**建的账本,不在任何迁移文件里。
+     -- 留着的话,「模拟跑一遍迁移」的结果永远比现库少一张表 —— 那不是差异,是噪声。
+     AND c.relname <> '_sqlx_migrations'
 ), lines AS (
   -- 表头
   SELECT t.relname AS obj, 0 AS cat, 0 AS ord, 'TABLE ' || t.relname AS line FROM t

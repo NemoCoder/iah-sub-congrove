@@ -30,8 +30,8 @@ export type Me = {
   direct_upload_endpoint: string | null
 }
 export type Role = 'viewer' | 'editor' | 'admin'
-/// 项目(原「项目」)。visibility ★只影响忙闲★:public 的会议让成员显示「忙」,
-/// private 完全不占忙闲(可多人私下组队)。两者的**资料**都只有成员能看。
+/// 项目。★没有 visibility★(M0-1 删):它原本兼着「内容给谁看」与「会不会占忙闲」两件正交的事,
+/// 后者已挪到**活动自己的** `busy`(PRD A4)。项目的资料可见性由成员身份唯一决定(D3)。
 export type Project = {
   id: number; name: string; description: string; created_by: string; my_role: Role | null
   quota_bytes: number; used_bytes: number; no_download: boolean

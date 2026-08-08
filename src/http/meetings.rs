@@ -111,10 +111,7 @@ pub async fn list(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                m.visibility <> 'public' AS is_private,
                 -- 列表要显示的三样,都在这条 SQL 里一次取全:
                 -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
@@ -232,10 +229,7 @@ pub async fn detail(
     let view = meeting_view(&state.pool, &id, mid).await?;
     let m: MeetingRow = sqlx::query_as(
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private
+                m.visibility <> 'public' AS is_private
            FROM meetings m
            LEFT JOIN meeting_participants mp ON mp.meeting_id = m.id AND mp.username = $2
           WHERE m.id = $1")
@@ -608,13 +602,23 @@ pub async fn freebusy(
           WHERE mp.username = ANY($1) AND m.status='active'
             AND mp.status <> 'declined'
             AND m.starts_at < $3 AND m.ends_at > $2
-            AND EXISTS (SELECT 1 FROM meeting_projects mpj
-                          JOIN projects p ON p.id = mpj.project_id
-                         WHERE mpj.meeting_id = m.id
-                           AND p.visibility = 'public' AND p.deleted_at IS NULL
-                           -- ★归档项目不再产生忙闲★(D17):项目结题了,它的历史会议
-                           -- 不该继续把人显示成「忙」——那会让别人永远约不到你。
-                           AND p.archived_at IS NULL)
+            -- ★判据是活动自己的 busy(PRD A4),不再是「有没有关联到公开项目」★
+            --   旧判据把「内容给谁看」和「时间占不占别人」绑成一件事,后果有二:
+            --   ① 不关联项目的活动**一个忙块都出不来**(A4 要的正是这种活动);
+            --   ② 私密项目的会不占忙闲 —— 而「我这个时段没空」本来就不泄露任何内容。
+            AND m.busy
+            -- ★归档项目不再产生忙闲★(D17):项目结题了,它的历史会议不该继续把人显示成「忙」。
+            -- 判据从「存在公开且未归档的关联项目」收成「不是所有关联项目都归档了」——
+            -- 没有关联项目的活动(A4)不受这条影响。
+            -- ⚠★这对括号是承重的★:`AND` 比 `OR` 结合得紧,少了它就变成
+            --   `(… AND m.busy AND NOT EXISTS(…)) OR EXISTS(…)` —— OR 那支会**绕过前面全部条件**,
+            --   包括 `username = ANY($1)` 和时间窗,于是任何关联了未归档项目的会
+            --   都给**所有人、任何时段**产生忙块。写这段时当场踩了,PREPARE 抓不到(语法合法)。
+            AND (NOT EXISTS (SELECT 1 FROM meeting_projects mpj WHERE mpj.meeting_id = m.id)
+                 OR EXISTS (SELECT 1 FROM meeting_projects mpj
+                              JOIN projects p ON p.id = mpj.project_id
+                             WHERE mpj.meeting_id = m.id
+                               AND p.deleted_at IS NULL AND p.archived_at IS NULL))
           ORDER BY mp.username, m.starts_at")
         .bind(&users).bind(q.from).bind(q.to)
         .fetch_all(&state.pool).await?;
@@ -1004,10 +1008,7 @@ pub async fn public_list(
     let days = q.days.filter(|d| *d > 0);
     let rows: Vec<MeetingRow> = sqlx::query_as(
         "SELECT m.*, mp.status AS my_status,
-                NOT EXISTS (SELECT 1 FROM meeting_projects mpj
-                              JOIN projects p ON p.id = mpj.project_id
-                             WHERE mpj.meeting_id = m.id
-                               AND p.visibility = 'public' AND p.deleted_at IS NULL) AS is_private,
+                m.visibility <> 'public' AS is_private,
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
                    FROM meeting_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
                   WHERE mp2.meeting_id = m.id AND p2.deleted_at IS NULL) AS projects,
@@ -1168,22 +1169,22 @@ pub async fn my_stats(
          FROM mine"))
         .bind(who).bind(range).fetch_one(&state.pool).await?;
 
-    let by_project: Vec<(i64, String, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
-         SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+    let by_project: Vec<(i64, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
+         SELECT p.id, p.name, p.archived_at IS NOT NULL,
                 count(*)::bigint, COALESCE(SUM(x.hours), 0)::float8,
                 count(*) FILTER (WHERE mm.status = 'done')::bigint
          FROM mine x
          JOIN meeting_projects mp ON mp.meeting_id = x.id
          JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
          LEFT JOIN meeting_minutes mm ON mm.meeting_id = x.id
-         GROUP BY p.id, p.name, p.visibility, p.archived_at
+         GROUP BY p.id, p.name, p.archived_at
          ORDER BY count(*) DESC, p.name"))
         .bind(who).bind(range).fetch_all(&state.pool).await?;
 
     // 我主持的项目(原型下半张卡)。「N 份纪要待整理」是**项目视角**的:
     // 只要这项目里有开完却没完成纪要的会就算,不论记录员是谁 —— 主持人要的是「我这摊子有没有欠账」。
-    let hosting: Vec<(i64, String, String, bool, i64, i64)> = sqlx::query_as(
-        "SELECT p.id, p.name, p.visibility, p.archived_at IS NOT NULL,
+    let hosting: Vec<(i64, String, bool, i64, i64)> = sqlx::query_as(
+        "SELECT p.id, p.name, p.archived_at IS NOT NULL,
                 (SELECT count(*) FROM project_members pm WHERE pm.project_id = p.id)::bigint,
                 (SELECT count(*) FROM meetings m
                    JOIN meeting_projects mp ON mp.meeting_id = m.id
@@ -1213,12 +1214,12 @@ pub async fn my_stats(
             // ★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证
             "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
         },
-        "by_project": by_project.iter().map(|(id, name, vis, arch, c, h, done)| json!({
-            "id": id, "name": name, "visibility": vis, "archived": arch,
+        "by_project": by_project.iter().map(|(id, name, arch, c, h, done)| json!({
+            "id": id, "name": name, "archived": arch,
             "count": c, "hours": r1(*h), "minutes_done": done,
         })).collect::<Vec<_>>(),
-        "hosting": hosting.iter().map(|(id, name, vis, arch, mem, pend)| json!({
-            "id": id, "name": name, "visibility": vis, "archived": arch,
+        "hosting": hosting.iter().map(|(id, name, arch, mem, pend)| json!({
+            "id": id, "name": name, "archived": arch,
             "members": mem, "minutes_pending": pend,
         })).collect::<Vec<_>>(),
     })))
