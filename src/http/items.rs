@@ -944,7 +944,17 @@ pub async fn download(
     let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     // D4 开关(迁移 0003):viewer 禁下载原件;editor/admin/超管不受限。阅读/播放不走这,不拦。
     if role == Role::Viewer {
-        let blocked: bool = sqlx::query_scalar("SELECT viewer_no_download FROM projects WHERE id = $1")
+        // ⚠★2026-08-08:这里原本查的是 `viewer_no_download`,而 projects 的列叫 `no_download`
+        //   —— 列根本不存在,`fetch_one` 直接 Err → 500。也就是说 **D4「viewer 禁下载」从
+        //   2026-08-03 落地那天(b47978a)起就没工作过,整整五天**,而它是一条「权」路径:
+        //   本该「禁下载」的人拿到的是 500 不是 403,本该能下载的 viewer 则一律下不了。
+        //   ★为什么 13 条安全网 + 70 条 E2E 全绿也没发现★:两个原因叠加 ——
+        //   ① 这个分支只在 `role == Viewer` 时才走,而测试用的都是 owner/admin 身份;
+        //   ② 现有的「禁下载」测试覆盖的全是**会议级** `meetings.no_download`(0007 加的),
+        //      项目级这条一条都没有。
+        //   抓到它的是 `scripts/sql-prepare-check.py`(全量 SQL 对真库 PREPARE)第一次跑 ——
+        //   这正是它存在的理由:**冷门路径的 SQL 错,靠测试覆盖是等不到的**。
+        let blocked: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
             .bind(pid)
             .fetch_one(&state.pool)
             .await?;
