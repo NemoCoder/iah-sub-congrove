@@ -92,6 +92,32 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members (username);
 
+-- ══════ 活动类型（ADR-0002）══════
+-- ★一条活动必须有类型★：「会议」这个词原本把三件事绑死了 —— 必须有纪要、必须关联项目、
+-- 必然占忙闲。而「个人日程」三条都不该有。与其加一串布尔开关，不如把「这是哪种活动」
+-- 提成一等概念，开关挂在类型上：加一种活动 = 加一行数据，不是改表 + 改所有判定分支。
+--
+-- ⚠ ★必须建在 activities 之前★：activities.type_id 外键指向它。
+CREATE TABLE activity_types (
+  id          bigserial PRIMARY KEY,
+  owner       text,                              -- NULL = 系统预置；否则这人自建（A2）
+  name        text NOT NULL,
+  has_minutes   boolean NOT NULL DEFAULT false,  -- 正式纪要与记录员（决定 recorder 是否必填）
+  needs_project boolean NOT NULL DEFAULT false,  -- 必须关联项目（材料权限归属，D3）
+  busy_default  boolean NOT NULL DEFAULT true,   -- 默认占不占忙闲（自建时唯一开放的开关 A3）
+  deleted_at  timestamptz,                       -- 软删（L1）：历史活动照常显示类型名
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- 自建类型不得与预置或自己已有的重名。COALESCE(owner,'') 让预置行（owner IS NULL）也参与唯一。
+CREATE UNIQUE INDEX idx_atype_name ON activity_types (COALESCE(owner,''), name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_atype_owner ON activity_types (owner) WHERE deleted_at IS NULL;
+-- ★预置行永不 DELETE★：activities.type_id 是 NOT NULL 外键，删了 = 历史活动失去类型名。
+-- 下线走软删；预置行连软删也不允许（守卫在 types.rs）。
+INSERT INTO activity_types (owner, name, has_minutes, needs_project, busy_default) VALUES
+  (NULL, '会议',     true,  true,  true),
+  (NULL, '个人日程', false, false, false);   -- ★busy_default=false★（O4，liaoruili 2026-08-08 拍板）
+
+
 -- ── 活动 ────────────────────────────────────────────────────────────────
 -- ★活动必须关联至少一个项目★(应用层保证):材料权限来自项目成员身份(D3),
 -- 没有项目就没人管得了它的材料。
@@ -125,6 +151,10 @@ CREATE TABLE IF NOT EXISTS activities (
   -- 于是「私密项目的会不占别人忙闲」这种明显错的行为成了默认。
   -- 默认 true 与旧行为里的「活动」一致；M0-2 起由活动类型的 busy_default 决定初值。
   busy       boolean NOT NULL DEFAULT true,
+  -- 活动类型（ADR-0002）。★NOT NULL★：没有「无类型的活动」这种东西 ——
+  -- 允许为空的话，每个读它的地方都要写一遍「空了算什么」，而那正是类型表要消灭的分支。
+  -- ⚠ 不给默认值：默认值会让「忘了传 type_id」变成静默落进某一类，而不是响亮报错。
+  type_id    bigint NOT NULL REFERENCES activity_types(id),
   -- 实际时长(原 0006):排期是计划,这是事实。统计按事实算。
   actual_minutes integer CHECK (actual_minutes IS NULL OR (actual_minutes > 0 AND actual_minutes <= 24 * 60)),
   actual_by      text,

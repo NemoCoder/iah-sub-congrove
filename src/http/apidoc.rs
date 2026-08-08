@@ -51,6 +51,11 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
 
     // ── 项目 ──
+    // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
+    api!("GET", "/api/activity-types", "活动", "登录", "列出预置的 + 我自建的活动类型", ""),
+    api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
+    api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default"),
+    api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", ""),
     api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", ""),
     api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description"),
     api!("GET", "/api/projects/{id}", "项目", "≥viewer", "项目详情", ""),

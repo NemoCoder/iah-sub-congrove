@@ -70,18 +70,21 @@ pub struct ActivityRow {
 
 #[derive(Deserialize)]
 pub struct ActivityIn {
+    /// 活动类型（ADR-0002）。★必填★：三个能力位（要不要纪要/项目/占忙闲）都从它来。
+    pub type_id: i64,
     pub title: String,
     #[serde(default)] pub agenda: String,
-    /// ★记录员必填(D14)★:正式纪要由他按固定模板整理,AI 转写只是原材料。
-    pub recorder: String,
+    /// 记录员。★是否必填由类型的 `has_minutes` 决定★(D14:正式纪要由他按模板整理) ——
+    /// 原来写死在 create 里,于是「个人日程」这类活动根本建不出来。
+    #[serde(default)] pub recorder: String,
     pub starts_at: Ts,
     pub ends_at: Ts,
     #[serde(default)] pub timezone: Option<String>,
     #[serde(default)] pub location: String,
     #[serde(default)] pub online_url: String,
     #[serde(default)] pub visibility: Option<String>,
-    /// ★至少一个★:材料权限来自项目成员身份,没有项目就没人管得了它的材料。
-    pub project_ids: Vec<i64>,
+    /// 关联项目。★是否必填由类型的 `needs_project` 决定★(材料权限来自项目成员身份,D3)。
+    #[serde(default)] pub project_ids: Vec<i64>,
     /// 一并邀请的人(可空,之后再加)。
     #[serde(default)] pub participants: Vec<String>,
 }
@@ -167,16 +170,20 @@ pub async fn create(
     let username = id.require_username()?;
     let title = input.title.trim();
     if title.is_empty() { return Err(AppError::BadRequest("活动标题不能为空".into())) }
-    if input.recorder.trim().is_empty() { return Err(AppError::BadRequest("必须指定记录员(D14:纪要由他整理)".into())) }
+    // ★校验按类型的能力位走,不再写死★(ADR-0002)。
+    let caps: crate::http::activity_types::Caps = sqlx::query_as(
+        "SELECT has_minutes, needs_project, busy_default FROM activity_types
+          WHERE id = $1 AND deleted_at IS NULL AND (owner IS NULL OR owner = $2)")
+        .bind(input.type_id).bind(username).fetch_optional(&state.pool).await?
+        .ok_or_else(|| AppError::BadRequest("活动类型不存在,或者不是你的".into()))?;
+    crate::http::activity_types::check_caps(&caps, &input.recorder, &input.project_ids)
+        .map_err(|m| AppError::BadRequest(m.into()))?;
     if input.ends_at <= input.starts_at { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
     // ★不能发起已经过去的会★(2026-08-07 用户)。
     // ⚠ 留 5 分钟容差:填表本身要花时间,选了「最近的整点」再慢慢填完议程,提交时那个点可能刚过 ——
     // 卡死到秒会让人白填一轮。容差只对**创建**放,改期(update)不限,那是修正历史记录的正当场景。
     if input.starts_at < chrono::Utc::now() - chrono::Duration::minutes(5) {
         return Err(AppError::BadRequest("活动开始时间不能早于现在".into()));
-    }
-    if input.project_ids.is_empty() {
-        return Err(AppError::BadRequest("活动必须关联至少一个项目(材料权限来自项目成员身份)".into()));
     }
     // ★每个关联项目都要 ≥editor★:把活动挂到一个项目上等于往那个项目里塞东西(纪要/材料最终落在那)。
     // 逐个校验而不是只验第一个——多项目关联时,漏验的那个就是越权入口(D4)。
@@ -187,12 +194,14 @@ pub async fn create(
 
     let mut tx = state.pool.begin().await?;
     let mid: i64 = sqlx::query_scalar(
+        // busy 取类型的 busy_default 作初值(A3);用户想改逐条改,不改类型。
         "INSERT INTO activities (title, agenda, organizer, recorder, starts_at, ends_at, timezone,
-                               location, online_url, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10) RETURNING id")
+                               location, online_url, visibility, type_id, busy)
+         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12) RETURNING id")
         .bind(title).bind(&input.agenda).bind(username).bind(input.recorder.trim())
         .bind(input.starts_at).bind(input.ends_at).bind(input.timezone.as_deref())
         .bind(&input.location).bind(&input.online_url).bind(vis)
+        .bind(input.type_id).bind(caps.busy_default)
         .fetch_one(&mut *tx).await?;
     for pid in &input.project_ids {
         sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)")
@@ -203,8 +212,13 @@ pub async fn create(
     sqlx::query("INSERT INTO activity_participants (activity_id, username, status, responded_at, notified_at)
                  VALUES ($1,$2,'accepted',now(),now()) ON CONFLICT DO NOTHING")
         .bind(mid).bind(username).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
-        .bind(mid).bind(input.recorder.trim()).execute(&mut *tx).await?;
+    // ⚠★记录员可能为空★(ADR-0002:`has_minutes=false` 的类型不要记录员)。
+    //   不守这一下的话会往名单里插一行**空用户名** —— 它不属于任何人,
+    //   却会出现在参与人列表、进忙闲、还占一个「未答复」名额。
+    if !input.recorder.trim().is_empty() {
+        sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+            .bind(mid).bind(input.recorder.trim()).execute(&mut *tx).await?;
+    }
     for u in &input.participants {
         let u = u.trim();
         if u.is_empty() { continue }
