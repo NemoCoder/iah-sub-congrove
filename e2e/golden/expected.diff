@@ -10,7 +10,7 @@ activity.detail.c.body.activity.is_private: false → true
 deny.activity.noproject.body.error: "会议必须关联至少一个项目(材料权限来自项目成员身份)" → "这类活动必须关联至少一个项目（材料权限来自项目成员身份）"
 deny.activity.past.body.error: "会议开始时间不能早于现在" → "活动开始时间不能早于现在"
 deny.download.nodownload.body.error: "这场会议的材料已设为禁止下载原件(可在线预览/播放)" → "这场活动的材料已设为禁止下载原件(可在线预览/播放)"
-freebusy.body.busy.e2e.<len>: 2 → 14
+freebusy.body.busy.e2e.<len>: 2 → 1
 me.stats.body.hosting.<of>.0.visibility: "private" → undefined
 me.stats.body.hosting.<of>.1.archived: false → undefined
 me.stats.body.hosting.<of>.1.id: "<id>" → undefined
