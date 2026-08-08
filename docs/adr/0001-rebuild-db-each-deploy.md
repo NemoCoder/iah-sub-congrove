@@ -18,12 +18,36 @@ v0.5 上线之前，**每次部署都先清库再建**，`migrations/` 里**永�
 
 | 步 | 做什么 | 为什么不能省 |
 |---|---|---|
-| 1 | `DROP SCHEMA public CASCADE; CREATE SCHEMA public` | ★只清 `_sqlx_migrations` 不够★：现行 `0001` 全是 `CREATE TABLE IF NOT EXISTS`，只清账本会让**老结构活下来**，而且一声不响 |
+| 1 | ★四条一起，缺一不可★（见下） | ★只清 `_sqlx_migrations` 不够★：现行 `0001` 全是 `CREATE TABLE IF NOT EXISTS`，只清账本会让**老结构活下来**，而且一声不响 |
 | 2 | 部署（`POST .../deploy` 带 `ref`，`autobuild:false`） | `sqlx::migrate!` 启动即校验校验和，必须先清后部 |
 | 3 | 已部署过则 `rollout restart` | 迁移只在**启动时**跑一次；清了库不重启，跑的还是老进程、面对空库 |
 | 4 | 窗口内挡住 dev 的 auto-deploy | `ci.yml` 的 deploy 条件是 `push && refs/heads/dev` —— 期间任何热修都会把 dev 通道刷回旧代码，撞上新 schema |
 
-**门禁**：`SELECT count(*) FROM information_schema.tables WHERE table_schema='public'` 必须 = 0。
+```sql
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+-- ★下面两条不能省★（2026-08-08 首次部署就栽在这）：
+GRANT ALL ON SCHEMA public TO <app 角色>;          -- 例：sub_congrove_dev
+ALTER SCHEMA public OWNER TO <app 角色>;           -- 交回去，与平台供给出来的初态一致
+GRANT ALL ON SCHEMA public TO <cli 角色>;          -- 门禁脚本还要连
+```
+
+⚠⚠ ★为什么后两条是承重的★：清库用的是平台发给开发者的**第二个角色** `<slug>_cli`，
+而 app 连库用的是 `<slug>`。`CREATE SCHEMA public` 会让新 schema **归 CLI 角色所有**，
+ACL 变成 `{..._cli=UC/..._cli}` —— app 角色一点权限都没有，于是它的 `CREATE TABLE`
+找不到任何可写 schema，pod CrashLoopBackOff，报的是：
+
+```
+Error: while executing migrations: no schema has been selected to create in
+```
+
+★这条报错文案指向 `search_path`，真凶却是 ACL★，很容易被诊断成「你没重建 public」——
+实际 public 一直在。判据看 `select nspacl from pg_namespace where nspname='public'`。
+（也因此，「在迁移开头加 `CREATE SCHEMA IF NOT EXISTS public`」**治不了这一种**：
+schema 本来就在，那是空操作。）
+
+**门禁**：`SELECT count(*) FROM information_schema.tables WHERE table_schema='public'` 必须 = 0，
+且 `nspacl` 里必须有 app 角色。
 
 连带一条 DDL 要求：★新的 `0001_init.sql` 不许用 `CREATE TABLE IF NOT EXISTS`★，一律裸 `CREATE TABLE`。
 理由同步骤 1 —— `IF NOT EXISTS` 会在「库没清干净」时**静默建出错误 schema**，裸写则**响亮失败**。

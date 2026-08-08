@@ -47,7 +47,7 @@ if (Array.isArray(ps)) for (const x of ps) if (/^(E2E-|演示)/.test(x.name)) aw
 const pid = (await call('/api/projects', { method: 'POST', data: { name: '演示·课题组 计量经济学', visibility: 'public' } }))?.id
 await call('/api/projects', { method: 'POST', data: { name: '演示·私下组队', visibility: 'private' } })
 const now = Date.now()
-const mk = (title, hOffset, durH, extra = {}) => call('/api/meetings', { method: 'POST', data: {
+const mk = (title, hOffset, durH, extra = {}) => call('/api/activities', { method: 'POST', data: { type_id: 1,
   title, recorder: 'e2e', project_ids: [pid],
   starts_at: new Date(now + hOffset * 3600e3).toISOString(),
   ends_at: new Date(now + (hOffset + durH) * 3600e3).toISOString(),
@@ -56,17 +56,17 @@ const mk = (title, hOffset, durH, extra = {}) => call('/api/meetings', { method:
 const m = await mk('模型评审会', 2, 1.5, { online_url: 'https://meeting.tencent.com/xxx', location: '3 号楼 401' })
 await mk('数据治理周会', 26, 1)
 await mk('组会', 3, 1)          // 与模型评审会重叠 → 看并排布局
-if (m?.id) await call('/api/meetings/' + m.id, { method: 'PUT', data: { online_url: 'https://meeting.tencent.com/new-link' } })
+if (m?.id) await call('/api/activities/' + m.id, { method: 'PUT', data: { online_url: 'https://meeting.tencent.com/new-link' } })
 
 const shot = async (name) => { await page.waitForTimeout(900); await page.screenshot({ path: `${OUT}/${name}.png` }); console.log('✓', name) }
 const nav = async (t) => { await page.getByText(t, { exact: true }).first().click(); await page.waitForTimeout(1000) }
 
 await page.goto(BASE + '/'); await shot('01-日程')
-await nav('会议'); await shot('02-会议列表')
-await page.getByText('模型评审会').first().click(); await shot('03-会议详情-上')
-await page.mouse.wheel(0, 700); await shot('04-会议详情-下')
-await page.goto(BASE + '/'); await nav('会议')
-await page.getByRole('button', { name: /发起会议/ }).click(); await shot('05-发起会议')
+await nav('活动'); await shot('02-活动列表')
+await page.getByText('模型评审会').first().click(); await shot('03-活动详情-上')
+await page.mouse.wheel(0, 700); await shot('04-活动详情-下')
+await page.goto(BASE + '/'); await nav('活动')
+await page.getByRole('button', { name: /发起活动/ }).click(); await shot('05-发起活动')
 await page.goto(BASE + '/'); await nav('项目'); await shot('06-项目')
 // 个人面板(v0.4.23):在右上用户菜单里,不在主导航 —— 低频入口不占主导航
 await page.goto(BASE + '/')

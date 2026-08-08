@@ -3,9 +3,9 @@
 // 起因：v0.5 的四路同行评审量出来一个数字——现有 50 条 E2E 只覆盖 84 个接口里的 **28 个（33%）**，
 // 而**完全没有覆盖**的恰恰是 M0 要动的那几块：
 //
-//   · 内容 items（17 个接口）—— `items.meeting_id → activity_id` 的改名点
+//   · 内容 items（17 个接口）—— `items.activity_id → activity_id` 的改名点
 //   · 直传 media（5 个）—— 配额预检就在这里
-//   · 公开分享（8 个）—— `share.rs` 里 JOIN meetings 取会议级 no_share
+//   · 公开分享（8 个）—— `share.rs` 里 JOIN activities 取活动级 no_share
 //   · 超管（4 个）—— 配额接口要被整个替换
 //
 // ★「行为不变」这个门禁承担不起它现在被赋予的分量★：配额是「钱」、禁下载禁分享是「权」，
@@ -14,6 +14,7 @@
 // ⚠ 这一组**刻意不测 UI**，只打接口：它要在改名前后各跑一遍做对照，
 // 而 UI 在 M1 本来就要变，掺进来会让对照失去意义。
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -44,11 +45,12 @@ async function usedBytes(req: APIRequestContext, pid: number) {
   return row!.used_bytes
 }
 
-async function newMeeting(req: APIRequestContext, pid: number, extra: Record<string, unknown> = {}) {
+async function newActivity(req: APIRequestContext, pid: number, extra: Record<string, unknown> = {}) {
   const now = Date.now()
-  const r = await req.post('/api/meetings', {
+  const r = await req.post('/api/activities', {
     data: {
-      title: `E2E-网-会议-${tag()}`, recorder: 'e2e', project_ids: [pid],
+      type_id: 会议,
+      title: `E2E-网-活动-${tag()}`, recorder: 'e2e', project_ids: [pid],
       starts_at: new Date(now + 3600_000).toISOString(),
       ends_at: new Date(now + 7200_000).toISOString(),
       ...extra,
@@ -135,25 +137,25 @@ test.describe('安全网·配额', () => {
 // ════════ ③ 材料策略：禁下载 / 禁分享（「权」路径）════════
 
 test.describe('安全网·材料策略', () => {
-  test('★会议设了禁下载,材料就下不了(在线预览不拦)★', async ({ request }) => {
+  test('★活动设了禁下载,材料就下不了(在线预览不拦)★', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-禁下载-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?meeting_id=${mid}`)).json()).id as number
+    const mid = await newActivity(request, pid)
+    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?activity_id=${mid}`)).json()).id as number
     expect((await request.get(`/api/items/${iid}/download`)).status(), '设之前下得到').toBe(200)
 
-    expect((await request.put(`/api/meetings/${mid}`, { data: { no_download: true } })).status()).toBe(200)
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_download: true } })).status()).toBe(200)
     expect((await request.get(`/api/items/${iid}/download`)).status(), '★设之后下不了★').toBe(400)
-    // 判据是 items JOIN meetings —— 改名时这条 JOIN 一旦写错，闸就静默失效
+    // 判据是 items JOIN activities —— 改名时这条 JOIN 一旦写错，闸就静默失效
     expect((await request.get(`/api/items/${iid}`)).status(), '详情仍可看').toBe(200)
   })
 
-  test('★会议设了禁分享,建不了公开链接★', async ({ request }) => {
+  test('★活动设了禁分享,建不了公开链接★', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-禁分享-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?meeting_id=${mid}`)).json()).id as number
+    const mid = await newActivity(request, pid)
+    const iid = (await (await upload(request, pid, 'm.txt', 'secret', `?activity_id=${mid}`)).json()).id as number
     expect((await request.post(`/api/items/${iid}/shares`, { data: {} })).status(), '设之前建得了').toBe(200)
 
-    expect((await request.put(`/api/meetings/${mid}`, { data: { no_share: true } })).status()).toBe(200)
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_share: true } })).status()).toBe(200)
     const r = await request.post(`/api/items/${iid}/shares`, { data: {} })
     expect(r.status(), '★设之后后端必须拒★——前端隐藏不是安全边界').toBe(400)
   })
@@ -231,32 +233,32 @@ test.describe('安全网·公开分享', () => {
   })
 })
 
-// ════════ ⑤ 会议材料区与纪要（items.meeting_id 的改名点）════════
+// ════════ ⑤ 活动材料区与纪要（items.activity_id 的改名点）════════
 
-test.describe('安全网·会议材料与纪要', () => {
-  test('带 meeting_id 传的材料出现在会议材料区,录制单列', async ({ request }) => {
-    const pid = await newProject(request, `E2E-网-会议材料-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    await upload(request, pid, 'doc.txt', 'a', `?meeting_id=${mid}`)
-    await upload(request, pid, 'rec.txt', 'b', `?meeting_id=${mid}&is_recording=true`)
+test.describe('安全网·活动材料与纪要', () => {
+  test('带 activity_id 传的材料出现在活动材料区,录制单列', async ({ request }) => {
+    const pid = await newProject(request, `E2E-网-活动材料-${tag()}`)
+    const mid = await newActivity(request, pid)
+    await upload(request, pid, 'doc.txt', 'a', `?activity_id=${mid}`)
+    await upload(request, pid, 'rec.txt', 'b', `?activity_id=${mid}&is_recording=true`)
 
-    const items = await (await request.get(`/api/meetings/${mid}/items`)).json() as { is_recording: boolean }[]
+    const items = await (await request.get(`/api/activities/${mid}/items`)).json() as { is_recording: boolean }[]
     expect(items.length).toBe(2)
-    // ★录制 ≠ 材料★（D5）：只有录制会被转写、并作为会议时长依据
+    // ★录制 ≠ 材料★（D5）：只有录制会被转写、并作为活动时长依据
     expect(items.filter((i) => i.is_recording).length).toBe(1)
   })
 
   test('纪要:没写时回空而不是 404,写了能读回来', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-纪要-${tag()}`)
-    const mid = await newMeeting(request, pid)
-    const empty = await request.get(`/api/meetings/${mid}/minutes`)
+    const mid = await newActivity(request, pid)
+    const empty = await request.get(`/api/activities/${mid}/minutes`)
     expect(empty.status(), '★前端不该为「还没写」判 404★').toBe(200)
 
     const text = `决议-${tag()}`
-    expect((await request.put(`/api/meetings/${mid}/minutes`, {
+    expect((await request.put(`/api/activities/${mid}/minutes`, {
       data: { content_md: text, status: 'draft' },
     })).status()).toBe(200)
-    const got = await (await request.get(`/api/meetings/${mid}/minutes`)).json()
+    const got = await (await request.get(`/api/activities/${mid}/minutes`)).json()
     expect(got.minutes?.content_md).toBe(text)
   })
 })
@@ -277,27 +279,38 @@ test.describe('安全网·会议材料与纪要', () => {
 // 下面这条现在断言的是**旧定义**（它现在必须是绿的）。M0-3 换定义时，
 // 实现者必须**有意识地**把期望值改成新定义 —— 那一刻判反就会当场变红。
 test.describe('安全网·is_private 语义', () => {
+  // ★2026-08-08 M0-1 换定义（PRD J4）★：从「所有关联项目都不 public」
+  // 改成「**活动自己的** visibility 不是 public」。四个组合的期望值因此变成：
+  //   项目 public + 活动 private → 旧 false / ★新 true★
+  //   项目 private + 活动 public → 旧 true  / ★新 false★
+  // 另两个组合新旧同值 —— ★所以只造那两个是抓不住「判反」的，四个都要留★
+  //（这一课是 2026-08-08 实测得出的：前两个组合恰好是「旧定义」与「判反的新定义」
+  //  结果重合的组合。）
+  //
+  // ⚠ 项目那一列**保留但已无语义**：`projects.visibility` M0-1 已删，
+  //   `newProject` 传它等于空操作。留着是为了证明★项目可见性不再影响 is_private★ ——
+  //   同一个活动可见性下，两种项目必须给出同一个值。
   const COMBOS = [
-    { proj: 'public' as const, act: 'private' as const, old: false },
-    { proj: 'private' as const, act: 'public' as const, old: true },
-    { proj: 'private' as const, act: 'private' as const, old: true },
-    { proj: 'public' as const, act: 'public' as const, old: false },
+    { proj: 'public' as const, act: 'private' as const, want: true },
+    { proj: 'private' as const, act: 'public' as const, want: false },
+    { proj: 'private' as const, act: 'private' as const, want: true },
+    { proj: 'public' as const, act: 'public' as const, want: false },
   ]
 
-  test('★四个组合逐个对★（旧定义 = 所有关联项目都不 public）', async ({ request }) => {
+  test('★四个组合逐个对★（新定义 = 活动自己的 visibility）', async ({ request }) => {
     const from = new Date(Date.now() - 864e5).toISOString()
     const to = new Date(Date.now() + 30 * 864e5).toISOString()
     for (const c of COMBOS) {
       const pid = await newProject(request, `E2E-网-isp-${c.proj}-${tag()}`, { visibility: c.proj })
-      const mid = await newMeeting(request, pid, { visibility: c.act })
-      const list = (await (await request.get(`/api/meetings?from=${from}&to=${to}`)).json()) as
+      const mid = await newActivity(request, pid, { visibility: c.act })
+      const list = (await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()) as
         { id: number; is_private: boolean }[]
       const row = list.find((m) => m.id === mid)
       expect(row, `活动 ${mid} 应当在日历里`).toBeTruthy()
       expect(
         row!.is_private,
-        `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.old}`,
-      ).toBe(c.old)
+        `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.want}`,
+      ).toBe(c.want)
     }
   })
 })
