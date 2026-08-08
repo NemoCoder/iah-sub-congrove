@@ -13,9 +13,11 @@ import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Typog
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
-import { HOUR_PX, layout } from './schedule-layout'
+import { HOUR_PX, NIGHT_END_H, layout } from './schedule-layout'
 
-const DAY_PX = HOUR_PX * 24
+/// 网格总高。★凌晨折叠时从 8 点起画★（2026-08-09 用户）——
+/// 0–8 点几乎永远是空的，却白占整屏三分之一，把真正有事的白天挤扁。
+const dayPx = (fromH: number) => (24 - fromH) * HOUR_PX
 
 /// ★时段分隔★(2026-08-07 用户:「12 点那里分隔一下,标识上下午…8 点也空一行,18 点后面也空一行」)。
 /// 画的是**分隔线 + 非工作时段压暗 + 轴上的时段名**,而**不是真的空出高度**——
@@ -72,6 +74,9 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
   const [mode, setMode] = useState<'week' | 'month' | 'list'>('week')
   const [items, setItems] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
+  /// ★凌晨 0–8 点默认折叠★。那一段真有活动时，上面给一条提示让用户自己展开 ——
+  /// 不自动展开：自动展开会让「今天有个 3 点的会」把整周的布局都撑高一截。
+  const [nightOpen, setNightOpen] = useState(false)
 
   /// 一屏显示几天 + 翻页步长。
   /// ★月视图就是月历★(2026-08-09 用户改的):原来它把 28 天塞进同一套小时时间轴,
@@ -89,6 +94,13 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
     [anchor, gridStart, mode, span],
   )
   const today = new Date()
+  /// 网格从几点开始画。折叠时 = 8。
+  const fromH = nightOpen ? 0 : NIGHT_END_H
+  /// 折叠区里到底有没有东西 —— 有才提示，没有就安静。
+  const nightCount = useMemo(
+    () => (nightOpen ? 0 : items.filter((m) => new Date(m.starts_at).getHours() < NIGHT_END_H).length),
+    [items, nightOpen, ],
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -209,6 +221,26 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
         ) : (
           <div style={{ overflowX: 'auto' }}>
             {/* 表头:时间轴列 + 7 天 */}
+            {/* ★凌晨折叠条★：折叠区里有活动才出现。不自动展开 ——
+                自动展开会让「今天有个 3 点的会」把整周的布局都撑高一截。 */}
+            {!nightOpen && (
+              <div onClick={() => setNightOpen(true)} style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                padding: '4px 8px', marginBottom: 4, borderRadius: 4,
+                background: nightCount ? '#fffbe6' : '#fafafa',
+                border: `1px solid ${nightCount ? '#ffe58f' : '#f0f0f0'}`,
+                fontSize: 12, color: '#8c8c8c',
+              }}>
+                <span>凌晨 0–8 点已折叠</span>
+                {nightCount > 0 && <Tag color="orange" style={{ margin: 0 }}>这段有 {nightCount} 项</Tag>}
+                <span style={{ marginLeft: 'auto', color: '#0d9488' }}>展开 ▾</span>
+              </div>
+            )}
+            {nightOpen && (
+              <div onClick={() => setNightOpen(false)} style={{
+                cursor: 'pointer', padding: '4px 8px', marginBottom: 4, fontSize: 12, color: '#0d9488',
+              }}>收起凌晨 ▴</div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: `92px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               <div />
               {days.map((d, i) => {
@@ -234,14 +266,35 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                 ★叠在一起★,截图里读作「上午8:00」。
                 ★注释里明明写着「列宽相应加到 74px」「92px 是量出来的」—— 那件事从没执行过★,
                 只有注释在描述意图。(2026-08-09 用户截图指出;和「设计了 ≠ 执行了」是同一族。) */}
+            {/* ★凌晨折叠条★：折叠区里有活动才出现。不自动展开 ——
+                自动展开会让「今天有个 3 点的会」把整周的布局都撑高一截。 */}
+            {!nightOpen && (
+              <div onClick={() => setNightOpen(true)} style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                padding: '4px 8px', marginBottom: 4, borderRadius: 4,
+                background: nightCount ? '#fffbe6' : '#fafafa',
+                border: `1px solid ${nightCount ? '#ffe58f' : '#f0f0f0'}`,
+                fontSize: 12, color: '#8c8c8c',
+              }}>
+                <span>凌晨 0–8 点已折叠</span>
+                {nightCount > 0 && <Tag color="orange" style={{ margin: 0 }}>这段有 {nightCount} 项</Tag>}
+                <span style={{ marginLeft: 'auto', color: '#0d9488' }}>展开 ▾</span>
+              </div>
+            )}
+            {nightOpen && (
+              <div onClick={() => setNightOpen(false)} style={{
+                cursor: 'pointer', padding: '4px 8px', marginBottom: 4, fontSize: 12, color: '#0d9488',
+              }}>收起凌晨 ▴</div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: `92px repeat(7, minmax(90px, 1fr))`, minWidth: 700 }}>
               {/* 时间轴 */}
-              <div style={{ position: 'relative', height: DAY_PX }}>
+              <div style={{ position: 'relative', height: dayPx(fromH) }}>
                 {/* ★时段名并进刻度文字★(2026-08-07 截图核对后改):
                     第一版把「凌晨/上午/下午/晚上」竖排在轴左边,在 48px 宽的列里被挤成
                     几乎读不出的小字 —— 一个看不清的标识等于没有标识。
                     现在写成「上午 8:00」,横排、和刻度同一行,列宽相应加到 74px。 */}
-                {Array.from({ length: 24 }, (_, h) => {
+                {Array.from({ length: 24 - fromH }, (_, k) => {
+                  const h = k + fromH
                   const seg = SEGMENTS.find((x) => x.from === h)
                   return (
                     <div key={h}>
@@ -251,7 +304,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                           裁掉的恰恰是要传达的那两个字,而时间反倒完整。分开放就不会互相挤。 */}
                       {seg && (
                         <div style={{
-                          position: 'absolute', top: h * HOUR_PX, left: 6,
+                          position: 'absolute', top: (h - fromH) * HOUR_PX, left: 6,
                           // ⚠ 列宽 92px 是量出来的:74px 时「上午」和「8:00」贴成了
                           // 「上午8:00」一个词(2026-08-07 第四版才看准 —— 前三版分别是
                           // 竖排看不清、拼串被左裁、贴太紧)。字号比时间小一号,拉开层次。
@@ -260,7 +313,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                         }}>{seg.label}</div>
                       )}
                       <div style={{
-                        position: 'absolute', top: h * HOUR_PX, right: 6, fontSize: 11,
+                        position: 'absolute', top: (h - fromH) * HOUR_PX, right: 6, fontSize: 11,
                         // 时段起点(8/12/18)加深:它们是右边那三条分隔线的锚
                         color: seg ? '#595959' : '#bfbfbf',
                         fontWeight: seg ? 600 : 400,
@@ -274,7 +327,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                 const weekend = i === 0 || i === 6
                 return (
                   <div key={i} style={{
-                    position: 'relative', height: DAY_PX,
+                    position: 'relative', height: dayPx(fromH),
                     borderLeft: '1px solid #f0f0f0',
                     background: weekend ? '#fafafa' : undefined,
                     // 每小时一条横线:用 repeating gradient,省掉 24 个 DOM 节点 × 7 列
@@ -284,23 +337,26 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                         ⚠ 用**线**而不是真的空出高度 —— 事件的 top 是按「小时 × 30px」算的,
                         中间插空行会让所有坐标错位(那套计算有 20 条单测钉着)。
                         视觉上分段的目的达到了,定位不动。 */}
-                    {SEG_MARKS.map((h) => (
+                    {SEG_MARKS.filter((h) => h >= fromH).map((h) => (
                       <div key={h} style={{
-                        position: 'absolute', left: 0, right: 0, top: h * HOUR_PX,
+                        position: 'absolute', left: 0, right: 0, top: (h - fromH) * HOUR_PX,
                         borderTop: '1px solid #d9d9d9', pointerEvents: 'none',
                       }} />
                     ))}
                     {/* 工作时段(8–18)之外压暗:一眼看出「正常不会在这儿排会」 */}
+                    {/* 凌晨压暗:折叠时这一段根本不在网格里,别画 */}
+                    {fromH === 0 && (
+                      <div style={{
+                        position: 'absolute', left: 0, right: 0, top: 0, height: WORK_FROM * HOUR_PX,
+                        background: 'rgba(0,0,0,.015)', pointerEvents: 'none',
+                      }} />
+                    )}
                     <div style={{
-                      position: 'absolute', left: 0, right: 0, top: 0, height: WORK_FROM * HOUR_PX,
-                      background: 'rgba(0,0,0,.015)', pointerEvents: 'none',
-                    }} />
-                    <div style={{
-                      position: 'absolute', left: 0, right: 0, top: WORK_TO * HOUR_PX,
+                      position: 'absolute', left: 0, right: 0, top: (WORK_TO - fromH) * HOUR_PX,
                       height: (24 - WORK_TO) * HOUR_PX,
                       background: 'rgba(0,0,0,.015)', pointerEvents: 'none',
                     }} />
-                    {layout(items, d).map(({ item: m, top, height, left, width }) => (
+                    {layout(items, d, fromH).map(({ item: m, top, height, left, width }) => (
                       <div
                         key={m.id}
                         onClick={() => onOpenActivity(m.id)}
