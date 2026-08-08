@@ -322,8 +322,21 @@ pub async fn complete(
     // 超了就地回滚(删对象 + 删行),不留既成事实。
     let (quota, used) = project_quota_used(&state.pool, pid).await?;
     if used + size > quota {
-        let _ = state.storage.delete(&key).await;
+        // ⚠★2026-08-08 修:这里原来也是裸 `storage.delete(&key)` —— **同一个洞的第三处**★
+        //   (前两处:v0.4.38 的 projects::remove、v0.4.40 的 items::upload 收尾复核)。
+        //   看上面 begin 那段:`if exists(blobs/<sha>) { 另起 -rand } else { 就用 blobs/<sha> }`
+        //   —— ★`blobs/<sha>` 还不存在时,key 就是那个全库共享的 key★。于是:
+        //   我 begin 拿到 blobs/X(当时不存在)→ 传到一半,别人经普通上传把 blobs/X 建好了
+        //   → 我 complete 撞配额回滚 → **把别人那份打空**(行还在、点开是空的)。
+        //   两人并发 begin 同一个新 sha 也一样(exists 那个检查是 TOCTOU)。
+        //
+        // ★我一度在提交信息里写过「G7 是安全的,别顺手一起改」—— 那是照抄别人的结论没自己验。★
+        //   同一个洞第三次出现说明一件事:「删 S3 对象前先数引用」必须是**唯一入口**,
+        //   而不是每处各自判断「我这里安不安全」。
+        //
+        // 顺序:先删行再数引用(delete_unreferenced 按 items ∪ item_versions 数,本行还在会把自己算进去)。
         let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
+        crate::http::items::delete_unreferenced(&state, std::slice::from_ref(&key)).await;
         return Err(AppError::BadRequest("实际大小超出空间配额,已回滚本次上传".into()));
     }
     // 落 s3_key 的同时清掉续传痕迹:这一行已经完成,不该再被当成断点认领。

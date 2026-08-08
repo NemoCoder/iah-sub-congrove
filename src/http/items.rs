@@ -800,8 +800,16 @@ pub async fn upload(
                 // 两个 9GiB 能一起过 10GiB 的闸。按落地时的真实总量再判一次,超了回滚。
                 let (q2, used2) = project_quota_used(&state.pool, pid).await?;
                 if used2 + total > q2 {
-                    let _ = state.storage.delete(&key).await;
+                    // ⚠★2026-08-08 修:这里原来是 `storage.delete(&key)` —— 会打空别人的文件★
+                    //   内容寻址之后 `blobs/<sha>` 是**全库共享**的:上面十行刚写着
+                    //   「对象已存在就直接引用」,也就是说这个 key 很可能早就被别人的 items 行引用着。
+                    //   配额回滚直接删它 → 那些行还在、点开是空的 —— 静默数据损坏。
+                    //   这与 v0.4.38 修 `projects::remove` 的是**同一个洞**,当时漏了这一处。
+                    //
+                    // ★顺序要紧:先删自己这行,再数引用★。`delete_unreferenced` 按
+                    //   items ∪ item_versions 数引用,本行还在的话它会把自己算成一个引用,于是永远删不掉。
                     let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+                    delete_unreferenced(&state, std::slice::from_ref(&key)).await;
                     return Err(AppError::BadRequest("空间配额已被并发上传占满,本次已回滚".into()));
                 }
                 sqlx::query("UPDATE items SET s3_key = $1, size = $2, sha256 = $3, sha_verified = true WHERE id = $4")
