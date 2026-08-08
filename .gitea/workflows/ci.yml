@@ -38,6 +38,22 @@ jobs:
           echo "::group::① cargo clippy -D warnings"; cargo clippy --all-targets --locked -- -D warnings || fail=1; echo "::endgroup::"
           echo "::group::② cargo test";             cargo test --locked                        || fail=1; echo "::endgroup::"
           echo "::group::③④ 前端 pnpm typecheck + test"; ( cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test ) || fail=1; echo "::endgroup::"
+          # ⑤ 旧命名零残留(M0-7 加)。★纯 bash + grep,零依赖,所以进得了 CI★。
+          #   另外四道机械门禁(SQL 全量 PREPARE / schema 基线对拍 / golden / 接口面)
+          #   要活的 dev 库或 oasdiff 二进制,暂时进不来 —— 见 docs/M0-PLAN.md 的开放问题 O2/O4。
+          echo "::group::⑤ 旧命名零残留"; bash scripts/no-meeting.sh --all || fail=1; echo "::endgroup::"
+          # ⑥ 版本号必须比 dev 上的高。★这条是 2026-08-08 踩出来的★:
+          #   我用 `sed -i 's/version = "0.4.56"/…/'` 升版本,而分支基于更早的点(0.4.55),
+          #   **无匹配、sed 不报错**、版本就没升 —— 代码合进去了,线上版本号还是旧的。
+          #   `sed -i` 静默不匹配这件事,只能靠事后核对兜住。
+          echo "::group::⑥ 版本号是否真的升了"
+          cur=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          # ⚠ 只认 `export const VERSION` 那一行:文件头的注释里有 `v0.3.42.dev` 这种举例,
+          #   笼统 grep 会先命中它 —— 第一版就是这么写的,当场把好版本判成不一致。
+          web=$(sed -n "s/^export const VERSION = 'v\\(.*\\)'.*/\\1/p" web/src/version.ts)
+          echo "Cargo.toml=$cur  web/version.ts=$web"
+          [ "$cur" = "$web" ] || { echo "❌ 两处版本号不一致(必须同步)"; fail=1; }
+          echo "::endgroup::"
           if [ "$fail" != 0 ]; then echo "❌ CI 门禁未过 —— 上面哪一段红看哪段"; exit 1; fi
           echo "✅ CI 门禁全过"
 

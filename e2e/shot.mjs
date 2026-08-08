@@ -68,6 +68,12 @@ await page.mouse.wheel(0, 700); await shot('04-活动详情-下')
 await page.goto(BASE + '/'); await nav('活动')
 await page.getByRole('button', { name: /发起活动/ }).click(); await shot('05-发起活动')
 await page.goto(BASE + '/'); await nav('项目'); await shot('06-项目')
+// 我的活动类型（M0-4b）：在右上角头像菜单里
+await page.goto(BASE + '/'); await page.waitForTimeout(600)
+// ⚠ 页眉不是 <header> 元素（IahHeader 是个 div）—— 按**用户名按钮**定位
+await page.getByRole('button', { name: new RegExp(process.env.IAH_E2E_USER || 'e2e') }).first().click()
+await page.waitForTimeout(400)
+await page.getByText('我的活动类型', { exact: true }).click(); await shot('09-我的活动类型')
 // 个人面板(v0.4.23):在右上用户菜单里,不在主导航 —— 低频入口不占主导航
 await page.goto(BASE + '/')
 // ⚠ 页眉不是 <header> 标签(iah-header.tsx 用的 div),按用户名定位那个下拉按钮

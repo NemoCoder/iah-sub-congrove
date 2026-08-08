@@ -196,7 +196,13 @@ await shot('activity.minutes', `/api/activities/${midA}/minutes`)
 await shot('activity.messages', `/api/activities/${midA}/messages`)
 await shot('activity.linkhist', `/api/activities/${midA}/link-history`)
 await shot('activities.public', '/api/activities/public')
-await shot('freebusy', `/api/freebusy?users=e2e&from=${from}&to=${to}`)
+// ★忙闲要在**没人用的远期窗口**里采★（2026-08-09 踩的）：
+// 原来用的是 `from=-1天 to=+30天`，那会把**别的 spec 造的活动**全网罗进来 ——
+// 忙块条数于是随「这一轮跑了多少测试」变化，golden 每次都红，而且红在一个
+// **不是回归**的地方。`<len>` 这类计数只有在窗口里只有自己的东西时才有意义。
+const fbA = await mk('忙闲取样', [pubPid], { starts_at: iso(20 * 86400e3), ends_at: iso(20 * 86400e3 + 3600e3) })
+const fbFrom = iso(20 * 86400e3 - 3600e3), fbTo = iso(20 * 86400e3 + 7200e3)
+await shot('freebusy', `/api/freebusy?users=e2e&from=${fbFrom}&to=${fbTo}`)
 await shot('me.stats', '/api/me/stats?range=quarter')
 await shot('me.unread', '/api/me/unread')
 await shot('me.transfers', '/api/me/transfers')
@@ -236,6 +242,10 @@ const EXPECT = [
 ]
 
 // ★自己清自己★：这个脚本**不走 Playwright**，`teardown.ts` 的全局清理轮不到它。
+// ⚠★活动也要清★（2026-08-09 踩的）：原来只删项目，而活动**不随项目级联删** ——
+//   于是每跑一次 golden 就在库里多留几场，下一次采 `freebusy` 的 `<len>` 就多一个。
+//   症状是 golden 门禁红在一个**不是回归**的地方，且每跑一次红得不一样。
+for (const m of [midA, midB, midD, midE, fbA]) await R.delete(`${BASE}/api/activities/${m}`).catch(() => {})
 for (const p of [pubPid, prvPid]) await R.delete(`${BASE}/api/projects/${p}`).catch(() => {})
 await b.close()
 
