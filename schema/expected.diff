@@ -249,7 +249,7 @@
  TABLE owner_transfers
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
    COL   2 project_id             bigint                         NOT NULL
-@@ -214,22 +231,23 @@
+@@ -214,22 +231,22 @@
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
    COL   2 name                   text                           NOT NULL
    COL   3 description            text                           NOT NULL DEFAULT ''::text
@@ -263,18 +263,19 @@
 -  COL  11 hotwords               text                           NOT NULL DEFAULT ''::text
 -  COL  12 deleted_at             timestamp with time zone      
 -  COL  13 deleted_by             text                          
+-  COL  14 archived_at            timestamp with time zone      
+-  COL  15 archived_by            text                          
 +  COL   4 owner                  text                           NOT NULL
 +  COL   5 created_by             text                           NOT NULL
 +  COL   6 created_at             timestamp with time zone       NOT NULL DEFAULT now()
-+  COL   7 quota_bytes            bigint                         NOT NULL DEFAULT '10737418240'::bigint
-+  COL   8 no_download            boolean                        NOT NULL DEFAULT false
-+  COL   9 no_share               boolean                        NOT NULL DEFAULT false
-+  COL  10 hotwords               text                           NOT NULL DEFAULT ''::text
-+  COL  11 deleted_at             timestamp with time zone      
-+  COL  12 deleted_by             text                          
-+  COL  13 kind                   text                           NOT NULL DEFAULT 'team'::text
-   COL  14 archived_at            timestamp with time zone      
-   COL  15 archived_by            text                          
++  COL   7 no_download            boolean                        NOT NULL DEFAULT false
++  COL   8 no_share               boolean                        NOT NULL DEFAULT false
++  COL   9 hotwords               text                           NOT NULL DEFAULT ''::text
++  COL  10 deleted_at             timestamp with time zone      
++  COL  11 deleted_by             text                          
++  COL  12 kind                   text                           NOT NULL DEFAULT 'team'::text
++  COL  13 archived_at            timestamp with time zone      
++  COL  14 archived_by            text                          
 +  CON projects_kind_check                CHECK ((kind = ANY (ARRAY['team'::text, 'materials'::text])))
    CON projects_pkey                      PRIMARY KEY (id)
 -  CON projects_visibility_check          CHECK ((visibility = ANY (ARRAY['public'::text, 'private'::text])))
@@ -284,3 +285,19 @@
  SEQ projects_id_seq
  TABLE share_items
    COL   1 token                  text                           NOT NULL
+@@ -286,3 +303,15 @@
+   COL   8 fine                   jsonb                         
+   CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+   CON transcripts_pkey                   PRIMARY KEY (item_id)
++TABLE user_prefs
++  COL   1 username               text                           NOT NULL
++  COL   2 timezone               text                          
++  COL   3 default_remind_minutes integer                       
++  COL   4 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON user_prefs_pkey                    PRIMARY KEY (username)
++TABLE user_quota
++  COL   1 username               text                           NOT NULL
++  COL   2 quota_bytes            bigint                         NOT NULL DEFAULT '10737418240'::bigint
++  COL   3 updated_by             text                          
++  COL   4 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
++  CON user_quota_pkey                    PRIMARY KEY (username)

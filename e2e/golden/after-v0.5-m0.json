@@ -12,7 +12,7 @@
   "projects": {
     "status": 200,
     "body": {
-      "<len>": 4,
+      "<len>": 2,
       "<of>": [
         {
           "archived_at": null,
@@ -24,20 +24,6 @@
           "my_role": "admin",
           "name": "<gen>",
           "no_download": false,
-          "quota_bytes": 10737418240,
-          "used_bytes": 0
-        },
-        {
-          "archived_at": null,
-          "created_at": "<ts>",
-          "created_by": "e2e",
-          "description": "",
-          "hotwords": "",
-          "id": "<id>",
-          "my_role": "admin",
-          "name": "<gen>",
-          "no_download": false,
-          "quota_bytes": 10737418240,
           "used_bytes": 7000
         },
         {
@@ -50,7 +36,6 @@
           "my_role": "admin",
           "name": "<gen>",
           "no_download": false,
-          "quota_bytes": 10737418240,
           "used_bytes": 9000
         }
       ]
@@ -497,7 +482,7 @@
     "body": {
       "busy": {
         "e2e": {
-          "<len>": 19,
+          "<len>": 14,
           "<of>": [
             {
               "end": "<ts>",
@@ -516,7 +501,7 @@
         "<of>": []
       },
       "hosting": {
-        "<len>": 4,
+        "<len>": 2,
         "<of>": [
           {
             "archived": false,

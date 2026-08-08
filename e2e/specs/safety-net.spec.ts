@@ -166,10 +166,18 @@ test.describe('安全网·配额', () => {
 
   test('★版本历史计入★', async ({ request }) => {
     const pid = await newProject(request, `E2E-网-版本-${tag()}`)
-    const iid = (await (await upload(request, pid, 'v.md', 'v1'.repeat(500))).json()).id as number
+    // ⚠★建**文档**而不是传文件★：版本历史(item_versions)是文档保存时产生的。
+    // ⚠★入参是 `text` 不是 `content`★ —— 第一版我按直觉写了 `content`，
+    //   于是 PUT 静默什么都没改、用量不涨，测试红了却指向「算法漏了版本历史」。
+    //   ★`docs/openapi.json` 里写着 `text, label`，我手边就有却没查。★
+    //   (和 2026-08-08「安全网端点全是编的」是同一类错:凭直觉写接口形状。)
+    const doc = await request.post(`/api/projects/${pid}/items`, { data: { name: 'v.md', kind: 'doc' } })
+    const iid = (await doc.json()).id as number
+    await request.put(`/api/items/${iid}/content`, { data: { text: 'v1'.repeat(500) } })
     const one = (await myQuota(request)).used_bytes
+    expect(one, '文档存完要占用量').toBeGreaterThan(0)
     // 改一次内容 → 旧版进 item_versions，两份都占盘，都该算
-    await request.put(`/api/items/${iid}/content`, { data: { content: 'v2'.repeat(900) } })
+    await request.put(`/api/items/${iid}/content`, { data: { text: 'v2'.repeat(900) } })
     expect((await myQuota(request)).used_bytes, '历史版本没被计入 = 用户能靠反复改版白嫖').toBeGreaterThan(one)
   })
 
