@@ -19,7 +19,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
 import { useActivityUpload } from './activity-upload'
-import { fmtSize, ItemIcon } from './preview'
+import { fmtSize, ItemIcon, MarkdownView } from './preview'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -220,8 +220,15 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
               // ⚠ 决议与待办是**同一份** AI 产物（media_ai.rs 的 `decisions` 一次生成两者），
               //   拆成两个标签会得到两块一模一样的内容，所以这里是一个标签。
               key: 'd', label: '决议·待办',
+              // ★按 Markdown 渲染★(2026-08-09 liaoruili:「决议代办 应该前端使用 markdown 解析展示」)。
+              // 这一份 AI 产物**本来就是 Markdown**:提示词让它「列出关键决议与待办事项
+              // (谁负责、做什么、何时)」,模型给回来的就是 `- ` 列表 + `**加粗**`
+              // (提示词自己都写着 `**关键决议**`)。而这里一直是 `white-space: pre-wrap` 直出 ——
+              // ★于是满屏的星号和减号,该分层的地方全平着★,一份三层的清单读起来像一堆字符。
+              // 组件是现成的(preview.tsx 的 MarkdownView,react-markdown + GFM,项目文档一直在用),
+              // 缺的只是在这里用上它。
               children: sum(K_DECISIONS)
-                ? <div style={{ fontSize: 13, lineHeight: 1.9, whiteSpace: 'pre-wrap', maxHeight: 460, overflow: 'auto' }}>{sum(K_DECISIONS)}</div>
+                ? <div style={{ fontSize: 13, maxHeight: 460, overflow: 'auto' }}><MarkdownView text={sum(K_DECISIONS)} /></div>
                 : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyWhy(job, '决议与待办')} />,
             },
             {
