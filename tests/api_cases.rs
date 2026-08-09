@@ -367,6 +367,15 @@ const CASES: &[Case] = &[
     c!(deny "PUT", "/api/activities/{mid}/items/{iid}", "★不能借 A 活动改 B 活动材料的名★",
        "我是 A 活动关联项目的 editor;iid 属于 B 活动", "PUT /api/activities/{A}/items/{B 的材料}",
        "404 —— activity_id 必须同时匹配路径上的 mid,与删除那条同一个越权形状", "D10"),
+    c!("POST", "/api/projects/{id}/upload", "★同名+同哈希=误传两次,不建新行★",
+       "同一文件夹里已经有一份同名同内容的", "POST /upload 传同一个文件",
+       "200 且响应里 duplicate=true、★items 不多一行★;前端提示「已经在这里了」。\
+        盘上本来就只有一份(内容寻址),所以这不是空间问题 —— 是**人分不清哪个是哪个**,\
+        「删哪个」变成猜谜(2026-08-09 liaoruili 选的方案 C)", "C"),
+    c!("POST", "/api/projects/{id}/upload", "★同名但内容不同=新版本,自动缀序号★",
+       "同名文件已存在,内容不一样", "POST /upload",
+       "200,落成 `xxx (2).pdf` 两份都留着。★扩展名必须留在最后★:\
+        `a.pdf (2)` 会让按扩展名认类型失手,人也认不出它还是个 PDF。判据是纯函数 numbered_name,带单测", "C"),
     c!(deny "POST", "/api/projects/{id}/upload", "★不能往别人的活动里注入材料★",
        "我在自己的项目 P 里是 admin;activity_id 指向一场与 P 无关的活动",
        "POST /api/projects/P/upload?activity_id=<别人的会>",

@@ -64,7 +64,7 @@ pub fn check_span(starts_at: chrono::DateTime<chrono::Utc>,
     let days = (ends_at - starts_at).num_days();
     if days > MAX_SPAN_DAYS {
         return Err(format!(
-            "一条活动最长 {MAX_SPAN_DAYS} 天，这条是 {days} 天——是不是月份或年份填错了？             真要记这么长的一段，拆成几条。"));
+            "一条活动最长 {MAX_SPAN_DAYS} 天，这条是 {days} 天——是不是月份或年份填错了？真要记这么长的一段，拆成几条。"));
     }
     Ok(())
 }

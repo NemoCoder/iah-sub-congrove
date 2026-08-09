@@ -38,10 +38,19 @@ export function slot(s: Span, day: Date, fromH = 0): { top: number; height: numb
   if (to0 <= gridStart) return null          // 整段都在折叠区里
   const from = Math.max(from0, gridStart)
   const to = Math.min(to0, dayEnd.getTime())
-  return {
-    top: ((from - gridStart) / 3600_000) * HOUR_PX,
-    height: Math.max(MIN_H, ((to - from) / 3600_000) * HOUR_PX),
-  }
+  const gridH = (24 - fromH) * HOUR_PX
+  const top0 = ((from - gridStart) / 3600_000) * HOUR_PX
+  const h = Math.max(MIN_H, ((to - from) / 3600_000) * HOUR_PX)
+  // ★底边必须夹进网格★（2026-08-09 用户：「跨天的会议下面会多出来一节，
+  // 导致多了上下滑动的滚轮」）。两种情况都会伸出去：
+  //   · 跨天活动：起点在今天、终点在明天 —— 上面按天裁过了，但……
+  //   · ★真正的元凶是 MIN_H★：23:50 开始的活动只有 5px，被抬到 18px，
+  //     底边就越过午夜 3px；容器被撑高 → 整页多一条竖滚动条。
+  // 处置是**把块顶上去**（保住最小可见高度），而不是压扁它 ——
+  // 压到 5px 的话既读不出标题也点不中，那正是 MIN_H 当初存在的理由。
+  // ⚠ 夹在**纯函数**里而不是靠 CSS 的 overflow 遮住：布局有单测，遮罩没有；
+  //   而且「被遮住」和「没算对」在截图上长得一模一样。
+  return { top: Math.max(0, Math.min(top0, gridH - h)), height: Math.min(h, gridH) }
 }
 
 /// 把一天里的事件排成互不遮挡的盒子。两步:

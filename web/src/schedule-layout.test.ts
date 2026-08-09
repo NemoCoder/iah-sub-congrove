@@ -4,7 +4,7 @@
 //   cd web && npm test
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { HOUR_PX, layout, slot, type Span } from './schedule-layout.ts'
+import { HOUR_PX, layout, slot, type Span, NIGHT_END_H, MIN_H } from './schedule-layout.ts'
 
 /// 造当天某时段的事件。day 用固定日期,避免测试随当天日期漂。
 const DAY = new Date(2026, 7, 5)                       // 2026-08-05,本地时区
@@ -84,4 +84,21 @@ test('slot 对完全在别天的事件回 null', () => {
   const s = new Date(prev); s.setHours(10, 0, 0, 0)
   const e = new Date(prev); e.setHours(11, 0, 0, 0)
   assert.equal(slot({ starts_at: s.toISOString(), ends_at: e.toISOString() }, DAY), null)
+})
+
+/// ★这条是「跨天的会把日历撑高、多出一条滚动条」的复现测试★（2026-08-09 用户报）。
+/// 元凶不是跨天本身（跨天早就按天裁过了），是 `MIN_H`：
+/// 23:50 开始的活动实际只有 5px，被抬到 18px，底边就越过午夜——容器跟着长高。
+test('块的底边永远不越过网格下沿', () => {
+  const day = new Date('2026-08-09T00:00:00')
+  for (const fromH of [0, NIGHT_END_H]) {
+    const gridH = (24 - fromH) * HOUR_PX
+    // ① 23:50 → 次日 00:00：只有 10 分钟，会被 MIN_H 抬高
+    const a = slot({ starts_at: '2026-08-09T23:50:00', ends_at: '2026-08-10T00:00:00' }, day, fromH)!
+    assert.ok(a.top + a.height <= gridH, `23:50 那条越界了 top=${a.top} h=${a.height} grid=${gridH}`)
+    assert.equal(a.height, MIN_H, '仍要保住最小可见高度——压扁了既读不出标题也点不中')
+    // ② 真正的跨天：今天 23:00 开到明天 10:00
+    const b = slot({ starts_at: '2026-08-09T23:00:00', ends_at: '2026-08-10T10:00:00' }, day, fromH)!
+    assert.ok(b.top + b.height <= gridH, `跨天那条越界了 top=${b.top} h=${b.height} grid=${gridH}`)
+  }
 })

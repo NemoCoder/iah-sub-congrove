@@ -37,6 +37,9 @@ export function useActivityUpload({ projectId, activityId, isRecording, accept, 
   const { message } = AntdApp.useApp()
   const [tasks, setTasks] = useState<Task[]>([])
   const [dragging, setDragging] = useState(false)
+  /// 拖放进出的**净深度**(见 zone 里的注释):子元素冒泡会制造成对的 leave/enter,
+  /// 靠计数抵消才不闪。用 ref 不用 state —— 它是过程量,变一次就重渲染纯属浪费。
+  const depth = useRef(0)
   const input = useRef<HTMLInputElement>(null)
 
   /// 这一批材料落到哪个项目。
@@ -71,9 +74,15 @@ export function useActivityUpload({ projectId, activityId, isRecording, accept, 
     for (let i = 0; i < files.length; i++) {
       const t = batch[i]
       try {
-        await xhrUpload(`/api/projects/${pid}/upload?${qs}`, files[i], (p) => patch(t.key, p), t.ctl)
+        const r = await xhrUpload(`/api/projects/${pid}/upload?${qs}`, files[i], (p) => patch(t.key, p), t.ctl)
+        // ★完全重复的不算「上传完成」★(2026-08-09 liaoruili 选的方案 C):
+        // 同名 + 同哈希 = 误传了两次,后端不会再建一行。这里必须说清楚 ——
+        // 报「上传完成」而列表里没多出东西,比重复本身更让人困惑。
+        const dup = (r as { items?: { name: string; duplicate?: boolean }[] } | undefined)
+          ?.items?.some((x) => x.duplicate)
+        if (dup) message.info(`${t.name} 已经在这里了，没有重复上传`)
         // 录屏/录音传完后端会自动排队转写(v0.3.49),这里说一声,免得用户以为还要手动点。
-        message.success(`${t.name} 上传完成${isRecording ? '——已自动排队转写' : ''}`)
+        else message.success(`${t.name} 上传完成${isRecording ? '——已自动排队转写' : ''}`)
       } catch (e) {
         if (t.ctl.canceled || (e as Error).message === CANCELED) message.info(`${t.name} 已取消`)
         else message.error(`${t.name}：${(e as Error).message}`)
@@ -87,10 +96,16 @@ export function useActivityUpload({ projectId, activityId, isRecording, accept, 
   /// 拖放区:包住文件列表。`children` 是列表本身。
   const zone = (children?: React.ReactNode) => (
     <div
-      onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-      onDragLeave={() => setDragging(false)}
+      // ⚠★别用 dragover/dragleave 直接开关★(2026-08-09 用户:「拖动指定去会一直闪烁」)。
+      // 拖放区里有一整张表格,指针每移到一个**子元素**上,父元素就会收到一次 `dragleave`
+      // (紧接着子元素的 `dragenter` 又冒泡上来)—— 于是 true→false→true 高频来回,边框狂闪。
+      // ★判据换成「进出的净次数」★:dragenter +1 / dragleave −1,只有归零才算真的离开。
+      // dragover 仍要 preventDefault,否则浏览器不允许 drop(那是它的默认行为)。
+      onDragEnter={(e) => { e.preventDefault(); depth.current += 1; setDragging(true) }}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={() => { depth.current -= 1; if (depth.current <= 0) { depth.current = 0; setDragging(false) } }}
       onDrop={(e) => {
-        e.preventDefault(); setDragging(false)
+        e.preventDefault(); depth.current = 0; setDragging(false)
         void send([...e.dataTransfer.files])
       }}
       style={{
