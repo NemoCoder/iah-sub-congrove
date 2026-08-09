@@ -196,8 +196,10 @@ const CASES: &[Case] = &[
     c!("POST", "/api/activities", "建活动", "我在项目 P 是 editor",
        "POST {title,recorder,starts_at,ends_at,project_ids:[P]}",
        "200 回 id;★发起人自动 accepted、记录员自动进名单★(发起人不用对自己定的时间再答复一次)", "D14"),
-    c!(deny "POST", "/api/activities", "不关联项目就不让建", "我是某项目 editor",
-       "POST {project_ids:[]}", "400;★材料权限来自项目成员身份,没有项目就没人管得了它的材料★", "D3"),
+    c!(deny "POST", "/api/activities", "不关联项目就不让建", "类型是「会议」(needs_project=true),我是某项目 editor",
+       "POST {project_ids:[]}", "400;材料权限来自项目成员身份(D3)。\
+        ⚠★只对 needs_project 的类型★(ADR-0002):「个人日程」本来就是零关联项目,\
+        它的材料落发起人的材料区(J0)", "D3"),
     c!(deny "POST", "/api/activities", "不填记录员不让建", "参数其余齐全", "POST {recorder:''}",
        "400;纪要由记录员按模板整理,AI 转写只是原材料", "D14"),
     c!(deny "POST", "/api/activities", "多项目关联要逐个验权", "P1 我是 editor,P2 我不是成员",
@@ -297,6 +299,23 @@ const CASES: &[Case] = &[
        "DELETE /api/activities/{A}/items/{B 的材料}",
        "404 —— SQL 里 activity_id 必须同时匹配路径上的 mid;\
         少这一条就是「换个 mid 就能删别人的」这类典型越权", "D10"),
+    c!("POST", "/api/activities/{id}/materials-project", "★个人活动也能传材料★",
+       "我是发起人,活动零关联项目(类型 needs_project=false)", "POST .../materials-project",
+       "200 回 project_id —— 我的「我的活动材料」(没有就现建,kind='materials');\
+        ★这条以前只写在 PRD §J0 里,代码里一个字都没有★:于是整类「个人日程」传不了任何东西\
+        (2026-08-09 liaoruili 报)", "J0"),
+    c!(deny "POST", "/api/activities/{id}/materials-project", "有关联项目就不该走材料区",
+       "活动关联了 P1", "POST .../materials-project",
+       "400 —— 材料该落项目里(D4);放行的话同一场会的材料会散成两处:\
+        一半在项目树、一半在只有发起人看得见的材料区", "D4"),
+    c!(deny "POST", "/api/activities/{id}/materials-project", "别人的个人活动不给落点",
+       "我是参会人,不是发起人", "POST .../materials-project",
+       "403 —— 材料区只有 owner 有角色(ADR-0005 单点否决),这里先说清楚,\
+        免得他拿着 pid 去 upload 时收到一个费解的 403", "ADR-0005"),
+    c!(deny "GET", "/api/activities/{id}/items", "★超管读不到别人材料区里的东西★",
+       "我是超管;活动零关联项目,材料在发起人的材料区", "GET .../items",
+       "403 —— 超管短路这一条限定在「有关联项目」的活动上(PRD §J1c):\
+        材料区里是体检报告、私人录音这类东西,救火走留痕的影子账户,不走超管直读", "J1c"),
     c!("GET", "/api/activities/{id}/link-history", "线上链接改动可追溯", "链接改过 2 次",
        "GET .../link-history", "200,2 条,含 谁/何时/改成什么", ""),
     c!(deny "GET", "/api/activities/{id}/link-history", "旁听者看不到改动历史", "活动 public,我不是参会人",

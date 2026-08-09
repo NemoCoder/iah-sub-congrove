@@ -305,9 +305,11 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           )}
 
           {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为活动时长依据) */}
+          {/* ★不关联项目的个人活动也能传材料★(PRD §J0):落点由后端算(发起人的「我的活动材料」),
+              所以 canEdit 不再拿「有没有关联项目」当判据 —— 那正是它整类传不了东西的原因。 */}
           {d.participants && (
             <MaterialsCard id={id} projectId={d.projects?.[0]?.id ?? null}
-              canEdit={!canceled && !!d.projects?.length} onOpenMinutes={onOpenMinutes}
+              canEdit={!canceled && (!!d.projects?.length || !!d.can_edit)} onOpenMinutes={onOpenMinutes}
               policy={d.can_edit ? { no_download: m.no_download, no_share: m.no_share } : null}
               onPolicy={(v) => patch(v)} />
           )}
@@ -799,11 +801,11 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
   // ★两个 tab 各一份上传器★:`is_recording` 不同,后端据它决定要不要转写(D5),
   // 共用一个的话切 tab 时正在传的那份会被算成另一类。
   const upMat = useActivityUpload({
-    projectId: projectId ?? 0, activityId: id, isRecording: false,
+    projectId, activityId: id, isRecording: false,
     label: '上传材料', onDone: load,
   })
   const upRec = useActivityUpload({
-    projectId: projectId ?? 0, activityId: id, isRecording: true,
+    projectId, activityId: id, isRecording: true,
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: load,
   })
   const up = tab === 'rec' ? upRec : upMat
@@ -856,7 +858,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
           // 而它其实是**一块内容**。
           { key: 'min', label: '纪要', children: <MinutesTab id={id} canEdit={canEdit} onOpen={onOpenMinutes} /> },
         ]}
-        tabBarExtraContent={canEdit && projectId != null && tab !== 'min' && (
+        tabBarExtraContent={canEdit && tab !== 'min' && (
           // ★上传录屏单独一个入口★(原型评审:「最好单独有个上传录屏的入口」)——
           // 因为它决定「会不会被转写」,和传一份参考资料完全是两件事。
           <Space size={6}>{up.button}</Space>
