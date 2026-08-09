@@ -130,6 +130,12 @@ GRANT ALL ON SCHEMA public TO sub_congrove_dev_cli;  -- 门禁脚本还要连
 app 角色一点权限都没有 → `no schema has been selected to create in` → CrashLoopBackOff。
 ★报错文案指向 search_path,真凶是 ACL。★
 
+⚠★清库会把超管位一起清掉★(2026-08-09 踩到):`app_user.is_super` 是库里的状态,
+而 `/api/me` **查库**判超管(cookie 里那份是登录快照,撤销要立刻生效)——于是清库之后
+超管入口凭空消失,而当事人的会话还没过期、不会再走一次登录。
+★已在 `lib.rs` 里治本★:`CONGROVE_SUPER_USERS` 现在在**启动时**(跑完迁移就)种进 app_user,
+不再搭登录的顺风车。所以清完库**重启一次 pod** 就好,不必手动 UPDATE。
+
 ⚠★用特性分支部 dev 之后必须把 ref 改回 `dev`★:`POST /deploy {ref:...}` 会把记录里的 ref
 改掉并留在那里,之后 CI 的 `ci-deploy` 沿用它 —— **每次合并到 dev 构建的都是那个过期分支**,
 而且完全静默(gate 绿、deploy 绿、构建成功,只有线上版本不变)。

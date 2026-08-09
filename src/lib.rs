@@ -39,6 +39,27 @@ pub async fn run() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("migrations applied");
 
+    // ★超管白名单在**启动时**就种下去,不等谁来登录★。
+    //
+    // ⚠★2026-08-09 liaoruili:「超管没有显示开发者了吗」——ADR-0001 的清库把超管位清没了★。
+    // 原来 `CONGROVE_SUPER_USERS` 只在 `ensure_app_user`(登录路径)里生效,于是清库之后:
+    //   · 他的会话 cookie 还没过期 → ★不会再走一次登录★,而 /api/me 的 is_super 是**查库**的
+    //     (那是对的:撤销超管要立刻生效),于是超管入口凭空消失;
+    //   · 更糟的是 app_user 那一行可能被**非登录路径**先建出来(projects.rs 的
+    //     `ensure_platform_user`:把他加进项目成员时就会插一行,is_super 默认 false),
+    //     此后就算重新登录也只是 `OR` 上白名单——对,但得等他自己想起来重登。
+    // 而 ADR-0001 定的是**每次部署都清库**,所以这不是一次意外,是每次都会复现的。
+    // 白名单本来就自称「种子」——那它就该在**能种的最早时刻**种下去,而不是搭登录的顺风车。
+    if !cfg.super_users.is_empty() {
+        for u in &cfg.super_users {
+            sqlx::query(
+                "INSERT INTO app_user (username, is_super) VALUES ($1, true)
+                 ON CONFLICT (username) DO UPDATE SET is_super = true")
+                .bind(u).execute(&pool).await?;
+        }
+        tracing::info!(users = ?cfg.super_users, "超管白名单已种入 app_user");
+    }
+
     let storage = storage::Storage::build(&cfg).await;
     tracing::info!(bucket = %storage.bucket, "s3 client ready");
 
