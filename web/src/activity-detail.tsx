@@ -825,8 +825,14 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
         { title: '大小', dataIndex: 'size', width: 90, render: (v) => fmtSize(v) },
         { title: '上传', width: 150, render: (_, it) => `${it.created_by} · ${fmtTime(it.created_at).slice(5, 16)}` },
         {
-          title: '', width: 110,
-          render: (_, it) => <Space size={8}>
+          // ⚠★width 只是**建议值**,拦不住换行★(2026-08-09 liaoruili:「下载分享删除 成了 2 行」)。
+          // 名称列没设宽,它会把剩余宽度全吃掉;真到装不下时 AntD 压缩的是这一列,
+          // 于是三个词各自折成上下两行(「下/载」「分/享」「删/除」),读起来像六个按钮。
+          // 两件事一起做才管用:① 宽度给够;② ★整块 nowrap★ —— 有了它,
+          // 列宽以后怎么调都不会再断行(与项目页操作列 v0.3.56 那次是同一个教训)。
+          title: '', width: 150,
+          onCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+          render: (_, it) => <Space size={12} style={{ whiteSpace: 'nowrap' }}>
             <a href={`/api/items/${it.id}/download`}>下载</a>
             {/* ★分享只给能编辑的人★:建公开链接是**绕过项目授权**的动作(share.rs 头注),
                 只读成员不该有这个能力;后端也会再判一次(前端隐藏不是安全边界)。 */}

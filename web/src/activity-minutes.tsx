@@ -441,7 +441,11 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
           {
             // ★录制也要能删★(2026-08-09 liaoruili):和材料同一条规则 ——
             // 项目树里删不掉,唯一入口在活动这边。
-            title: '', width: 40,
+            // ⚠★width: 40 装不下「删除」两个字★(2026-08-09 liaoruili:「这里的删除也是」)——
+            // 它折成了「删 / 除」上下两行。width 只是建议值,真正管用的是 nowrap;
+            // 宽度也一并给够(与活动详情那张材料表同一次修的同一个毛病)。
+            title: '', width: 60,
+            onCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
             render: (_, it) => canEdit && (
               <Popconfirm title={`删除「${it.name}」？`} description="进项目回收站，30 天内可还原。"
                 okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
