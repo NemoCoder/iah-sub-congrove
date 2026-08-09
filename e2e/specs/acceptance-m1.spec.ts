@@ -77,7 +77,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     // 占位符照实物抄(e2e/probe.mjs 抓的清单),不凭印象写
     await page.getByPlaceholder('如：8 月第二次组会').fill(mtitle)
     // 线上链接 —— ★这是「按时开会」那一步的落点★：到点了人要从这里点进去
-    await page.getByPlaceholder('腾讯活动 / Zoom 链接').fill(url)
+    await page.getByPlaceholder('腾讯会议 / Zoom 链接').fill(url)
 
     // 时间：默认值可能是空的，明天这个点开一小时
     const start = new Date(Date.now() + 26 * 3600_000)

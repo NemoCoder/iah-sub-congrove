@@ -278,7 +278,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             <Input placeholder="如：明德主楼 1016" />
           </Form.Item>
           <Form.Item name="online_url" label="线上链接" style={{ flex: 1 }}>
-            <Input placeholder="腾讯活动 / Zoom 链接" />
+            <Input placeholder="腾讯会议 / Zoom 链接" />
           </Form.Item>
         </Space>
 
