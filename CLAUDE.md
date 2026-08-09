@@ -202,6 +202,22 @@ sqlx 全用 runtime 查询(无 `query!` 宏)→ **改 SQL 编译器不报错**�
   在那之前的零碎改动仍然只动第三位(0.3.57→0.3.58…)。
   ★★改完 Cargo.toml(含只改 version)**必须跑一次 cargo check 再提交**——它刷新 Cargo.lock;
   漏了则 kaniko 的 `cargo build --locked` 直接拒绝(v0.3.1 就这么挂过一次构建,0096)。★★
+### 分支纪律(2026-08-09 定,★按业界通用做法★)
+
+一度攒到 **23 条远端分支 / 45 条本地分支**,清理时才发现除 dev/main 外全是已合并的僵尸。规矩:
+
+| | |
+|---|---|
+| **一件事一条分支** | 命名 `<type>/<简述>`:`feat/` `fix/` `docs/` `chore/` `test/` |
+| **短命** | 目标 < 1 天。★分支活得越久,「合的时候已经不是当初那回事」越贵★ |
+| **合并即删** | 仓库设置 `default_delete_branch_after_merge` **已打开** —— 不靠人记得 |
+| **不复用** | ★别拿一条长期分支反复开 PR★:那会让多个 PR 互相污染、review 范围说不清、revert 时拆不开。合并后作废,下一件事开新的 |
+
+⚠ 清理前先**证明**安全:`git merge-base --is-ancestor <分支> gitea/dev` —— 是祖先才删,
+并先存一份 SHA(恢复只需 `git push gitea <sha>:refs/heads/<名字>`)。
+⚠ Gitea 一次删多个 ref 会被 pre-receive hook 拒,**逐条删**。
+⚠ 受保护的分支删不掉(`feat/v0.5-m0` 就是),要先去仓库设置取消保护。
+
 - 三推 Gitea(内网,主)+ Gitee + GitHub(origin 挂三 push URL,已配好);**push 由仓库所有者做,Claude 只 commit**。
   密钥绝不入库,提交前 `git diff --staged` 扫明文密钥。
 - 参考子系统:`../citeroot/`(**主范本**:Rust 栈、auth/storage/Dockerfile/流式代理全在这)、
