@@ -85,7 +85,37 @@ dev 库按 ADR-0001 每次部署清空；prod 通道还没开。**没有要修�
 - 不改秒传的判据（`readable_blob` 只认 `sha_verified` + 逐行 `effective_role`，本身是对的，
   A2 是从**写**侧破坏它的前提，不是从它这里绕过）。
 
-## ⚠ 一个必须先确认的实现风险
+## ~~⚠ 一个必须先确认的实现风险~~ → ★已实测，风险关闭★（2026-08-09）
+
+**结论先写：Garage 支持 `UploadPartCopy`（服务端分片复制），D2 的归位对多大的对象都成立。**
+
+实测（对 dev 的 `s3api.ruciah.com`，脚本见 PR 描述）：12 MiB 源对象 → 3 个分片（5+5+2 MiB）
+逐片 `UploadPartCopy` → complete → 取回比对 **逐字节一致**；单次 `CopyObject` 同样通过。
+
+> ★验证方法本身值得记下来★（liaoruili 2026-08-09 纠正）：我原本写的是「必须先传一个 >5 GiB
+> 的对象验 CopyObject 的天花板」——**把验证条件想复杂了**。
+> 要验的不是「Garage 的天花板在哪」，是**「UploadPartCopy 这条码路通不通」**；
+> 而 S3 的最小分片正好是 5 MiB，用一个 12 MiB 的对象跑 3 片，走的逻辑与 50 GB 完全相同。
+> ★通了就是通了，天花板在哪不再是问题——因为根本不会去撞它。★
+> 教训一般化：**要验的是自己那段代码的分支，不是依赖方的极限值**；
+> 后者往往贵得多，而且验完还是别人的实现细节，随时会变。
+
+### 由此定下的实现
+
+```
+promote(tmp_key, real_sha, size):
+    dst = blobs/<real_sha>
+    if exists(dst): 指过去，删 tmp        # 去重，零拷贝
+    elif size <= COPY_SINGLE_MAX (4 GiB): copy_object(tmp → dst)
+    else:                                  # 分片复制，已实测可行
+        multipart copy，PART = 256 MiB（10000 片上限 → 支持到 ~2.4 TiB）
+    指过去，删 tmp；置 sha_verified = true
+```
+
+阈值取 4 GiB 而不是贴着 5 GiB：留余量，且**这两条分支的行为必须一致**（都产出同一份字节），
+所以阈值取多少不影响正确性，只影响走哪条路。
+
+## ~~原风险描述（留作追溯）~~
 
 `storage.rs:96` 的 `copy()` 用的是 **CopyObject**，而 S3 语义下 CopyObject 有 **5 GiB** 上限，
 超过要走 **multipart copy**（UploadPartCopy）。而这个系统的主用例正是 **GB 级会议录屏**。

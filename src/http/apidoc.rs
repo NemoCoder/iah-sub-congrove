@@ -234,7 +234,11 @@ pub const APIS: &[Api] = &[
 
     // ── 大文件直传 ──
     api!("POST", "/api/projects/{id}/media/begin", "直传", "≥editor",
-         "预签名直传开始;带指纹可认领 24h 内没传完的同一文件(断点续传)",
+         "预签名直传开始;带指纹可认领 24h 内没传完的同一文件(断点续传)。
+          ⚠★对象先落临时 key `uploads/<iid>-<rand>`,与申报的 sha 无关★(A2/D1):
+          规范 key `blobs/<H>` 只能由**服务端算完真实哈希之后的归位**写出来 ——
+          否则任何人都能占住 blobs/<别人文件的哈希> 塞垃圾,让对方上传时被静默引用到它。
+          申报的 sha 仍用于断点认领与秒传预检,但不参与 key 的推导",
          "name, size, mime, parent_id, sha256, fp"),
     api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节"),
     api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",

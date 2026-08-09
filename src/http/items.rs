@@ -32,6 +32,22 @@ pub(crate) fn blob_key(sha: &str) -> String {
     format!("blobs/{sha}")
 }
 
+/// 上传落地前的**临时** key —— ★与任何哈希无关★。
+///
+/// ⚠★这是 A2 的根治点(2026-08-09 全量审计,两路独立视角同时报出)★。
+/// 不变量是「`blobs/<H>` 里的字节哈希必须等于 H」,整套去重/秒传/引用计数都建在它上面。
+/// 而预签名直传原来直接拿**客户端申报的 sha** 当 key,于是:
+///   · 占位:先申报别人文件的哈希 H 把 `blobs/H` 占了、塞垃圾;真正拥有那份文件的人
+///     后来上传时,流式那条路「对象已存在就直接引用」→ ★静默引用到垃圾,还打上 sha_verified★;
+///   · 覆盖:begin 时的 `exists()` 与 complete 之间隔着 6 小时的分片有效期(TOCTOU)。
+///
+/// ★根治的形式是「谁能往 blobs/* 写」★:收敛成**只有服务端算过哈希的路径**(promote)。
+/// 直传一律先落这个临时 key,以后新增任何上传路径也不会重新打开这个洞
+/// —— 除非它显式去写 `blobs/`,而那由 `scripts/blobkey-check.sh` 挡着。
+pub(crate) fn tmp_upload_key(iid: i64, rand: &str) -> String {
+    format!("uploads/{iid}-{rand}")
+}
+
 /// 我能不能读到某份内容(按 sha256)——**秒传的安全闸**。
 /// 百度网盘那个著名的坑:只凭哈希就能「认领」文件 = 知道哈希的人可以把别人的私有文件
 /// 秒传进自己账户。所以这里区分两件事:
@@ -238,6 +254,11 @@ pub struct ItemRow {
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_id: Option<i64>,
+    /// ★客户端申报的哈希与服务端算出的真值不符★(A2/D3):很可能在传输中损坏了。
+    /// 预签名分片上没有 checksum,complete 只对**字节数** —— 保长度的损坏能整条过闸。
+    /// 不阻止使用(内容自洽),但界面要说出来:此前这个信号被直接改写成了「已核验」。
+    #[sqlx(default)]
+    pub sha_declared_mismatch: bool,
 }
 
 /// GET /api/projects/{pid}/items —— 整空间平铺一次拉全(≥viewer),前端组树。
@@ -252,7 +273,7 @@ pub async fn list(
     // 用于拼 S3 key,传完才回填 s3_key。不过滤的话「还没传完就出现在列表里」(2026-08-03 反馈),
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
-        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id
+        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
            FROM items WHERE project_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     )
@@ -272,7 +293,7 @@ pub async fn detail(
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id
+        "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
            FROM items WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(iid)

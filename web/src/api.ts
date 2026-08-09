@@ -77,6 +77,9 @@ export type Item = {
   /// ★属于某场活动的材料★(D10 的只读区):非空时**不画**改名/移动/删除 ——
   /// 后端也拒(items.rs 的 update/remove 里有判断),这里不画是为了不引导人去犯错。
   activity_id?: number | null
+  /// ★客户端申报的哈希与服务端算出的真值不符★(A2/D3):很可能传输中损坏了。
+  /// 不阻止使用,但要在界面上说出来 —— 此前这个信号被后端直接改写成了「已核验」。
+  sha_declared_mismatch?: boolean
   created_at: string
   updated_at: string
 }

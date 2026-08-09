@@ -612,6 +612,14 @@ export function ProjectsView({ me, onOpenActivity }: {
                         {it.activity_id && it.kind === 'folder' && (
                           <Tag color="gold" style={{ marginLeft: 8 }}>活动 · 只读</Tag>
                         )}
+                        {/* ★传输校验对不上就说出来★(A2/D3):预签名分片上没有 checksum,
+                            complete 只对字节数,所以保长度的损坏能整条过闸。不拦你用,
+                            但别让人以为一切正常 —— 此前后端把这个信号改写成了「已核验」。 */}
+                        {it.sha_declared_mismatch && (
+                          <Tooltip title="上传时服务端算出的哈希与你本地算的不一致，很可能传输中损坏了。内容能打开，但建议重传一次核对。">
+                            <Tag color="orange" style={{ marginLeft: 8 }}>校验不符</Tag>
+                          </Tooltip>
+                        )}
                       </>
                     )),
                 },

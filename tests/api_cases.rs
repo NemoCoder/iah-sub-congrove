@@ -306,6 +306,20 @@ const CASES: &[Case] = &[
        "DELETE /api/activities/{A}/items/{B 的材料}",
        "404 —— SQL 里 activity_id 必须同时匹配路径上的 mid;\
         少这一条就是「换个 mid 就能删别人的」这类典型越权", "D10"),
+    c!("POST", "/api/projects/{id}/media/begin", "★直传永远不落在规范 key 上★",
+       "我申报 sha=H,而 blobs/H 尚不存在", "POST {sha256:H, size, name}",
+       "200,但 items.upload_key 是 `uploads/<iid>-<rand>` ——★不是 blobs/H★。\
+        原来这里直接拿申报值当 key:占住 blobs/H 塞垃圾,真正拥有那份文件的人后来上传时\
+        会被「对象已存在就直接引用」静默引用到垃圾、还打上 sha_verified 继续当秒传源扩散(审计 A2)", "A2"),
+    c!("POST", "/api/items/{id}/media/complete", "★归位只在服务端算完真实哈希之后★",
+       "直传完成,服务端算出真实哈希 R", "complete 后台 verify_and_promote",
+       "s3_key 变成 blobs/<R>、临时对象删掉、sha_verified=true。\
+        ★归位失败则停在临时 key 且 sha_verified 保持 false★ —— 文件照常下得到,\
+        但不能当秒传源(fail-closed)。大对象走 UploadPartCopy(2026-08-09 实测 Garage 支持)", "A2"),
+    c!("POST", "/api/items/{id}/media/complete", "★申报值≠真值要留痕,不能改写成「已核验」★",
+       "传输中损坏但字节数没变(complete 只对大小)", "complete 后台核验",
+       "sha_declared_mismatch=true,前端提示「建议重传」。\
+        原来只 warn 一句然后照样置 sha_verified=true —— ★把强信号改写成了「已核验」★(审计 A2/D3)", "A2"),
     c!(deny "POST", "/api/activities", "★跨度超过 30 天就拒★", "起止差 205 天(月份打错)",
        "POST {starts_at:'8-08', ends_at:'次年 3-01'}",
        "400 带可读文案 —— ★必须在应用层拒★:只靠数据库 CHECK 的话 error.rs 会把它映射成 500\

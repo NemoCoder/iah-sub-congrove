@@ -167,13 +167,16 @@ pub async fn begin(
         // ★续传沿用**断点原本那个 key**★(v0.3.55 审计):这里原先也是硬拼 pid/iid,
         // 于是即使断点侥幸认领成功,接下来的分片和 complete 也会打到另一个 key 上 —— 拼坏且不报错。
         Some((_, old_key, _)) => old_key.clone(),
-        None => match input.sha256.as_deref().map(str::trim).filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())) {
-            Some(sha) => {
-                let k = crate::http::items::blob_key(sha);
-                if state.storage.exists(&k).await { format!("{k}-{}", rand_suffix()) } else { k }
-            }
-            None => format!("spaces/{pid}/{iid}/blob"),
-        },
+        // ★直传永远不落在规范 key 上★(A2/D1,2026-08-09 全量审计)。
+        //
+        // 这里原来是「`blobs/<客户端申报的 sha>` 不存在就直接用它当 key」——
+        // 而申报值只校验了「64 位十六进制」这个形状,内容是什么完全没人看。
+        // 那句「已存在则另起 `-<rand>` 绝不覆盖」★只在 begin 那一刻成立★:
+        // complete 落对象时是**覆盖**语义,中间隔着 6 小时的分片有效期(TOCTOU)。
+        //
+        // 现在一律落临时 key,真实哈希由服务端在 `verify_and_promote` 里算完再归位。
+        // 申报的 sha 仍然记进 items.sha256(断点续传认领与秒传预检要用),但**不再参与 key 的推导**。
+        None => crate::http::items::tmp_upload_key(iid, &rand_suffix()),
     };
     // key 记进行里:complete/part/abort 都要用同一个(内容寻址之后不能再按 pid/iid 现拼)。
     sqlx::query("UPDATE items SET upload_key = $2, sha256 = $3 WHERE id = $1")
@@ -448,12 +451,56 @@ async fn verify_sha(state: AppState, iid: i64, key: String) {
     let real = hex::encode(hasher.finalize());
     let declared: Option<String> = sqlx::query_scalar("SELECT sha256 FROM items WHERE id = $1")
         .bind(iid).fetch_optional(&state.pool).await.ok().flatten().flatten();
-    if declared.as_deref() != Some(real.as_str()) {
-        tracing::warn!(item = iid, declared = ?declared, real = %&real[..8], "核验哈希:与客户端申报不符,以真值为准");
+    // ★D3:「申报 ≠ 真值」要留痕,不能改写成「已核验」★(A2 的第二半)。
+    //
+    // 这里原来只 `warn!` 一句,然后照样置 sha_verified=true ——
+    // ★把「内容和客户端算的不一样」这个强信号,改写成「已核验」★。
+    // 而这个信号有价值:预签名 part 上没有任何 checksum(storage.rs 头注,刻意压掉的),
+    // complete 只对**字节数**,所以任何**保长度**的传输损坏(代理改写、坏内存、串片)都能过闸。
+    // 不符 = 很可能传坏了。不阻止使用(内容自洽),但别假装一切正常。
+    let mismatch = declared.as_deref() != Some(real.as_str());
+    if mismatch {
+        tracing::warn!(item = iid, declared = ?declared, real = %&real[..8],
+                       "核验哈希:与客户端申报不符 —— 很可能传输中损坏,已标记");
     }
-    let _ = sqlx::query("UPDATE items SET sha256 = $2, sha_verified = true WHERE id = $1")
-        .bind(iid).bind(&real).execute(&state.pool).await;
-    tracing::info!(item = iid, sha = %&real[..8], "核验哈希:完成,可作秒传源");
+
+    // ★D2:归位(promote)——只有算完真实哈希的这一刻,才允许往规范 key 上写★。
+    let dst = crate::http::items::blob_key(&real);
+    if key != dst {
+        if state.storage.exists(&dst).await {
+            // 已经有同内容的对象了 → 直接指过去,零拷贝。这就是去重。
+            // ⚠ 这里的「已存在」现在**可信**:D1 之后,`blobs/*` 只可能由本函数写出来。
+        } else {
+            // 不存在 → 服务端复制过去。大对象走分片复制(2026-08-09 实测 Garage 支持)。
+            const COPY_SINGLE_MAX: i64 = 4 * 1024 * 1024 * 1024;   // 贴着 5 GiB 上限留余量
+            let (size, mime): (Option<i64>, Option<String>) =
+                sqlx::query_as("SELECT size, mime FROM items WHERE id = $1")
+                    .bind(iid).fetch_optional(&state.pool).await.ok().flatten()
+                    .unwrap_or((None, None));
+            let mime = mime.unwrap_or_else(|| "application/octet-stream".into());
+            let r = match size {
+                Some(sz) if sz > COPY_SINGLE_MAX => state.storage.copy_multipart(&key, &dst, sz, &mime).await,
+                _ => state.storage.copy(&key, &dst).await,
+            };
+            if let Err(e) = r {
+                // ★归位失败就停在这里:s3_key 仍指临时对象,sha_verified 保持 false★。
+                // 文件照常下得到,但**不能当秒传源**(readable_blob 只认 sha_verified)——fail-closed。
+                tracing::warn!(error = %e, item = iid, "核验哈希:归位失败,保留临时对象且不置 verified");
+                let _ = sqlx::query("UPDATE items SET sha256 = $2, sha_declared_mismatch = $3 WHERE id = $1")
+                    .bind(iid).bind(&real).bind(mismatch).execute(&state.pool).await;
+                return;
+            }
+        }
+        // 先改指向再删临时对象:反过来的话中间崩一下就指着一个不存在的 key。
+        let _ = sqlx::query("UPDATE items SET s3_key = $2 WHERE id = $1")
+            .bind(iid).bind(&dst).execute(&state.pool).await;
+        let _ = state.storage.delete(&key).await;
+    }
+
+    let _ = sqlx::query(
+        "UPDATE items SET sha256 = $2, sha_verified = true, sha_declared_mismatch = $3 WHERE id = $1")
+        .bind(iid).bind(&real).bind(mismatch).execute(&state.pool).await;
+    tracing::info!(item = iid, sha = %&real[..8], key = %dst, "核验哈希:完成并已归位,可作秒传源");
 }
 
 /// 撞名时的随机后缀(短即可,只为避免覆盖已有对象)。

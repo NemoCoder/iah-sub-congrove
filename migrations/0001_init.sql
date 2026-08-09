@@ -317,6 +317,12 @@ CREATE TABLE items (
   mime         text,
   sha256       text,
   sha_verified boolean NOT NULL DEFAULT false,
+  -- ★客户端申报的哈希与服务端算出的真值不符★（A2/D3，2026-08-09 全量审计）。
+  -- 预签名分片上没有任何 checksum（storage.rs 头注，刻意压掉的），complete 只对**字节数**，
+  -- 所以任何**保长度**的传输损坏（代理改写、坏内存、串片）都能过闸。不符 = 很可能传坏了。
+  -- ⚠ 不阻止使用（内容自洽，它就是它自己的哈希），但★别假装一切正常★ ——
+  --   此前这里只 warn 一句然后照样置 sha_verified=true，把强信号改写成了「已核验」。
+  sha_declared_mismatch boolean NOT NULL DEFAULT false,
   created_by   text   NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
