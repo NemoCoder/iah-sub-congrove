@@ -279,11 +279,27 @@ pub async fn detail(
         .ok_or(AppError::NotFound)?;
     if view == ActivityView::Observer {
         // ★逐字段挑出来给★,不是把 ActivityRow 塞进去删两个键——后者在加字段时会**默认泄露**。
+        //
+        // ⚠★外层形状必须与正常版一致★(2026-08-09 全量审计 A3):这里原来直接吐**扁平对象**
+        // (`{id,title,…,observer:true}`),没有 `activity` 这一层,而前端第一行就是
+        // `const m = d.activity` → 下一行 `m.status` **TypeError,整页白屏**。
+        // 触发路径:日程页「公开活动」广场点标题、站内信 `?activity=` 深链、旁听后从日历点进去。
+        // ★两边的门禁互相抵消了★:E2E 断言的恰好是扁平形状(把契约钉成了扁平),
+        // 而 `tsc` 认定 `activity` 必存在 —— 于是**没有任何一道闸会红**。
+        // 裁剪的是**内容**(无名单、无关联项目、can_edit=false),不该顺带把**结构**也裁了。
         return Ok(Json(json!({
-            "id": m.id, "title": m.title, "agenda": m.agenda,
-            "starts_at": m.starts_at, "ends_at": m.ends_at, "timezone": m.timezone,
-            "location": m.location, "online_url": m.online_url,
-            "visibility": m.visibility, "status": m.status,
+            "activity": {
+                "id": m.id, "title": m.title, "agenda": m.agenda,
+                "starts_at": m.starts_at, "ends_at": m.ends_at, "timezone": m.timezone,
+                "location": m.location, "online_url": m.online_url,
+                "visibility": m.visibility, "status": m.status,
+                // 旁听者不属于名单,也没有答复 —— 显式给 null,别让前端读到 undefined
+                "my_status": serde_json::Value::Null, "is_private": false,
+                "organizer": "", "recorder": "", "created_at": m.created_at,
+            },
+            "participants": serde_json::Value::Null,
+            "projects": [],
+            "can_edit": false,
             "observer": true,
         })));
     }

@@ -330,6 +330,30 @@ const CASES: &[Case] = &[
     c!(deny "PUT", "/api/activities/{mid}/items/{iid}", "★不能借 A 活动改 B 活动材料的名★",
        "我是 A 活动关联项目的 editor;iid 属于 B 活动", "PUT /api/activities/{A}/items/{B 的材料}",
        "404 —— activity_id 必须同时匹配路径上的 mid,与删除那条同一个越权形状", "D10"),
+    c!(deny "POST", "/api/projects/{id}/upload", "★不能往别人的活动里注入材料★",
+       "我在自己的项目 P 里是 admin;activity_id 指向一场与 P 无关的活动",
+       "POST /api/projects/P/upload?activity_id=<别人的会>",
+       "404 —— ★判权判的是路径上的 pid,写的却是参数里的 activity_id,两者必须对账★。\
+        少这一句就是:文件出现在别人活动的材料里、署我的名,而对方删不掉也改不了\
+        (那两条接口判的是 item 所属项目);带 is_recording 还能改写对方的时长统计。\
+        2026-08-09 全量审计 A1", "D10"),
+    c!(deny "POST", "/api/projects/{id}/items", "★不能往活动文件夹里塞东西★",
+       "parent_id 是某场活动的材料文件夹", "POST {kind:'file',parent_id:<活动文件夹>}",
+       "400「这是活动的材料文件夹,只读」—— D10 的**写入方向**。\
+        ★守卫只看『被操作项自己』是不够的,父节点那一侧同样是入口★:\
+        2026-08-09 先修的是『把材料拿出去』(改名/移动/删除),这条是没修完的另一半(审计 A6)", "D10"),
+    c!(deny "PUT", "/api/items/{id}", "★不能把文件移进活动文件夹★",
+       "parent_id 是某场活动的材料文件夹", "PUT {parent_id:<活动文件夹>}",
+       "400;同上,check_parent 现在会拒绝带 activity_id 的父节点", "D10"),
+    c!("PUT", "/api/activity-types/{id}", "★只改占忙闲、不带 name★",
+       "预置的「个人日程」或我自建的类型", "PUT {busy_default:false}",
+       "200 —— name 必须是 Option。原来它是裸 String,axum 在**进 handler 之前**就 422,\
+        于是 A3 说的『自建类型唯一的开关』★从来没工作过★(审计 A4)", "A3"),
+    c!("GET", "/api/activities/{id}", "★旁听者拿到的是裁剪版,但外层形状一样★",
+       "活动 public,我与它毫无关系", "GET /api/activities/{id}",
+       "200 且仍是 {activity:{…}, participants:null, projects:[], can_edit:false, observer:true}。\
+        ★裁剪的是内容不是结构★:原来直接吐扁平对象,前端 `d.activity.status` 当场白屏,\
+        而 E2E 恰好把契约钉成了扁平、tsc 又认定 activity 必存在 —— 两道闸互相抵消(审计 A3)", "D9"),
     c!(deny "POST", "/api/projects/{id}/upload", "★材料区不收散文件★",
        "pid 是我的「我的活动材料」", "POST /upload(不带 activity_id)",
        "403 —— 材料区在 require_role 的写闸上一律只读(PRD §J1);\

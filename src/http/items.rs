@@ -351,17 +351,60 @@ pub async fn check_parent(pool: &sqlx::PgPool, pid: i64, parent_id: Option<i64>)
     // ⚠ 内层变量**不能**也叫 pid:那会遮蔽外层的项目 id,让下面的同项目校验恒假
     //   (2026-08-06 批量改名 sid→pid 时真的踩过一次)。
     if let Some(parent) = parent_id {
-        let ok: Option<(i64, String)> =
-            sqlx::query_as("SELECT project_id, kind FROM items WHERE id = $1 AND deleted_at IS NULL")
+        let ok: Option<(i64, String, Option<i64>)> =
+            sqlx::query_as("SELECT project_id, kind, activity_id FROM items WHERE id = $1 AND deleted_at IS NULL")
                 .bind(parent)
                 .fetch_optional(pool)
                 .await?;
         match ok {
-            Some((parent_pid, kind)) if parent_pid == pid && kind == "folder" => {}
+            // ★不许往活动文件夹里塞东西★(D10 的**写入方向**,2026-08-09 全量审计 A6)。
+            //
+            // ⚠ 这是 2026-08-09 那次修复**没修完的另一半**:当时堵的是「把活动材料拿出去」
+            //   (改名/移动/删除,见 update/remove 里那两处守卫),而「把别的东西塞进来」一直没人管——
+            //   `check_parent` 只验「存在 / 是文件夹 / 同项目 / 未软删」,**从不问父节点是不是活动文件夹**。
+            //   于是 editor 在项目树里进到 `📁 2026-08-09 组会` 就能直接上传/新建/移入,
+            //   产生的行 activity_id 为 NULL → 不受那两道守卫约束、可继续改名删除,却坐在只读区里;
+            //   活动页按 activity_id 过滤看不到它们,项目树里看得到 —— 两边各说各话。
+            // ★守卫只看「被操作项自己」是不够的,父节点那一侧同样是入口。★
+            Some((_, _, Some(_))) =>
+                return Err(AppError::BadRequest("这是活动的材料文件夹,只读;要加东西请到那场活动的页面里传".into())),
+            Some((parent_pid, kind, None)) if parent_pid == pid && kind == "folder" => {}
             _ => return Err(AppError::BadRequest("父节点不存在或不是本项目的文件夹".into())),
         }
     }
     Ok(())
+}
+
+/// 这场活动的材料该不该落在这个项目里 —— ★A1:判权判的是项目,写的却是活动,两者必须对账★。
+///
+/// ⚠★2026-08-09 全量审计发现的越权口子★:`upload` 判的是**路径上的 pid**(我在这个项目里是不是
+/// editor),写进库的却是**请求参数里的 activity_id**,而这两者之间**一次校验都没有**
+/// (`items.rs` 全文 `activity_projects` 出现 0 次)。于是:
+///   任何登录用户建一个自己的项目 P(自动 admin)→ `POST /projects/P/upload?activity_id=<别人的会>`
+///   → 文件出现在**别人活动**的材料/录制里、署我的名;而对方**删不掉也改不了**
+///   (那两条接口判的是 item 所属项目,他们在 P 里没角色 → 404);
+///   带 `is_recording=true` 还能改写对方的时长统计(口径取 max(duration_sec))。
+///
+/// 判据与 `activities::materials_project` **同一套**,别在这里另立一套:
+///   · 活动有关联项目 → pid 必须是其中之一(且项目未软删);
+///   · 活动零关联项目(ADR-0002 的「个人日程」)→ pid 必须是**发起人本人**的材料区。
+pub async fn check_activity_target(pool: &sqlx::PgPool, mid: i64, pid: i64, actor: &str) -> AppResult<()> {
+    let linked: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
+          WHERE mp.activity_id = $1 AND p.deleted_at IS NULL LIMIT 1")
+        .bind(mid).fetch_optional(pool).await?;
+    if linked.is_some() {
+        let ok: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM activity_projects WHERE activity_id = $1 AND project_id = $2")
+            .bind(mid).bind(pid).fetch_optional(pool).await?;
+        // ★回 404 不回 403★:他连「这场活动存在」都不该从这条路确认(与 perm.rs 的口径一致)
+        return if ok.is_some() { Ok(()) } else { Err(AppError::NotFound) };
+    }
+    let ok: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM activities a JOIN projects p ON p.id = $2 AND p.kind = 'materials' AND p.owner = a.organizer
+          WHERE a.id = $1 AND a.organizer = $3")
+        .bind(mid).bind(pid).bind(actor).fetch_optional(pool).await?;
+    if ok.is_some() { Ok(()) } else { Err(AppError::NotFound) }
 }
 
 /// POST /api/projects/{pid}/items —— 建文件夹/空文档(≥editor)。
@@ -858,8 +901,13 @@ pub async fn upload(
     // 所以带 activity_id 的上传走 `require_material_write`(材料区认「这是我自己的区」,
     // 普通项目照旧 ≥editor);不带 activity_id 的照常走 require_role,于是
     // 「直接往材料区里传散文件」自动被挡住,不必再写一句判断。
+    let actor0 = id.require_username()?;
     match q.activity_id {
-        Some(_) => crate::perm::require_material_write(&state.pool, &id, pid).await?,
+        Some(mid) => {
+            crate::perm::require_material_write(&state.pool, &id, pid).await?;
+            // ★A1:活动与项目必须对账★——判权判的是 pid,写的是 mid,少这一句就是越权注入口
+            check_activity_target(&state.pool, mid, pid, actor0).await?;
+        }
         None => { require_role(&state.pool, &id, pid, Role::Editor).await?; }
     }
     check_parent(&state.pool, pid, q.parent_id).await?;
@@ -874,9 +922,12 @@ pub async fn upload(
     //  「而且是单独放到根下面的一个文件夹」）。
     // 之前活动材料的 parent_id 一直是 NULL —— ★全都散在项目根目录，和人自己整理的文件混在一起★，
     // 一场会传 4 段录屏就是根目录上 4 行,几场会之后项目文件页就没法看了。
+    // ★带 activity_id 就一律落活动文件夹,**忽略** parent_id★(A6)。
+    // 原来是 `Some(mid) if q.parent_id.is_none()`,于是同时带上 parent_id 就能把活动材料
+    // 放到项目树的任意角落 —— 而「名称与位置由活动决定」正是 D10 的全部内容。
     let parent = match q.activity_id {
-        Some(mid) if q.parent_id.is_none() => Some(activity_folder(&state, pid, mid, actor).await?),
-        _ => q.parent_id,
+        Some(mid) => Some(activity_folder(&state, pid, mid, actor).await?),
+        None => q.parent_id,
     };
 
     // 收**所有**文件字段(2026-08-04 审计):原来处理完第一个就 return,同一请求里的第二个文件

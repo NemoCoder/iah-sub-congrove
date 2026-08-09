@@ -107,8 +107,14 @@ test.describe('权限·旁听者不得提权', () => {
     const d = await outsider.get(`/api/activities/${mid}`)
     expect(d.status(), '公开活动路人看得见').toBe(200)
     const body = await d.json()
-    expect(body.title).toContain('E2E-旁听-公开会')
-    expect(body.agenda, 'D9:议程给').toBeTruthy()
+    // ⚠★断言外层形状,不只断言字段值★(2026-08-09 审计 A3):这里原来写的是 `body.title`,
+    // 即把契约钉成了**扁平对象**——而正常版是 `{activity:{…}, participants, projects, can_edit}`。
+    // 于是后端给旁听者返回扁平对象时,这条测试是**绿的**,前端却在 `d.activity.status` 上白屏。
+    // ★E2E 把错的形状钉住了,tsc 又认定它是对的,两道闸互相抵消。★
+    expect(body.activity, '★裁剪的是内容不是结构:外层必须仍是 activity 包裹★').toBeTruthy()
+    expect(body.activity.title).toContain('E2E-旁听-公开会')
+    expect(body.activity.agenda, 'D9:议程给').toBeTruthy()
+    expect(body.can_edit, '旁听者不能编辑').toBe(false)
     expect(body.participants ?? null, '★名单不给★').toBeNull()
   })
 

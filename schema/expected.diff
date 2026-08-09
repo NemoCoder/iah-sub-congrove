@@ -1,6 +1,6 @@
 --- baseline
 +++ current
-@@ -1,3 +1,120 @@
+@@ -1,11 +1,130 @@
 +TABLE activities
 +  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activities_id_seq'::regclass)
 +  COL   2 title                  text                           NOT NULL
@@ -112,8 +112,9 @@
 +  COL   4 has_minutes            boolean                        NOT NULL DEFAULT false
 +  COL   5 needs_project          boolean                        NOT NULL DEFAULT false
 +  COL   6 busy_default           boolean                        NOT NULL DEFAULT true
-+  COL   7 deleted_at             timestamp with time zone      
-+  COL   8 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL   7 allow_past             boolean                        NOT NULL DEFAULT true
++  COL   8 deleted_at             timestamp with time zone      
++  COL   9 created_at             timestamp with time zone       NOT NULL DEFAULT now()
 +  CON activity_types_pkey                PRIMARY KEY (id)
 +  IDX CREATE INDEX idx_atype_owner ON public.activity_types USING btree (owner) WHERE (deleted_at IS NULL)
 +  IDX CREATE UNIQUE INDEX idx_atype_name ON public.activity_types USING btree (COALESCE(owner, ''::text), name) WHERE (deleted_at IS NULL)
@@ -121,7 +122,18 @@
  TABLE app_user
    COL   1 username               text                           NOT NULL
    COL   2 sub                    text                          
-@@ -47,21 +164,22 @@
+   COL   3 name                   text                          
+   COL   4 email                  text                          
+   COL   5 is_super               boolean                        NOT NULL DEFAULT false
+-  COL   6 created_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL   7 last_login             timestamp with time zone      
++  COL   6 admin_mode_until       timestamp with time zone      
++  COL   7 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL   8 last_login             timestamp with time zone      
+   CON app_user_pkey                      PRIMARY KEY (username)
+ TABLE audit_log
+   COL   1 id                     bigint                         NOT NULL DEFAULT nextval('audit_log_id_seq'::regclass)
+@@ -47,21 +166,22 @@
    COL  14 upload_fp              text                          
    COL  15 upload_id              text                          
    COL  16 upload_key             text                          
@@ -147,7 +159,7 @@
  SEQ items_id_seq
  TABLE media_jobs
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('media_jobs_id_seq'::regclass)
-@@ -78,106 +196,6 @@
+@@ -78,106 +198,6 @@
    CON media_jobs_status_check            CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text])))
    IDX CREATE UNIQUE INDEX idx_media_jobs_active ON public.media_jobs USING btree (item_id) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))
  SEQ media_jobs_id_seq
@@ -254,7 +266,7 @@
  TABLE owner_transfers
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
    COL   2 project_id             bigint                         NOT NULL
-@@ -214,22 +232,22 @@
+@@ -214,22 +234,22 @@
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
    COL   2 name                   text                           NOT NULL
    COL   3 description            text                           NOT NULL DEFAULT ''::text
@@ -290,7 +302,17 @@
  SEQ projects_id_seq
  TABLE share_items
    COL   1 token                  text                           NOT NULL
-@@ -286,3 +304,15 @@
+@@ -275,6 +295,9 @@
+   CON summaries_item_id_fkey             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+   CON summaries_kind_check               CHECK ((kind = ANY (ARRAY['brief'::text, 'outline'::text, 'decisions'::text])))
+   CON summaries_pkey                     PRIMARY KEY (item_id, kind)
++VIEW super_now AS  SELECT username
++   FROM app_user
++  WHERE is_super AND admin_mode_until > now();
+ TABLE transcripts
+   COL   1 item_id                bigint                         NOT NULL
+   COL   2 text                   text                           NOT NULL
+@@ -286,3 +309,15 @@
    COL   8 fine                   jsonb                         
    CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON transcripts_pkey                   PRIMARY KEY (item_id)

@@ -86,7 +86,13 @@ pub async fn list(
 
 #[derive(Deserialize)]
 pub struct TypeIn {
-    pub name: String,
+    /// ⚠★必须是 Option★(2026-08-09 全量审计 A4):原来是裸 `String`,而「我的活动类型」页勾
+    /// 「占忙闲」时只送 `{busy_default}` —— axum 的 Json 提取器在**进 handler 之前**就 422,
+    /// 响应体是纯文本,用户看到的是一个裸的「422」。于是 A3 说的「自建类型唯一的开关」
+    /// ★从来没工作过★。前端注释里写的「后端 name 是 COALESCE 更新,不传就保留」描述的是 SQL,
+    /// 而 serde 在 SQL 之前就把请求毙了 —— ★「后端会兜住」这种话要去看它兜在哪一层★。
+    #[serde(default)]
+    pub name: Option<String>,
     /// ★自建类型只开放这一个开关★（A3）：`has_minutes` / `needs_project` 是系统语义，
     /// 不给用户改 —— 让人自己勾「不需要纪要」等于把 D14 的约束交给使用者绕过。
     #[serde(default)]
@@ -121,7 +127,8 @@ pub async fn create(
     Json(input): Json<TypeIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    let name = clean_name(&input.name)?;
+    // 建类型时名字是**必填**的(改名时才可省)——缺了就给人话,不是 422
+    let name = clean_name(input.name.as_deref().ok_or_else(|| AppError::BadRequest("类型名不能为空".into()))?)?;
     let nid: i64 = sqlx::query_scalar(
         // has_minutes / needs_project 一律 false：自建类型是「我自己的日程分类」，
         // 要正式纪要与项目归属的话，用预置的「会议」。
@@ -192,7 +199,15 @@ pub async fn update(
     let me = id.require_username()?;
     let scope = scope_or_err(&state.pool, tid, me).await?;
     // ★预置的简单型只让改 busy_default★：改名会让所有人的历史活动跟着变名字。
-    let name = if scope == TypeScope::Full { Some(clean_name(&input.name)?) } else { None };
+    // ★没传 name 就只改 busy_default★:这正是「占忙闲」那个复选框走的路(A4)。
+    // 预置的简单型也只让改 busy_default —— 改名会让所有人的历史活动跟着变名字。
+    let name = match (&input.name, scope == TypeScope::Full) {
+        (Some(n), true) => Some(clean_name(n)?),
+        _ => None,
+    };
+    if name.is_none() && input.busy_default.is_none() {
+        return Err(AppError::BadRequest("没有要改的字段".into()));
+    }
     sqlx::query(
         "UPDATE activity_types SET name = COALESCE($2, name),
                                    busy_default = COALESCE($3, busy_default)
