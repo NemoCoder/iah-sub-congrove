@@ -121,7 +121,7 @@
  TABLE app_user
    COL   1 username               text                           NOT NULL
    COL   2 sub                    text                          
-@@ -47,17 +164,17 @@
+@@ -47,21 +164,22 @@
    COL  14 upload_fp              text                          
    COL  15 upload_id              text                          
    COL  16 upload_key             text                          
@@ -142,7 +142,12 @@
    IDX CREATE INDEX idx_items_resume ON public.items USING btree (project_id, created_by, upload_fp) WHERE (s3_key IS NULL)
    IDX CREATE INDEX idx_items_s3key ON public.items USING btree (s3_key) WHERE (s3_key IS NOT NULL)
    IDX CREATE INDEX idx_items_sha ON public.items USING btree (sha256) WHERE ((sha256 IS NOT NULL) AND (deleted_at IS NULL))
-@@ -78,106 +195,6 @@
+   IDX CREATE INDEX idx_items_trash ON public.items USING btree (project_id, deleted_at DESC) WHERE (deleted_at IS NOT NULL)
++  IDX CREATE UNIQUE INDEX items_activity_folder_uniq ON public.items USING btree (project_id, activity_id) WHERE ((kind = 'folder'::text) AND (deleted_at IS NULL))
+ SEQ items_id_seq
+ TABLE media_jobs
+   COL   1 id                     bigint                         NOT NULL DEFAULT nextval('media_jobs_id_seq'::regclass)
+@@ -78,106 +196,6 @@
    CON media_jobs_status_check            CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text])))
    IDX CREATE UNIQUE INDEX idx_media_jobs_active ON public.media_jobs USING btree (item_id) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))
  SEQ media_jobs_id_seq
@@ -249,7 +254,7 @@
  TABLE owner_transfers
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
    COL   2 project_id             bigint                         NOT NULL
-@@ -214,22 +231,22 @@
+@@ -214,22 +232,22 @@
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
    COL   2 name                   text                           NOT NULL
    COL   3 description            text                           NOT NULL DEFAULT ''::text
@@ -285,7 +290,7 @@
  SEQ projects_id_seq
  TABLE share_items
    COL   1 token                  text                           NOT NULL
-@@ -286,3 +303,15 @@
+@@ -286,3 +304,15 @@
    COL   8 fine                   jsonb                         
    CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON transcripts_pkey                   PRIMARY KEY (item_id)
