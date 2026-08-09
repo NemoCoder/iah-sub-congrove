@@ -950,7 +950,19 @@ pub async fn activity_items(
            JOIN project_members pm ON pm.project_id = mp.project_id
            JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
           WHERE mp.activity_id = $1 AND pm.username = $2
-          UNION ALL SELECT 1 FROM app_user WHERE username = $2 AND is_super
+         UNION ALL
+          -- ★不关联项目的个人活动:材料落发起人自己的材料区,所以只有他看得到★(PRD §J0)。
+          -- 没有这一条的话「个人日程」的材料列表恒 403 —— 材料传得进去、列不出来。
+          SELECT 1 FROM activities a
+            WHERE a.id = $1 AND a.organizer = $2
+              AND NOT EXISTS (SELECT 1 FROM activity_projects mp0 WHERE mp0.activity_id = a.id)
+         UNION ALL
+          -- ⚠★超管这一条要限定在「有关联项目」的活动上★(PRD §J1c,liaoruili 拍板):
+          -- 材料区里是体检报告、私人录音这类东西,超管短路读得到就等于 J1 承诺的「只有我」不成立。
+          -- 救火走影子账户(留痕、只读、以本人视角),不走这里。
+          SELECT 1 FROM app_user u
+            WHERE u.username = $2 AND u.is_super
+              AND EXISTS (SELECT 1 FROM activity_projects mps WHERE mps.activity_id = $1)
           LIMIT 1")
         .bind(mid).bind(username).fetch_optional(&state.pool).await?;
     if ok.is_none() {
@@ -993,6 +1005,45 @@ pub async fn delete_activity_item(
     audit::record(&state.pool, actor, "activity.item.delete", &iid.to_string(),
         &format!("activity={mid} project={pid} 删除活动材料(进回收站)")).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /api/activities/{id}/materials-project —— 拿到这场活动材料的**落点项目**。
+///
+/// ★2026-08-09 liaoruili:「个人活动无法上传材料」★。上传口是项目作用域的
+/// (`POST /api/projects/{pid}/upload`),而不关联项目的活动(ADR-0002 `needs_project=false`)
+/// 前端手上根本没有 pid —— 于是界面上只剩一句「这个活动还没有关联项目,材料没地方放」。
+///
+/// PRD §J0 的答案是:落到**发起人自己的「我的活动材料」**,没有就现建(见 projects::materials_project)。
+///
+/// ★为什么是一个 POST 接口,而不是在活动详情里带上这个 id★:
+/// 那样每打开一次别人的个人日程详情就会**建出一个材料区**(GET 有了副作用),
+/// 而这个区是「按需才存在」的东西 —— 真要传材料时才建,零成本地保持了这一点。
+///
+/// ★为什么限定发起人★:材料区只有 owner 有角色(ADR-0005 单点否决)。
+/// 就算这里放行了别人,他拿着这个 pid 去 upload 也会被 `require_role` 挡回来 ——
+/// 那样他得到的是一个费解的 403;这里直接说清「不是你的活动」。
+pub async fn materials_project(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    // 先按看得见与否判 404/403(与其他活动接口同一套语义:看不见的活动不该确认它存在)
+    activity_view(&state.pool, &id, mid).await?;
+    let organizer: String = sqlx::query_scalar("SELECT organizer FROM activities WHERE id = $1")
+        .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    if organizer != me { return Err(AppError::Forbidden) }
+    let linked: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
+          WHERE mp.activity_id = $1 AND p.deleted_at IS NULL LIMIT 1")
+        .bind(mid).fetch_optional(&state.pool).await?;
+    if linked.is_some() {
+        // 有关联项目就该落进项目(D4:材料整份进所有关联项目)。放行的话同一场活动的材料
+        // 会散在两处 —— 一半在项目树里、一半在只有发起人看得到的材料区。
+        return Err(AppError::BadRequest("这个活动已经关联了项目,材料落在项目里".into()));
+    }
+    let pid = crate::http::projects::materials_project(&state, me).await?;
+    Ok(Json(json!({ "project_id": pid })))
 }
 
 #[derive(Serialize, sqlx::FromRow)]

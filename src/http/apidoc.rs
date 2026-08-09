@@ -133,6 +133,11 @@ pub const APIS: &[Api] = &[
           DELETE /api/items/{id} 会拒绝带 activity_id 的 item(D10:项目树里是只读区)。
           入口不同接口就不同,因为后端看不见调用方是哪个页面,只靠前端藏按钮等于没有这条规则。
           不删活动文件夹本身(结构由活动决定)", ""),
+    api!("POST", "/api/activities/{id}/materials-project", "活动", "发起人本人",
+         "拿到这场活动材料的**落点项目**,并在需要时现建。★只对不关联项目的活动★(ADR-0002 的
+          needs_project=false,如「个人日程」):上传口是项目作用域的,而它手上没有 pid ——
+          PRD §J0 的答案是落到发起人自己的「我的活动材料」(kind='materials',每人至多一个)。
+          有关联项目的活动调它 400(材料该落项目里,D4);不是发起人 403(材料区只有 owner 有角色,ADR-0005)", ""),
     api!("GET", "/api/activities/{id}/link-history", "活动", "参会人/关联项目成员",
          "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
     api!("POST", "/api/activities/{id}/remind", "活动", "发起人 / 记录员",

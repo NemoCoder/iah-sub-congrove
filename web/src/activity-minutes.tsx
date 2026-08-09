@@ -388,7 +388,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
   /// 刚点过「转写」但还没轮到第一次轮询的那些 —— 只用来盖住那一两秒的空窗。
   const [justQueued, setJustQueued] = useState<number[]>([])
   const up = useActivityUpload({
-    projectId: projectId ?? 0, activityId, isRecording: true,
+    projectId, activityId, isRecording: true,
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: onChanged,
   })
   return (
@@ -405,7 +405,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
             background: '#000', borderRadius: 6, marginBottom: 10, display: 'block',
           }} />
       )}
-      {canEdit && projectId && <div style={{ marginBottom: 10 }}>{up.button}</div>}
+      {canEdit && <div style={{ marginBottom: 10 }}>{up.button}</div>}
       {up.zone(
       <Table<ActivityItem> size="small" rowKey="id" dataSource={items} pagination={false} showHeader={false}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有录屏或录音" /> }}

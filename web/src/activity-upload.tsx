@@ -14,6 +14,7 @@
 // `DefaultBodyLimit::disable()`,大录屏走它内存上是安全的 —— 缺的只是进度,补上即可。
 import { App as AntdApp, Button, Progress, Typography } from 'antd'
 import { useRef, useState } from 'react'
+import { api } from './api'
 import { CANCELED, cancelUpload, newCtl, xhrUpload, type UploadCtl } from './upload'
 
 type Task = { key: string; name: string; percent: number; ctl: UploadCtl }
@@ -24,7 +25,9 @@ type Task = { key: string; name: string; percent: number; ctl: UploadCtl }
 ///
 /// `isRecording` 决定后端要不要把它当录制(只有录制会被转写、并作为活动时长依据,D5)。
 export function useActivityUpload({ projectId, activityId, isRecording, accept, label, onDone }: {
-  projectId: number
+  /// 关联项目之一;★null = 这场活动不关联任何项目★(ADR-0002 的「个人日程」),
+  /// 此时落点由后端算(PRD §J0:发起人自己的「我的活动材料」),见下面的 dropTarget。
+  projectId: number | null
   activityId: number
   isRecording: boolean
   accept?: string
@@ -36,11 +39,26 @@ export function useActivityUpload({ projectId, activityId, isRecording, accept, 
   const [dragging, setDragging] = useState(false)
   const input = useRef<HTMLInputElement>(null)
 
+  /// 这一批材料落到哪个项目。
+  ///
+  /// ⚠★2026-08-09 liaoruili:「个人活动无法上传材料」★。在此之前这里是一句
+  /// `if (!projectId) { message.error('这个活动还没有关联项目，材料没地方放'); return }` ——
+  /// 而「个人日程」按 ADR-0002 本来就是**零关联项目**,于是整类活动传不了任何东西。
+  /// PRD §J0 早就写了答案(材料落发起人的「我的活动材料」),只是没人实现:
+  /// ★又一次「文档里写了 ≠ 代码里做了」★(同一天已在 D10 只读区、AI 摘要 kind 上各栽过一次)。
+  ///
+  /// ★按需解析,不在页面加载时先问★:那个存档区是「第一次真要用才建」的东西,
+  /// 打开一次详情页就凭空建一个项目行,是把懒创建做没了。
+  const dropTarget = async (): Promise<number> => {
+    if (projectId) return projectId
+    const r = await api<{ project_id: number }>(`/api/activities/${activityId}/materials-project`, { method: 'POST' })
+    return r.project_id
+  }
+
   const send = async (files: File[]) => {
     if (!files.length) return
-    // ★没有可落地的项目就不收★:调用方在 projectId 为空时会把按钮藏掉,
-    // 但**拖放区还在**(它包着文件列表) —— 拖进来会打到 /api/projects/0/upload。
-    if (!projectId) { message.error('这个活动还没有关联项目，材料没地方放'); return }
+    let pid: number
+    try { pid = await dropTarget() } catch (e) { message.error((e as Error).message); return }
     // ★key 用「时间戳 + 序号 + 文件名」★:同名文件可以同时传两份,不能靠文件名当身份。
     const stamp = Date.now()
     const batch: Task[] = files.map((f, i) => ({ key: `${stamp}-${i}-${f.name}`, name: f.name, percent: 0, ctl: newCtl() }))
@@ -53,7 +71,7 @@ export function useActivityUpload({ projectId, activityId, isRecording, accept, 
     for (let i = 0; i < files.length; i++) {
       const t = batch[i]
       try {
-        await xhrUpload(`/api/projects/${projectId}/upload?${qs}`, files[i], (p) => patch(t.key, p), t.ctl)
+        await xhrUpload(`/api/projects/${pid}/upload?${qs}`, files[i], (p) => patch(t.key, p), t.ctl)
         // 录屏/录音传完后端会自动排队转写(v0.3.49),这里说一声,免得用户以为还要手动点。
         message.success(`${t.name} 上传完成${isRecording ? '——已自动排队转写' : ''}`)
       } catch (e) {

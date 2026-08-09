@@ -85,8 +85,11 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<ProjectRow> =
+            // ★超管也看不到别人的材料区★(PRD §J1c):它里面是体检报告、私人录音这类东西。
+            // 超管仍看得到「这个人占了多少 GB」(配额页另走 usage),但看不到项目名之外的任何东西。
             sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at \
-                            FROM projects WHERE deleted_at IS NULL ORDER BY archived_at NULLS FIRST, id")
+                            FROM projects WHERE deleted_at IS NULL AND kind <> 'materials' \
+                            ORDER BY archived_at NULLS FIRST, id")
                 .fetch_all(&state.pool)
                 .await?;
         rows.iter_mut().for_each(|r| {
@@ -102,9 +105,11 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, bool, String, String,
                 Option<chrono::DateTime<chrono::Utc>>);
     let rows: Vec<Row> = sqlx::query_as(
+        // ★材料区不出现在项目列表里★(PRD §J1):它不是第二个工作区,而且列进来就意味着
+        // 「关联项目」下拉里也会冒出它 —— 那等于把个人存档区当协作项目用。
         "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
-          WHERE s.deleted_at IS NULL
+          WHERE s.deleted_at IS NULL AND s.kind <> 'materials'
           ORDER BY s.archived_at NULLS FIRST, s.id",
     )
     .bind(username)
@@ -612,6 +617,53 @@ pub async fn archive(
     audit::record(&state.pool, username, if want { "project.archive" } else { "project.unarchive" },
                   &pid.to_string(), "").await;
     Ok(Json(json!({ "ok": true, "archived": want })))
+}
+
+/// 某人的「我的活动材料」——★没有就现建一个★,返回项目 id。
+///
+/// ★为什么要有它★(PRD §J0,2026-08-09 liaoruili:「个人活动无法上传材料」):
+/// 不关联项目的个人活动(ADR-0002 的 `needs_project=false`)★也要能传材料★,
+/// 可材料必须落到某个项目才有权限归属(D3)—— 于是给每人一个系统建的存档区。
+///
+/// ⚠★它不是一个项目★(PRD §J1),只是技术上复用了 projects 表:
+/// 不出现在项目列表里(`list` 里 `kind <> 'materials'`)、拉不了成员、
+/// 别人(含超管,J1c)一律无角色 —— 隔离在 `perm.rs::effective_role` 单点否决(ADR-0005)。
+///
+/// ⚠★owner 也要写一行 project_members★:`effective_role` 是从成员表读角色的,
+/// projects.owner 那一列**不参与**角色推导。少这一行的话,材料区连它主人自己都进不去
+/// (而 `create` 早就是这么写的 —— 同一个坑,照抄它)。
+///
+/// ⚠★还没做的那半边(别看到这个函数就以为 §J 落地了)★:PRD §J1 的**白名单**
+/// (材料区只放行「读树/读 item/下载/复制出去/回收站还原」,其余一律拒)、
+/// §J0b 的「我的活动材料」页、§J1c 的影子账户 —— 都是 M1 的活。
+/// 现在这里只解决一件事:★个人活动传得进材料★。它的主人对这个区仍是 admin,
+/// 也就是说他从 URL 直接进去还能建文件夹 —— 不理想,但不是越权(是他自己的东西)。
+///
+/// 并发两个请求同时建靠**部分唯一索引** `idx_proj_materials` 兜:
+/// 第二个 INSERT 冲突返回 0 行,回头再查一次拿第一个建好的那个(与 `activity_folder` 同一手法)。
+pub async fn materials_project(state: &AppState, owner: &str) -> AppResult<i64> {
+    if let Some(pid) = find_materials_project(&state.pool, owner).await? { return Ok(pid) }
+    let mut tx = state.pool.begin().await?;
+    let made: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO projects (name, description, owner, created_by, kind)
+         VALUES ('我的活动材料', '不关联项目的个人活动,材料落在这里。只有你自己看得到。', $1, $1, 'materials')
+         ON CONFLICT DO NOTHING RETURNING id")
+        .bind(owner).fetch_optional(&mut *tx).await?;
+    let Some(pid) = made else {
+        tx.rollback().await?;
+        return find_materials_project(&state.pool, owner).await?.ok_or(AppError::NotFound);
+    };
+    sqlx::query("INSERT INTO project_members (project_id, username, role, added_by) VALUES ($1,$2,'admin',$2)")
+        .bind(pid).bind(owner).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record(&state.pool, owner, "project.materials.create", &pid.to_string(), "我的活动材料").await;
+    Ok(pid)
+}
+
+async fn find_materials_project(pool: &sqlx::PgPool, owner: &str) -> AppResult<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM projects WHERE owner = $1 AND kind = 'materials' AND deleted_at IS NULL")
+        .bind(owner).fetch_optional(pool).await?)
 }
 
 /// GET /api/me/transfers —— 等我答复的主持人转移。
