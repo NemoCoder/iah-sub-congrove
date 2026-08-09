@@ -582,7 +582,21 @@ pub async fn oidc_callback(State(state): State<AppState>, headers: HeaderMap, Qu
 }
 
 /// /auth/logout → 清会话 cookie 回首页。
-pub async fn oidc_logout() -> Response {
+///
+/// ★顺带把超管模式关掉★(2026-08-09 liaoruili 定的三条之一:「退出登录即失效」)。
+/// 模式存在库里(`app_user.admin_mode_until`),而会话在 cookie 里 —— 不显式清的话,
+/// 「退出再登进来」会发现自己**还开着超管模式**,而人退出时以为一切都归零了。
+/// ⚠ 这条路由在 `/api` 之外、没有 require_auth,所以身份要自己从 cookie 里解一次;
+///   解不出来(没登录 / 会话过期)就只清 cookie,不是错误。
+pub async fn oidc_logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let (Some(auth), Some(tok)) = (state.auth.as_ref(), cookie(&headers, "cg_session")) {
+        if let Some(id) = auth.verify_session(&tok) {
+            if let Some(u) = id.username.as_deref() {
+                let _ = sqlx::query("UPDATE app_user SET admin_mode_until = NULL WHERE username = $1")
+                    .bind(u).execute(&state.pool).await;
+            }
+        }
+    }
     Response::builder()
         .status(StatusCode::FOUND)
         .header(LOCATION, "/")
@@ -598,8 +612,18 @@ pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity
     // is_super 以库为准(cookie 里那份是登录时快照):撤销后前端的超管入口要立刻消失,
     // 否则用户看得见按钮却处处 403,比藏起来更糟。
     let is_super = crate::perm::is_super_now(&state.pool, &id).await.unwrap_or(id.is_super);
+    // ★资格与特权分开回★(超管模式,docs/TECH-DESIGN-admin-mode.md):
+    //   · `is_super` 语义**不变** = 此刻有没有超管特权 —— 前端所有「能不能」的判断继续用它;
+    //   · `can_super` = 有没有超管资格 —— 只用来决定「超管模式」那个开关画不画出来。
+    // 刻意不改 is_super 的含义:它已经散在前端多处,改语义会让「显示」和「能力」错配。
+    let (can_super, until): (bool, Option<chrono::DateTime<chrono::Utc>>) = match id.username.as_deref() {
+        Some(u) => sqlx::query_as("SELECT is_super, admin_mode_until FROM app_user WHERE username = $1")
+            .bind(u).fetch_optional(&state.pool).await.ok().flatten().unwrap_or((id.is_super, None)),
+        None => (false, None),
+    };
     Json(json!({
         "username": id.username, "name": id.name, "email": id.email, "is_super": is_super,
+        "can_super": can_super, "admin_mode_until": until,
         "direct_upload_endpoint": state.config.s3_public_endpoint,
     }))
 }

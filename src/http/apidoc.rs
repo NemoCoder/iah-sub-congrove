@@ -47,13 +47,20 @@ pub const APIS: &[Api] = &[
     api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", ""),
     api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state"),
     api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", ""),
-    api!("GET", "/api/me", "认证", "登录", "当前身份与超管位", ""),
+    api!("GET", "/api/me", "认证", "登录",
+         "当前身份。★is_super = 此刻有没有超管**特权**★(超管模式关着时为 false);
+          can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", ""),
     api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
 
     // ── 项目 ──
     api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", ""),
     api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
     api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert；没传的字段保留）", "timezone, default_remind_minutes"),
+    api!("POST", "/api/me/admin-mode", "我的", "★有超管**资格**的人★（不是「此刻有特权」）",
+         "进 / 出超管模式。★超管平时就是普通用户★——关着的时候他看不到别人的项目与活动,
+          要用特权得刻意开一下,2 小时自动关、退出登录也关(照 GitLab Admin Mode)。
+          ⚠ 判据是 `app_user.is_super` 那一列而**不是** super_now 视图 ——
+          用视图的话「关掉之后就再也开不回来」。两个方向都进 audit_log", "on"),
     // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
     api!("GET", "/api/activity-types", "活动", "登录",
          "列出预置的 + 我自建的活动类型。★能力位决定表单与校验★(ADR-0002):

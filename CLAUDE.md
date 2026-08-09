@@ -136,6 +136,22 @@ app 角色一点权限都没有 → `no schema has been selected to create in` �
 ★已在 `lib.rs` 里治本★:`CONGROVE_SUPER_USERS` 现在在**启动时**(跑完迁移就)种进 app_user,
 不再搭登录的顺风车。所以清完库**重启一次 pod** 就好,不必手动 UPDATE。
 
+## ★超管模式:`is_super` 那一列不再等于「他现在能看到一切」★(2026-08-09)
+
+liaoruili 也是日常用户,而超管默认能看到所有人的内容 —— 照 GitLab Admin Mode 拆成两件事
+(`docs/TECH-DESIGN-admin-mode.md`):
+
+| | 判据 | 谁用 |
+|---|---|---|
+| **资格** | `app_user.is_super` 列 | 授/撤超管、用户列表、启动种子、登录 upsert、开关自己的准入 |
+| **特权** | ★`super_now` 视图★ | **所有判权、所有「比别人多看到东西」的 SQL** |
+
+`super_now = is_super AND admin_mode_until > now()`,2 小时自动关、退出登录也关,进出都进 audit_log。
+⚠★写新的超管路径时用视图,别用那一列★ —— 用错的后果是**反的**:
+资格处误用视图 → 关掉模式就撤不了别人的超管;特权处漏用视图 → 那条路永远是超管视角,
+而它**不报错、只默默多给**。想验完整性:`sql-prepare-check.py --pre` 里
+`ALTER TABLE app_user RENAME COLUMN is_super TO x` 跑一遍,报红的必须全是资格型。
+
 ⚠★用特性分支部 dev 之后必须把 ref 改回 `dev`★:`POST /deploy {ref:...}` 会把记录里的 ref
 改掉并留在那里,之后 CI 的 `ci-deploy` 沿用它 —— **每次合并到 dev 构建的都是那个过期分支**,
 而且完全静默(gate 绿、deploy 绿、构建成功,只有线上版本不变)。

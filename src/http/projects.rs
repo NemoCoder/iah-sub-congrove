@@ -337,8 +337,11 @@ pub async fn diagnose(
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let username = q.get("username").map(|s| s.trim()).filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("缺 username 参数".into()))?;
-    let is_super: bool = sqlx::query_scalar("SELECT is_super FROM app_user WHERE username = $1")
-        .bind(username).fetch_optional(&state.pool).await?.unwrap_or(false);
+    // ★诊断链必须与 perm.rs 同一推导★:所以这里问的也是「他此刻有没有超管**特权**」,
+    // 不是「有没有资格」——否则会报「他是超管所以看得到」,而他的超管模式关着、其实看不到。
+    let is_super: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM super_now WHERE username = $1)")
+        .bind(username).fetch_one(&state.pool).await?;
     let member: Option<String> = sqlx::query_scalar(
         "SELECT role FROM project_members WHERE project_id = $1 AND username = $2",
     ).bind(pid).bind(username).fetch_optional(&state.pool).await?;

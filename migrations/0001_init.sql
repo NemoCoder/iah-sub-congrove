@@ -22,10 +22,28 @@ CREATE TABLE IF NOT EXISTS app_user (
   sub        text,
   name       text,
   email      text,
-  is_super   boolean NOT NULL DEFAULT false,   -- 全局超管;bootstrap 走 CONGROVE_SUPER_USERS 白名单
+  is_super   boolean NOT NULL DEFAULT false,   -- ★超管**资格**★;bootstrap 走 CONGROVE_SUPER_USERS 白名单
+  -- ★超管**模式**到期时刻★（NULL / 已过期 = 没开）。2026-08-09 liaoruili：
+  -- 「我自己也要使用这个系统,但我默认能看到所有人的内容,这对日常使用带来困扰」。
+  -- 照 GitLab Admin Mode 那套:★管理员平时就是普通用户,要管理才刻意进模式★,2 小时自动失效。
+  -- ⚠ 过期**不需要定时任务** —— 判据里带 `> now()`,每次查询自带判定。
+  admin_mode_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   last_login timestamptz
 );
+
+-- ★「谁此刻有超管特权」的唯一判据★（docs/TECH-DESIGN-admin-mode.md）。
+--
+-- ⚠★资格 ≠ 特权,别用混★:
+--   · **资格** = `app_user.is_super` 那一列 —— 授/撤、用户列表、启动种子、登录 upsert 用它;
+--   · **特权** = 这个视图 —— 所有判权、所有「比别人多看到东西」的 SQL 只认它。
+-- 用错一边的后果是**反的**:资格处误用视图 → 模式一关就撤不了别人的超管;
+-- 特权处漏用视图 → 那条路径永远是超管视角,而它★不报错,只默默多给★。
+--
+-- 做成视图而不是在 7 处各写一遍 `AND admin_mode_until > now()`:判据只有一处,
+-- 加新的超管路径时引用它即可,不必记得补条件（漏补是看不见的)。
+CREATE VIEW super_now AS
+  SELECT username FROM app_user WHERE is_super AND admin_mode_until > now();
 
 -- ── 项目(原「空间」)与成员 ──────────────────────────────────────────────
 -- 项目是组织的基本单位:资料、活动、权限全挂在它下面。

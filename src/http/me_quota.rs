@@ -72,3 +72,46 @@ pub async fn put_prefs(
     .await?;
     Ok(Json(json!({ "ok": true })))
 }
+
+/// 超管模式开关时长 —— ★2 小时★（2026-08-09 liaoruili 拍板）。
+///
+/// 参照 GitLab Admin Mode（6h）与 GitHub sudo mode（2h）。取 2h 的理由：
+/// 这里的超管活儿（调配额、看审计、收拾无主项目）都是几分钟的事，
+/// ★开着的每一分钟都在放大「误看别人东西」的窗口★，短一点更贴合它存在的目的。
+const ADMIN_MODE_HOURS: i64 = 2;
+
+#[derive(Deserialize)]
+pub struct AdminModeIn { pub on: bool }
+
+/// POST /api/me/admin-mode —— 进入 / 退出超管模式（docs/TECH-DESIGN-admin-mode.md）。
+///
+/// ★2026-08-09 liaoruili：「我自己也要使用这个系统，但我默认能看到所有人的内容，
+/// 这对日常使用带来困扰」★。照 GitLab Admin Mode 那套：**超管平时就是普通用户**，
+/// 要用特权得刻意开一下，2 小时自动关，退出登录也关。
+///
+/// ⚠★判据是「资格」不是「特权」★：这里必须查 `app_user.is_super` 那一列，
+/// **不能**走 `is_super_now`／`super_now` —— 后者在模式关着时返回 false，
+/// 于是「关掉之后就再也开不回来」。这是本次改动里唯一一处**故意**不用视图的判权。
+///
+/// 不要求重新认证（GitLab 要）：这里的威胁模型是「我不想天天看见别人的东西」，
+/// 不是「会话被盗」；为一个日常开关往 Keycloak 绕一圈不划算。要加是独立一步。
+pub async fn set_admin_mode(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Json(input): Json<AdminModeIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    let capable: bool = sqlx::query_scalar("SELECT is_super FROM app_user WHERE username = $1")
+        .bind(me).fetch_optional(&state.pool).await?.unwrap_or(false);
+    if !capable { return Err(crate::error::AppError::Forbidden) }
+    let until: Option<chrono::DateTime<chrono::Utc>> = input.on
+        .then(|| chrono::Utc::now() + chrono::Duration::hours(ADMIN_MODE_HOURS));
+    sqlx::query("UPDATE app_user SET admin_mode_until = $2 WHERE username = $1")
+        .bind(me).bind(until).execute(&state.pool).await?;
+    // ★两个方向都留痕★：这是这个功能白赚的好处 —— 在此之前「超管读了什么」一点痕迹都没有，
+    // 现在「想用特权就必然留下一条记录」（与 PRD §J1c 影子账户同一个思路）。
+    crate::audit::record(&state.pool, me,
+        if input.on { "admin_mode.enter" } else { "admin_mode.exit" }, me,
+        &if input.on { format!("超管模式开启，{ADMIN_MODE_HOURS} 小时后自动关闭") } else { "超管模式关闭".to_string() }).await;
+    Ok(Json(json!({ "admin_mode": input.on, "until": until })))
+}
