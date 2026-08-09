@@ -312,6 +312,17 @@ const CASES: &[Case] = &[
        "我是参会人,不是发起人", "POST .../materials-project",
        "403 —— 材料区只有 owner 有角色(ADR-0005 单点否决),这里先说清楚,\
         免得他拿着 pid 去 upload 时收到一个费解的 403", "ADR-0005"),
+    c!("PUT", "/api/activities/{mid}/items/{iid}", "活动材料能在活动页改名",
+       "我是关联项目的 editor,iid 是这场活动的一份材料", "PUT {name:'第一次组会录屏.mp4'}",
+       "200 —— D10 说的是「在**项目树里**只读」,不是永远不可改;\
+        改名这个动作发生在活动页,和删除同一条路(2026-08-09 liaoruili)", "D10"),
+    c!(deny "PUT", "/api/activities/{mid}/items/{iid}", "★改不了活动文件夹的名字★",
+       "iid 是这场活动的材料文件夹本身", "PUT {name:'我想叫这个'}",
+       "404(SQL 带 kind <> 'folder')—— 它的名字从活动的日期+标题派生,\
+        手改了下次改活动标题又会被覆盖回去,是个假功能", "D10"),
+    c!(deny "PUT", "/api/activities/{mid}/items/{iid}", "★不能借 A 活动改 B 活动材料的名★",
+       "我是 A 活动关联项目的 editor;iid 属于 B 活动", "PUT /api/activities/{A}/items/{B 的材料}",
+       "404 —— activity_id 必须同时匹配路径上的 mid,与删除那条同一个越权形状", "D10"),
     c!(deny "POST", "/api/projects/{id}/upload", "★材料区不收散文件★",
        "pid 是我的「我的活动材料」", "POST /upload(不带 activity_id)",
        "403 —— 材料区在 require_role 的写闸上一律只读(PRD §J1);\

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{middleware, Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -81,7 +81,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/activities/{id}/items", get(activities::activity_items))
         // ★删活动材料走这条,不走通用的 DELETE /items/{id}★:入口不同,接口就不同 ——
         // 通用那条会拒绝带 activity_id 的 item(D10 的只读区,靠后端而不是靠前端藏按钮)。
-        .route("/activities/{mid}/items/{iid}", delete(activities::delete_activity_item))
+        .route("/activities/{mid}/items/{iid}", put(activities::rename_activity_item).delete(activities::delete_activity_item))
         // 不关联项目的个人活动,材料落发起人的「我的活动材料」(PRD §J0)
         .route("/activities/{id}/materials-project", post(activities::materials_project))
         .route("/activities/{id}/link-history", get(activities::link_history))

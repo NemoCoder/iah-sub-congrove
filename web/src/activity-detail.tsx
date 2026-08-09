@@ -14,6 +14,7 @@ import { InlineEdit } from './inline-edit'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
+import { useRenameActivityItem } from './activity-item-rename'
 import { ShareModal } from './share-modal'
 import { TimeRangePicker } from './time-range'
 
@@ -816,6 +817,8 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: load,
   })
   const up = tab === 'rec' ? upRec : upMat
+  // 改名:两个 tab 的表格共用一个 Modal(见 activity-item-rename.tsx 的头注)
+  const ren = useRenameActivityItem({ activityId: id, onDone: load })
 
   const table = (rows: ActivityItem[], empty: string) => (
     <Table<ActivityItem> size="small" rowKey="id" dataSource={rows} pagination={false}
@@ -837,6 +840,9 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
             {/* ★分享只给能编辑的人★:建公开链接是**绕过项目授权**的动作(share.rs 头注),
                 只读成员不该有这个能力;后端也会再判一次(前端隐藏不是安全边界)。 */}
             {canEdit && <a onClick={() => setShareFor(it)}>分享</a>}
+            {/* ★改名也只在这里★(2026-08-09 liaoruili:「上传的文件,也要支持能够重命名」):
+                与删除同一条路 —— 项目树那条通用接口按 D10 拒绝活动材料。 */}
+            {canEdit && <a onClick={() => ren.open(it)}>改名</a>}
             {/* ★删除只在这里★（2026-08-09 liaoruili:「要去会议里面删除」）:
                 项目树里那条通用删除接口会拒绝活动材料(D10 的只读区),
                 所以这份材料的唯一删除入口就是这一行。 */}
@@ -895,6 +901,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
         </div>
       )}
       {shareFor && <ShareModal key={shareFor.id} items={[shareFor]} onClose={() => setShareFor(null)} />}
+      {ren.modal}
     </Card>
   )
 }

@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
 import { useActivityUpload } from './activity-upload'
+import { useRenameActivityItem } from './activity-item-rename'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -398,6 +399,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
     projectId, activityId, isRecording: true,
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: onChanged,
   })
+  const ren = useRenameActivityItem({ activityId, onDone: onChanged })
   return (
     <div>
       {/* ⚠★播放器高度写死★(2026-08-09 用户:「选中后页面抖动」):原来是 `maxHeight: 220`,
@@ -451,9 +453,12 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
             // ⚠★width: 40 装不下「删除」两个字★(2026-08-09 liaoruili:「这里的删除也是」)——
             // 它折成了「删 / 除」上下两行。width 只是建议值,真正管用的是 nowrap;
             // 宽度也一并给够(与活动详情那张材料表同一次修的同一个毛病)。
-            title: '', width: 60,
+            title: '', width: 100,
             onCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
-            render: (_, it) => canEdit && (
+            render: (_, it) => canEdit && (<>
+              {/* 录屏名字最需要改 —— 浏览器录出来的一律叫 `Rec 0001.mp4` */}
+              <a style={{ marginRight: 10 }}
+                 onClick={(e) => { e.stopPropagation(); ren.open(it) }}>改名</a>
               <Popconfirm title={`删除「${it.name}」？`} description="进项目回收站，30 天内可还原。"
                 okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
                 onConfirm={async () => {
@@ -464,7 +469,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
                 }}>
                 <a style={{ color: '#ff4d4f' }} onClick={(e) => e.stopPropagation()}>删除</a>
               </Popconfirm>
-            ),
+            </>),
           },
           {
             title: '', width: 96,
@@ -500,6 +505,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
             },
           },
         ]} />)}
+      {ren.modal}
     </div>
   )
 }
