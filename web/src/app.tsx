@@ -163,7 +163,7 @@ export function App() {
             <ActivityDetailView id={activityId} me={me?.username ?? ''} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
               backLabel="返回日程" />
           ) : (
-            <ScheduleView onOpenActivity={setActivityId} onNewActivity={() => setActivityId('new')} />
+            <ScheduleView me={me?.username ?? ''} onOpenActivity={setActivityId} onNewActivity={() => setActivityId('new')} />
           )
         ) : view === 'activities' ? (
           minutesOf != null ? (

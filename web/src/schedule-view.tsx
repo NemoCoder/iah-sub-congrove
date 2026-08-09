@@ -10,11 +10,13 @@
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
 //   公开的活动 = 青色实框 / 非公开的活动 = 紫色虚框 / 待应答 = 红色。
 //   ★判据是活动自己的 visibility(M0 起),不是「关联了什么项目」★——用词别再写「私密项目」。
-import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Tooltip, Typography } from 'antd'
+import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
-import { HOUR_PX, NIGHT_END_H, layout } from './schedule-layout'
+import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
+import { MINE_TEXT, mineOf, type Mine } from './activity-mine'
 
 /// 网格总高。★凌晨折叠时从 8 点起画★（2026-08-09 用户）——
 /// 0–8 点几乎永远是空的，却白占整屏三分之一，把真正有事的白天挤扁。
@@ -59,6 +61,20 @@ const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 /// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让活动在界面上凭空消失。
 /// 这里只留渲染,别把算法抄回来(抄回来就是第二个真相源,也就没人再跑那 9 条测试了)。
 /// 活动在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
+/// 身份图标。★AntD 图标,不用 emoji★(C2):容器里没有 emoji 字体时会显示成豆腐块 ——
+/// `e2e/shot.mjs` 已经踩过这个坑。
+/// 「旁听」那个**空心圈** AntD 没有现成的,用 CSS 画一个 —— 它同样不是 emoji,
+/// 而且原型定的就是圈(★发起 / ✎记录员 / ○旁听)。
+function MineIcon({ mine }: { mine: NonNullable<Mine> }) {
+  const st: React.CSSProperties = { fontSize: 10, marginRight: 3, flexShrink: 0 }
+  if (mine === 'organizer') return <StarFilled style={st} />
+  if (mine === 'recorder') return <EditOutlined style={st} />
+  return <span style={{
+    ...st, display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+    border: '1.5px solid currentColor', verticalAlign: 'middle',
+  }} />
+}
+
 function evStyle(m: Activity): React.CSSProperties {
   // ★归档项目的活动:淡化★(PRD B1)。它照常出现在日历里(B0——日程也是「我做过什么」的记录),
   // 但归档项目是**只读**的:不淡化的话人会点进去想改时间才发现动不了。
@@ -70,7 +86,9 @@ function evStyle(m: Activity): React.CSSProperties {
   return { background: '#e6fffb', border: '1px solid #0d9488', color: '#00474f' }
 }
 
-export function ScheduleView({ onOpenActivity, onNewActivity }: {
+export function ScheduleView({ me, onOpenActivity, onNewActivity }: {
+  /// 当前登录用户名 —— 判「我在这场活动里是什么身份」要用(C0)
+  me: string
   onOpenActivity: (id: number) => void
   onNewActivity: () => void
 }) {
@@ -103,9 +121,11 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
   /// 网格从几点开始画。折叠时 = 8。
   const fromH = nightOpen ? 0 : NIGHT_END_H
   /// 折叠区里到底有没有东西 —— 有才提示，没有就安静。
+  /// ⚠ 判据是「有没有落在 0–8 这一段」而不是「几点开始」——见 nightHiddenCount 的头注:
+  /// 23:00 跨到次日凌晨的活动,起点不在折叠区里,可它次日那一段确实被藏了。
   const nightCount = useMemo(
-    () => (nightOpen ? 0 : items.filter((m) => new Date(m.starts_at).getHours() < NIGHT_END_H).length),
-    [items, nightOpen, ],
+    () => (nightOpen ? 0 : nightHiddenCount(items, days)),
+    [items, nightOpen, days],
   )
 
   /// `silent=true` 不掀 loading —— 见 activity-detail 里同名函数的那段。
@@ -290,7 +310,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                 border: `1px solid ${nightCount ? '#ffe58f' : '#f0f0f0'}`,
                 fontSize: 12, color: '#8c8c8c',
               }}>
-                <span>凌晨 0–8 点已折叠</span>
+                <span>{nightCount ? '★凌晨这一段有活动被折叠了★' : '凌晨 0–8 点已折叠'}</span>
                 {nightCount > 0 && <Tag color="orange" style={{ margin: 0 }}>这段有 {nightCount} 项</Tag>}
                 <span style={{ marginLeft: 'auto', color: '#0d9488' }}>展开 ▾</span>
               </div>
@@ -370,11 +390,28 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                       height: (24 - WORK_TO) * HOUR_PX,
                       background: 'rgba(0,0,0,.015)', pointerEvents: 'none',
                     }} />
-                    {layout(items, d, fromH).map(({ item: m, top, height, left, width }) => (
+                    {layout(items, d, fromH).map(({ item: m, top, height, left, width }) => {
+                      const mine = mineOf(m, me)
+                      const projs = (m.projects ?? []).map((p) => p.name).join(' · ')
+                      return (
+                      // ★hover 出完整信息★(C3,原型 `.tip`):块小的时候标题常被截成「模型评…」,
+                      // **hover 是看全它的唯一机会** —— tooltip 里只放项目的话,
+                      // 那个被截断的标题就永远看不全了。
+                      // 不放参与人数/地点/链接:tooltip 一大就会遮住相邻的时间格,而那些点进去就有。
+                      <Tooltip key={m.id} mouseEnterDelay={0.35} title={
+                        <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                          <div style={{ fontWeight: 600 }}>{m.title}</div>
+                          <div>{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
+                            {projs ? ` · ${projs}` : '（不关联项目）'}</div>
+                          <div style={{ color: '#bfbfbf' }}>
+                            {mine ? MINE_TEXT[mine] : m.my_status === 'pending' ? '待你应答' : '参与人'}
+                            {m.archived ? ' · 已归档，只读' : ''}
+                            {m.is_private ? ' · 不公开' : ''}
+                          </div>
+                        </div>
+                      }>
                       <div
-                        key={m.id}
                         onClick={() => onOpenActivity(m.id)}
-                        title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 非公开' : ''}${m.archived ? ' · 已归档(只读)' : ''}`}
                         style={{
                           position: 'absolute', top, height, left, width,
                           borderRadius: 3, padding: '1px 4px', fontSize: 11, lineHeight: 1.3,
@@ -382,9 +419,14 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                           ...evStyle(m),
                         }}
                       >
+                        {/* ★身份图标在标题前★(C1/C2,原型 `.ic`):
+                            发起=星 / 记录员=笔 / 旁听=空心圈;★普通参与人不标★ */}
+                        {mine && <MineIcon mine={mine} />}
                         {m.title}
                       </div>
-                    ))}
+                      </Tooltip>
+                      )
+                    })}
                   </div>
                 )
               })}
@@ -406,6 +448,12 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
           <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待应答" />
           {/* ★归档也进图例★:它现在是日历上第四种观感,不解释的话人会以为那条会「坏了」 */}
           <LegendDot style={{ background: '#fafafa', border: '1px dashed #d9d9d9' }} text="已归档 · 只读" />
+          {/* ★身份图标也要进图例★(原型图例末尾那一行):三个符号不解释,人只会当成装饰 */}
+          <span style={{ color: '#8c8c8c', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <span><StarFilled style={{ fontSize: 10, marginRight: 3 }} />我发起</span>
+            <span><EditOutlined style={{ fontSize: 10, marginRight: 3 }} />我是记录员</span>
+            <span><MineIcon mine="observer" />我旁听</span>
+          </span>
         </Space>
       </Card>
 

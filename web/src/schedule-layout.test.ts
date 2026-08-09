@@ -4,7 +4,7 @@
 //   cd web && npm test
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { HOUR_PX, layout, slot, type Span, NIGHT_END_H, MIN_H } from './schedule-layout.ts'
+import { HOUR_PX, layout, nightHiddenCount, slot, type Span, NIGHT_END_H, MIN_H } from './schedule-layout.ts'
 
 /// 造当天某时段的事件。day 用固定日期,避免测试随当天日期漂。
 const DAY = new Date(2026, 7, 5)                       // 2026-08-05,本地时区
@@ -101,4 +101,23 @@ test('块的底边永远不越过网格下沿', () => {
     const b = slot({ starts_at: '2026-08-09T23:00:00', ends_at: '2026-08-10T10:00:00' }, day, fromH)!
     assert.ok(b.top + b.height <= gridH, `跨天那条越界了 top=${b.top} h=${b.height} grid=${gridH}`)
   }
+})
+
+/// ★这条是「凌晨有活动却不提醒」的复现测试★（2026-08-09 liaoruili 报，带八个感叹号）。
+/// 提示条一直在，是**数不出来**：原判据看的是「几点开始」，
+/// 而 23:00 跨到次日凌晨的活动起点是 23 点 —— 数出来 0，可它次日那一段确实被藏了。
+test('折叠区的计数按「有没有落在这一段」算，不按「几点开始」', () => {
+  const days = [new Date('2026-08-09T00:00:00'), new Date('2026-08-10T00:00:00')]
+  // ① 跨天：周日 23:00 → 周一 01:00，起点不在折叠区，但周一那截被藏了
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-09T23:00:00', ends_at: '2026-08-10T01:00:00' }], days), 1)
+  // ② 纯凌晨的当然要算
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-10T02:00:00', ends_at: '2026-08-10T03:00:00' }], days), 1)
+  // ③ 白天的不算 —— 没被藏就别报警，否则提示条天天亮着等于没有
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-10T09:00:00', ends_at: '2026-08-10T10:00:00' }], days), 0)
+  // ④ 正好 08:00 结束的不算：它在网格里从 8 点那条线开始，看得见
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-10T07:00:00', ends_at: '2026-08-10T08:00:00' }], days), 1,
+    '07:00 开始的确实被藏了')
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-10T08:00:00', ends_at: '2026-08-10T09:00:00' }], days), 0)
+  // ⑤ 同一条跨两天只算一次
+  assert.equal(nightHiddenCount([{ starts_at: '2026-08-09T23:00:00', ends_at: '2026-08-10T07:00:00' }], days), 1)
 })

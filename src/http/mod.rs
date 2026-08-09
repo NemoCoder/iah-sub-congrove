@@ -109,6 +109,8 @@ pub fn build_router(state: AppState) -> Router {
         // 只在项目内部可见的请求多半永远不会被答复 —— 归到「待我处理」那张卡
         .route("/me/transfers", get(projects::my_transfers))
         .route("/me/unread", get(activities::my_unread))
+        // 等我整理的纪要(2026-08-10)。★记录员是被系统指派的角色,却曾是唯一不提醒的一路★
+        .route("/me/minutes-todo", get(activities::my_minutes_todo))
         .route("/me/unread/read", post(activities::mark_read))
 
 

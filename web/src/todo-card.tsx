@@ -4,11 +4,18 @@
 // 同一件事两页两套。上一轮已经因为「双击编辑 vs 编辑按钮」被用户指出过一次
 // （见 inline-edit.tsx 头注）—— 同一个动作两套交互，比丑更糟。
 //
-// 卡里两类条目，判据不同：
+// 卡里几类条目，判据不同：
 //   · 📩 **邀请**：我的答复还是 pending 且会还没开始 —— 要我做的是「答不答应」；
 //   · 💬 **私聊未读**：有人在活动里私聊我且我没看过 —— 要我做的是「回一句」。
 //     ★公开讨论区的新消息不进这张卡★（后端就没给）：那是「群里有人说话」，
 //     混进来会让这卡天天有红点，红点天天有就等于没有。
+//   · 👑 **主持人转移**：等我答复的转让请求。
+//   · 📝 **待整理的纪要**（2026-08-10 补）：我是记录员、活动已开完、纪要还不是 done。
+//     ⚠★liaoruili：「其实纪要也是待我处理，但是通知里面没有出现」★ ——
+//     记录员是 D14 明确指派的角色（「AI 转写只是原材料，记录员才是作者」），
+//     却是全系统唯一一件**被指派了却不提醒**的活儿。
+//     ★把责任指派给某个人、又不给他一条看得见的待办，那条责任在实践中就等于没指派。★
+//     判据在后端的 `activities_owing_minutes` 视图里（与个人面板「待写纪要」同源）。
 //
 // ★冲突提示在前端本地算★（D1/D2）：私密项目的日程对发起人完全隐形，他不知道你那时段忙，
 // 所以必须在**你自己**收到邀请时标红，并把「改期」放在手边 —— 不提醒就一定会漏。
@@ -29,6 +36,9 @@ type Unread = { activity_id: number; title: string; sender: string; body: string
 /// 等我答复的主持人转移(PRD ⑨.5)。★放这张卡而不是项目页里★:
 /// 被转让人可能压根不打开那个项目,只在项目内部可见的请求多半永远不会被答复。
 type Transfer = { id: number; project_id: number; project_name: string; from: string; created_at: string }
+/// 等我整理的纪要。`has_draft` 区分「连草稿都没有」与「草稿写了一半」——
+/// 两种都是欠着，但前者要说的是「去建一份」，后者是「去写完」，文案不该一样。
+type MinutesTodo = { activity_id: number; title: string; starts_at: string; ends_at: string; has_draft: boolean }
 
 export function TodoCard({ all, onOpen, onDone, style }: {
   /// 我能看到的活动（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
@@ -41,10 +51,12 @@ export function TodoCard({ all, onOpen, onDone, style }: {
   const { message } = AntdApp.useApp()
   const [unread, setUnread] = useState<Unread[]>([])
   const [transfers, setTransfers] = useState<Transfer[]>([])
+  const [minutes, setMinutes] = useState<MinutesTodo[]>([])
 
   const loadUnread = useCallback(() => {
     api<Unread[]>('/api/me/unread').then(setUnread).catch(() => setUnread([]))
     api<Transfer[]>('/api/me/transfers').then(setTransfers).catch(() => setTransfers([]))
+    api<MinutesTodo[]>('/api/me/minutes-todo').then(setMinutes).catch(() => setMinutes([]))
   }, [])
   useEffect(loadUnread, [loadUnread])
 
@@ -55,7 +67,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
   const accepted = all.filter((m) => m.my_status === 'accepted')
 
-  const total = pending.length + unread.length + transfers.length
+  const total = pending.length + unread.length + transfers.length + minutes.length
 
   const markAll = async () => {
     try {
@@ -88,6 +100,11 @@ export function TodoCard({ all, onOpen, onDone, style }: {
           ))}
           {transfers.map((t) => (
             <TransferRow key={t.id} t={t} onDone={() => { loadUnread(); onDone() }} />
+          ))}
+          {/* ★排在私聊未读之前★：欠一份纪要是**有交付物的活儿**，
+              而未读消息多半只是「看一眼」——把重的排在轻的后面，重的就会被划走。 */}
+          {minutes.map((m) => (
+            <MinutesRow key={m.activity_id} m={m} onOpen={onOpen} />
           ))}
           {unread.map((u) => (
             <div key={u.activity_id} style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
@@ -153,6 +170,32 @@ function InviteRow({ m, clash, onOpen, onDone }: {
         <Button size="small" type={clash ? 'primary' : 'default'} ghost={!!clash} disabled={busy}
           onClick={() => onOpen(m.id)}>建议改期</Button>
       </Space>
+    </div>
+  )
+}
+
+/// 一条待整理的纪要。★只给一个动作:去整理★ ——
+/// 这件事没有「拒绝」也没有「稍后」:纪要要么写完(status=done)要么还欠着,
+/// 加一个「忽略」按钮等于让人把自己的账勾掉,而卡上的账本来就是给别人看的。
+function MinutesRow({ m, onOpen }: { m: MinutesTodo; onOpen: (id: number) => void }) {
+  const s = new Date(m.starts_at)
+  /// 拖了多久 —— 光说「待整理」看不出急不急,而「3 天前开完的」会。
+  const days = Math.floor((Date.now() - new Date(m.ends_at).getTime()) / 86400_000)
+  const ago = days <= 0 ? '今天开完' : days === 1 ? '昨天开完' : `${days} 天前开完`
+  return (
+    <div>
+      <div onClick={() => onOpen(m.activity_id)} style={{ cursor: 'pointer', fontSize: 13 }}>
+        📝 <b>{m.title}</b> 的纪要等你整理
+      </div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {fmtDay(s)} {fmtHM(s)} · {ago} · {m.has_draft ? '已有草稿' : '还没建'}
+      </Typography.Text>
+      <div>
+        <Button size="small" type={days >= 3 ? 'primary' : 'default'} style={{ marginTop: 6 }}
+          onClick={() => onOpen(m.activity_id)}>
+          {m.has_draft ? '接着写' : '去整理'}
+        </Button>
+      </div>
     </div>
   )
 }

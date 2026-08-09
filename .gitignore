@@ -8,3 +8,6 @@ __pycache__/
 node_modules/
 dist/
 target/
+
+# Claude Code 的本地工作区（子代理跑完留下的 worktree 等），不入库
+.claude/

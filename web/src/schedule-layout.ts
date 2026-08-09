@@ -99,3 +99,27 @@ export function layout<T extends Span>(items: T[], day: Date, fromH = 0): Box<T>
   flush()
   return out
 }
+
+/// 折叠区(0–`NIGHT_END_H` 点)里藏了几项 —— ★判据是「有没有落在这一段」,不是「几点开始」★。
+///
+/// ⚠★2026-08-09 liaoruili:「凌晨有活动,没有提醒呢!!」★
+/// 提示条一直在,只是数不出来:原来的判据是 `new Date(starts_at).getHours() < NIGHT_END_H`,
+/// 而他那两条是 **23:00 跨到次日凌晨**的 —— 起点 23 点不小于 8,数出来是 0;
+/// 可它们在次日 00:00–01:00 的那一段**确实被折叠藏了**(`slot` 对整段落在折叠区的返回 null)。
+/// ★「几点开始」和「哪一段可见」是两件事,跨天活动把它们劈开了。★
+///
+/// 按**可见的那几天**逐天判重叠;同一条活动跨两天只算一次(用 index 去重,调用方传的是同一个数组)。
+export function nightHiddenCount(items: Span[], days: Date[], nightEndH = NIGHT_END_H): number {
+  const hit = new Set<number>()
+  for (const d of days) {
+    const bandStart = new Date(d); bandStart.setHours(0, 0, 0, 0)
+    const bandEnd = new Date(bandStart); bandEnd.setHours(nightEndH, 0, 0, 0)
+    items.forEach((m, i) => {
+      const from = new Date(m.starts_at).getTime()
+      const to = new Date(m.ends_at).getTime()
+      // 半开区间求交:结束正好等于 08:00 的不算(它在网格里从 8 点那条线开始,看得见)
+      if (from < bandEnd.getTime() && to > bandStart.getTime()) hit.add(i)
+    })
+  }
+  return hit.size
+}

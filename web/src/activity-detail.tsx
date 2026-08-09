@@ -242,7 +242,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               {
                 key: 'u', label: '线上',
                 children: <InlineEdit value={m.online_url} canEdit={!!d.can_edit && !canceled}
-                  placeholder="（双击填写腾讯活动 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
+                  placeholder="（双击填写腾讯会议 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
