@@ -42,7 +42,14 @@ export type Project = {
   /// 归档时间;非空 = ★只读存档★(D17)。归档 ≠ 删除:材料全保留、可读可下载,
   /// 只是不能再往里加东西;它的活动也不再进日历、不产生忙闲。
   archived_at?: string | null
+  /// `team` = 普通项目;`materials` = ★「我的活动材料」★(ADR-0005 / PRD §J):
+  /// 系统给每人建的一个存档区,不关联项目的个人活动,材料落在这里。
+  /// ★它是全只读的★ —— 增删都回到那条活动里做(闸在后端 perm.rs,前端只是别给假按钮)。
+  kind?: string
 }
+/// 「我的活动材料」判据 —— ★只有这一处★。它决定要不要藏掉全部写入口、
+/// 要不要从「关联项目」下拉里剔掉(把个人存档区当协作项目用,正是 PRD §J1 要防的)。
+export const isMaterials = (p: { kind?: string } | null | undefined) => p?.kind === 'materials'
 /// 权限诊断:★判定链只剩两段★(超管? 成员表里什么角色?)。
 /// 删掉「组」之后不再有 via_groups —— 这正是删组的好处:从一条推导链变成一次查表。
 export type Diagnose = {

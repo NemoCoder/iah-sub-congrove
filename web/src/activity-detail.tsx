@@ -11,7 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
-import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
+import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
 import { ShareModal } from './share-modal'
@@ -67,8 +67,9 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
   useEffect(() => {
     if (!addProj) return
     // 只列我有编辑权的（后端也会逐个再判一次）
-    api<{ id: number; name: string; my_role: string | null }[]>('/api/projects')
-      .then((ps) => setMyProjects(ps.filter((x) => x.my_role === 'editor' || x.my_role === 'admin')))
+    // 「我的活动材料」不进这个下拉(PRD §J1,与 activity-new 同一判据)
+    api<{ id: number; name: string; my_role: string | null; kind?: string }[]>('/api/projects')
+      .then((ps) => setMyProjects(ps.filter((x) => !isMaterials(x) && (x.my_role === 'editor' || x.my_role === 'admin'))))
       .catch(() => {})
   }, [addProj])
 

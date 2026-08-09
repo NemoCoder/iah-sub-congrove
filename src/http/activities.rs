@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::perm::{activity_view, require_activity_host, require_role, ActivityView, Role};
+use crate::perm::{activity_view, require_activity_host, ActivityView};
 use crate::state::AppState;
 use crate::notify::{fmt_when, notify_activity, notify_targets};
 use crate::{audit, perm};
@@ -993,7 +993,9 @@ pub async fn delete_activity_item(
     Path((mid, iid)): Path<(i64, i64)>,
 ) -> AppResult<Json<serde_json::Value>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    // 材料区在 require_role 上是全只读的(PRD §J1),而「删材料」正是它放行的两条写路径之一
+    // —— 普通项目里这个函数就等于 require_role(Editor),行为不变。
+    crate::perm::require_material_write(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     // ★路径里的 mid 必须与这份材料实际归属的活动一致★:否则「在我能编辑的 A 活动下,
     // 报一个属于 B 活动的 item id」就能删掉 B 的材料 —— 一个典型的越权形状。
