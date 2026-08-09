@@ -76,8 +76,17 @@ pub const APIS: &[Api] = &[
          "改名/描述/禁下载/术语表/禁分享。★开启禁分享会连带撤销已有公开链接★",
          "name, description, no_download, hotwords, no_share"),
     api!("DELETE", "/api/projects/{id}", "项目", "owner",
-         "删项目(软删除)。★owner 专属(D0)★,不是 admin;★归档的项目也能直接删★\
-          (走 require_owner,不受归档写闸约束)", ""),
+         "★软删除★项目,进回收站 30 天,S3 一个字节都不动;连带撤销指向本项目的公开链接
+          (share.rs 判的是 items.deleted_at,而软删项目不给 item 打标记 —— 不撤销的话
+          项目删了、墙外链接照常下得到)。★owner 专属(D0)★不是 admin;归档的项目也能直接删。
+          ⚠ 2026-08-09 之前这里是**硬删除**,而这行文案一直写着「软删除」——契约说了谎半个月", ""),
+    api!("GET", "/api/projects/trash", "项目", "登录(只看自己是 owner 的)",
+         "我删掉的项目 + 还剩几天。★没有这一页,软删除就只是「永久看不见」★
+          (与 §J1b-2 同源:只能删不能还原的回收站不是回收站)", ""),
+    api!("POST", "/api/projects/{id}/undelete", "项目", "★仅 owner 本人★",
+         "从回收站还原。⚠ 不能走 require_owner —— 它查 `deleted_at IS NULL`,对已删项目直接
+          NotFound,那样项目就永远还不回来了;所以这里显式按 owner 判。
+          公开链接**不**随还原恢复(撤销是终态,与 no_share 一致)", ""),
     api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", ""),
     api!("PUT", "/api/projects/{id}/members", "项目", "admin;给 admin 需 owner",
          "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),

@@ -284,8 +284,25 @@ fn normalize_hotwords(raw: &str) -> String {
     seen.join(" ")
 }
 
-/// DELETE /api/projects/{id} —— 删项目(admin)。DB 行级联删(FK CASCADE);
-/// S3 对象按 items+versions 收集 key 逐个删——key 带 project_id 前缀,不会误伤别的项目。
+/// DELETE /api/projects/{id} —— ★软删除★项目(主持人专属),进回收站 30 天。
+///
+/// ⚠★2026-08-09 全量审计 A5:这里原来是 `DELETE FROM projects`,一条硬删除★。
+/// FK CASCADE 会连带清掉 items / 版本 / 成员 / 分享 / 纪要 / 转写…,S3 对象也一并删,
+/// **没有回收站、没有 30 天窗口、没有还原入口** —— 一次误点 = 整个项目连同全部录屏永久消失。
+/// 而与此同时:
+///   · CLAUDE.md 与迁移头注写着「★所有删除都是软删除★」(用户明令);
+///   · `apidoc.rs` 与 docs/openapi.json 对外宣称「删项目(**软删除**)」——★发布出去的契约在说谎★;
+///   · 表里有 `deleted_at`/`deleted_by` 两列,20+ 处 SQL 在过滤 `projects.deleted_at`,
+///     而这一列★全仓从没被写过一次★。**不是回归,是从没实现**;两种语义各写了一半。
+/// 2026-08-09 liaoruili 拍板:**走软删除**。
+///
+/// ⚠★必须与 perm.rs 的 A5b 同一个提交★:`effective_role` 的两条**授权**支原本不判
+/// `projects.deleted_at`(fail-open),单补软删会当场变成「删进回收站后成员照常读写」+
+/// 「超管拿到别人材料区」。那一条已在同提交里补成 BLOCK。
+///
+/// ★分享链接连带撤销★:`share.rs::live()` 判的是 items.deleted_at,而软删项目**不给 item 打标记**
+/// —— 不撤销的话,项目删了、墙外的公开链接照常下得到。与项目级 `no_share` 那条同一个处理。
+/// 撤销是终态,还原**不**恢复链接(与 no_share 一致)。
 pub async fn remove(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -298,28 +315,85 @@ pub async fn remove(
     // 而 Admin >= Editor,于是**归档的项目连删都删不掉**,必须先恢复再删 —— 反直觉
     // (「结题归档了,后来发现是废的想清理掉」是很自然的诉求)。require_owner 不受那道闸约束。
     crate::perm::require_owner(&state.pool, &id, pid).await?;
+    let me = id.require_username()?;
+    let mut tx = state.pool.begin().await?;
+    let n = sqlx::query(
+        "UPDATE projects SET deleted_at = now(), deleted_by = $2 WHERE id = $1 AND deleted_at IS NULL")
+        .bind(pid).bind(me).execute(&mut *tx).await?.rows_affected();
+    if n == 0 { tx.rollback().await?; return Err(AppError::NotFound) }
+    // 连带撤销指向本项目的公开链接(理由见函数头注)
+    let links = sqlx::query(
+        "UPDATE share_links SET revoked_at = now()
+          WHERE revoked_at IS NULL AND item_id IN (SELECT id FROM items WHERE project_id = $1)")
+        .bind(pid).execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    // ★S3 一个字节都不动★ —— 30 天后由清理任务 purge 时才按引用计数决定对象删不删。
+    audit::record(&state.pool, me, "project.delete", &pid.to_string(),
+                  &format!("软删除,进回收站 30 天;连带撤销公开链接 {links} 条")).await;
+    Ok(Json(json!({ "ok": true, "restorable_days": 30 })))
+}
+
+/// GET /api/projects/trash —— 我删掉的项目(30 天内可还原)。
+///
+/// ★没有这一页,「软删除」就只是「永久看不见」★ —— 与 §J1b-2 给材料区回收站的那条理由同源:
+/// 只能删不能还原的回收站不是回收站。
+pub async fn trash(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    // 判据是 owner —— 删项目本来就是主持人专属(D0),还原自然也是。超管走影子账户,不在这里开口子。
+    let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
+        "SELECT id, name, deleted_at, deleted_by FROM projects
+          WHERE owner = $1 AND deleted_at IS NOT NULL AND kind <> 'materials'
+          ORDER BY deleted_at DESC")
+        .bind(me).fetch_all(&state.pool).await?;
+    Ok(Json(json!(rows.iter().map(|(pid, name, at, by)| json!({
+        "id": pid, "name": name, "deleted_at": at, "deleted_by": by,
+        // 前端显示「还剩 N 天」比显示一个删除时刻有用 —— 人关心的是「还来得及吗」
+        "days_left": 30 - (chrono::Utc::now() - *at).num_days(),
+    })).collect::<Vec<_>>())))
+}
+
+/// POST /api/projects/{id}/undelete —— 从回收站还原(主持人本人)。
+///
+/// ⚠★不能走 require_owner★:它查的是 `WHERE id=$1 AND deleted_at IS NULL`,
+/// 对已删项目直接 NotFound —— 那样这个项目就**永远还不回来**了。
+/// 所以这里显式按 owner 判,且**只**认 owner(与删除对称)。
+pub async fn undelete(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let me = id.require_username()?;
+    let n = sqlx::query(
+        "UPDATE projects SET deleted_at = NULL, deleted_by = NULL
+          WHERE id = $1 AND owner = $2 AND deleted_at IS NOT NULL")
+        .bind(pid).bind(me).execute(&state.pool).await?.rows_affected();
+    // 不是我的、不存在、或根本没删 —— 一律 404(不给存在性预言机,与 perm.rs 口径一致)
+    if n == 0 { return Err(AppError::NotFound) }
+    audit::record(&state.pool, me, "project.undelete", &pid.to_string(),
+                  "从回收站还原(公开链接不随还原恢复)").await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 满 30 天的项目彻底删除 —— 由 `lib.rs` 的清理任务调用。
+///
+/// ★这才是原来那段硬删除该待的地方★:先收 key,再 DELETE(FK CASCADE 清干净),
+/// 最后**按引用计数**删对象。
+/// ⚠ 必须走 `delete_unreferenced` 而不是直接 `storage.delete`(2026-08-08 修):
+/// 内容寻址之后 `blobs/<sha>` 是**全库共享**的,直接删会把别人项目里同内容的文件一起打空。
+/// (此处原本的注释写着「key 带 project_id 前缀,不会误伤别的项目」—— 那是改成内容寻址**之前**
+///  的事实,注释没跟着改,于是那个洞在代码里挂了三天。)
+pub async fn purge_project(state: &AppState, pid: i64) -> AppResult<usize> {
     let keys: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k FROM (
            SELECT s3_key k FROM items WHERE project_id = $1 AND s3_key IS NOT NULL
            UNION SELECT v.s3_key FROM item_versions v JOIN items i ON i.id = v.item_id WHERE i.project_id = $1
          ) t",
-    )
-    .bind(pid)
-    .fetch_all(&state.pool)
-    .await?;
-    let n = sqlx::query("DELETE FROM projects WHERE id = $1").bind(pid).execute(&state.pool).await?.rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound);
-    }
-    // DB 先删(权限即刻收回),对象后清;清失败只 warn——孤儿对象可由 P3 的项目容量巡检兜底。
-    //
-    // ★必须走 delete_unreferenced 而不是直接 storage.delete★(2026-08-08 修):
-    // 内容寻址之后 `blobs/<sha>` 是**全库共享**的,直接删会把别人项目里同内容的文件一起打空。
-    // 此前这里的注释写着「key 带 project_id 前缀,不会误伤别的项目」——
-    // 那是 2026-08-05 改成内容寻址**之前**的事实,注释没跟着改,于是这个洞在代码里挂了三天。
-    let gone = crate::http::items::delete_unreferenced(&state, &keys).await;
-    audit::record(&state.pool, id.require_username()?, "project.delete", &pid.to_string(), &format!("objects={} 实删={gone}(其余仍被别处引用)", keys.len())).await;
-    Ok(Json(json!({ "ok": true })))
+    ).bind(pid).fetch_all(&state.pool).await?;
+    sqlx::query("DELETE FROM projects WHERE id = $1").bind(pid).execute(&state.pool).await?;
+    Ok(crate::http::items::delete_unreferenced(state, &keys).await)
 }
 
 /// GET /api/projects/{id}/diagnose?username=X(admin)—— 权限诊断:「为什么他能/不能看」。

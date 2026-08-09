@@ -82,12 +82,17 @@ export function ProjectsView({ me, onOpenActivity }: {
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
   const [shareFor, setShareFor] = useState<Item[] | null>(null) // 正在设置公开分享的那些项(可多选)
-  const [trashOpen, setTrashOpen] = useState(false)             // 回收站抽屉
+  const [trashOpen, setTrashOpen] = useState(false)             // 回收站抽屉(项目**内**的条目)
+  /// 项目级回收站(整个项目被软删)。★与上面那个是两件事★:一个装文件,一个装项目。
+  const [projTrash, setProjTrash] = useState<{ id: number; name: string; deleted_at: string; days_left: number }[]>([])
+  const [projTrashOpen, setProjTrashOpen] = useState(false)
 
   const loadProjects = useCallback(async () => {
     const s = await api<Project[]>('/api/projects')
     setProjects(s)
     setCur((c) => (c ? s.find((x: Project) => x.id === c.id) || null : null))
+    // 回收站空是常态,拉失败也不该影响主列表 —— 静默兜底
+    try { setProjTrash(await api('/api/projects/trash')) } catch { setProjTrash([]) }
   }, [])
   const loadItems = useCallback(async (pid: number) => {
     setItems(await api<Item[]>(`/api/projects/${pid}/items`))
@@ -341,7 +346,12 @@ export function ProjectsView({ me, onOpenActivity }: {
       if (key === 'delete') {
         modal.confirm({
           title: `删除项目「${s.name}」?`,
-          content: '项目内全部内容与文件将一并删除,不可撤销。',
+          // ⚠★文案跟着行为改★(2026-08-09 审计 A5):原来写的是「不可撤销」——
+          // 那时后端确实是硬删除;现在是软删除进回收站 30 天。
+          // ★说明文案和实现不一致时,人会按文案决策★:说「不可撤销」会让人不敢删该删的东西,
+          // 反过来说「可撤销」而实际删干净了,那就是骗人。
+          content: <span>进<b>回收站保留 30 天</b>，期间可在「回收站」里还原，文件一个字节都不会删。<br />
+            ⚠ <b>已经发出去的公开链接会立即失效</b>，还原也不会恢复它们。</span>,
           okButtonProps: { danger: true },
           onOk: async () => {
             try {
@@ -401,7 +411,16 @@ export function ProjectsView({ me, onOpenActivity }: {
         // 260 减去角色标签(~56px)与 ⋯ 按钮(~30px),留给名称的只剩 ~150px,
         // 「课题组·计量经济学」这种正常长度的名字就已经被截断了。
         size="small" title="项目" style={{ width: 320, flex: '0 0 auto' }}
-        extra={<Button size="small" type="primary" onClick={newSpace}>新建</Button>}
+        extra={<AntSpace size={6}>
+          {/* ★回收站入口必须有★(2026-08-09 审计 A5):删项目改成软删除之后,
+              没有这一页的话「软删除」就只是「永久看不见」——与 §J1b-2 给材料区回收站的
+              理由同源:★只能删不能还原的回收站不是回收站★。
+              只在**真的删过东西**时出现:平时不占位置,有东西时才提醒你它在倒计时。 */}
+          {projTrash.length > 0 && (
+            <Button size="small" onClick={() => setProjTrashOpen(true)}>回收站 {projTrash.length}</Button>
+          )}
+          <Button size="small" type="primary" onClick={newSpace}>新建</Button>
+        </AntSpace>}
       >
         {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
             只过滤本地已加载的列表(项目列表本来就是一次拉全),不打接口。 */}
@@ -731,6 +750,29 @@ export function ProjectsView({ me, onOpenActivity }: {
           <Empty description="选择或新建一个项目" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </Card>
       )}
+      {/* 项目级回收站。★挂在最外层★:它与「当前选中哪个项目」无关 ——
+          删掉的项目本来就不在列表里,选不中。 */}
+      <Drawer title="项目回收站" open={projTrashOpen} onClose={() => setProjTrashOpen(false)} width={460}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="删掉的项目在这里保留 30 天"
+          description="期间文件一个字节都没删，还原后内容原样回来。⚠ 已发出去的公开链接在删除那一刻就失效了，还原不会恢复它们。" />
+        <List size="small" dataSource={projTrash}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="回收站是空的" /> }}
+          renderItem={(t) => (
+            <List.Item actions={[
+              <Popconfirm key="r" title={`还原「${t.name}」？`} okText="还原" cancelText="取消"
+                onConfirm={async () => {
+                  try {
+                    await api(`/api/projects/${t.id}/undelete`, { method: 'POST' })
+                    message.success('已还原'); await loadProjects()
+                  } catch (e) { message.error((e as Error).message) }
+                }}><a>还原</a></Popconfirm>,
+            ]}>
+              <List.Item.Meta title={t.name}
+                description={`${fmtTime(t.deleted_at)} 删除 · ${t.days_left > 0 ? `还剩 ${t.days_left} 天` : '即将彻底删除'}`} />
+            </List.Item>
+          )} />
+      </Drawer>
     </div>
     </>
   )

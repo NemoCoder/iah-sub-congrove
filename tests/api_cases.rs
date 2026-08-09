@@ -362,6 +362,26 @@ const CASES: &[Case] = &[
     c!(deny "POST", "/api/projects/{id}/items", "材料区里不能建文件夹/文档",
        "pid 是我的「我的活动材料」", "POST {kind:'folder',name:'x'}",
        "403;§J0b 的那些「文件夹」是活动自己带的,不是人建的", "J1"),
+    c!("DELETE", "/api/projects/{id}", "★删项目是软删除,不是硬删★", "我是主持人",
+       "DELETE /api/projects/{id}",
+       "200 restorable_days=30;projects.deleted_at 置位、★S3 一个字节都不动★、公开链接连带撤销。\
+        2026-08-09 之前这里是 `DELETE FROM projects` 一条硬删(FK CASCADE 连录屏一起没),\
+        而契约、CLAUDE.md、20+ 处 SQL 过滤都在声称软删 —— ★那一列从没被写过一次★(审计 A5)", "A5"),
+    c!(deny "GET", "/api/projects/{id}/items", "★软删的项目对成员也立刻失效★",
+       "项目已删进回收站,我还在成员表里", "GET /api/projects/{id}/items",
+       "404 —— effective_role 现在对 deleted_at 非空的项目发 BLOCK。\
+        ★这条与 A5 必须同一个提交★:原来两条**授权**支都不判 deleted_at(fail-open),\
+        单补软删会变成「删进回收站后成员照常读写」+「材料区 BLOCK 消失 → 超管读得到别人的材料区」", "A5b"),
+    c!("POST", "/api/projects/{id}/undelete", "主持人能把项目还回来", "项目在回收站里,我是 owner",
+       "POST .../undelete", "200,项目回到列表;公开链接不随还原恢复(撤销是终态)", "A5"),
+    c!(deny "POST", "/api/projects/{id}/undelete", "不是主持人还不了", "项目在回收站,我只是成员",
+       "POST .../undelete", "404(不是 403 —— 不给存在性预言机)", "A5"),
+    c!("GET", "/api/projects/trash", "回收站列出我删的项目与剩余天数", "我删过两个项目",
+       "GET /api/projects/trash", "200,两条,带 days_left", "A5"),
+    c!(deny "GET", "/api/projects/trash", "★别人删的项目不进我的回收站★",
+       "别的主持人删了他的项目,我曾是那个项目的 admin", "GET /api/projects/trash",
+       "200 但**不含**那一条 —— 判据是 owner(删项目本来就是主持人专属 D0,还原自然也是);\
+        成员看得到别人回收站里的项目名 = 又一个存在性泄露", "A5"),
     c!(deny "PUT", "/api/projects/{id}", "★材料区连主人也改不了名★",
        "pid 是我的「我的活动材料」", "PUT {name:'随便'}",
        "403 —— decide_owner 对 kind='materials' 一律 Deny(2026-08-09 收严:原来主人放行)。\
