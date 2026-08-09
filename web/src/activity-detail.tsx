@@ -128,7 +128,9 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         </Typography.Text>
         {canceled && <Tag color="default">已取消</Tag>}
         {m.visibility === 'public' && <Tag color="blue">公开活动</Tag>}
-        {m.is_private && <Tag color="purple">私密项目</Tag>}
+        {/* ★「非公开」,不是「私密项目」★(PRD §J4):判据是活动自己的 visibility(M0 起),
+            而活动可以一个项目都不关联(A4)——「私密项目」对它根本不适用。 */}
+        {m.is_private && <Tag color="purple">非公开</Tag>}
         {d.observer && <Tag>旁听</Tag>}
         <span style={{ flex: 1 }} />
         {/* ★取消旁听在这里做★(2026-08-07):广场只列「我还没有关系的会」,
@@ -466,7 +468,11 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
       {showCounter && (
         <div>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '0 0 8px' }}>
-            发起人**看不到**你私密项目里的安排,所以他不知道你这个时段忙。
+            {/* ⚠ 这里原来写的是 `发起人**看不到**你私密项目里的安排` —— 两处都不对:
+                ① `**...**` 是 Markdown,而这是一个 Typography.Paragraph,★星号会原样显示出来★;
+                ② 用词(2026-08-09 liaoruili):不叫「私密」,叫「不公开」;判据也是活动自己的
+                   visibility,不是项目的。 */}
+            发起人<b>看不到</b>你不公开的安排,所以他不知道你这个时段忙。
             给一个你方便的具体时间,比只说「不行」有用得多。
           </Typography.Paragraph>
           {/* 建议一个**将来**的时段才有意义,所以这里 noPast */}

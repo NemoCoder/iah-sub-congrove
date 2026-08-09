@@ -149,7 +149,7 @@ function Group({ title, items, onOpen, me }: {
 }
 
 const STATUS_TAG: Record<RespondStatus, { t: string; c: string }> = {
-  pending: { t: '待你应答', c: 'red' }, accepted: { t: '已接受', c: 'green' },
+  pending: { t: '待应答', c: 'red' }, accepted: { t: '已接受', c: 'green' },
   declined: { t: '已拒绝', c: 'default' }, tentative: { t: '待定', c: 'orange' },
   counter: { t: '已提改期', c: 'purple' },
 }
@@ -177,7 +177,7 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
           {/* 记录员只有「要出纪要」的类型才有 —— 空的时候别显示「记录员 」这半句 */}
           {m.recorder && <span>· 记录员 {m.recorder}</span>}
           {!!m.participant_count && <span>· {m.participant_count} 人</span>}
-          {m.is_private && <Tag color="purple" style={{ marginInlineEnd: 0 }}>私密</Tag>}
+          {m.is_private && <Tag color="purple" style={{ marginInlineEnd: 0 }}>非公开</Tag>}
         </Space>
         {(m.location || m.online_url || m.agenda) && (
           <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 3 }}>
