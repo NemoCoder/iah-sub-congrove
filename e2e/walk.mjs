@@ -74,15 +74,28 @@ const grid = await p.evaluate(() => {
 console.log('【日程】纵向溢出的容器:', grid.length ? JSON.stringify(grid) : '无 ✓')
 
 // 2c. 今天高亮
+// ⚠★这里原来一直返回 null,而界面上其实是有高亮的★(2026-08-10):
+// 选择器按 `th,[class*=head],[class*=col]` 找,可这套日历是 div 拼的、类名对不上 ——
+// 于是脚本报「没找到」,我差点把它当成「没高亮」写进结论。
+// ★「选择器没匹配上」和「这个东西不存在」是两回事,脚本必须把两者分开报★:
+// 前者是我的 bug,后者才是产品的 bug。判据换成「按可见文字定位」——
+// 它是用户真正看到的东西,不依赖 DOM 结构怎么搭。
 const todayHl = await p.evaluate(() => {
-  const d = new Date(), md = `${d.getMonth() + 1}月${d.getDate()}日`, dd = String(d.getDate())
-  const heads = [...document.querySelectorAll('th,[class*=head],[class*=col]')]
-  const hit = heads.find((h) => (h.innerText || '').includes(dd))
-  if (!hit) return null
-  const cs = getComputedStyle(hit)
-  return { txt: hit.innerText.replace(/\n/g, ' ').slice(0, 24), bg: cs.backgroundColor, color: cs.color, weight: cs.fontWeight }
+  const el = [...document.querySelectorAll('div,th,td,span')]
+    .filter((x) => (x.innerText || '').includes('今天') && x.children.length <= 3)
+    .sort((a, b) => a.innerText.length - b.innerText.length)[0]
+  if (!el) return { 找到: false, 说明: '★没找到写着「今天」的元素——先怀疑选择器,再怀疑产品★' }
+  const bg = (n) => { // 背景可能挂在祖先上,往上找到第一个非透明的
+    for (let x = n; x && x !== document.body; x = x.parentElement) {
+      const c = getComputedStyle(x).backgroundColor
+      if (c && !/rgba\(0, 0, 0, 0\)|transparent/.test(c)) return c
+    }
+    return '(全透明)'
+  }
+  const cs = getComputedStyle(el)
+  return { 找到: true, 文字: el.innerText.replace(/\n/g, ' ').slice(0, 20), 底色: bg(el), 字重: cs.fontWeight }
 })
-console.log('【日程】今天那一列:', JSON.stringify(todayHl))
+console.log('【日程】今天那一列:', JSON.stringify(todayHl, null, 0))
 
 await shot('01-schedule')
 
