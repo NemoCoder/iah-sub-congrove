@@ -42,6 +42,46 @@ pub fn check_caps(c: &Caps, recorder: &str, project_ids: &[i64]) -> Result<(), &
     Ok(())
 }
 
+/// 一条活动的跨度上限 —— ★30 天★（PRD F4，2026-08-08 liaoruili 拍板）。
+///
+/// **为什么需要一个上界**：此前只有「结束必须晚于开始」这一条下界。
+/// 一条 `2026-08-08 → 2126-08-08`（输错年份）会命中**每一次**日历查询与忙闲查询的时间窗，
+/// 把两条最热的路径一起拖垮，而用户在任何一屏上都看不出是哪条记录干的。
+///
+/// **为什么是 30 天而不是更松**：真实的长活动是「出差两周」「年假一个月」。
+/// 更常见的手滑不是输错年份，而是**输错月份**（8 月 8 日打成次年 3 月 1 日 = 205 天）——
+/// ★365 天的上界挡不住它，30 天挡得住。★
+pub const MAX_SPAN_DAYS: i64 = 30;
+
+/// 时间区间本身合法吗（纯函数，`cargo test` 够得着）。
+///
+/// ⚠★必须在应用层校验并返 400 带可读文案★（F4 明写）：只靠数据库 CHECK 的话，
+/// `error.rs` 把 sqlx 错误一律映射成 500 `"internal error"` ——
+/// 用户会拿到一个「服务器出错了」，而问题其实出在他填的日期上。
+pub fn check_span(starts_at: chrono::DateTime<chrono::Utc>,
+                  ends_at: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
+    if ends_at <= starts_at { return Err("结束时间必须晚于开始时间".into()) }
+    let days = (ends_at - starts_at).num_days();
+    if days > MAX_SPAN_DAYS {
+        return Err(format!(
+            "一条活动最长 {MAX_SPAN_DAYS} 天，这条是 {days} 天——是不是月份或年份填错了？             真要记这么长的一段，拆成几条。"));
+    }
+    Ok(())
+}
+
+/// 会后补录的「实际时长」上界 —— ★按这场活动的跨度算，不写死 1440 分钟★（F4 连带条）。
+/// 写死一天的话，三天的出差就填不了实际时长。
+/// ⚠ 上界是「跨度 + 1 天」而不是「跨度」：跨度按 num_days() 取整会丢掉不满一天的尾巴。
+pub fn check_actual_minutes(minutes: i32, starts_at: chrono::DateTime<chrono::Utc>,
+                            ends_at: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
+    if minutes < 0 { return Err("实际时长不能是负数".into()) }
+    let cap = ((ends_at - starts_at).num_minutes() + 24 * 60).max(24 * 60);
+    if i64::from(minutes) > cap {
+        return Err(format!("实际时长比这场活动的跨度还长（上限 {} 分钟）", cap));
+    }
+    Ok(())
+}
+
 /// 开始时间能不能是过去（F0/F1）。★与 check_caps 分开是因为它要"现在几点"★——
 /// 揉进去会让那个纯函数依赖时钟，单测就得注入时间，反而更难测。
 ///
@@ -287,6 +327,29 @@ mod tests {
         // 于是「昨天下午改论文改了 3 小时」这种正当的补录根本建不出来，
         // 只能先建一条再去改时间绕过去（update 没有这道闸）。
         assert!(check_past(&个人日程, t(-60 * 24 * 30), t(0)).is_ok(), "一个月前也该能补");
+    }
+
+    // ══════ 跨度上界（F4，2026-08-08 liaoruili 拍板）══════
+    #[test]
+    fn 跨度超过三十天就拒() {
+        assert!(check_span(t(0), t(60)).is_ok(), "一小时的会");
+        assert!(check_span(t(0), t(60 * 24 * 30)).is_ok(), "正好 30 天：出差/年假的真实上限");
+        assert!(check_span(t(0), t(60 * 24 * 31)).is_err(), "31 天");
+        // ★这条才是它真正要挡的★：输错月份（8-08 打成次年 3-01 ≈ 205 天）——
+        // 365 天的上界挡不住它，30 天挡得住。
+        assert!(check_span(t(0), t(60 * 24 * 205)).is_err(), "输错月份");
+        assert!(check_span(t(60), t(0)).is_err(), "结束早于开始");
+        assert!(check_span(t(0), t(0)).is_err(), "零长度");
+    }
+
+    #[test]
+    fn 实际时长按跨度算上界_不写死一天() {
+        // 三天的出差：填 40 小时是合理的，写死 1440 分钟（一天）会把它挡掉
+        assert!(check_actual_minutes(40 * 60, t(0), t(60 * 24 * 3)).is_ok());
+        // 一小时的会：上界仍留一天的余量（补录时人常常估个整数）
+        assert!(check_actual_minutes(90, t(0), t(60)).is_ok());
+        assert!(check_actual_minutes(60 * 24 * 5, t(0), t(60)).is_err(), "比跨度长太多");
+        assert!(check_actual_minutes(-1, t(0), t(60)).is_err());
     }
 
     // ══════ 可改范围（原型「我的活动类型」那一页）══════

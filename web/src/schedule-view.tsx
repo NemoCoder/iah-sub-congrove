@@ -60,6 +60,11 @@ const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
 /// 这里只留渲染,别把算法抄回来(抄回来就是第二个真相源,也就没人再跑那 9 条测试了)。
 /// 活动在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
 function evStyle(m: Activity): React.CSSProperties {
+  // ★归档项目的活动:淡化★(PRD B1)。它照常出现在日历里(B0——日程也是「我做过什么」的记录),
+  // 但归档项目是**只读**的:不淡化的话人会点进去想改时间才发现动不了。
+  // ⚠ 判在最前面:归档是「这场会已经封存了」,比「我还没答复」更该主导它的观感 ——
+  //   一场封存项目里的历史会,不该再用红色催我答复。
+  if (m.archived) return { background: '#fafafa', border: '1px dashed #d9d9d9', color: '#8c8c8c' }
   if (m.my_status === 'pending') return { background: '#fff1f0', border: '1px solid #ff4d4f', color: '#a8071a' }
   if (m.is_private) return { background: '#f9f0ff', border: '1px dashed #722ed1', color: '#531dab' }
   return { background: '#e6fffb', border: '1px solid #0d9488', color: '#00474f' }
@@ -369,7 +374,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                       <div
                         key={m.id}
                         onClick={() => onOpenActivity(m.id)}
-                        title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 非公开' : ''}`}
+                        title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 非公开' : ''}${m.archived ? ' · 已归档(只读)' : ''}`}
                         style={{
                           position: 'absolute', top, height, left, width,
                           borderRadius: 3, padding: '1px 4px', fontSize: 11, lineHeight: 1.3,
@@ -399,6 +404,8 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
           <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488' }} text="公开" />
           <LegendDot style={{ background: '#f9f0ff', border: '1px dashed #722ed1' }} text="非公开" />
           <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待应答" />
+          {/* ★归档也进图例★:它现在是日历上第四种观感,不解释的话人会以为那条会「坏了」 */}
+          <LegendDot style={{ background: '#fafafa', border: '1px dashed #d9d9d9' }} text="已归档 · 只读" />
         </Space>
       </Card>
 

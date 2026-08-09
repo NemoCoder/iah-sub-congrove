@@ -699,6 +699,32 @@ pub async fn archive(
     // 不带 archived 字段 = 归档;显式传 false = 恢复为进行中
     let want = body.get("archived").and_then(|v| v.as_bool()).unwrap_or(true);
     let username = id.require_username()?;
+    // ★有未开始的活动就不许归档★(PRD B2,2026-08-09 全量审计发现这里此前**零校验**)。
+    //
+    // 归档 = 做完了。还有排在未来的活动 = 没做完 —— 直接拒,让人先处理(取消它们,或等它们开完)。
+    // 推论:归档项目里不会存在「未来的活动」,于是「归档项目的活动要不要占忙闲」这个问题自然消失。
+    //
+    // ★不含已取消的★(2026-08-07 确认):取消了就不算有安排,不该因为一条作废的记录卡住归档。
+    //
+    // ⚠★跨项目的活动不能静默跳过★:A 想归档却卡在一场**同时关联 A 和 B** 的会上,而那场会主要是 B 的事。
+    //   处置是★把是哪几场列出来★,让他自己决定(把 A 从关联里去掉,或直接取消它)——
+    //   静默跳过等于允许「项目归档了、名下还有未来的会」。
+    if want {
+        let pending: Vec<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "SELECT m.title, m.starts_at FROM activities m
+               JOIN activity_projects mp ON mp.activity_id = m.id
+              WHERE mp.project_id = $1 AND m.status = 'active' AND m.starts_at > now()
+              ORDER BY m.starts_at LIMIT 5")
+            .bind(pid).fetch_all(&state.pool).await?;
+        if !pending.is_empty() {
+            let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+            let list = pending.iter()
+                .map(|(t, at)| format!("{}（{}）", t, at.with_timezone(&tz).format("%m-%d %H:%M")))
+                .collect::<Vec<_>>().join("、");
+            return Err(AppError::BadRequest(format!(
+                "还有没开始的活动,先处理掉再归档:{list}。（取消它们,或把本项目从它的关联里去掉）")));
+        }
+    }
     let n = sqlx::query(
         "UPDATE projects SET archived_at = CASE WHEN $2 THEN now() END,
                              archived_by = CASE WHEN $2 THEN $3 END

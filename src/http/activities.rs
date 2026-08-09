@@ -72,6 +72,14 @@ pub struct ActivityRow {
     /// 两处若各写各的,就会出现「日历显示私密、别人却看到你忙」这种自相矛盾的展示。
     #[sqlx(default)]
     pub is_private: bool,
+    /// ★关联的项目**全部**已归档吗★(PRD B1)。日历据此淡化 + 打「已归档」标。
+    ///
+    /// 归档项目的活动**照常显示**(B0 推翻了 D17 的这一半:日程也是「我做过什么」的记录),
+    /// 但归档项目是**只读**的 —— 不标出来的话,人会点进去想传材料、想改时间,
+    /// 才发现动不了。★标记是为了让「动不了」在点进去之前就可见。★
+    /// 判据是「全部归档」而不是「有一个归档」:只要还有一个项目在进行中,这场会就还是活的。
+    #[sqlx(default)]
+    pub archived: bool,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +129,12 @@ pub async fn list(
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
         "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
+                -- ★全部关联项目都归档了吗★(B1):零关联项目的活动恒为 false ——
+                -- 「没有项目」不等于「项目都归档了」,前者是个人活动、活得好好的。
+                (EXISTS (SELECT 1 FROM activity_projects a1 JOIN projects q1 ON q1.id = a1.project_id
+                          WHERE a1.activity_id = m.id AND q1.archived_at IS NOT NULL)
+                 AND NOT EXISTS (SELECT 1 FROM activity_projects a2 JOIN projects q2 ON q2.id = a2.project_id
+                          WHERE a2.activity_id = m.id AND q2.archived_at IS NULL)) AS archived,
                 -- 列表要显示的三样,都在这条 SQL 里一次取全:
                 -- ★不让前端为每场会再打一次详情★(23 场会 = 23 个请求 = 列表页卡住)
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
@@ -162,15 +176,18 @@ pub async fn list(
                  OR EXISTS (SELECT 1 FROM activity_projects mpd
                               JOIN projects pd ON pd.id = mpd.project_id
                              WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL))
-            -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
-            -- 塞满已结题项目的历史活动会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
-            -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
-            AND NOT (EXISTS (SELECT 1 FROM activity_projects mpj
-                               JOIN projects p ON p.id = mpj.project_id
-                              WHERE mpj.activity_id = m.id AND p.archived_at IS NOT NULL)
-                     AND NOT EXISTS (SELECT 1 FROM activity_projects m2
-                                       JOIN projects p2 ON p2.id = m2.project_id
-                                      WHERE m2.activity_id = m.id AND p2.archived_at IS NULL))
+            -- ★归档项目的活动**照常进日历**★(PRD B0,2026-08-07 liaoruili 推翻了 D17 的这一半)。
+            --
+            -- ⚠★这里原来滤掉它们,执行的是一条已被明确推翻的决定★(2026-08-09 全量审计发现,
+            --   PRD B0 写了两天没人落):我当初的理由是「日历回答『我接下来要做什么』,
+            --   塞满已结题项目的历史会变成考古现场」——★这个视角是片面的★。
+            --   liaoruili:「日程也是**我做过什么**的记录,有时候用户就想回顾之前的工作,
+            --   看看满日程的很有成就感」。归档不该让过去消失,那些时间是真的花掉了。
+            --
+            -- 不加过滤,改为**标出来**:下面把 `archived` 一并回给前端,由它淡化 + 打「已归档」标(B1)。
+            -- ★为什么必须标而不是一视同仁★:归档项目是**只读**的(D17 的这一半仍然成立),
+            --   不加区分的话用户会点进去想传材料、想改时间,才发现动不了 ——
+            --   标记是为了让「动不了」这件事在**点进去之前**就可见。
           ORDER BY m.starts_at",
     )
     .bind(username).bind(from).bind(to).bind(q.project_id)
@@ -195,7 +212,10 @@ pub async fn create(
         .ok_or_else(|| AppError::BadRequest("活动类型不存在,或者不是你的".into()))?;
     crate::http::activity_types::check_caps(&caps, &input.recorder, &input.project_ids)
         .map_err(|m| AppError::BadRequest(m.into()))?;
-    if input.ends_at <= input.starts_at { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
+    // ★跨度上界 30 天★(F4):一条输错年份的活动会命中每一次日历/忙闲查询,
+    // 把两条最热的路径一起拖垮,而任何一屏上都看不出是哪条记录干的。判据是纯函数,带单测。
+    crate::http::activity_types::check_span(input.starts_at, input.ends_at)
+        .map_err(AppError::BadRequest)?;
     // ★能不能填过去的时间,由**类型的能力位**说了算★(F0/F1,2026-08-09 liaoruili:
     // 「会议类型的活动只能发起未来的会议,其他类型可以后面补录」)。
     //
@@ -394,7 +414,13 @@ pub async fn update(
         sqlx::query_as("SELECT starts_at, ends_at, online_url, title FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let (s, e) = (p.starts_at.unwrap_or(cur.0), p.ends_at.unwrap_or(cur.1));
-    if e <= s { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
+    // 跨度上界与创建同一套(F4)。⚠ 改期**不**受 allow_past 约束 —— 那是修正历史记录的正当场景。
+    crate::http::activity_types::check_span(s, e).map_err(AppError::BadRequest)?;
+    // ★实际时长按**这场活动的跨度**算上界,不写死一天★(F4 连带条):
+    // 写死 1440 分钟的话,三天的出差就填不了实际时长。
+    if let Some(am) = p.actual_minutes {
+        crate::http::activity_types::check_actual_minutes(am, s, e).map_err(AppError::BadRequest)?;
+    }
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
@@ -499,10 +525,28 @@ pub async fn cancel(
     require_activity_host(&state.pool, &id, mid).await?;
     let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    sqlx::query("UPDATE activities SET status='canceled', updated_at=now() WHERE id=$1")
-        .bind(mid).execute(&state.pool).await?;
     let actor = id.require_username()?;
-    audit::record(&state.pool, actor, "activity.cancel", &mid.to_string(), "").await;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE activities SET status='canceled', updated_at=now() WHERE id=$1")
+        .bind(mid).execute(&mut *tx).await?;
+    // ★取消活动时,**材料区里**的材料跟着走★(PRD §J1b)。
+    //
+    // ⚠★只对「我的活动材料」成立,普通项目一个字节都不动★——PRD 把这条边界写得很重:
+    //   普通项目里的材料是**项目的资产**,不该被一次活动的取消带走(D10「会议材料进项目树」的精神);
+    //   而材料区里的每一份材料**都有主人(某条活动)**,不存在游离的文件 ——
+    //   活动没了还留着,它在 §J0b 的虚拟分组里★根本渲染不出来★:
+    //   用户看不见、删不掉,却一直占着配额。
+    //
+    // 走软删(进回收站 30 天),不是硬删 —— 与全站「所有删除都是软删除」一致。
+    let n = sqlx::query(
+        "UPDATE items SET deleted_at = now(), deleted_by = $2
+           FROM projects p
+          WHERE items.project_id = p.id AND p.kind = 'materials'
+            AND items.activity_id = $1 AND items.deleted_at IS NULL")
+        .bind(mid).bind(actor).execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    audit::record(&state.pool, actor, "activity.cancel", &mid.to_string(),
+                  &format!("材料区里连带软删 {n} 项(普通项目的材料保留)")).await;
     // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
     let who = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &who, "活动已取消",
