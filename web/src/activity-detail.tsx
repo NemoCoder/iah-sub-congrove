@@ -15,7 +15,7 @@ import { api, showUser, type LinkChange, type ActivityDetail, type ActivityItem,
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
 import { ShareModal } from './share-modal'
-import { QuarterRangePicker } from './time-range'
+import { TimeRangePicker } from './time-range'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -175,8 +175,8 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
             我的 00 15 30 45 呢」):有秒、分钟 60 格、还要点一次确认 —— 因为「一刻钟粒度」
             当初只写进了「发起活动」那一处。现在三处共用 time-range.tsx。
             ★这里**不加** noPast★:后端只在创建时拒绝过去的时间,改时间还用来**补录**已经开过的会。 */}
-        <QuarterRangePicker style={{ width: '100%' }} value={timeEdit}
-          onChange={(v) => setTimeEdit(v as [Dayjs, Dayjs] | null)} />
+        <TimeRangePicker value={timeEdit}
+          onChange={(v) => setTimeEdit(v)} />
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
           ★所有人的答复会清回「待定」★，并收到一条改期通知。
         </Typography.Text>
@@ -467,10 +467,10 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
             给一个你方便的具体时间,比只说「不行」有用得多。
           </Typography.Paragraph>
           {/* 建议一个**将来**的时段才有意义,所以这里 noPast */}
-          <QuarterRangePicker noPast size="small"
-            style={{ width: '100%', marginBottom: 8 }}
-            onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)}
-          />
+          <div style={{ marginBottom: 8 }}>
+            <TimeRangePicker noPast size="small"
+              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
+          </div>
           <Input.TextArea rows={2} size="small" placeholder="原因（选填）" value={reason}
             onChange={(e) => setReason(e.target.value)} style={{ marginBottom: 8 }} />
           <Button size="small" type="primary" block loading={busy} disabled={!range}

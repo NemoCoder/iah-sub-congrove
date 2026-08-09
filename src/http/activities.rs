@@ -148,10 +148,19 @@ pub async fn list(
             -- ★关联项目**全部**被删则这场会不再出现★(2026-08-07,Playwright 截图里肉眼看出来的):
             -- 项目软删除不动 activity_projects 也不动成员表,所以删掉项目之后它的活动照样躺在日历上,
             -- 还因为「找不到未删的公开项目」被误标成**私密**(紫色虚框)。
-            -- 活动必须关联至少一个项目(硬约束),项目全没了它就是个孤儿。
-            AND EXISTS (SELECT 1 FROM activity_projects mpd
-                          JOIN projects pd ON pd.id = mpd.project_id
-                         WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
+            --
+            -- ⚠★2026-08-09 这一条差点把「个人日程」整类活动吞掉★(liaoruili:「我创建完个人活动,
+            --   这里没有显示呢??」)。它当初写作 `EXISTS(未删的关联项目)`,依据是当时那条
+            --   「活动必须关联至少一个项目」的硬约束 —— ★而 ADR-0002 加了 needs_project
+            --   能力位之后,这个前提就不成立了★:「个人日程」本来就是零关联项目。
+            --   于是它被这条过滤悄悄滤掉:不报错、创建成功、日历上就是没有。
+            --   ★「注释里写着的前提」会过期,而 SQL 不会自己发现★(同一天已在 D10 的只读区、
+            --   AI 摘要的 kind 上各栽过一次)。
+            -- 改成:**有关联就要求至少一个活着;没关联的直接放行**。
+            AND (NOT EXISTS (SELECT 1 FROM activity_projects mpn WHERE mpn.activity_id = m.id)
+                 OR EXISTS (SELECT 1 FROM activity_projects mpd
+                              JOIN projects pd ON pd.id = mpd.project_id
+                             WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL))
             -- ★归档项目的会不进日历★(D17):日历回答「我接下来要做什么」,
             -- 塞满已结题项目的历史活动会变成考古现场。历史仍可在项目页里查、搜索也搜得到。
             -- 判据:关联的项目**全部**归档才滤掉;只要还有一个在进行中就留下。
@@ -1155,10 +1164,12 @@ pub async fn public_list(
             AND NOT EXISTS (SELECT 1 FROM activity_participants mpx
                              WHERE mpx.activity_id = m.id AND mpx.username = $1)
             AND ($2::bigint IS NULL OR m.starts_at < now() + ($2 || ' days')::interval)
-            -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)
-            AND EXISTS (SELECT 1 FROM activity_projects mpd
-                          JOIN projects pd ON pd.id = mpd.project_id
-                         WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
+            -- 关联项目全被删则不进广场(与日历同一条口径,见 list 里那段注释)——
+            -- 同样放行零关联项目的活动(公开的个人日程也该能被旁听)
+            AND (NOT EXISTS (SELECT 1 FROM activity_projects mpn WHERE mpn.activity_id = m.id)
+                 OR EXISTS (SELECT 1 FROM activity_projects mpd
+                              JOIN projects pd ON pd.id = mpd.project_id
+                             WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL))
             -- 归档项目的会不进广场(与日历同一条口径:它不该再出现在「接下来要做什么」里)
             AND NOT (EXISTS (SELECT 1 FROM activity_projects mpj
                                JOIN projects p ON p.id = mpj.project_id
@@ -1292,6 +1303,12 @@ pub async fn my_stats(
           -- 少了这一句,totals 会说「参会 1 次」而下面的分项目表是空的 ——
           -- 因为分项目那条 JOIN 了 projects 判 deleted_at,总数却没判。
           -- ★两个数字自相矛盾比两个都错更糟★:看的人会以为是自己看错了。
+          --
+          -- ⚠★这里**故意**保留「必须有活着的关联项目」,与日历那条不同★(2026-08-09):
+          --   日历放行零关联项目的活动(它就是要显示我自己的安排),
+          --   而这张表统计的是「参会次数 / 总时长」—— ★个人日程不是会★
+          --   (预置的 `个人日程` 连 busy_default 都是 false,它只是我自己挡的一块时间)。
+          --   把它算进参会时长会让这个数字失去意义。两处口径不同是**有意的**,别顺手改齐。
           AND EXISTS (SELECT 1 FROM activity_projects mpd
                         JOIN projects pd ON pd.id = mpd.project_id
                        WHERE mpd.activity_id = m.id AND pd.deleted_at IS NULL)
