@@ -660,6 +660,23 @@ const CASES: &[Case] = &[
     c!(deny "GET", "/api/_dev/openapi.json", "非超管拿不到契约", "我已登录但非超管",
        "GET /api/_dev/openapi.json", "403;契约等同系统结构图", ""),
 
+    // ══════════ 超管模式(docs/TECH-DESIGN-admin-mode.md)══════════
+    c!("POST", "/api/me/admin-mode", "超管刻意开一下才拿到特权", "我有超管资格,模式关着",
+       "POST {on:true}", "200,until = 2 小时后;审计里多一条 admin_mode.enter —— \
+        ★在此之前「超管读了什么」一点痕迹都没有★", "AdminMode"),
+    c!(deny "POST", "/api/me/admin-mode", "没资格的人开不了", "我是普通用户",
+       "POST {on:true}", "403", "AdminMode"),
+    c!(deny "GET", "/api/projects/{id}", "★超管模式关着时,超管看不到别人的项目★",
+       "我有超管资格但模式没开;这个项目我不是成员", "GET /api/projects/{id}",
+       "404(与普通人完全一样,连存在性都不给)—— 这正是这个功能的目的:\
+        2026-08-09 liaoruili「我默认能看到所有人的内容,这对日常使用带来困扰」", "AdminMode"),
+    c!(deny "GET", "/api/_dev/apis", "模式关着时超管面也进不去", "我有超管资格但模式没开",
+       "GET /api/_dev/apis", "403;前端据此提示「进入超管模式」而不是把入口藏掉 —— \
+        入口凭空消失会让人以为超管被撤了", "AdminMode"),
+    c!("GET", "/api/me", "资格与特权分开回", "我有超管资格,模式关着",
+       "GET /api/me", "is_super=false(此刻没特权)、can_super=true(有资格)、admin_mode_until=null。\
+        ★is_super 的语义刻意不改★:它散在前端多处,改语义会让「显示」和「能力」错配", "AdminMode"),
+
     // ══════════ 越权用例(档位不够)══════════
     // 上面各组里的 deny 用例测的是**业务规则**(purge 不在回收站、play 只对 video、移人连带撤链接…);
     // 这一块测的是**权限档位**,机械但不能省——perm.rs 是唯一推导,可某个 handler 忘了调它就是个洞。

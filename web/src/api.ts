@@ -25,7 +25,14 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
 }
 
 export type Me = {
-  username: string | null; name: string | null; email: string | null; is_super: boolean
+  username: string | null; name: string | null; email: string | null
+  /// ★此刻有没有超管**特权**★ —— 语义没变,「能不能」的判断继续用它。
+  /// ⚠ 超管模式关着时它是 **false**,哪怕这个人有超管资格(docs/TECH-DESIGN-admin-mode.md)。
+  is_super: boolean
+  /// 有没有超管**资格**。★只用来决定「超管模式」那个开关画不画出来★,不是权限判据。
+  can_super?: boolean
+  /// 超管模式的到期时刻;null = 没开。
+  admin_mode_until?: string | null
   /// 预签名直传的外部端点;null = 平台未启用。前端据此探测本设备能否信任其证书。
   direct_upload_endpoint: string | null
 }

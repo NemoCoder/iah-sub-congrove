@@ -69,6 +69,9 @@ pub fn build_router(state: AppState) -> Router {
         // 我的配额与偏好（ADR-0004）
         .route("/me/quota", get(me_quota::get_quota))
         .route("/me/prefs", get(me_quota::get_prefs).put(me_quota::put_prefs))
+        // ★超管模式★(docs/TECH-DESIGN-admin-mode.md):超管平时就是普通用户,
+        // 要用特权得刻意开一下,2 小时自动关、退出登录也关
+        .route("/me/admin-mode", post(me_quota::set_admin_mode))
         .route("/activity-types", get(activity_types::list).post(activity_types::create))
         .route("/activity-types/{id}", put(activity_types::update).delete(activity_types::remove))
         .route("/activities/{id}", get(activities::detail).put(activities::update).delete(activities::cancel))

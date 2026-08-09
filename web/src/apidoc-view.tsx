@@ -6,7 +6,7 @@
 // 「试一下」是拿当前登录态直接打真实接口(同源、带 cookie),所以:
 //   · 你看到的响应就是**你自己这个身份**能拿到的响应,权限判定照常生效;
 //   · ⚠ 它是**真的在改数据**——DELETE 就是真删。dev 环境随便点,prod 上想清楚再点。
-import { App as AntdApp, Button, Card, Input, Segmented, Space, Table, Tag, Typography } from 'antd'
+import { Alert, App as AntdApp, Button, Card, Input, Segmented, Space, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api'
 
@@ -31,10 +31,18 @@ export function ApiDocView() {
   const [kw, setKw] = useState('')
   const [group, setGroup] = useState('全部')
 
+  /// 403 = 我有超管资格但**超管模式没开**(docs/TECH-DESIGN-admin-mode.md)。
+  /// ★入口留着、点了给提示★是 2026-08-09 liaoruili 定的:
+  /// 直接把菜单项藏掉会让人以为超管被撤了,而一个空白页 + 一句红字 toast 更难懂。
+  const [denied, setDenied] = useState(false)
   useEffect(() => {
     api<{ apis: Api[] }>('/api/_dev/apis')
-      .then((r) => setApis(r.apis))
-      .catch((e) => message.error((e as Error).message))
+      .then((r) => { setApis(r.apis); setDenied(false) })
+      .catch((e) => {
+        const m = (e as Error).message
+        if (m.includes('forbidden') || m === '403') setDenied(true)
+        else message.error(m)
+      })
       .finally(() => setLoading(false))
   }, [message])
 
@@ -50,6 +58,18 @@ export function ApiDocView() {
         (!k || a.path.toLowerCase().includes(k) || a.summary.toLowerCase().includes(k)),
     )
   }, [apis, kw, group])
+
+  if (denied) return (
+    <Card>
+      <Alert type="warning" showIcon
+        message="这一页要超管权限，而你的超管模式没开着"
+        description="超管模式平时是关的——那样你在系统里就是个普通用户，看不到别人的项目与活动。开一下就能进，2 小时后自动关。"
+        action={<Button type="primary" size="small" onClick={async () => {
+          try { await api('/api/me/admin-mode', { method: 'POST', body: JSON.stringify({ on: true }) }); window.location.reload() }
+          catch (e) { message.error((e as Error).message) }
+        }}>进入超管模式</Button>} />
+    </Card>
+  )
 
   return (
     <Card>

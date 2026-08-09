@@ -144,7 +144,8 @@ pub async fn list(
                               JOIN project_members pm ON pm.project_id = mpj.project_id
                               JOIN projects p ON p.id = mpj.project_id AND p.deleted_at IS NULL
                              WHERE mpj.activity_id = m.id AND pm.username = $1)
-                 OR EXISTS (SELECT 1 FROM app_user WHERE username = $1 AND is_super))
+                 -- 超管特权只认 super_now:关着超管模式时,别人的活动不进我的日历
+                 OR EXISTS (SELECT 1 FROM super_now WHERE username = $1))
             -- ★关联项目**全部**被删则这场会不再出现★(2026-08-07,Playwright 截图里肉眼看出来的):
             -- 项目软删除不动 activity_projects 也不动成员表,所以删掉项目之后它的活动照样躺在日历上,
             -- 还因为「找不到未删的公开项目」被误标成**私密**(紫色虚框)。
@@ -367,7 +368,7 @@ pub async fn update(
                  OR EXISTS (SELECT 1 FROM activity_projects mp
                               JOIN projects pr ON pr.id = mp.project_id AND pr.deleted_at IS NULL
                              WHERE mp.activity_id = $1 AND pr.owner = $2)
-                 OR EXISTS (SELECT 1 FROM app_user WHERE username = $2 AND is_super)")
+                 OR EXISTS (SELECT 1 FROM super_now WHERE username = $2)")
             .bind(mid).bind(who).fetch_one(&state.pool).await?;
         if !ok {
             return Err(AppError::Forbidden);
@@ -967,8 +968,8 @@ pub async fn activity_items(
           -- ⚠★超管这一条要限定在「有关联项目」的活动上★(PRD §J1c,liaoruili 拍板):
           -- 材料区里是体检报告、私人录音这类东西,超管短路读得到就等于 J1 承诺的「只有我」不成立。
           -- 救火走影子账户(留痕、只读、以本人视角),不走这里。
-          SELECT 1 FROM app_user u
-            WHERE u.username = $2 AND u.is_super
+          SELECT 1 FROM super_now u
+            WHERE u.username = $2
               AND EXISTS (SELECT 1 FROM activity_projects mps WHERE mps.activity_id = $1)
           LIMIT 1")
         .bind(mid).bind(username).fetch_optional(&state.pool).await?;

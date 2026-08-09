@@ -68,6 +68,19 @@ export function App() {
       .catch((e) => { if (e.message !== '未登录') setStatus('error') }) // 401 已由 api.ts 整页跳登录
   }, [])
 
+  /// 进 / 出超管模式(docs/TECH-DESIGN-admin-mode.md)。
+  ///
+  /// ★切完必须整页重载★:超管特权影响的是**数据本身**(项目列表、日历里有哪些活动、
+  /// 材料看不看得到),而这些数据散在各个视图各自的 useEffect 里 —— 只更新 `me` 的话,
+  /// 用户会看到一个「已进入超管模式」的横幅 + 一屏还是普通视角的旧数据,
+  /// 而他没法知道哪些是刷新过的。整页重载是这里**唯一诚实**的做法。
+  const toggleAdminMode = async (on: boolean) => {
+    try {
+      await api('/api/me/admin-mode', { method: 'POST', body: JSON.stringify({ on }) })
+      window.location.reload()
+    } catch (e) { void e /* 失败保持原状:横幅与菜单都由 me 派生,没切成就什么都不变 */ }
+  }
+
   if (status === 'loading')
     return <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 120 }}><Spin size="large" /></div>
   if (status === 'error')
@@ -95,12 +108,23 @@ export function App() {
               { key: 'shares', label: '我的分享' },
               // ★活动类型是低频设置,收进用户菜单★(与「我的分享」同档);主导航只放三个天天用的
               { key: 'atypes', label: '我的活动类型' },
-              // 开发者页面只给超管:清单来自 /api/_dev/apis,与路由表由后端测试逐条比对,不会漂移
-              ...(me?.is_super ? [{ key: 'apis', label: '开发者' }] : []),
+              // ★开发者入口按「资格」显示,不按「特权」★(超管模式):按特权的话,
+              // 一关模式入口就消失了,人会以为超管被撤了 —— 2026-08-09 liaoruili 定的三条之一
+              // 「入口留着,点了提示开启」。点进去发现 403 比入口凭空消失好解释得多。
+              ...(me?.can_super ? [{ key: 'apis', label: '开发者' }] : []),
+              // ★超管模式开关★(docs/TECH-DESIGN-admin-mode.md):有资格才画。
+              // 平时关着 = 我就是个普通用户,看不到别人的东西;要用特权刻意开一下,2 小时自动关。
+              ...(me?.can_super ? [{
+                key: 'adminmode',
+                label: me?.is_super ? '退出超管模式' : '进入超管模式',
+              }] : []),
               { type: 'divider' as const },
               { key: 'logout', label: <a href="/auth/logout">退出登录</a> },
             ],
-            onClick: ({ key }) => { if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null) } },
+            onClick: ({ key }) => {
+              if (key === 'adminmode') { void toggleAdminMode(!me?.is_super); return }
+              if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null) }
+            },
           }}>
             <Button type="text" style={{ height: 'auto', padding: '4px 8px' }}>
               <Avatar size="small" style={{ background: '#0d9488', marginRight: 8 }}>{display.slice(0, 1).toUpperCase()}</Avatar>
@@ -114,6 +138,21 @@ export function App() {
           而**外边距会从没有 padding/border 的父元素底边「逃出去」**(margin collapsing) ——
           20px 不计进 100vh 的盒子里,却把文档撑到 100vh+20px,又是一条凭空多出来的滚动条。
           padding 不会塌陷,视觉完全一样。(与 index.html 里那条 body reset 是同一个问题的两半。) */}
+      {/* ★超管模式常驻横幅,不可关闭★(照 GitLab / PRD §J1c 影子账户那套):
+          这一刻我看到的东西比平时多,★这件事必须一直在视野里★ ——
+          不然过两小时忘了自己开着,又回到「默认看得见所有人」的老问题上。
+          写出到期时间,因为它会自己关,而「怎么突然又看不见了」比看不见更困惑。 */}
+      {me?.is_super && (
+        <div style={{
+          background: '#fff7e6', borderBottom: '1px solid #ffd591', color: '#d46b08',
+          padding: '6px 22px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <span>★超管模式生效中★ —— 你现在看得到所有人的项目与活动{me.admin_mode_until
+            ? `，${new Date(me.admin_mode_until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 自动关闭` : ''}</span>
+          <span style={{ flex: 1 }} />
+          <a onClick={() => void toggleAdminMode(false)}>立即退出</a>
+        </div>
+      )}
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 22px' }}>
         {view === 'schedule' ? (
           minutesOf != null ? (

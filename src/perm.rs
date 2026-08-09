@@ -116,7 +116,9 @@ pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> Ap
         "SELECT 'BLOCK'::text FROM projects
           WHERE id = $1 AND kind = 'materials' AND owner <> $2 AND deleted_at IS NULL
          UNION ALL
-         SELECT 'admin'::text FROM app_user WHERE username = $2 AND is_super
+         -- ★超管**特权**只认 super_now 视图,不认 is_super 那一列★(超管模式,
+         --   docs/TECH-DESIGN-admin-mode.md):关着模式时他就是个普通用户。
+         SELECT 'admin'::text FROM super_now WHERE username = $2
          UNION ALL
          SELECT role FROM project_members WHERE project_id = $1 AND username = $2",
     )
@@ -163,7 +165,10 @@ pub async fn require_owner(pool: &PgPool, id: &Identity, project_id: i64) -> App
 /// 当前是不是超管——**以库为准**(同上,cookie 里的 is_super 只是登录时快照)。
 pub async fn is_super_now(pool: &PgPool, id: &Identity) -> AppResult<bool> {
     let Some(username) = id.username.as_deref() else { return Ok(false) };
-    Ok(sqlx::query_scalar::<_, bool>("SELECT is_super FROM app_user WHERE username = $1")
+    // ★这里查的是「此刻有没有超管**特权**」,不是「有没有资格」★ —— 见 super_now 视图的头注。
+    // 名字里的 `now` 原本只指「以库为准不信 cookie 快照」,现在它还多了一层意思:
+    // **超管模式关着的时候,这个函数对超管本人也返回 false**。
+    Ok(sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM super_now WHERE username = $1)")
         .bind(username)
         .fetch_optional(pool)
         .await?
@@ -325,7 +330,8 @@ pub async fn activity_view(pool: &PgPool, id: &Identity, activity_id: i64) -> Ap
            JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
            WHERE mp.activity_id = $1 AND pm.username = $2
          UNION ALL
-         SELECT 'super' FROM app_user WHERE username = $2 AND is_super
+         -- 同上:关着超管模式时,别人的活动他一样看不见
+         SELECT 'super' FROM super_now WHERE username = $2
          UNION ALL
          SELECT 'public' FROM activities WHERE id = $1 AND visibility = 'public'",
     )
