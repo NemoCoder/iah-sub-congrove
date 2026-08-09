@@ -54,6 +54,13 @@ pub struct ActivityRow {
     /// 我的答复(不在参会名单里则 None)。列表页据此显示「待你答复」。
     #[sqlx(default)]
     pub my_status: Option<String>,
+    /// ★我在这场活动里是什么身份★(PRD C0–C2):`attendee` = 正式参会人 / `observer` = 旁听。
+    /// 不在名单里则 None(可能是关联项目的成员,看得到但没被邀请)。
+    ///
+    /// 「我发起的」「我是记录员」前端拿 organizer/recorder 与自己比就知道,不必再查;
+    /// ★只有「我是不是旁听」是库里的事实,推不出来★ —— 所以只补这一个字段。
+    #[sqlx(default)]
+    pub my_kind: Option<String>,
     /// 关联项目(id+名字),活动列表要显示项目标签(原型 meets 视图)。
     /// ★列表里一并带出,不让前端为每场会再打一次详情★(23 场会 = 23 个请求)。
     #[sqlx(default)]
@@ -127,7 +134,7 @@ pub async fn list(
     let rows: Vec<ActivityRow> = sqlx::query_as(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
-        "SELECT m.*, at.name AS type_name, mp.status AS my_status,
+        "SELECT m.*, at.name AS type_name, mp.status AS my_status, mp.kind AS my_kind,
                 m.visibility <> 'public' AS is_private,
                 -- ★全部关联项目都归档了吗★(B1):零关联项目的活动恒为 false ——
                 -- 「没有项目」不等于「项目都归档了」,前者是个人活动、活得好好的。

@@ -115,6 +115,10 @@ export type Activity = {
   created_at: string
   /// 我的答复;不在名单里则 null
   my_status: RespondStatus | null
+  /// ★我在这场活动里是什么身份★(C0–C2):attendee=正式参会人 / observer=旁听 / null=不在名单里。
+  /// 「我发起的」「我是记录员」拿 organizer/recorder 与自己比就知道;
+  /// ★只有「是不是旁听」是库里的事实、推不出来★,所以后端只补了这一个字段。
+  my_kind?: 'attendee' | 'observer' | null
   /// ★只关联私密项目★——日历据此上色。判据与忙闲分流一致(D1):
   /// 只要关联了任一公开项目就算「公开的会」,它已经会让别人看到你在忙。
   is_private: boolean
