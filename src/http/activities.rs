@@ -188,19 +188,26 @@ pub async fn create(
     if title.is_empty() { return Err(AppError::BadRequest("活动标题不能为空".into())) }
     // ★校验按类型的能力位走,不再写死★(ADR-0002)。
     let caps: crate::http::activity_types::Caps = sqlx::query_as(
-        "SELECT has_minutes, needs_project, busy_default FROM activity_types
+        "SELECT has_minutes, needs_project, busy_default, allow_past FROM activity_types
           WHERE id = $1 AND deleted_at IS NULL AND (owner IS NULL OR owner = $2)")
         .bind(input.type_id).bind(username).fetch_optional(&state.pool).await?
         .ok_or_else(|| AppError::BadRequest("活动类型不存在,或者不是你的".into()))?;
     crate::http::activity_types::check_caps(&caps, &input.recorder, &input.project_ids)
         .map_err(|m| AppError::BadRequest(m.into()))?;
     if input.ends_at <= input.starts_at { return Err(AppError::BadRequest("结束时间必须晚于开始时间".into())) }
-    // ★不能发起已经过去的会★(2026-08-07 用户)。
-    // ⚠ 留 5 分钟容差:填表本身要花时间,选了「最近的整点」再慢慢填完议程,提交时那个点可能刚过 ——
-    // 卡死到秒会让人白填一轮。容差只对**创建**放,改期(update)不限,那是修正历史记录的正当场景。
-    if input.starts_at < chrono::Utc::now() - chrono::Duration::minutes(5) {
-        return Err(AppError::BadRequest("活动开始时间不能早于现在".into()));
-    }
+    // ★能不能填过去的时间,由**类型的能力位**说了算★(F0/F1,2026-08-09 liaoruili:
+    // 「会议类型的活动只能发起未来的会议,其他类型可以后面补录」)。
+    //
+    // ⚠★这里原来是写死的「所有活动都不能排过去」★(2026-08-07 用户的原话是「不能发起已经
+    //   过去的会」——说的是**会**),而 PRD F0 同一天写着「所有类型都能填任意时间」。
+    //   两条同日的决定就这么在代码里打了半个月的架:补录一场昨天的读文献创建不了,
+    //   人只能先建一条再去改时间绕过去(update 没有这道闸)。
+    //   ★根因是把「会议」这一类的规则写成了全局规则★ —— 正是 A1「类型决定能力,不是纯标签」
+    //   要避免的那件事。现在收回 `allow_past` 能力位,判据只有一个,就在 activity_types 表里。
+    //
+    // 容差只对**创建**放;改期(update)本来就不限,那是修正历史记录的正当场景。
+    crate::http::activity_types::check_past(&caps, input.starts_at, chrono::Utc::now())
+        .map_err(|m| AppError::BadRequest(m.into()))?;
     // ★每个关联项目都要 ≥editor★:把活动挂到一个项目上等于往那个项目里塞东西(纪要/材料最终落在那)。
     // 逐个校验而不是只验第一个——多项目关联时,漏验的那个就是越权入口(D4)。
     for pid in &input.project_ids {

@@ -200,6 +200,13 @@ const CASES: &[Case] = &[
        "POST {project_ids:[]}", "400;材料权限来自项目成员身份(D3)。\
         ⚠★只对 needs_project 的类型★(ADR-0002):「个人日程」本来就是零关联项目,\
         它的材料落发起人的材料区(J0)", "D3"),
+    c!(deny "POST", "/api/activities", "★会议只能排未来★", "类型是「会议」(allow_past=false)",
+       "POST {starts_at: 昨天}", "400 —— 判据是**类型的能力位**不是全局规则(F0,2026-08-09 liaoruili:\
+        「会议类型的活动只能发起未来的会议,其他类型可以后面补录」);留 5 分钟容差,\
+        免得填完议程提交时那个整点刚过就白填一轮", "F0"),
+    c!("POST", "/api/activities", "★其他类型可以补录★", "类型是「个人日程」(allow_past=true)",
+       "POST {starts_at: 上个月}", "200 —— 「昨天下午改论文改了 3 小时」是正当的补录;\
+        在此之前「不能排过去」是写死的全局规则,这种活动根本建不出来", "F0"),
     c!(deny "POST", "/api/activities", "不填记录员不让建", "参数其余齐全", "POST {recorder:''}",
        "400;纪要由记录员按模板整理,AI 转写只是原材料", "D14"),
     c!(deny "POST", "/api/activities", "多项目关联要逐个验权", "P1 我是 editor,P2 我不是成员",

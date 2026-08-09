@@ -22,6 +22,10 @@ pub struct Caps {
     pub needs_project: bool,
     /// 默认占不占忙闲（自建类型时**唯一开放**的开关，A3）
     pub busy_default: bool,
+    /// ★能不能填过去的时间（补录）★（F0/F1，2026-08-09 liaoruili：
+    /// 「会议类型的活动只能发起未来的会议，其他类型可以后面补录」）。
+    /// 自建类型恒为 true —— 补录本来就是自建类型（读文献 / 跑数据 / 健身）的主要用法。
+    pub allow_past: bool,
 }
 
 /// 建活动时按类型校验入参。★纯函数，所以 hermetic 的 `cargo test` 够得着★。
@@ -38,6 +42,19 @@ pub fn check_caps(c: &Caps, recorder: &str, project_ids: &[i64]) -> Result<(), &
     Ok(())
 }
 
+/// 开始时间能不能是过去（F0/F1）。★与 check_caps 分开是因为它要"现在几点"★——
+/// 揉进去会让那个纯函数依赖时钟，单测就得注入时间，反而更难测。
+///
+/// ⚠ 留 5 分钟容差：填表本身要花时间，选了「最近的整点」再慢慢填完议程，
+/// 提交时那个点可能刚过 —— 卡死到秒会让人白填一轮。
+pub fn check_past(c: &Caps, starts_at: chrono::DateTime<chrono::Utc>,
+                  now: chrono::DateTime<chrono::Utc>) -> Result<(), &'static str> {
+    if !c.allow_past && starts_at < now - chrono::Duration::minutes(5) {
+        return Err("「会议」只能排未来的时间。要补录一场已经开过的会，先建再改时间，或者换一个可补录的类型");
+    }
+    Ok(())
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct TypeRow {
     pub id: i64,
@@ -47,6 +64,7 @@ pub struct TypeRow {
     pub has_minutes: bool,
     pub needs_project: bool,
     pub busy_default: bool,
+    pub allow_past: bool,
 }
 
 /// GET /api/activity-types —— 预置的 + 我自建的。★别人自建的看不到★（那是他的分类习惯）。
@@ -55,7 +73,7 @@ pub async fn list(
     Extension(id): Extension<Identity>,
 ) -> AppResult<Json<Vec<TypeRow>>> {
     let rows: Vec<TypeRow> = sqlx::query_as(
-        "SELECT id, owner, name, has_minutes, needs_project, busy_default
+        "SELECT id, owner, name, has_minutes, needs_project, busy_default, allow_past
            FROM activity_types
           WHERE deleted_at IS NULL AND (owner IS NULL OR owner = $1)
           ORDER BY owner NULLS FIRST, id",
@@ -215,8 +233,8 @@ pub async fn remove(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const 会议: Caps = Caps { has_minutes: true, needs_project: true, busy_default: true };
-    const 个人日程: Caps = Caps { has_minutes: false, needs_project: false, busy_default: false };
+    const 会议: Caps = Caps { has_minutes: true, needs_project: true, busy_default: true, allow_past: false };
+    const 个人日程: Caps = Caps { has_minutes: false, needs_project: false, busy_default: false, allow_past: true };
 
     #[test]
     fn 会议要记录员也要项目() {
@@ -230,6 +248,30 @@ mod tests {
         // ★这条是类型表存在的理由★：旧代码把「必须有记录员 + 必须关联项目」写死在 create 里，
         // 于是「个人日程」这类活动根本建不出来。
         assert!(check_caps(&个人日程, "", &[]).is_ok());
+    }
+
+    // ══════ 补录（F0/F1，2026-08-09 liaoruili：「会议类型的活动只能发起未来的会议，
+    //        其他类型可以后面补录」）══════
+    fn t(min: i64) -> chrono::DateTime<chrono::Utc> {
+        // 用一个固定基准点 + 偏移，别取 now()：测试不该依赖时钟
+        chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap() + chrono::Duration::minutes(min)
+    }
+
+    #[test]
+    fn 会议只能排未来() {
+        assert!(check_past(&会议, t(60), t(0)).is_ok(), "一小时后的会当然可以");
+        assert!(check_past(&会议, t(-60), t(0)).is_err(), "★昨天的会不许直接建★");
+        // 5 分钟容差：填表要花时间，选了「最近的整点」再慢慢填完议程，提交时那个点可能刚过
+        assert!(check_past(&会议, t(-3), t(0)).is_ok(), "容差内不该卡人白填一轮");
+        assert!(check_past(&会议, t(-6), t(0)).is_err(), "超出容差就该拒");
+    }
+
+    #[test]
+    fn 其他类型可以补录() {
+        // ★这条是这个能力位存在的理由★：在此之前「不能排过去」是**写死的全局规则**，
+        // 于是「昨天下午改论文改了 3 小时」这种正当的补录根本建不出来，
+        // 只能先建一条再去改时间绕过去（update 没有这道闸）。
+        assert!(check_past(&个人日程, t(-60 * 24 * 30), t(0)).is_ok(), "一个月前也该能补");
     }
 
     // ══════ 可改范围（原型「我的活动类型」那一页）══════
@@ -262,11 +304,11 @@ mod tests {
     #[test]
     fn 能力位是逐条判的_不是一刀切() {
         // 只要纪要不要项目
-        let c = Caps { has_minutes: true, needs_project: false, busy_default: true };
+        let c = Caps { has_minutes: true, needs_project: false, busy_default: true, allow_past: true };
         assert!(check_caps(&c, "bob", &[]).is_ok());
         assert!(check_caps(&c, "", &[]).is_err());
         // 只要项目不要纪要
-        let c = Caps { has_minutes: false, needs_project: true, busy_default: false };
+        let c = Caps { has_minutes: false, needs_project: true, busy_default: false, allow_past: true };
         assert!(check_caps(&c, "", &[7]).is_ok());
         assert!(check_caps(&c, "", &[]).is_err());
     }

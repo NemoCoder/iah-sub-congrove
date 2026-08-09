@@ -18,7 +18,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   onCreated: (id: number) => void
   onCancel: () => void
 }) {
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const [form] = Form.useForm()
   const [projects, setProjects] = useState<Project[]>([])
   const [found, setFound] = useState<UserOpt[]>([])
@@ -125,6 +125,9 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   // ⚠ 类型还没拉回来时**按最严的算**（两样都要）——先松后紧会让人填到一半突然多出必填项。
   const needRecorder = cap?.has_minutes ?? true
   const needProject = cap?.needs_project ?? true
+  /// ★能不能补录,跟着类型走★(F0/F1)。缺省 false = 按最严的「会议」算 ——
+  /// 类型还没加载出来时不该先把闸放开(后端也会再判一次)。
+  const allowPast = cap?.allow_past ?? false
 
   const submit = async (v: {
     title: string; agenda?: string; recorder: string
@@ -132,6 +135,19 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
     project_ids: number[]; participants?: string[]
     location?: string; online_url?: string
   }) => {
+    // ★补录超过 7 天要确认一次★(PRD F1,liaoruili 定的阈值)。
+    // 想补多久以前的都行 —— 这是自己的记录不是报销;但**输错月份**比输错年份常见得多
+    // (8 月 8 日打成次年 3 月 1 日),而一周之内的补录才是常态,跨过一周就值得停下来看一眼日期。
+    const start = new Date(v.range[0].toISOString())
+    if (allowPast && start.getTime() < Date.now() - 7 * 864e5) {
+      const ok = await new Promise<boolean>((res) => modal.confirm({
+        title: '确认这个日期吗？',
+        content: `这条活动排在 ${start.getFullYear()} 年 ${start.getMonth() + 1} 月 ${start.getDate()} 日，已经过去 ${Math.floor((Date.now() - start.getTime()) / 864e5)} 天了。`,
+        okText: '就是这天', cancelText: '我改一下',
+        onOk: () => res(true), onCancel: () => res(false),
+      }))
+      if (!ok) return
+    }
     setBusy(true)
     try {
       const r = await api<{ id: number }>('/api/activities', {
@@ -208,10 +224,12 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
 
         <Form.Item label="时间" required>
           <Form.Item name="range" noStyle rules={[{ required: true, message: '选时间' }]}>
-            {/* ★不让选过去的时间★(2026-08-07 用户):`noPast` 打开日期与时刻两级限制。
-                后端另有 5 分钟容差的真闸(activities.rs)。
+            {/* ★能不能选过去,跟着类型的 allow_past 走★(F0/F1,2026-08-09 liaoruili:
+                「会议类型的活动只能发起未来的会议,其他类型可以后面补录」)。
+                在此之前这里写死 `noPast` —— 于是「昨天下午改论文改了 3 小时」这种正当的补录
+                在界面上根本选不了日期。后端有真闸(activity_types.rs 的 check_past,带 5 分钟容差)。
                 粒度、扁平时间列、持续时长快捷都在 time-range.tsx 里,三处共用。 */}
-            <TimeRangePicker noPast
+            <TimeRangePicker noPast={!allowPast}
               onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
           </Form.Item>
         </Form.Item>

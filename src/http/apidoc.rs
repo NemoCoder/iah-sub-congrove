@@ -55,7 +55,10 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
     api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert；没传的字段保留）", "timezone, default_remind_minutes"),
     // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
-    api!("GET", "/api/activity-types", "活动", "登录", "列出预置的 + 我自建的活动类型", ""),
+    api!("GET", "/api/activity-types", "活动", "登录",
+         "列出预置的 + 我自建的活动类型。★能力位决定表单与校验★(ADR-0002):
+          has_minutes(记录员必填) / needs_project(关联项目必填) / busy_default(占不占忙闲) /
+          allow_past(能不能填过去的时间 —— 「会议」false 只能排未来,其余 true 可补录,F0)", ""),
     api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
     api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default"),
     api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", ""),
@@ -95,8 +98,11 @@ pub const APIS: &[Api] = &[
          "我的活动(参会人 / 所在项目的会)。★public 活动不进这里★——列表是我的日程不是全平台公告板",
          "from, to, project_id"),
     api!("POST", "/api/activities", "活动", "每个关联项目都要 ≥editor",
-         "建活动。★必须关联至少一个项目★(材料权限来自项目成员身份)+ ★记录员必填★(D14)",
-         "title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
+         "建活动。★校验全按类型的能力位走,没有一条是写死的★(ADR-0002):
+          needs_project → 关联项目必填 / has_minutes → 记录员必填(D14) /
+          allow_past=false → 只能排未来(「会议」,留 5 分钟容差,F0)。
+          ⚠ 这行原文写的是「必须关联至少一个项目」——那是 ADR-0002 之前的规则,已过期",
+         "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
     api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
          "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
     api!("PUT", "/api/activities/{id}", "活动", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",

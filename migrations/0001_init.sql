@@ -125,6 +125,13 @@ CREATE TABLE activity_types (
   has_minutes   boolean NOT NULL DEFAULT false,  -- 正式纪要与记录员（决定 recorder 是否必填）
   needs_project boolean NOT NULL DEFAULT false,  -- 必须关联项目（材料权限归属，D3）
   busy_default  boolean NOT NULL DEFAULT true,   -- 默认占不占忙闲（自建时唯一开放的开关 A3）
+  -- ★能不能填过去的时间（补录）★（F0/F1，2026-08-09 liaoruili 拍板：
+  --   「会议类型的活动只能发起未来的会议，其他类型可以后面补录」）。
+  -- ⚠ PRD F0 一度写着「allow_past 这个能力位已废弃，所有类型都能填任意时间」——
+  --   而同一天用户又要求「不能发起已经过去的会」，于是校验写死在 create 里、和 F0 打架。
+  --   现在按 A1「类型决定能力，不是纯标签」把它收回能力位：★判据只有一个，就在这张表里★。
+  -- 自建类型恒为 true（A3：自建只开「占忙闲」一个开关，补录本来就是自建类型的主要用法）。
+  allow_past    boolean NOT NULL DEFAULT true,
   deleted_at  timestamptz,                       -- 软删（L1）：历史活动照常显示类型名
   created_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -133,9 +140,9 @@ CREATE UNIQUE INDEX idx_atype_name ON activity_types (COALESCE(owner,''), name) 
 CREATE INDEX idx_atype_owner ON activity_types (owner) WHERE deleted_at IS NULL;
 -- ★预置行永不 DELETE★：activities.type_id 是 NOT NULL 外键，删了 = 历史活动失去类型名。
 -- 下线走软删；预置行连软删也不允许（守卫在 types.rs）。
-INSERT INTO activity_types (owner, name, has_minutes, needs_project, busy_default) VALUES
-  (NULL, '会议',     true,  true,  true),
-  (NULL, '个人日程', false, false, false);   -- ★busy_default=false★（O4，liaoruili 2026-08-08 拍板）
+INSERT INTO activity_types (owner, name, has_minutes, needs_project, busy_default, allow_past) VALUES
+  (NULL, '会议',     true,  true,  true,  false),   -- ★只能排未来★（F0，2026-08-09 拍板）
+  (NULL, '个人日程', false, false, false, true);    -- ★busy_default=false★（O4，liaoruili 2026-08-08 拍板）
 
 
 -- ── 活动 ────────────────────────────────────────────────────────────────
