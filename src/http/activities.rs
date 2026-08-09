@@ -978,6 +978,44 @@ pub async fn activity_items(
     Ok(Json(rows))
 }
 
+#[derive(Deserialize)]
+pub struct ItemRename { pub name: String }
+
+/// PUT /api/activities/{mid}/items/{iid} —— 给一份活动材料/录制改名(≥editor)。
+///
+/// ★2026-08-09 liaoruili:「材料 录制 上传的文件,也要支持能够重命名」★。
+/// 在此之前活动材料**在哪儿都改不了名**:项目树那条(`PUT /api/items/{iid}`)按 D10 拒绝,
+/// 而活动这边压根没有对应的入口 —— 于是「Rec 0001.mp4」这种名字只能永远留着。
+///
+/// ★D10 说的是「在**项目树里**只读」,不是「永远不可改」★:名称与位置由活动决定,
+/// 所以改名这个动作要**发生在活动页**,和删除同一个道理(那条路已经在了,这条是它的镜像)。
+///
+/// ⚠ 三条边界与 `delete_activity_item` 完全一致,别只改一处:
+///   ① `activity_id = mid` 必须同时匹配 —— 否则「拿 A 活动的 id 改 B 活动的材料」就是越权;
+///   ② `kind <> 'folder'` —— 活动文件夹的名字是**从活动派生**的(日期 + 标题),
+///      手改了它下次活动改标题时又会被覆盖回去,是个假功能;
+///   ③ 走 `require_material_write` —— 材料区在 require_role 上全只读(PRD §J1)。
+pub async fn rename_activity_item(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path((mid, iid)): Path<(i64, i64)>,
+    Json(p): Json<ItemRename>,
+) -> AppResult<Json<serde_json::Value>> {
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    crate::perm::require_material_write(&state.pool, &id, pid).await?;
+    let actor = id.require_username()?;
+    let name = p.name.trim();
+    if name.is_empty() { return Err(AppError::BadRequest("名称不能为空".into())) }
+    let n = sqlx::query(
+        "UPDATE items SET name = $3, updated_at = now()
+          WHERE id = $1 AND activity_id = $2 AND kind <> 'folder' AND deleted_at IS NULL")
+        .bind(iid).bind(mid).bind(name).execute(&state.pool).await?.rows_affected();
+    if n == 0 { return Err(AppError::NotFound) }
+    audit::record(&state.pool, actor, "activity.item.rename", &iid.to_string(),
+        &format!("activity={mid} project={pid} 改名为 {name}")).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// DELETE /api/activities/{mid}/items/{iid} —— 删一份活动材料/录制(≥editor)。
 ///
 /// ★为什么不复用 DELETE /api/items/{iid}★(2026-08-09 liaoruili:「要去会议里面删除」):

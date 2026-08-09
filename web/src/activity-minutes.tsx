@@ -19,7 +19,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
 import { useActivityUpload } from './activity-upload'
-import { fmtSize, ItemIcon } from './preview'
+import { useRenameActivityItem } from './activity-item-rename'
+import { fmtSize, ItemIcon, MarkdownView } from './preview'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const fmtTime = (s: string) => {
@@ -220,8 +221,15 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
               // ⚠ 决议与待办是**同一份** AI 产物（media_ai.rs 的 `decisions` 一次生成两者），
               //   拆成两个标签会得到两块一模一样的内容，所以这里是一个标签。
               key: 'd', label: '决议·待办',
+              // ★按 Markdown 渲染★(2026-08-09 liaoruili:「决议代办 应该前端使用 markdown 解析展示」)。
+              // 这一份 AI 产物**本来就是 Markdown**:提示词让它「列出关键决议与待办事项
+              // (谁负责、做什么、何时)」,模型给回来的就是 `- ` 列表 + `**加粗**`
+              // (提示词自己都写着 `**关键决议**`)。而这里一直是 `white-space: pre-wrap` 直出 ——
+              // ★于是满屏的星号和减号,该分层的地方全平着★,一份三层的清单读起来像一堆字符。
+              // 组件是现成的(preview.tsx 的 MarkdownView,react-markdown + GFM,项目文档一直在用),
+              // 缺的只是在这里用上它。
               children: sum(K_DECISIONS)
-                ? <div style={{ fontSize: 13, lineHeight: 1.9, whiteSpace: 'pre-wrap', maxHeight: 460, overflow: 'auto' }}>{sum(K_DECISIONS)}</div>
+                ? <div style={{ fontSize: 13, maxHeight: 460, overflow: 'auto' }}><MarkdownView text={sum(K_DECISIONS)} /></div>
                 : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyWhy(job, '决议与待办')} />,
             },
             {
@@ -391,6 +399,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
     projectId, activityId, isRecording: true,
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: onChanged,
   })
+  const ren = useRenameActivityItem({ activityId, onDone: onChanged })
   return (
     <div>
       {/* ⚠★播放器高度写死★(2026-08-09 用户:「选中后页面抖动」):原来是 `maxHeight: 220`,
@@ -441,8 +450,15 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
           {
             // ★录制也要能删★(2026-08-09 liaoruili):和材料同一条规则 ——
             // 项目树里删不掉,唯一入口在活动这边。
-            title: '', width: 40,
-            render: (_, it) => canEdit && (
+            // ⚠★width: 40 装不下「删除」两个字★(2026-08-09 liaoruili:「这里的删除也是」)——
+            // 它折成了「删 / 除」上下两行。width 只是建议值,真正管用的是 nowrap;
+            // 宽度也一并给够(与活动详情那张材料表同一次修的同一个毛病)。
+            title: '', width: 100,
+            onCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+            render: (_, it) => canEdit && (<>
+              {/* 录屏名字最需要改 —— 浏览器录出来的一律叫 `Rec 0001.mp4` */}
+              <a style={{ marginRight: 10 }}
+                 onClick={(e) => { e.stopPropagation(); ren.open(it) }}>改名</a>
               <Popconfirm title={`删除「${it.name}」？`} description="进项目回收站，30 天内可还原。"
                 okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
                 onConfirm={async () => {
@@ -453,7 +469,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
                 }}>
                 <a style={{ color: '#ff4d4f' }} onClick={(e) => e.stopPropagation()}>删除</a>
               </Popconfirm>
-            ),
+            </>),
           },
           {
             title: '', width: 96,
@@ -489,6 +505,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
             },
           },
         ]} />)}
+      {ren.modal}
     </div>
   )
 }

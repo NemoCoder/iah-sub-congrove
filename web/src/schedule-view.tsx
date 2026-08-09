@@ -8,7 +8,8 @@
 //   · 12–14 点**不折叠**(午休也可能排会)。
 //
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
-//   公开项目的会 = 青色实框 / 私密项目的会 = 紫色虚框 / 待你应答 = 红色。
+//   公开的活动 = 青色实框 / 非公开的活动 = 紫色虚框 / 待应答 = 红色。
+//   ★判据是活动自己的 visibility(M0 起),不是「关联了什么项目」★——用词别再写「私密项目」。
 import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity } from './api'
@@ -236,7 +237,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {m.title}
-                    {m.is_private && <Tag color="purple" style={{ marginLeft: 6 }}>私密</Tag>}
+                    {m.is_private && <Tag color="purple" style={{ marginLeft: 6 }}>非公开</Tag>}
                     {m.my_status === 'pending' && <Tag color="red" style={{ marginLeft: 4 }}>待应答</Tag>}
                   </div>
                 </div>
@@ -368,7 +369,7 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
                       <div
                         key={m.id}
                         onClick={() => onOpenActivity(m.id)}
-                        title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 私密' : ''}`}
+                        title={`${m.title} ${hhmm(new Date(m.starts_at))}–${hhmm(new Date(m.ends_at))}${m.is_private ? ' · 非公开' : ''}`}
                         style={{
                           position: 'absolute', top, height, left, width,
                           borderRadius: 3, padding: '1px 4px', fontSize: 11, lineHeight: 1.3,
@@ -386,11 +387,18 @@ export function ScheduleView({ onOpenActivity, onNewActivity }: {
           </div>
         )}
 
-        {/* 图例:三种颜色各是什么 */}
+        {/* 图例:三种颜色各是什么。
+            ★用词是「公开 / 非公开」,不带「项目」二字,更不许出现「私密」★
+            (PRD §J4 + 2026-08-09 liaoruili 第二次点名)。两个理由都硬:
+              ① ★判据早就不是项目了★ —— M0 起 `is_private` = **活动自己的** visibility,
+                 不再从关联项目反推;而活动可以一个项目都不关联(A4),「私密项目」
+                 对它根本不适用;
+              ② 「私密」听起来像「藏起来的私事」,可它只是「没公开」—— 一场普通的组会
+                 也是这个色。措辞把用户往错的方向引。 */}
         <Space size={16} style={{ marginTop: 12, fontSize: 12, flexWrap: 'wrap' }}>
-          <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488' }} text="公开项目" />
-          <LegendDot style={{ background: '#f9f0ff', border: '1px dashed #722ed1' }} text="私密项目" />
-          <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待你应答" />
+          <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488' }} text="公开" />
+          <LegendDot style={{ background: '#f9f0ff', border: '1px dashed #722ed1' }} text="非公开" />
+          <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待应答" />
         </Space>
       </Card>
 

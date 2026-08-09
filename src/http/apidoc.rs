@@ -128,6 +128,11 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
          "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
           is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
+    api!("PUT", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
+         "给一份活动材料/录制改名。★和删除同一条路★——D10 说的是「在**项目树里**只读」
+          (名称与位置由活动决定),不是「永远不可改」,所以改名这个动作发生在活动页。
+          通用的 PUT /api/items/{id} 仍然拒绝带 activity_id 的 item。
+          不改活动文件夹本身(它的名字从活动的日期+标题派生,手改了下次改标题又会被覆盖)", "name"),
     api!("DELETE", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
          "删一份活动材料/录制(软删,进回收站)。★活动材料只能从这里删★ —— 通用的
           DELETE /api/items/{id} 会拒绝带 activity_id 的 item(D10:项目树里是只读区)。

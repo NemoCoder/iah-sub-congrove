@@ -14,6 +14,7 @@ import { InlineEdit } from './inline-edit'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
+import { useRenameActivityItem } from './activity-item-rename'
 import { ShareModal } from './share-modal'
 import { TimeRangePicker } from './time-range'
 
@@ -128,7 +129,9 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         </Typography.Text>
         {canceled && <Tag color="default">已取消</Tag>}
         {m.visibility === 'public' && <Tag color="blue">公开活动</Tag>}
-        {m.is_private && <Tag color="purple">私密项目</Tag>}
+        {/* ★「非公开」,不是「私密项目」★(PRD §J4):判据是活动自己的 visibility(M0 起),
+            而活动可以一个项目都不关联(A4)——「私密项目」对它根本不适用。 */}
+        {m.is_private && <Tag color="purple">非公开</Tag>}
         {d.observer && <Tag>旁听</Tag>}
         <span style={{ flex: 1 }} />
         {/* ★取消旁听在这里做★(2026-08-07):广场只列「我还没有关系的会」,
@@ -466,7 +469,11 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
       {showCounter && (
         <div>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '0 0 8px' }}>
-            发起人**看不到**你私密项目里的安排,所以他不知道你这个时段忙。
+            {/* ⚠ 这里原来写的是 `发起人**看不到**你私密项目里的安排` —— 两处都不对:
+                ① `**...**` 是 Markdown,而这是一个 Typography.Paragraph,★星号会原样显示出来★;
+                ② 用词(2026-08-09 liaoruili):不叫「私密」,叫「不公开」;判据也是活动自己的
+                   visibility,不是项目的。 */}
+            发起人<b>看不到</b>你不公开的安排,所以他不知道你这个时段忙。
             给一个你方便的具体时间,比只说「不行」有用得多。
           </Typography.Paragraph>
           {/* 建议一个**将来**的时段才有意义,所以这里 noPast */}
@@ -810,6 +817,8 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
     accept: 'video/*,audio/*', label: '上传录屏 / 录音', onDone: load,
   })
   const up = tab === 'rec' ? upRec : upMat
+  // 改名:两个 tab 的表格共用一个 Modal(见 activity-item-rename.tsx 的头注)
+  const ren = useRenameActivityItem({ activityId: id, onDone: load })
 
   const table = (rows: ActivityItem[], empty: string) => (
     <Table<ActivityItem> size="small" rowKey="id" dataSource={rows} pagination={false}
@@ -819,12 +828,21 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
         { title: '大小', dataIndex: 'size', width: 90, render: (v) => fmtSize(v) },
         { title: '上传', width: 150, render: (_, it) => `${it.created_by} · ${fmtTime(it.created_at).slice(5, 16)}` },
         {
-          title: '', width: 110,
-          render: (_, it) => <Space size={8}>
+          // ⚠★width 只是**建议值**,拦不住换行★(2026-08-09 liaoruili:「下载分享删除 成了 2 行」)。
+          // 名称列没设宽,它会把剩余宽度全吃掉;真到装不下时 AntD 压缩的是这一列,
+          // 于是三个词各自折成上下两行(「下/载」「分/享」「删/除」),读起来像六个按钮。
+          // 两件事一起做才管用:① 宽度给够;② ★整块 nowrap★ —— 有了它,
+          // 列宽以后怎么调都不会再断行(与项目页操作列 v0.3.56 那次是同一个教训)。
+          title: '', width: 150,
+          onCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
+          render: (_, it) => <Space size={12} style={{ whiteSpace: 'nowrap' }}>
             <a href={`/api/items/${it.id}/download`}>下载</a>
             {/* ★分享只给能编辑的人★:建公开链接是**绕过项目授权**的动作(share.rs 头注),
                 只读成员不该有这个能力;后端也会再判一次(前端隐藏不是安全边界)。 */}
             {canEdit && <a onClick={() => setShareFor(it)}>分享</a>}
+            {/* ★改名也只在这里★(2026-08-09 liaoruili:「上传的文件,也要支持能够重命名」):
+                与删除同一条路 —— 项目树那条通用接口按 D10 拒绝活动材料。 */}
+            {canEdit && <a onClick={() => ren.open(it)}>改名</a>}
             {/* ★删除只在这里★（2026-08-09 liaoruili:「要去会议里面删除」）:
                 项目树里那条通用删除接口会拒绝活动材料(D10 的只读区),
                 所以这份材料的唯一删除入口就是这一行。 */}
@@ -883,6 +901,7 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
         </div>
       )}
       {shareFor && <ShareModal key={shareFor.id} items={[shareFor]} onClose={() => setShareFor(null)} />}
+      {ren.modal}
     </Card>
   )
 }
