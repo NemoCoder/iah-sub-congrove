@@ -389,6 +389,27 @@ CREATE TABLE activity_minutes (
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
+-- ★「这场活动还欠一份纪要」的唯一判据★(2026-08-10)——照 super_now 的先例做成视图。
+--
+-- ⚠ 起因:liaoruili「其实纪要也是待我处理,但是通知里面没有出现」。补「待我处理」那一路时
+-- 发现 `/api/me/stats` **已经**在算「待写纪要」了,判据却是各写一遍的第二份 ——
+-- 而那一份**漏了 `has_minutes`**:自建类型按 A3 恒 `has_minutes=false`(那是「我自己的日程分类」,
+-- 没有纪要这回事),可只要它关联了项目,统计就会说你欠它一份纪要。
+-- ★同一个判据写第二遍的那一刻就已经分叉了,只是要过一阵才看得见。★
+--
+-- 四条判据,少一条都会造噪声:类型有纪要 / 活动没被取消 / **已经开完** / 纪要不是 done。
+-- 「纪要行还不存在」也算欠 —— 连草稿都没建比草稿没写完更该提醒,`has_draft` 供文案区分。
+-- ⚠ 视图**不带 recorder 过滤**:调用方各有各的范围(待办卡按记录员、项目主持人按项目),
+--   把范围写进视图会逼出第二个视图。
+CREATE VIEW activities_owing_minutes AS
+  SELECT m.id AS activity_id, m.recorder, m.title, m.starts_at, m.ends_at,
+         (n.activity_id IS NOT NULL) AS has_draft
+  FROM activities m
+  JOIN activity_types t ON t.id = m.type_id AND t.has_minutes
+  LEFT JOIN activity_minutes n ON n.activity_id = m.id
+  WHERE m.status = 'active' AND m.ends_at < now()
+    AND (n.activity_id IS NULL OR n.status <> 'done');
+
 
 -- 播放进度:每人每视频记一条,换设备/清缓存都还在(所以不放 localStorage);
 -- 独立播放窗与主窗口天然一致。

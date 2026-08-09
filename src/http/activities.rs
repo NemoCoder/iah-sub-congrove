@@ -1495,9 +1495,13 @@ pub async fn my_stats(
                 COALESCE(SUM(hours) FILTER (WHERE src = 'scheduled'), 0)::float8,
                 (SELECT count(DISTINCT mp.project_id) FROM activity_projects mp
                    WHERE mp.activity_id IN (SELECT id FROM mine))::bigint,
-                (SELECT count(*) FROM mine x WHERE x.recorder = $1
-                   AND NOT EXISTS (SELECT 1 FROM activity_minutes mm
-                                   WHERE mm.activity_id = x.id AND mm.status = 'done'))::bigint
+                -- ★判据走视图,别就地再写一遍★(2026-08-10):原来这里是
+                -- 「我是记录员 AND 纪要非 done」,**漏了 has_minutes** ——
+                -- 自建类型(A3 恒 false,没有纪要这回事)只要关联了项目就会被算成欠纪要。
+                -- 视图定义见 0001_init.sql 的 activities_owing_minutes,「待我处理」卡同源。
+                (SELECT count(*) FROM mine x
+                   JOIN activities_owing_minutes o ON o.activity_id = x.id
+                  WHERE o.recorder = $1)::bigint
          FROM mine"))
         .bind(who).bind(range).fetch_one(&state.pool).await?;
 
@@ -1518,11 +1522,11 @@ pub async fn my_stats(
     let hosting: Vec<(i64, String, bool, i64, i64)> = sqlx::query_as(
         "SELECT p.id, p.name, p.archived_at IS NOT NULL,
                 (SELECT count(*) FROM project_members pm WHERE pm.project_id = p.id)::bigint,
-                (SELECT count(*) FROM activities m
-                   JOIN activity_projects mp ON mp.activity_id = m.id
-                  WHERE mp.project_id = p.id AND m.status = 'active' AND m.ends_at <= now()
-                    AND NOT EXISTS (SELECT 1 FROM activity_minutes mm
-                                    WHERE mm.activity_id = m.id AND mm.status = 'done'))::bigint
+                -- ★同一个判据,同一个视图★(2026-08-10):这里也曾漏 has_minutes。
+                -- 与上面那处不同的只是**范围**——项目视角不筛记录员(主持人要看的是整摊子的欠账)。
+                (SELECT count(*) FROM activities_owing_minutes o
+                   JOIN activity_projects mp ON mp.activity_id = o.activity_id
+                  WHERE mp.project_id = p.id)::bigint
          FROM projects p WHERE p.owner = $1 AND p.deleted_at IS NULL
          ORDER BY p.archived_at IS NOT NULL, p.name")
         .bind(who).fetch_all(&state.pool).await?;
@@ -1589,6 +1593,41 @@ pub async fn my_unread(
 
     Ok(Json(json!(rows.iter().map(|(mid, title, sender, body, at, cnt)| json!({
         "activity_id": mid, "title": title, "sender": sender, "body": body, "created_at": at, "count": cnt,
+    })).collect::<Vec<_>>())))
+}
+
+/// 「待我处理」的第四路:★等我整理的纪要★。
+///
+/// ⚠★2026-08-10 liaoruili:「其实纪要也是待我处理,但是通知里面没有出现」★。
+/// 在此之前这张卡只有三路来源(邀请待答复 / 私聊未读 / 主持人转移),
+/// 而**记录员**这个角色是 D14 明确设的位置(「AI 转写只是原材料,记录员才是作者」)——
+/// 一件被系统指派给你的、有交付物的活儿,却是全系统唯一不提醒的那件。
+/// ★把责任指派给某个人、又不给他一条看得见的待办,那条责任在实践中就等于没指派。★
+///
+/// 判据四条,缺一条都会造出噪声:
+///   · `recorder = 我` —— 别人的活不进我的卡;
+///   · `has_minutes` —— 「个人日程」这类类型压根没有纪要这回事(ADR-0002 的能力位);
+///   · `ends_at < now()` —— ★会还没开完就催纪要是纯噪声★,那时候根本无从写起;
+///   · 纪要行不存在 **或** `status <> 'done'` —— 「连草稿都没建」比「草稿没写完」更该提醒,
+///     所以两者都算,用 `has_draft` 区分文案。
+/// 取消掉的活动(`status='canceled'`)自然不算 —— 没开的会没有纪要。
+///
+/// ⚠★不设时间下限★(比如「只看最近 30 天」):欠着的纪要不会因为放久了就不欠。
+/// 真嫌吵的话应该去把它写完或标 done,而不是让它自己淡出——那等于系统替人把账勾了。
+/// 但**上限 50 条**是有的:再多就不是待办而是历史债,该走统计而不是这张卡。
+pub async fn my_minutes_todo(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    let who = id.require_username()?;
+    let rows: Vec<(i64, String, Ts, Ts, bool)> = sqlx::query_as(
+        "SELECT activity_id, title, starts_at, ends_at, has_draft
+         FROM activities_owing_minutes WHERE recorder = $1
+         ORDER BY ends_at DESC LIMIT 50")
+        .bind(who).fetch_all(&state.pool).await?;
+
+    Ok(Json(json!(rows.iter().map(|(mid, title, s, e, draft)| json!({
+        "activity_id": mid, "title": title, "starts_at": s, "ends_at": e, "has_draft": draft,
     })).collect::<Vec<_>>())))
 }
 

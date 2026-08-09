@@ -199,6 +199,10 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/me/unread", "活动", "登录",
          "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
           否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),
+    api!("GET", "/api/me/minutes-todo", "活动", "登录",
+         "等我整理的纪要(喂给「待我处理」卡)。★判据走 activities_owing_minutes 视图★——\
+          与 /api/me/stats 的「待写纪要」同源,免得两份判据分叉(此前 stats 那份漏了 has_minutes,\
+          会把自建类型的活动也算成欠纪要)。不设时间下限:欠着的纪要不会因为放久了就不欠", ""),
     api!("POST", "/api/me/unread/read", "活动", "登录",
          "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
           后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),
