@@ -167,10 +167,7 @@ async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> A
     let (title, starts_at): (String, chrono::DateTime<chrono::Utc>) =
         sqlx::query_as("SELECT title, starts_at FROM activities WHERE id = $1")
             .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    // ★按东八区取日期,不按 UTC★:UTC 下「8-09 早上 7 点的会」是 8-08,
-    // 文件夹名就会比会议日期早一天 —— 与 notify.rs 的 fmt_when 用同一个偏移。
-    let local = starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
-    let name = format!("{} {}", local.format("%Y-%m-%d"), title.trim());
+    let name = activity_folder_name(starts_at, &title);
     let made: Option<i64> = sqlx::query_scalar(
         "INSERT INTO items (project_id, parent_id, kind, name, created_by, activity_id)
          VALUES ($1, NULL, 'folder', $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id")
@@ -181,6 +178,22 @@ async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> A
         // 冲突 = 刚刚被另一个并发请求建好了,再查一次
         None => find_activity_folder(&state.pool, pid, mid).await?.ok_or(AppError::NotFound),
     }
+}
+
+/// 活动材料文件夹的名字 —— ★全树唯一的定义★。
+///
+/// ⚠★必须只有一处★:建文件夹在这个文件、改名在 `activities.rs::update`(活动改标题/改时间时
+/// 跟着改)。两边各写一遍 `format!` 的话,改一个格式就会漂 —— 而漂了之后
+/// **老文件夹和新文件夹长得不一样,却都是"对的"**,没有任何检查会红。
+/// (2026-08-09 一天之内已经在「AI 摘要的 kind」「时间粒度」上各栽过一次。)
+///
+/// ★按东八区取日期,不按 UTC★:UTC 下「8-09 早上 7 点的会」是 8-08,
+/// 文件夹名会比会议日期早一天 —— 与 `notify.rs::fmt_when` 用同一个偏移。
+///
+/// 日期在前 = 按名字排序就等于按时间排序,一个项目开一年会之后这条比什么都有用。
+pub fn activity_folder_name(starts_at: chrono::DateTime<chrono::Utc>, title: &str) -> String {
+    let local = starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+    format!("{} {}", local.format("%Y-%m-%d"), title.trim())
 }
 
 async fn find_activity_folder(pool: &sqlx::PgPool, pid: i64, mid: i64) -> AppResult<Option<i64>> {
@@ -1123,4 +1136,34 @@ pub(crate) fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// ★时区那一格★:活动文件夹名里的日期必须是**开会当地那天**,不是 UTC 那天。
+    /// 8-09 07:00(北京)= 8-08 23:00 UTC —— 按 UTC 取日期,文件夹名会比会议早一天,
+    /// 而且**不报任何错**,只是名字悄悄不对(与 notify.rs 里记的同一类坑)。
+    #[test]
+    fn 文件夹名按东八区取日期() {
+        let t = chrono::Utc.with_ymd_and_hms(2026, 8, 8, 23, 0, 0).unwrap();  // = 北京 8-09 07:00
+        assert_eq!(activity_folder_name(t, "组会"), "2026-08-09 组会");
+    }
+
+    /// 日期在前:按名字排序就等于按时间排序(一个项目开一年会之后,这条比什么都有用)。
+    #[test]
+    fn 按名字排序等于按时间排序() {
+        let a = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 3, 2, 0, 0).unwrap(), "乙会");
+        let b = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 12, 2, 0, 0).unwrap(), "甲会");
+        assert!(a < b, "8-03 的应排在 8-12 之前,而不是被标题的字序左右:{a} / {b}");
+    }
+
+    /// 标题两头的空白不进名字(用户手滑粘进一个空格,文件夹就会长得很怪)。
+    #[test]
+    fn 标题两头空白被裁掉() {
+        let t = chrono::Utc.with_ymd_and_hms(2026, 8, 9, 2, 0, 0).unwrap();
+        assert_eq!(activity_folder_name(t, "  组会  "), "2026-08-09 组会");
+    }
 }
