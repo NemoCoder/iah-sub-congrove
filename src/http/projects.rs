@@ -123,7 +123,10 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
         "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at, s.kind
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
           WHERE s.deleted_at IS NULL
-          ORDER BY (s.kind = 'materials'), s.archived_at NULLS FIRST, s.id",
+          -- ★材料区永远排第一★(2026-08-09 liaoruili:「把我的活动材料永远置顶」):
+          --   它是每个人**天天都在**的那一个,而普通项目会越攒越多 ——
+          --   放在最后等于「项目一多就再也看不见」。前端也不让筛选/搜索把它挤掉。
+          ORDER BY (s.kind <> 'materials'), s.archived_at NULLS FIRST, s.id",
     )
     .bind(username)
     .fetch_all(&state.pool)

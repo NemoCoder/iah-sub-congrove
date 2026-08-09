@@ -137,7 +137,11 @@ export function App() {
           ) : (
             <ActivitiesListView me={me} onOpen={setActivityId} onOpenMinutes={setMinutesOf} onNew={() => setActivityId('new')} />
           )
-        ) : view === 'projects' ? <ProjectsView me={me} />
+        ) : view === 'projects' ? (
+          // 项目页里点「去活动 →」直接切到活动详情(活动材料的文件夹在项目树里是只读的,
+          // 要改就得回那条活动 —— 给它一条路,别让人自己去活动列表里找)
+          <ProjectsView me={me} onOpenActivity={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null) }} />
+        )
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />
           : view === 'apis' ? <ApiDocView />
           : view === 'atypes' ? <ActivityTypesView me={me?.username ?? ''} /> : <SharesView />}

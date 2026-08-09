@@ -29,7 +29,7 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
-import { effectiveScope, showScopeSwitch } from './project-filter'
+import { effectiveScope, effectiveTab, showScopeSwitch } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
 import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
@@ -57,7 +57,12 @@ function fmtTime(s: string) {
 /// - 项目里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function ProjectsView({ me }: { me: Me | null }) {
+export function ProjectsView({ me, onOpenActivity }: {
+  me: Me | null
+  /// 跳到某条活动的详情页。★由 app.tsx 注入而不是在这里改 URL★:
+  /// 本应用整层不引路由库(app.tsx 头注的既有约定),视图切换是状态,不是地址。
+  onOpenActivity?: (activityId: number) => void
+}) {
   const { message, modal } = AntdApp.useApp()
   const [projects, setProjects] = useState<Project[]>([])
   /// 左栏搜索关键词(只过滤已加载的列表,不打接口)
@@ -366,7 +371,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
   const checkedItems = rows.filter((r) => checked.includes(r.id))
 
   /// 左栏过滤后的项目。★大小写不敏感★:项目名常混中英文,记不住原始大小写。
-  const archivedCount = projects.filter((p) => p.archived_at).length
+  /// ★计数只数真项目★:材料区不是项目(PRD §J1),把它算进「进行中 3」里会对不上眼睛看到的。
+  const teamProjects = projects.filter((p) => !isMaterials(p))
+  const archivedCount = teamProjects.filter((p) => p.archived_at).length
   /// ★没有归档项目时强制回到「进行中」★(2026-08-07 用户撞到):
   /// 切换控件是 `archivedCount > 0` 才渲染的 —— 恢复掉最后一个归档项目后,
   /// 控件消失、而 scope 状态还停在 'archived' → 列表永远筛不出东西,
@@ -374,9 +381,16 @@ export function ProjectsView({ me }: { me: Me | null }) {
   /// 修法是**派生**而不是同步状态:控件的可见性与筛选值来自同一个事实,不会各说各话。
   /// 两者都抽到 project-filter.ts 并有单测(含这个 bug 的复现用例)。
   const effScope = effectiveScope(scope, archivedCount)
-  const shown = projects
-    .filter((p) => (effScope === 'archived' ? !!p.archived_at : !p.archived_at))
-    .filter((p) => !kw.trim() || p.name.toLowerCase().includes(kw.trim().toLowerCase()))
+  /// ★「我的活动材料」永远置顶、永远显示★(2026-08-09 liaoruili:「永远置顶」)。
+  /// 它不参与「进行中 / 已归档」筛选,也不参与搜索 —— 那两个筛的是**项目**,
+  /// 而它不是项目(PRD §J1),是每个人固定的那一格。被搜索词筛掉一次,人就会以为它没了。
+  const shown = [
+    ...projects.filter(isMaterials),
+    ...projects
+      .filter((p) => !isMaterials(p))
+      .filter((p) => (effScope === 'archived' ? !!p.archived_at : !p.archived_at))
+      .filter((p) => !kw.trim() || p.name.toLowerCase().includes(kw.trim().toLowerCase())),
+  ]
 
   return (
     <>
@@ -396,15 +410,15 @@ export function ProjectsView({ me }: { me: Me | null }) {
           <Segmented
             size="small" block value={effScope} onChange={(v) => { setScope(v as 'active' | 'archived'); setCur(null) }}
             options={[
-              { value: 'active', label: `进行中 ${projects.length - archivedCount}` },
+              { value: 'active', label: `进行中 ${teamProjects.length - archivedCount}` },
               { value: 'archived', label: `已归档 ${archivedCount}` },
             ]}
             style={{ marginBottom: 8 }}
           />
         )}
-        {projects.length > 6 && (
+        {teamProjects.length > 6 && (
           <Input
-            size="small" allowClear placeholder={`在 ${projects.length} 个项目里找…`}
+            size="small" allowClear placeholder={`在 ${teamProjects.length} 个项目里找…`}
             value={kw} onChange={(e) => setKw(e.target.value)}
             style={{ marginBottom: 8 }}
           />
@@ -465,7 +479,16 @@ export function ProjectsView({ me }: { me: Me | null }) {
           {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 活动 / 设置。
               此前只有「内容」,成员藏在弹窗里、★项目的活动根本没有入口★ ——
               而 D7 明说材料有两个入口(项目 与 时间线),活动同理。 */}
-          <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
+          {/* ★activeKey 必须**派生**,不能直接用 ptab★(2026-08-09 liaoruili 撞到:
+              停在别的项目的「设置」tab 上,切到「我的活动材料」→ 右边整块空白)。
+              材料区只有「文档」一个 tab,而选中值还指着一个**已经不存在的 key** ——
+              AntD 于是什么都不渲染,只剩一条悬空的下划线。
+              ★这和 effectiveScope 是同一个坑★(可选项没了、选中值还指着它),修法也一样:
+              不同步两份状态,**让取值从可选项派生**。判据在 project-filter.ts,带复现测试。
+              ⚠ key 列表从 `tabItems` 现算,不另写一份 —— 手写一份的话,以后加了 tab
+              却忘了加进列表,那个 tab 会**点不动**(被 effectiveTab 挡回 items),很难查。 */}
+          {(() => {
+          const tabItems = [
             {
               // ★叫「文档」不叫「内容」★(2026-08-09 liaoruili):这一栏装的就是文件与文档,
               // 而「内容」这个词在同一页里还指别的东西(活动、成员也都是这个项目的内容)。
@@ -560,9 +583,17 @@ export function ProjectsView({ me }: { me: Me | null }) {
                     : up(it)
                     ? <Typography.Text type="secondary" ellipsis>⬆ {it.name}</Typography.Text>
                     : (
-                      <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
-                        <ItemIcon it={it} />{it.name}
-                      </a>
+                      <>
+                        <a onClick={() => (it.kind === 'folder' ? (setCwd(it.id), setChecked([])) : setPreview(it))}>
+                          <ItemIcon it={it} />{it.name}
+                        </a>
+                        {/* ★只读要看得见★:D10 说活动材料在项目树里不可改,可在此之前
+                            界面上唯一的痕迹是「操作列少了三个图标」—— 那是**没有**,不是**说明**。
+                            标只打在文件夹上:一场活动的材料整块归它,逐个文件再标一遍纯是噪音。 */}
+                        {it.activity_id && it.kind === 'folder' && (
+                          <Tag color="gold" style={{ marginLeft: 8 }}>活动 · 只读</Tag>
+                        )}
+                      </>
                     )),
                 },
                 { title: '大小', dataIndex: 'size', width: 100,
@@ -616,8 +647,15 @@ export function ProjectsView({ me }: { me: Me | null }) {
                           <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}><DeleteOutlined /></a>
                         </Tooltip>
                       )}
+                      {/* ★点得进去★(2026-08-09 liaoruili:「操作那一栏,点击可以直接连接到
+                          活动的详情页」)。原来这里是一个**灰色的、不能点的**「活动」二字 ——
+                          它说的是「去活动页改」,却没告诉人活动页在哪,等于把人推到路口不给指路牌。
+                          ⚠ 这一条对**所有**项目都成立(用户:「其他的项目也有一个只读的文件夹,
+                          同理处理」):判据是 `it.activity_id`,与项目是不是材料区无关。 */}
                       {it.activity_id && (
-                        <Tooltip title="这是活动材料：名称与位置由活动决定，删除请到活动页"><span style={{ color: '#bfbfbf', fontSize: 12 }}>活动</span></Tooltip>
+                        <Tooltip title="这是活动材料：名称与位置由活动决定，增删都在活动页里做。点这里去那条活动">
+                          <a onClick={() => onOpenActivity?.(it.activity_id!)}>去活动 →</a>
+                        </Tooltip>
                       )}
                     </AntSpace>
                   )),
@@ -683,7 +721,10 @@ export function ProjectsView({ me }: { me: Me | null }) {
               key: 'settings', label: '设置',
               children: <ProjectSettings space={cur} onChanged={loadProjects} menu={spaceMenu(cur)} />,
             }]),
-          ]} />
+          ]
+          return <Tabs size="small" activeKey={effectiveTab(ptab, tabItems.map((t) => t.key))}
+                       onChange={setPtab} items={tabItems} />
+          })()}
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>
