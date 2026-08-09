@@ -29,7 +29,7 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
-import { effectiveScope, showScopeSwitch } from './project-filter'
+import { effectiveScope, effectiveTab, showScopeSwitch } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
 import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
@@ -479,7 +479,16 @@ export function ProjectsView({ me, onOpenActivity }: {
           {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 活动 / 设置。
               此前只有「内容」,成员藏在弹窗里、★项目的活动根本没有入口★ ——
               而 D7 明说材料有两个入口(项目 与 时间线),活动同理。 */}
-          <Tabs size="small" activeKey={ptab} onChange={setPtab} items={[
+          {/* ★activeKey 必须**派生**,不能直接用 ptab★(2026-08-09 liaoruili 撞到:
+              停在别的项目的「设置」tab 上,切到「我的活动材料」→ 右边整块空白)。
+              材料区只有「文档」一个 tab,而选中值还指着一个**已经不存在的 key** ——
+              AntD 于是什么都不渲染,只剩一条悬空的下划线。
+              ★这和 effectiveScope 是同一个坑★(可选项没了、选中值还指着它),修法也一样:
+              不同步两份状态,**让取值从可选项派生**。判据在 project-filter.ts,带复现测试。
+              ⚠ key 列表从 `tabItems` 现算,不另写一份 —— 手写一份的话,以后加了 tab
+              却忘了加进列表,那个 tab 会**点不动**(被 effectiveTab 挡回 items),很难查。 */}
+          {(() => {
+          const tabItems = [
             {
               // ★叫「文档」不叫「内容」★(2026-08-09 liaoruili):这一栏装的就是文件与文档,
               // 而「内容」这个词在同一页里还指别的东西(活动、成员也都是这个项目的内容)。
@@ -712,7 +721,10 @@ export function ProjectsView({ me, onOpenActivity }: {
               key: 'settings', label: '设置',
               children: <ProjectSettings space={cur} onChanged={loadProjects} menu={spaceMenu(cur)} />,
             }]),
-          ]} />
+          ]
+          return <Tabs size="small" activeKey={effectiveTab(ptab, tabItems.map((t) => t.key))}
+                       onChange={setPtab} items={tabItems} />
+          })()}
         </Card>
       ) : (
         <Card style={{ flex: 1 }}>

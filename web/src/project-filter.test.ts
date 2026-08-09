@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { effectiveScope, showScopeSwitch, type Scope } from './project-filter.ts'
+import { effectiveScope, effectiveTab, showScopeSwitch, type Scope } from './project-filter.ts'
 
 test('有归档项目时,切换控件显示且按选择筛选', () => {
   assert.equal(showScopeSwitch(2), true)
@@ -20,4 +20,13 @@ test('恢复最后一个归档项目后不能卡在「已归档」', () => {
 test('没有归档项目时,控件不显示、恒为 active', () => {
   assert.equal(showScopeSwitch(0), false)
   assert.equal(effectiveScope('active', 0), 'active')
+})
+
+/// ★这条是「切到材料区右边一片空白」的复现测试★(2026-08-09):
+/// 材料区只有「文档」一个 tab,而 activeKey 还停在上一个项目的「设置」上。
+test('可选 tab 少了时,选中值要回落而不是指着不存在的 key', () => {
+  const stale = 'settings'                                   // 上一个项目里选的
+  assert.equal(effectiveTab(stale, ['items']), 'items', 'tab 没了却还选着它 = 右边整块空白')
+  // 回到有全部 tab 的项目,原来的选择照常保留
+  assert.equal(effectiveTab(stale, ['items', 'members', 'activities', 'settings']), 'settings')
 })
