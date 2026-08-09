@@ -17,7 +17,7 @@
 
 -- 身份:登录即 upsert;preferred_username 为主键(决策 A:全平台一致的用户标识,
 -- citeroot/textleaf/registry 全都认它)。sub 仅记录备查,不作键。
-CREATE TABLE IF NOT EXISTS app_user (
+CREATE TABLE app_user (
   username   text PRIMARY KEY,
   sub        text,
   name       text,
@@ -64,7 +64,7 @@ CREATE VIEW super_now AS
 --   no_share        :禁止对外分享。★开启时须连带撤销本项目已有的公开链接★,否则这个开关是空的。
 --   hotwords        :本项目的转写术语表(空格分隔)。落到项目而不是全局——人名与专业词天然按组不同。
 --                    ⚠ 平台侧是拼音模糊匹配的确定性替换,词表乱填会把正常的字改坏。
-CREATE TABLE IF NOT EXISTS projects (
+CREATE TABLE projects (
   id           bigserial PRIMARY KEY,
   name         text NOT NULL,
   description  text NOT NULL DEFAULT '',
@@ -99,7 +99,7 @@ CREATE UNIQUE INDEX idx_proj_materials ON projects (owner) WHERE kind = 'materia
 -- 角色展示名:admin=管理员(副手) / editor=成员 / viewer=只读成员;主持人在 projects.owner 单列。
 -- ⚠★绝不加「授权生效时间」之类的字段★:那会把 D3 的「当前状态函数」退回「历史累积」,
 --   直接违反 R1「加入即可见全部历史」。
-CREATE TABLE IF NOT EXISTS project_members (
+CREATE TABLE project_members (
   project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   username   text   NOT NULL,
   role       text   NOT NULL CHECK (role IN ('viewer','editor','admin')),
@@ -170,7 +170,7 @@ INSERT INTO activity_types (owner, name, has_minutes, needs_project, busy_defaul
 -- 所以**不关联项目的活动也就不该有材料**,而不是「不许存在」。
 -- (2026-08-09:list 的可见性 SQL 里还留着按旧前提写的过滤,把「个人日程」整类吞掉了 ——
 --  创建成功、不报错、日历上就是没有。★注释里的前提会过期,SQL 不会自己发现。★)
-CREATE TABLE IF NOT EXISTS activities (
+CREATE TABLE activities (
   id         bigserial PRIMARY KEY,
   title      text NOT NULL,
   -- 议题与议程。★公开活动时这段对全平台所有人可见(D9)★,所以它是**文本字段**而不是上传的文件
@@ -218,7 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_activities_time ON activities (starts_at, ends_at
 CREATE INDEX IF NOT EXISTS idx_activities_organizer ON activities (organizer, starts_at DESC);
 
 -- 活动 × 项目(多对多):一次会可同时讨论多个项目,材料整份进每个关联项目。
-CREATE TABLE IF NOT EXISTS activity_projects (
+CREATE TABLE activity_projects (
   activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   PRIMARY KEY (activity_id, project_id)
@@ -231,7 +231,7 @@ CREATE INDEX IF NOT EXISTS idx_mpj_project ON activity_projects (project_id);
 --   status: 四态并列 —— 待定 / 接受 / 拒绝 / **建议改期**。
 --           ★「建议改期」不是便利功能★:private 项目的日程对发起人完全隐形,他根本不知道我忙,
 --           所以这是私事冲突**唯一的结构化出口**。
-CREATE TABLE IF NOT EXISTS activity_participants (
+CREATE TABLE activity_participants (
   activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   username   text NOT NULL,
   -- ⚠ ★没有 guest 档★(原 0005 删掉的):它和 observer 的可见面完全一样,
@@ -260,7 +260,7 @@ CREATE INDEX IF NOT EXISTS idx_mp_user ON activity_participants (username);
 -- 活动讨论区(D13)。两个频道:public(参会人可见)/ private(仅双方)。
 -- ★私聊对象只限发起人与项目主持人★,不做任意点对点——否则会长成一个 IM。
 -- 聊天记录留在活动详情页,**不进材料**(不占项目目录,权限跟活动走)。
-CREATE TABLE IF NOT EXISTS activity_messages (
+CREATE TABLE activity_messages (
   id         bigserial PRIMARY KEY,
   activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   sender     text NOT NULL,
@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS activity_messages (
 CREATE INDEX IF NOT EXISTS idx_mm_activity ON activity_messages (activity_id, created_at);
 
 -- 线上链接改动历史:开会前十分钟改链接是真实场景,要能追溯「谁何时改成什么」。
-CREATE TABLE IF NOT EXISTS activity_link_history (
+CREATE TABLE activity_link_history (
   id         bigserial PRIMARY KEY,
   activity_id bigint NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
   old_url    text NOT NULL DEFAULT '',
@@ -306,7 +306,7 @@ CREATE INDEX IF NOT EXISTS idx_mlh_activity ON activity_link_history (activity_i
 --                  ★判据是「传到哪个入口」,不是「是不是视频文件」★——同一个 mp4,
 --                  传进「录制」是这场会的记录,传进「材料」是会上讨论的素材。
 --                  不做这个区分,系统就分不清 1.8G 的录屏和 200M 的演示视频哪个代表活动长度。
-CREATE TABLE IF NOT EXISTS items (
+CREATE TABLE items (
   id           bigserial PRIMARY KEY,
   project_id   bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   parent_id    bigint REFERENCES items(id) ON DELETE CASCADE,
@@ -317,6 +317,12 @@ CREATE TABLE IF NOT EXISTS items (
   mime         text,
   sha256       text,
   sha_verified boolean NOT NULL DEFAULT false,
+  -- ★客户端申报的哈希与服务端算出的真值不符★（A2/D3，2026-08-09 全量审计）。
+  -- 预签名分片上没有任何 checksum（storage.rs 头注，刻意压掉的），complete 只对**字节数**，
+  -- 所以任何**保长度**的传输损坏（代理改写、坏内存、串片）都能过闸。不符 = 很可能传坏了。
+  -- ⚠ 不阻止使用（内容自洽，它就是它自己的哈希），但★别假装一切正常★ ——
+  --   此前这里只 warn 一句然后照样置 sha_verified=true，把强信号改写成了「已核验」。
+  sha_declared_mismatch boolean NOT NULL DEFAULT false,
   created_by   text   NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -349,7 +355,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS items_activity_folder_uniq
 -- ⚠ 同一 sha 可能被多行引用(items 当前版 + 多条 item_versions):删对象前必须查引用计数,
 --   ★且引用计数要把**软删除的行**也算上★——回收站里的东西还指着同一个对象,
 --   现在删掉它,回收站里那份还原出来就是个空壳。
-CREATE TABLE IF NOT EXISTS item_versions (
+CREATE TABLE item_versions (
   id         bigserial PRIMARY KEY,
   item_id    bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   s3_key     text   NOT NULL,
@@ -368,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_item_versions_item ON item_versions (item_id);
 --   todos    :★先当普通文本★,不做结构化任务系统(一旦做成任务就要跟踪/提醒/统计完成率,是另一个产品)。
 --   pdf_item_id:点「完成」时经 LaTeX 生成 PDF 存档为一条 items(可下载/分享/进版本历史)。
 --              ★内容冻结★:事后改纪要不会悄悄改变已经发出去的那份 PDF。
-CREATE TABLE IF NOT EXISTS activity_minutes (
+CREATE TABLE activity_minutes (
   activity_id  bigint PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
   status      text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','done')),
   attendees   text NOT NULL DEFAULT '',
@@ -386,7 +392,7 @@ CREATE TABLE IF NOT EXISTS activity_minutes (
 
 -- 播放进度:每人每视频记一条,换设备/清缓存都还在(所以不放 localStorage);
 -- 独立播放窗与主窗口天然一致。
-CREATE TABLE IF NOT EXISTS play_progress (
+CREATE TABLE play_progress (
   username     text   NOT NULL,
   item_id      bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   position_sec double precision NOT NULL DEFAULT 0,
@@ -398,7 +404,7 @@ CREATE TABLE IF NOT EXISTS play_progress (
 -- ── 公开分享 ────────────────────────────────────────────────────────────
 -- ★这是全系统唯一绕过项目成员身份的入口★,所以整章 fail-closed:
 -- 令牌不存在/过期/超次数/撤销/主项已删 —— **一律 404 不区分**(区分了就成了探测工具)。
-CREATE TABLE IF NOT EXISTS share_links (
+CREATE TABLE share_links (
   token          text PRIMARY KEY,                    -- 32 位十六进制(128 bit,/dev/urandom)
   item_id        bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   -- 提取码存**加盐 sha256**,不存明文。NULL = 不要提取码,链接即可访问。
@@ -420,7 +426,7 @@ CREATE INDEX IF NOT EXISTS idx_share_links_creator ON share_links (created_by, c
 
 -- 多选分享:一条链接带 N 份内容。主项(share_links.item_id)决定访客页的标题与根目录;
 -- ⚠ 取内容仍逐项验「是被分享项之一或其后代」——多选只是把「根」从 1 个变成 N 个。
-CREATE TABLE IF NOT EXISTS share_items (
+CREATE TABLE share_items (
   token   text   NOT NULL REFERENCES share_links(token) ON DELETE CASCADE,
   item_id bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   PRIMARY KEY (token, item_id)
@@ -429,7 +435,7 @@ CREATE TABLE IF NOT EXISTS share_items (
 -- 访问明细。★只留粗粒度★:IP 只存 /24(v4)或 /48(v6) 前缀、UA 只存 sha256 前 16 位 ——
 -- 够看「有多少不同的人访问过」,又不至于把访客的可识别信息攒成一个数据库。
 --   ok=false 的行是**提取码输错**的记录,用于限速(20 次/15 分钟)。
-CREATE TABLE IF NOT EXISTS share_visits (
+CREATE TABLE share_visits (
   id        bigserial PRIMARY KEY,
   token     text NOT NULL REFERENCES share_links(token) ON DELETE CASCADE,
   at        timestamptz NOT NULL DEFAULT now(),
@@ -443,7 +449,7 @@ CREATE INDEX IF NOT EXISTS idx_share_visits_fail  ON share_visits (token, at DES
 -- ── 转写与纪要产出 ──────────────────────────────────────────────────────
 -- 录屏分析任务。任务态活在 PG 而不是内存:无 PVC 铁律下 pod 重启即丢内存态,
 -- 靠这张表续跑,重启后 reclaim_stale 把 running 打回 queued。
-CREATE TABLE IF NOT EXISTS media_jobs (
+CREATE TABLE media_jobs (
   id           bigserial PRIMARY KEY,
   item_id      bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   status       text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','done','failed')),
@@ -468,7 +474,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_media_jobs_active
 --              接上之后 media_ai 的 token 反推逻辑可以退役。
 --   fine    :**重排后**的细分段(realign 的结果)。转写时算一次存这里,
 --            /analysis 与 /subtitles.vtt 直接用。
-CREATE TABLE IF NOT EXISTS transcripts (
+CREATE TABLE transcripts (
   item_id      bigint PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
   text         text NOT NULL,
   segments     jsonb,
@@ -482,7 +488,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
 -- AI 参考稿:一个录制多种产出(摘要/大纲/决议待办),各存一行,重跑覆盖。
 -- ⚠★这不是正式纪要★(D14):它是**给记录员核对整理用的原材料**。
 --   正式纪要在 activity_minutes,由记录员按模板写、有明确责任人。
-CREATE TABLE IF NOT EXISTS summaries (
+CREATE TABLE summaries (
   item_id    bigint NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   kind       text   NOT NULL CHECK (kind IN ('brief','outline','decisions')),
   content    text   NOT NULL,
@@ -492,7 +498,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 
 -- 审计:谁改了权限、删了什么。权限变更/删除类操作必录(audit.rs helper)。
-CREATE TABLE IF NOT EXISTS audit_log (
+CREATE TABLE audit_log (
   id     bigserial PRIMARY KEY,
   ts     timestamptz NOT NULL DEFAULT now(),
   actor  text NOT NULL,

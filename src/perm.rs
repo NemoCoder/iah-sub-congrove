@@ -116,6 +116,20 @@ pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> Ap
         "SELECT 'BLOCK'::text FROM projects
           WHERE id = $1 AND kind = 'materials' AND owner <> $2 AND deleted_at IS NULL
          UNION ALL
+         -- ★软删掉的项目对所有人零角色★(2026-08-09 全量审计 A5b,与真软删同一个提交)。
+         --
+         -- ⚠★这里原来是 fail-**open** 的★:三支里只有上面那条否决支带 `deleted_at IS NULL`,
+         --   两条**授权**支(super_now、成员表)一个都不判。项目从来没被软删过,所以一直没暴露;
+         --   而一旦补上真软删,它当场变成两个洞:
+         --     ① 项目删进回收站 → 成员表不动 → 成员照常读写(items 的过滤是 items.deleted_at,
+         --        项目软删不给 item 打标记);
+         --     ② 更反常:`deleted_at IS NULL` 一旦不成立,材料区的 BLOCK **消失** →
+         --        super_now 那一支返回 admin → ★超管拿到别人「我的活动材料」的完整读权限★,
+         --        正是 PRD §J1c 要防的那件事。
+         -- ★同族的 require_owner / require_material_write 都是「查不到行就 NotFound」(fail-closed),
+         --   只有这里方向相反 —— 两种写法并存本身就是坑。★
+         SELECT 'BLOCK'::text FROM projects WHERE id = $1 AND deleted_at IS NOT NULL
+         UNION ALL
          -- ★超管**特权**只认 super_now 视图,不认 is_super 那一列★(超管模式,
          --   docs/TECH-DESIGN-admin-mode.md):关着模式时他就是个普通用户。
          SELECT 'admin'::text FROM super_now WHERE username = $2

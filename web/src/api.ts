@@ -77,6 +77,9 @@ export type Item = {
   /// ★属于某场活动的材料★(D10 的只读区):非空时**不画**改名/移动/删除 ——
   /// 后端也拒(items.rs 的 update/remove 里有判断),这里不画是为了不引导人去犯错。
   activity_id?: number | null
+  /// ★客户端申报的哈希与服务端算出的真值不符★(A2/D3):很可能传输中损坏了。
+  /// 不阻止使用,但要在界面上说出来 —— 此前这个信号被后端直接改写成了「已核验」。
+  sha_declared_mismatch?: boolean
   created_at: string
   updated_at: string
 }
@@ -115,6 +118,11 @@ export type Activity = {
   /// ★只关联私密项目★——日历据此上色。判据与忙闲分流一致(D1):
   /// 只要关联了任一公开项目就算「公开的会」,它已经会让别人看到你在忙。
   is_private: boolean
+  /// ★关联的项目**全部**已归档★(PRD B1)。日历据此淡化并标「已归档 · 只读」。
+  /// 归档项目的活动**照常显示**(B0:日程也是「我做过什么」的记录),但它是只读的 ——
+  /// 不标出来的话人会点进去想传材料、改时间,才发现动不了。
+  /// 零关联项目的活动恒为 false:「没有项目」不等于「项目都归档了」。
+  archived?: boolean
   /// 关联项目(列表页显示标签用),后端在列表 SQL 里一次取全
   projects?: { id: number; name: string }[] | null
   participant_count?: number

@@ -42,6 +42,46 @@ pub fn check_caps(c: &Caps, recorder: &str, project_ids: &[i64]) -> Result<(), &
     Ok(())
 }
 
+/// 一条活动的跨度上限 —— ★30 天★（PRD F4，2026-08-08 liaoruili 拍板）。
+///
+/// **为什么需要一个上界**：此前只有「结束必须晚于开始」这一条下界。
+/// 一条 `2026-08-08 → 2126-08-08`（输错年份）会命中**每一次**日历查询与忙闲查询的时间窗，
+/// 把两条最热的路径一起拖垮，而用户在任何一屏上都看不出是哪条记录干的。
+///
+/// **为什么是 30 天而不是更松**：真实的长活动是「出差两周」「年假一个月」。
+/// 更常见的手滑不是输错年份，而是**输错月份**（8 月 8 日打成次年 3 月 1 日 = 205 天）——
+/// ★365 天的上界挡不住它，30 天挡得住。★
+pub const MAX_SPAN_DAYS: i64 = 30;
+
+/// 时间区间本身合法吗（纯函数，`cargo test` 够得着）。
+///
+/// ⚠★必须在应用层校验并返 400 带可读文案★（F4 明写）：只靠数据库 CHECK 的话，
+/// `error.rs` 把 sqlx 错误一律映射成 500 `"internal error"` ——
+/// 用户会拿到一个「服务器出错了」，而问题其实出在他填的日期上。
+pub fn check_span(starts_at: chrono::DateTime<chrono::Utc>,
+                  ends_at: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
+    if ends_at <= starts_at { return Err("结束时间必须晚于开始时间".into()) }
+    let days = (ends_at - starts_at).num_days();
+    if days > MAX_SPAN_DAYS {
+        return Err(format!(
+            "一条活动最长 {MAX_SPAN_DAYS} 天，这条是 {days} 天——是不是月份或年份填错了？             真要记这么长的一段，拆成几条。"));
+    }
+    Ok(())
+}
+
+/// 会后补录的「实际时长」上界 —— ★按这场活动的跨度算，不写死 1440 分钟★（F4 连带条）。
+/// 写死一天的话，三天的出差就填不了实际时长。
+/// ⚠ 上界是「跨度 + 1 天」而不是「跨度」：跨度按 num_days() 取整会丢掉不满一天的尾巴。
+pub fn check_actual_minutes(minutes: i32, starts_at: chrono::DateTime<chrono::Utc>,
+                            ends_at: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
+    if minutes < 0 { return Err("实际时长不能是负数".into()) }
+    let cap = ((ends_at - starts_at).num_minutes() + 24 * 60).max(24 * 60);
+    if i64::from(minutes) > cap {
+        return Err(format!("实际时长比这场活动的跨度还长（上限 {} 分钟）", cap));
+    }
+    Ok(())
+}
+
 /// 开始时间能不能是过去（F0/F1）。★与 check_caps 分开是因为它要"现在几点"★——
 /// 揉进去会让那个纯函数依赖时钟，单测就得注入时间，反而更难测。
 ///
@@ -86,7 +126,13 @@ pub async fn list(
 
 #[derive(Deserialize)]
 pub struct TypeIn {
-    pub name: String,
+    /// ⚠★必须是 Option★(2026-08-09 全量审计 A4):原来是裸 `String`,而「我的活动类型」页勾
+    /// 「占忙闲」时只送 `{busy_default}` —— axum 的 Json 提取器在**进 handler 之前**就 422,
+    /// 响应体是纯文本,用户看到的是一个裸的「422」。于是 A3 说的「自建类型唯一的开关」
+    /// ★从来没工作过★。前端注释里写的「后端 name 是 COALESCE 更新,不传就保留」描述的是 SQL,
+    /// 而 serde 在 SQL 之前就把请求毙了 —— ★「后端会兜住」这种话要去看它兜在哪一层★。
+    #[serde(default)]
+    pub name: Option<String>,
     /// ★自建类型只开放这一个开关★（A3）：`has_minutes` / `needs_project` 是系统语义，
     /// 不给用户改 —— 让人自己勾「不需要纪要」等于把 D14 的约束交给使用者绕过。
     #[serde(default)]
@@ -121,7 +167,8 @@ pub async fn create(
     Json(input): Json<TypeIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    let name = clean_name(&input.name)?;
+    // 建类型时名字是**必填**的(改名时才可省)——缺了就给人话,不是 422
+    let name = clean_name(input.name.as_deref().ok_or_else(|| AppError::BadRequest("类型名不能为空".into()))?)?;
     let nid: i64 = sqlx::query_scalar(
         // has_minutes / needs_project 一律 false：自建类型是「我自己的日程分类」，
         // 要正式纪要与项目归属的话，用预置的「会议」。
@@ -192,7 +239,15 @@ pub async fn update(
     let me = id.require_username()?;
     let scope = scope_or_err(&state.pool, tid, me).await?;
     // ★预置的简单型只让改 busy_default★：改名会让所有人的历史活动跟着变名字。
-    let name = if scope == TypeScope::Full { Some(clean_name(&input.name)?) } else { None };
+    // ★没传 name 就只改 busy_default★:这正是「占忙闲」那个复选框走的路(A4)。
+    // 预置的简单型也只让改 busy_default —— 改名会让所有人的历史活动跟着变名字。
+    let name = match (&input.name, scope == TypeScope::Full) {
+        (Some(n), true) => Some(clean_name(n)?),
+        _ => None,
+    };
+    if name.is_none() && input.busy_default.is_none() {
+        return Err(AppError::BadRequest("没有要改的字段".into()));
+    }
     sqlx::query(
         "UPDATE activity_types SET name = COALESCE($2, name),
                                    busy_default = COALESCE($3, busy_default)
@@ -272,6 +327,29 @@ mod tests {
         // 于是「昨天下午改论文改了 3 小时」这种正当的补录根本建不出来，
         // 只能先建一条再去改时间绕过去（update 没有这道闸）。
         assert!(check_past(&个人日程, t(-60 * 24 * 30), t(0)).is_ok(), "一个月前也该能补");
+    }
+
+    // ══════ 跨度上界（F4，2026-08-08 liaoruili 拍板）══════
+    #[test]
+    fn 跨度超过三十天就拒() {
+        assert!(check_span(t(0), t(60)).is_ok(), "一小时的会");
+        assert!(check_span(t(0), t(60 * 24 * 30)).is_ok(), "正好 30 天：出差/年假的真实上限");
+        assert!(check_span(t(0), t(60 * 24 * 31)).is_err(), "31 天");
+        // ★这条才是它真正要挡的★：输错月份（8-08 打成次年 3-01 ≈ 205 天）——
+        // 365 天的上界挡不住它，30 天挡得住。
+        assert!(check_span(t(0), t(60 * 24 * 205)).is_err(), "输错月份");
+        assert!(check_span(t(60), t(0)).is_err(), "结束早于开始");
+        assert!(check_span(t(0), t(0)).is_err(), "零长度");
+    }
+
+    #[test]
+    fn 实际时长按跨度算上界_不写死一天() {
+        // 三天的出差：填 40 小时是合理的，写死 1440 分钟（一天）会把它挡掉
+        assert!(check_actual_minutes(40 * 60, t(0), t(60 * 24 * 3)).is_ok());
+        // 一小时的会：上界仍留一天的余量（补录时人常常估个整数）
+        assert!(check_actual_minutes(90, t(0), t(60)).is_ok());
+        assert!(check_actual_minutes(60 * 24 * 5, t(0), t(60)).is_err(), "比跨度长太多");
+        assert!(check_actual_minutes(-1, t(0), t(60)).is_err());
     }
 
     // ══════ 可改范围（原型「我的活动类型」那一页）══════

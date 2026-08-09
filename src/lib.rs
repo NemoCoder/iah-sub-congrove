@@ -180,6 +180,18 @@ async fn cleanup_stale_uploads(state: AppState) {
                 Err(e) => tracing::warn!(error = %format!("{e:?}"), item = iid, "cleanup: 自动 purge 失败"),
             }
         }
+        // ★项目回收站也满 30 天就彻底删★(2026-08-09 审计 A5:删项目从硬删改成软删)。
+        // 到这一步才 FK CASCADE + 按引用计数删对象 —— 软删期间 S3 一个字节都没动过。
+        let dead: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM projects
+              WHERE deleted_at IS NOT NULL AND deleted_at < now() - interval '30 days' LIMIT 20",
+        ).fetch_all(&state.pool).await.unwrap_or_default();
+        for pid in dead {
+            match crate::http::projects::purge_project(&state, pid).await {
+                Ok(n) => tracing::info!(project = pid, objects = n, "cleanup: 项目回收站满 30 天,已彻底删除"),
+                Err(e) => tracing::warn!(error = %format!("{e:?}"), project = pid, "cleanup: 项目 purge 失败"),
+            }
+        }
     }
 }
 

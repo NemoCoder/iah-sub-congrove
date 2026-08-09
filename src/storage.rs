@@ -106,6 +106,50 @@ impl Storage {
 
     /// 删对象。⚠ 调用方必须先做引用计数(items.s3_key + item_versions.s3_key 都不再引用
     /// 才能删——citeroot delete_fulltext 的教训),这里只管执行。
+    /// ★服务端分片复制★(UploadPartCopy)——把 `from` 整个复制成 `to`,字节不经 pod。
+    ///
+    /// ⚠★为什么需要它★:S3 语义下单次 `CopyObject` 有 **5 GiB** 上限,而本系统的主用例
+    /// 正是 GB 级会议录屏。审计 A2 的归位(promote)会让大对象第一次走到这条复制上。
+    ///
+    /// ★2026-08-09 实测确认 Garage 支持 UploadPartCopy★:12 MiB 源 → 3 片(5+5+2) →
+    /// complete → 取回逐字节一致。**验的是这条码路,不是 Garage 的天花板在哪** ——
+    /// S3 的最小分片正好是 5 MiB,小对象跑的逻辑与 50 GB 完全相同,通了就是通了
+    /// (liaoruili 纠正过我一次:别去撞依赖方的极限值,验自己那段代码的分支)。
+    ///
+    /// 分片取 256 MiB:10000 片上限 → 支持到约 2.4 TiB,足够有余。
+    pub async fn copy_multipart(&self, from_key: &str, to_key: &str, size: i64, mime: &str) -> anyhow::Result<()> {
+        const PART: i64 = 256 * 1024 * 1024;
+        let upload_id = self.multipart_begin(to_key, mime).await?;
+        let mut parts = Vec::new();
+        let mut off = 0i64;
+        let mut n = 0i32;
+        while off < size {
+            let end = (off + PART).min(size) - 1;
+            n += 1;
+            let r = self.s3.upload_part_copy()
+                .bucket(&self.bucket).key(to_key).upload_id(&upload_id).part_number(n)
+                .copy_source(format!("{}/{}", self.bucket, from_key))
+                .copy_source_range(format!("bytes={off}-{end}"))
+                .send().await;
+            match r {
+                Ok(r) => {
+                    parts.push(aws_sdk_s3::types::CompletedPart::builder()
+                        .part_number(n)
+                        .e_tag(r.copy_part_result().and_then(|c| c.e_tag()).unwrap_or_default())
+                        .build());
+                    off = end + 1;
+                }
+                Err(e) => {
+                    // 失败要 abort,否则半截 multipart 留在桶里等 24h 清扫
+                    self.multipart_abort(to_key, &upload_id).await;
+                    return Err(anyhow::anyhow!("UploadPartCopy 第 {n} 片失败: {e}"));
+                }
+            }
+        }
+        self.multipart_complete(to_key, &upload_id, parts).await?;
+        Ok(())
+    }
+
     pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
         self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
         Ok(())

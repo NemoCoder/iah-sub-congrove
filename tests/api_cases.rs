@@ -306,6 +306,43 @@ const CASES: &[Case] = &[
        "DELETE /api/activities/{A}/items/{B 的材料}",
        "404 —— SQL 里 activity_id 必须同时匹配路径上的 mid;\
         少这一条就是「换个 mid 就能删别人的」这类典型越权", "D10"),
+    c!("POST", "/api/projects/{id}/media/begin", "★直传永远不落在规范 key 上★",
+       "我申报 sha=H,而 blobs/H 尚不存在", "POST {sha256:H, size, name}",
+       "200,但 items.upload_key 是 `uploads/<iid>-<rand>` ——★不是 blobs/H★。\
+        原来这里直接拿申报值当 key:占住 blobs/H 塞垃圾,真正拥有那份文件的人后来上传时\
+        会被「对象已存在就直接引用」静默引用到垃圾、还打上 sha_verified 继续当秒传源扩散(审计 A2)", "A2"),
+    c!("POST", "/api/items/{id}/media/complete", "★归位只在服务端算完真实哈希之后★",
+       "直传完成,服务端算出真实哈希 R", "complete 后台 verify_and_promote",
+       "s3_key 变成 blobs/<R>、临时对象删掉、sha_verified=true。\
+        ★归位失败则停在临时 key 且 sha_verified 保持 false★ —— 文件照常下得到,\
+        但不能当秒传源(fail-closed)。大对象走 UploadPartCopy(2026-08-09 实测 Garage 支持)", "A2"),
+    c!("POST", "/api/items/{id}/media/complete", "★申报值≠真值要留痕,不能改写成「已核验」★",
+       "传输中损坏但字节数没变(complete 只对大小)", "complete 后台核验",
+       "sha_declared_mismatch=true,前端提示「建议重传」。\
+        原来只 warn 一句然后照样置 sha_verified=true —— ★把强信号改写成了「已核验」★(审计 A2/D3)", "A2"),
+    c!(deny "POST", "/api/activities", "★跨度超过 30 天就拒★", "起止差 205 天(月份打错)",
+       "POST {starts_at:'8-08', ends_at:'次年 3-01'}",
+       "400 带可读文案 —— ★必须在应用层拒★:只靠数据库 CHECK 的话 error.rs 会把它映射成 500\
+        「服务器出错了」,而问题其实出在他填的日期上。上界取 30 天不是 365:\
+        最常见的手滑是**输错月份**,365 挡不住它(F4)", "F4"),
+    c!(deny "PUT", "/api/activities/{id}", "★实际时长不能比跨度还长★", "一小时的会",
+       "PUT {actual_minutes: 7200}",
+       "400;上界★按这场活动的跨度算★不写死 1440 —— 写死一天的话三天的出差就填不了实际时长(F4)", "F4"),
+    c!(deny "POST", "/api/projects/{id}/archive", "★有没开始的活动就不许归档★",
+       "项目下有两场未来的活动(未取消)", "POST {archived:true}",
+       "400 且★把是哪几场列出来★ —— 跨项目的活动不能静默跳过:\
+        A 想归档却卡在一场同时关联 A 和 B 的会上,得让他自己决定(取消它,或把 A 从关联里去掉);\
+        静默跳过等于允许「项目归档了、名下还有未来的会」。已取消的不算(B2)", "B2"),
+    c!("GET", "/api/activities", "★归档项目的活动照常进日历,只是标出来★",
+       "我有一个已归档项目,里面有历史活动", "GET /api/activities?from&to",
+       "200 且含那些活动,archived=true → 前端淡化 + 打「已归档 · 只读」。\
+        ★这里原来是滤掉的,执行的是一条已被 PRD B0 推翻的决定★(liaoruili:「日程也是我做过什么的记录,\
+        看看满日程的很有成就感」);标记是为了让「只读」在点进去之前就可见(B1)", "B0"),
+    c!("DELETE", "/api/activities/{id}", "★取消活动时材料区里的材料跟着走★",
+       "不关联项目的个人活动,材料在我的材料区", "DELETE /api/activities/{id}",
+       "200,材料软删进回收站。★只对材料区成立★:普通项目里的材料是**项目的资产**,\
+        不该被一次活动的取消带走;而材料区里每份材料都有主人(某条活动),\
+        活动没了还留着的话在 §J0b 的虚拟分组里根本渲染不出来 —— 看不见、删不掉、还占配额(J1b)", "J1b"),
     c!("POST", "/api/activities/{id}/materials-project", "★个人活动也能传材料★",
        "我是发起人,活动零关联项目(类型 needs_project=false)", "POST .../materials-project",
        "200 回 project_id —— 我的「我的活动材料」(没有就现建,kind='materials');\
@@ -330,6 +367,30 @@ const CASES: &[Case] = &[
     c!(deny "PUT", "/api/activities/{mid}/items/{iid}", "★不能借 A 活动改 B 活动材料的名★",
        "我是 A 活动关联项目的 editor;iid 属于 B 活动", "PUT /api/activities/{A}/items/{B 的材料}",
        "404 —— activity_id 必须同时匹配路径上的 mid,与删除那条同一个越权形状", "D10"),
+    c!(deny "POST", "/api/projects/{id}/upload", "★不能往别人的活动里注入材料★",
+       "我在自己的项目 P 里是 admin;activity_id 指向一场与 P 无关的活动",
+       "POST /api/projects/P/upload?activity_id=<别人的会>",
+       "404 —— ★判权判的是路径上的 pid,写的却是参数里的 activity_id,两者必须对账★。\
+        少这一句就是:文件出现在别人活动的材料里、署我的名,而对方删不掉也改不了\
+        (那两条接口判的是 item 所属项目);带 is_recording 还能改写对方的时长统计。\
+        2026-08-09 全量审计 A1", "D10"),
+    c!(deny "POST", "/api/projects/{id}/items", "★不能往活动文件夹里塞东西★",
+       "parent_id 是某场活动的材料文件夹", "POST {kind:'file',parent_id:<活动文件夹>}",
+       "400「这是活动的材料文件夹,只读」—— D10 的**写入方向**。\
+        ★守卫只看『被操作项自己』是不够的,父节点那一侧同样是入口★:\
+        2026-08-09 先修的是『把材料拿出去』(改名/移动/删除),这条是没修完的另一半(审计 A6)", "D10"),
+    c!(deny "PUT", "/api/items/{id}", "★不能把文件移进活动文件夹★",
+       "parent_id 是某场活动的材料文件夹", "PUT {parent_id:<活动文件夹>}",
+       "400;同上,check_parent 现在会拒绝带 activity_id 的父节点", "D10"),
+    c!("PUT", "/api/activity-types/{id}", "★只改占忙闲、不带 name★",
+       "预置的「个人日程」或我自建的类型", "PUT {busy_default:false}",
+       "200 —— name 必须是 Option。原来它是裸 String,axum 在**进 handler 之前**就 422,\
+        于是 A3 说的『自建类型唯一的开关』★从来没工作过★(审计 A4)", "A3"),
+    c!("GET", "/api/activities/{id}", "★旁听者拿到的是裁剪版,但外层形状一样★",
+       "活动 public,我与它毫无关系", "GET /api/activities/{id}",
+       "200 且仍是 {activity:{…}, participants:null, projects:[], can_edit:false, observer:true}。\
+        ★裁剪的是内容不是结构★:原来直接吐扁平对象,前端 `d.activity.status` 当场白屏,\
+        而 E2E 恰好把契约钉成了扁平、tsc 又认定 activity 必存在 —— 两道闸互相抵消(审计 A3)", "D9"),
     c!(deny "POST", "/api/projects/{id}/upload", "★材料区不收散文件★",
        "pid 是我的「我的活动材料」", "POST /upload(不带 activity_id)",
        "403 —— 材料区在 require_role 的写闸上一律只读(PRD §J1);\
@@ -338,6 +399,26 @@ const CASES: &[Case] = &[
     c!(deny "POST", "/api/projects/{id}/items", "材料区里不能建文件夹/文档",
        "pid 是我的「我的活动材料」", "POST {kind:'folder',name:'x'}",
        "403;§J0b 的那些「文件夹」是活动自己带的,不是人建的", "J1"),
+    c!("DELETE", "/api/projects/{id}", "★删项目是软删除,不是硬删★", "我是主持人",
+       "DELETE /api/projects/{id}",
+       "200 restorable_days=30;projects.deleted_at 置位、★S3 一个字节都不动★、公开链接连带撤销。\
+        2026-08-09 之前这里是 `DELETE FROM projects` 一条硬删(FK CASCADE 连录屏一起没),\
+        而契约、CLAUDE.md、20+ 处 SQL 过滤都在声称软删 —— ★那一列从没被写过一次★(审计 A5)", "A5"),
+    c!(deny "GET", "/api/projects/{id}/items", "★软删的项目对成员也立刻失效★",
+       "项目已删进回收站,我还在成员表里", "GET /api/projects/{id}/items",
+       "404 —— effective_role 现在对 deleted_at 非空的项目发 BLOCK。\
+        ★这条与 A5 必须同一个提交★:原来两条**授权**支都不判 deleted_at(fail-open),\
+        单补软删会变成「删进回收站后成员照常读写」+「材料区 BLOCK 消失 → 超管读得到别人的材料区」", "A5b"),
+    c!("POST", "/api/projects/{id}/undelete", "主持人能把项目还回来", "项目在回收站里,我是 owner",
+       "POST .../undelete", "200,项目回到列表;公开链接不随还原恢复(撤销是终态)", "A5"),
+    c!(deny "POST", "/api/projects/{id}/undelete", "不是主持人还不了", "项目在回收站,我只是成员",
+       "POST .../undelete", "404(不是 403 —— 不给存在性预言机)", "A5"),
+    c!("GET", "/api/projects/trash", "回收站列出我删的项目与剩余天数", "我删过两个项目",
+       "GET /api/projects/trash", "200,两条,带 days_left", "A5"),
+    c!(deny "GET", "/api/projects/trash", "★别人删的项目不进我的回收站★",
+       "别的主持人删了他的项目,我曾是那个项目的 admin", "GET /api/projects/trash",
+       "200 但**不含**那一条 —— 判据是 owner(删项目本来就是主持人专属 D0,还原自然也是);\
+        成员看得到别人回收站里的项目名 = 又一个存在性泄露", "A5"),
     c!(deny "PUT", "/api/projects/{id}", "★材料区连主人也改不了名★",
        "pid 是我的「我的活动材料」", "PUT {name:'随便'}",
        "403 —— decide_owner 对 kind='materials' 一律 Deny(2026-08-09 收严:原来主人放行)。\
