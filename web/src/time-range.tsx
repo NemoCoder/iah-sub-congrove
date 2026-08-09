@@ -1,57 +1,136 @@
 // 「选一段时间」—— ★全站唯一的时间区间选择器★。
 //
-// ⚠★2026-08-09 建这个文件的原因★:liaoruili 报「改时间怎么到了时分秒。。。。我的 00 15 30 45 呢」。
-// 当时树里有**三个**各写各的 `DatePicker.RangePicker`:
-//   · 发起活动 —— 我刚给它做了一刻钟粒度 + 免确认;
-//   · 活动详情「改时间」弹窗 —— 裸 `showTime`,于是有秒、分钟 60 格、还要点一次确认;
-//   · 「建议改期」—— 又是第三种写法。
-// ★「一刻钟」这个规则被我写进了其中一个,另外两个当然不知道★ —— 这正是本仓库反复强调的
-// 「每样东西只有一个真相源」在 UI 上的同一个坑:改一处 ≠ 改了这件事。
-// 现在三处都用这个组件;要调粒度、格式、确认方式,只有这里一个地方。
-import { DatePicker } from 'antd'
-import dayjs from 'dayjs'
+// ⚠★2026-08-09 第二版:整块重写成「扁平时间列」★(liaoruili:「要的不是这样的分钟。
+//   而是选择几点,后面只有 00 15 30 45 这几个分钟,现在还要下拉。我做这样的目的
+//   就是为了方便用户选择时间,减少工作」)。
+//
+// 第一版只是把 AntD 的分钟列裁到 4 个值,★交互步数一点没少★:
+//   展开 → 滚小时列 → 点小时 → 滚分钟列 → 点分钟 = 5 步。
+// 现在照腾讯会议 / Google 日历那套:**一列现成的时刻**,点一下同时定下时与分 = 2 步。
+//   · 开始:`08:00 / 08:15 / 08:30 …` 一列到底;
+//   · 结束:★只列开始之后的时刻,并在右边直接标出时长★(「1小时」「1.5小时」)——
+//     人心里想的是「开多久」,让他自己从两个时刻里心算时长是白饶的一步;
+//   · 再加一排持续时长按钮,连结束时间那一列都不用点。
+//
+// ★为什么不继续用 DatePicker.RangePicker★:它的时间面板天生是「时/分/秒」分列滚动的,
+// 那是**为任意精度设计的**;而排会只需要 96 个候选,把它们摆平比让人在两列里对齐快得多。
+// 日期仍然用 DatePicker(日历比列表更适合选日期)。
+import { Button, DatePicker, Select, Space, Typography } from 'antd'
+import { useMemo } from 'react'
+import dayjs, { type Dayjs } from 'dayjs'
+// ★纯逻辑在 time-slots.ts★:那边有单测(候选必须落在整刻钟上等),这边只管渲染。
+import { DURATIONS, STEP_MIN, fmtDur, hhmm, slots } from './time-slots'
 
-/// ★分钟只走一刻钟★:00 / 15 / 30 / 45。会不会约在 8:07？不会。
-/// 而默认给 60 行分钟,常用的那四个要滚很久才够得着 —— 多出来的 56 个选项**只制造滚动**。
-export const MINUTES = [0, 15, 30, 45]
-const BAD_MINUTES = Array.from({ length: 60 }, (_, i) => i).filter((m) => !MINUTES.includes(m))
 
-/// 持续时长快捷（参考腾讯会议）。★先定「开多久」再算结束时刻★ ——
-/// 人脑里想的是「开一小时」，不是「10:00 到 11:00」；让人心算结束时间是白饶的一步。
-export const DURATIONS: { m: number; label: string }[] = [
-  { m: 30, label: '30 分钟' }, { m: 60, label: '1 小时' },
-  { m: 90, label: '1.5 小时' }, { m: 120, label: '2 小时' }, { m: 180, label: '3 小时' },
-]
+export function TimeRangePicker({ value, onChange, noPast = false, size }: {
+  value?: [Dayjs, Dayjs] | null
+  onChange?: (v: [Dayjs, Dayjs] | null) => void
+  /// 禁掉今天以前的日期与今天已过去的时刻。
+  /// ★不是默认开★ —— 后端只在**创建**时拒绝过去的时间(activities.rs 的 5 分钟容差闸),
+  /// **改时间没有这条限制**,因为那也用来**补录**已经开过的会。
+  /// 界面比后端更严会让人做不成后端允许的事,而这种「不知道为什么点不了」最难查。
+  noPast?: boolean
+  size?: 'small' | 'middle'
+}) {
+  const [s, e] = value ?? [null, null]
+  const now = dayjs()
 
-type RangeProps = React.ComponentProps<typeof DatePicker.RangePicker>
+  /// 起点缺省:下一个整点(最常见的意图「现在建个会」)。
+  const fallbackStart = useMemo(() => now.add(1, 'hour').startOf('hour'), [/* 每次渲染重算无妨 */ now])
 
-/// `noPast`:禁掉今天以前的日期与今天已经过去的时刻。
-/// ★不是默认开★ —— 后端只在**创建**时拒绝过去的时间(activities.rs 的 5 分钟容差闸),
-/// **改时间没有这条限制**,因为那也用来**补录**已经开过的会。
-/// 界面比后端更严会让人做不成后端允许的事,而这种「不知道为什么点不了」最难查。
-export function QuarterRangePicker({ noPast = false, ...rest }: RangeProps & { noPast?: boolean }) {
+  const emit = (ns: Dayjs, ne: Dayjs) => onChange?.([ns, ne])
+
+  /// 改开始:★结束跟着平移,保持原时长★ —— 把会整体挪一小时,不该顺带把它变短。
+  const setStart = (ns: Dayjs) => {
+    const dur = s && e ? e.diff(s, 'minute') : 60
+    emit(ns, ns.add(Math.max(dur, STEP_MIN), 'minute'))
+  }
+  const setEnd = (ne: Dayjs) => emit(s ?? fallbackStart, ne)
+  const setDuration = (m: number) => {
+    const ns = s ?? fallbackStart
+    emit(ns, ns.add(m, 'minute'))
+  }
+
+  const curStart = s ?? null
+  const curEnd = e ?? null
+  const durMin = curStart && curEnd ? curEnd.diff(curStart, 'minute') : null
+
+  // ── 开始时刻的候选 ──
+  const startDay = curStart ?? fallbackStart
+  const startIsToday = startDay.isSame(now, 'day')
+  const startOpts = useMemo(() => {
+    const after = noPast && startIsToday ? now.hour() * 60 + now.minute() : undefined
+    return slots(after).map((m) => ({ value: m, label: hhmm(m) }))
+  }, [noPast, startIsToday, now])
+
+  // ── 结束时刻的候选:★只列开始之后的,右边标时长★ ──
+  const endDay = curEnd ?? startDay
+  const sameDay = curStart ? endDay.isSame(curStart, 'day') : true
+  const endOpts = useMemo(() => {
+    const base = curStart ?? fallbackStart
+    // 同一天:从开始时刻的下一格起;跨天:整天都能选(时长由日期差补上)
+    const after = sameDay ? base.hour() * 60 + base.minute() + STEP_MIN : undefined
+    return slots(after).map((m) => {
+      const cand = endDay.startOf('day').add(m, 'minute')
+      const d = cand.diff(base, 'minute')
+      return {
+        value: m,
+        label: hhmm(m),
+        // ★时长直接摆在选项里★:省掉「11:30 减 10:00 等于多久」这一次心算
+        title: d > 0 ? fmtDur(d) : undefined,
+        dur: d > 0 ? fmtDur(d) : '',
+      }
+    })
+  }, [curStart, endDay, sameDay, fallbackStart])
+
+  const minOf = (d: Dayjs) => d.hour() * 60 + d.minute()
+  const wide = size === 'small' ? 96 : 108
+
   return (
-    <DatePicker.RangePicker
-      // ★不给秒★:排会精确到秒没有意义,而多一列就多一次滚动
-      showTime={{ format: 'HH:mm' }}
-      format="YYYY-MM-DD HH:mm"
-      // ★needConfirm={false}★:选完分钟就算数、光标自己跳到结束时间,不再点一次「确定」。
-      // 那一步是纯仪式 —— 时间已经选好了,再确认一遍只是在问「你确定你刚才点的是你点的吗」。
-      needConfirm={false}
-      disabledDate={(d) => (noPast ? !!d && d.isBefore(dayjs().startOf('day')) : false)}
-      disabledTime={(d) => {
-        const isToday = noPast && !!d && d.isSame(dayjs(), 'day')
-        const now = dayjs()
-        return {
-          disabledHours: () => (isToday ? Array.from({ length: now.hour() }, (_, i) => i) : []),
-          // ★两条限制在这里合流★:不是一刻钟的分钟一律禁;今天的当前小时里,
-          // 还要额外禁掉已经过去的那几个。漏掉后半句就能选出「过去的整点」。
-          disabledMinutes: (h: number) => (isToday && h === now.hour()
-            ? [...new Set([...BAD_MINUTES, ...Array.from({ length: now.minute() }, (_, i) => i)])]
-            : BAD_MINUTES),
-        }
-      }}
-      {...rest}
-    />
+    <div>
+      <Space size={8} wrap style={{ display: 'flex' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, width: 28, flexShrink: 0 }}>开始</Typography.Text>
+        <DatePicker size={size} value={curStart} allowClear={false} format="YYYY-MM-DD"
+          disabledDate={(d) => (noPast ? !!d && d.isBefore(now.startOf('day')) : false)}
+          onChange={(d) => { if (d) setStart(d.startOf('day').add(curStart ? minOf(curStart) : minOf(fallbackStart), 'minute')) }} />
+        <Select size={size} style={{ width: wide }} placeholder="时间" showSearch
+          value={curStart ? minOf(curStart) : undefined}
+          // 输入「930」「9:30」都能筛到 —— 键盘党比点两下更快
+          filterOption={(input, opt) => (opt?.label ?? '').replace(':', '').includes(input.replace(':', ''))}
+          options={startOpts}
+          onChange={(m: number) => setStart(startDay.startOf('day').add(m, 'minute'))} />
+      </Space>
+
+      <Space size={8} wrap style={{ display: 'flex', marginTop: 8 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, width: 28, flexShrink: 0 }}>结束</Typography.Text>
+        <DatePicker size={size} value={curEnd} allowClear={false} format="YYYY-MM-DD"
+          disabledDate={(d) => !!d && !!curStart && d.isBefore(curStart.startOf('day'))}
+          onChange={(d) => { if (d) setEnd(d.startOf('day').add(curEnd ? minOf(curEnd) : minOf(startDay) + 60, 'minute')) }} />
+        <Select size={size} style={{ width: wide }} placeholder="时间" showSearch
+          value={curEnd ? minOf(curEnd) : undefined}
+          filterOption={(input, opt) => (opt?.label ?? '').replace(':', '').includes(input.replace(':', ''))}
+          options={endOpts}
+          optionRender={(o) => (
+            <Space size={8} style={{ display: 'flex' }}>
+              <span>{o.data.label}</span>
+              <span style={{ marginLeft: 'auto', color: '#8c8c8c', fontSize: 12 }}>{o.data.dur}</span>
+            </Space>
+          )}
+          onChange={(m: number) => setEnd(endDay.startOf('day').add(m, 'minute'))} />
+        {durMin !== null && durMin > 0 && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {fmtDur(durMin)}</Typography.Text>
+        )}
+      </Space>
+
+      {/* ★持续时长快捷★:点一下连结束那一列都不用开。
+          还没选开始时间时也能用 —— 那就从「下一个整点」起算。 */}
+      <Space size={4} wrap style={{ marginTop: 8 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, width: 28, flexShrink: 0 }}>持续</Typography.Text>
+        {DURATIONS.map((d) => (
+          <Button key={d.m} size="small" type={durMin === d.m ? 'primary' : 'default'}
+            onClick={() => setDuration(d.m)}>{d.label}</Button>
+        ))}
+      </Space>
+    </div>
   )
 }

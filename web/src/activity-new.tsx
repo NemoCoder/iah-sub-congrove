@@ -8,10 +8,9 @@
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
 import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import dayjs, { type Dayjs } from 'dayjs'
 import { api, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
-import { DURATIONS, QuarterRangePicker } from './time-range'
+import { TimeRangePicker } from './time-range'
 
 
 export function ActivityNewView({ me, onCreated, onCancel }: {
@@ -120,22 +119,6 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
     return out
   }, [me, pool])
 
-  /// 当前时长(分钟);用来把选中的那颗快捷按钮点亮。
-  const durMin = useMemo(() => range
-    ? Math.round((new Date(range[1]).getTime() - new Date(range[0]).getTime()) / 60000)
-    : null, [range])
-
-  /// 按时长定结束时间。★没有开始时间就用「下一个整点」★(腾讯会议也是这么兜的)。
-  /// ⚠ 必须**同时**写 Form 和 range state:setFieldValue 不会触发 picker 的 onChange,
-  /// 只写 Form 的话右栏忙闲图会一直停在旧时段(而它正是用来判断这个时段行不行的)。
-  const setDuration = (mins: number) => {
-    const cur = form.getFieldValue('range') as [Dayjs, Dayjs] | undefined
-    const s = cur?.[0] ?? dayjs().add(1, 'hour').startOf('hour')
-    const e = s.add(mins, 'minute')
-    form.setFieldValue('range', [s, e])
-    setRange([s.toISOString(), e.toISOString()])
-  }
-
   const cap = types.find((t) => t.id === typeId)
   // ⚠ 类型还没拉回来时**按最严的算**（两样都要）——先松后紧会让人填到一半突然多出必填项。
   const needRecorder = cap?.has_minutes ?? true
@@ -224,20 +207,11 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
         <Form.Item label="时间" required>
           <Form.Item name="range" noStyle rules={[{ required: true, message: '选时间' }]}>
             {/* ★不让选过去的时间★(2026-08-07 用户):`noPast` 打开日期与时刻两级限制。
-                后端另有 5 分钟容差的真闸(activities.rs)。粒度与免确认在 time-range.tsx 统一定义。 */}
-            <QuarterRangePicker noPast style={{ width: '100%' }}
+                后端另有 5 分钟容差的真闸(activities.rs)。
+                粒度、扁平时间列、持续时长快捷都在 time-range.tsx 里,三处共用。 */}
+            <TimeRangePicker noPast
               onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
           </Form.Item>
-          {/* ★持续时长快捷★(2026-08-09 用户,参考腾讯会议):点一下就把结束时间算出来。
-              ★还没选开始时间时也能用★ —— 那就默认从「下一个整点」起算,
-              这是最常见的意图(「现在建个一小时的会」),比逼人先去点日历少两步。 */}
-          <Space size={4} wrap style={{ marginTop: 8 }}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>持续</Typography.Text>
-            {DURATIONS.map((d) => (
-              <Button key={d.m} size="small" type={durMin === d.m ? 'primary' : 'default'}
-                onClick={() => setDuration(d.m)}>{d.label}</Button>
-            ))}
-          </Space>
         </Form.Item>
 
         <Form.Item
