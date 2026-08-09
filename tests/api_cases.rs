@@ -507,6 +507,27 @@ const CASES: &[Case] = &[
        "GET /api/me/transfers", "不回 —— 让人去接手一个已经不存在的项目是纯粹的噪音", ""),
     c!(deny "GET", "/api/me/transfers", "未登录看不了", "无会话", "GET /api/me/transfers", "401", ""),
 
+    // ── 等我整理的纪要(2026-08-10)──────────────────────────────────────
+    // 判据在 activities_owing_minutes 视图里,这几条用例正好把它的四个条件各钉一遍。
+    c!("GET", "/api/me/minutes-todo", "只列我当记录员的", "两场都开完了、纪要都没写:一场我是记录员、一场别人是",
+       "GET /api/me/minutes-todo", "只回我当记录员那场 —— 别人欠的账不进我的待办", ""),
+    c!("GET", "/api/me/minutes-todo", "★没有纪要这回事的类型不算★",
+       "我用自建类型(A3:has_minutes 恒 false)开了一场、已结束、关联了项目",
+       "GET /api/me/minutes-todo", "不回。这一条正是收进视图前 /api/me/stats 漏掉的判据:\
+        自建类型是「我自己的日程分类」,催它交纪要是纯噪声", ""),
+    c!("GET", "/api/me/minutes-todo", "会还没开完不催", "我是记录员,活动在未来",
+       "GET /api/me/minutes-todo", "不回 —— 会没开就催纪要,那时候根本无从写起", ""),
+    c!("GET", "/api/me/minutes-todo", "连草稿都没有也算欠,并标出来",
+       "我是记录员、已结束、activity_minutes 一行都没有",
+       "GET /api/me/minutes-todo", "回这一条且 has_draft=false —— 「连草稿都没建」比\
+        「草稿没写完」更该提醒,文案要能区分「去整理」与「接着写」", ""),
+    c!("GET", "/api/me/minutes-todo", "写完了(done)就退出待办", "我是记录员、已结束、纪要 status=done",
+       "GET /api/me/minutes-todo", "空数组 —— 待办要能被「做完」清掉,\
+        否则这张卡上永远挂着同一条,红点天天有就等于没有", ""),
+    c!("GET", "/api/me/minutes-todo", "取消掉的活动不算", "我是记录员、时间已过、活动 status=canceled",
+       "GET /api/me/minutes-todo", "不回 —— 没开的会没有纪要", ""),
+    c!(deny "GET", "/api/me/minutes-todo", "未登录看不了", "无会话", "GET /api/me/minutes-todo", "401", ""),
+
     // ── 站内信(M1 收口)──★钉的是「谁该收到、谁不该收到」★:
     // 该收没收 = 人不知道有会;不该收却收 = 收件箱被淹,真正要紧的那条被埋掉。两种错都致命。
     c!("POST", "/api/activities", "★建会即通知被约的人★", "我约了 A、B",
