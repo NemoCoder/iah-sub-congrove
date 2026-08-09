@@ -172,6 +172,10 @@ export type ActivityType = {
   needs_project: boolean
   /// 默认占不占忙闲（自建类型时唯一开放的开关）
   busy_default: boolean
+  /// ★能不能填过去的时间（补录）★（F0/F1，2026-08-09 liaoruili：
+  /// 「会议类型的活动只能发起未来的会议，其他类型可以后面补录」）。
+  /// 「会议」= false，其余（含全部自建类型）= true。
+  allow_past: boolean
 }
 
 /// 我的额度与已用量（ADR-0004）。★用量算我**名下所有项目**之和★，不是我上传的东西。

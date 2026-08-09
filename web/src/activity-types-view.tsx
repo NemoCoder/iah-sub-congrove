@@ -72,13 +72,17 @@ export default function ActivityTypesView({ me }: { me: string }) {
             },
           },
           {
-            title: '能力', width: 200,
-            render: (_, t) => (t.has_minutes || t.needs_project
+            title: '能力', width: 230,
+            // ★「只能排未来」也是一个能力位★(F0/F1,2026-08-09):它决定这类活动能不能补录,
+            // 用户在这一页就该看得出来「为什么建会议时日期选不到昨天」——
+            // 不标的话那个限制在界面上是没有出处的。
+            render: (_, t) => (t.has_minutes || t.needs_project || !t.allow_past
               ? <Space size={4}>
                   {t.has_minutes && <Tag color="blue">纪要</Tag>}
                   {t.needs_project && <Tag color="blue">须关联项目</Tag>}
+                  {!t.allow_past && <Tag color="orange">只能排未来</Tag>}
                 </Space>
-              : <span style={{ color: '#999' }}>简单型</span>),
+              : <span style={{ color: '#999' }}>简单型 · 可补录</span>),
           },
           {
             title: '', align: 'right' as const,
