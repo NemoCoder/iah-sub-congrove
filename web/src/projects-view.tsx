@@ -78,6 +78,8 @@ export function ProjectsView({ me, onOpenActivity }: {
   const [preview, setPreview] = useState<Item | null>(null)
   const [grantsOpen, setGrantsOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
+  /// 拖放进出的净深度(见拖放区注释):子元素冒泡制造的成对 leave/enter 靠它抵消,否则边框狂闪
+  const dragDepth = useRef(0)
   const [uploads, setUploads] = useState<UpTask[]>([])
   const [moving, setMoving] = useState<Item[] | null>(null) // 待移动的项(单个或批量)
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
@@ -562,10 +564,13 @@ export function ProjectsView({ me, onOpenActivity }: {
 
           {/* 拖拽落区:整张表都能接文件 */}
           <div
-            onDragOver={(e) => { e.preventDefault(); if (canEdit) setDragging(true) }}
-            onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
+            // 同 activity-upload.tsx:子元素冒泡会制造成对的 leave/enter,直接开关会狂闪。
+            // ★判据是「进出的净次数」★,归零才算真的离开。
+            onDragEnter={(e) => { e.preventDefault(); dragDepth.current += 1; if (canEdit) setDragging(true) }}
+            onDragOver={(e) => e.preventDefault()}
+            onDragLeave={() => { dragDepth.current -= 1; if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false) } }}
             onDrop={(e) => {
-              e.preventDefault(); setDragging(false)
+              e.preventDefault(); dragDepth.current = 0; setDragging(false)
               if (canEdit) uploadFiles(Array.from(e.dataTransfer.files).filter((f) => f.size > 0))
             }}
             style={{

@@ -133,15 +133,31 @@
    CON app_user_pkey                      PRIMARY KEY (username)
  TABLE audit_log
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('audit_log_id_seq'::regclass)
-@@ -47,21 +166,22 @@
-   COL  14 upload_fp              text                          
-   COL  15 upload_id              text                          
-   COL  16 upload_key             text                          
+@@ -41,27 +160,29 @@
+   COL   8 mime                   text                          
+   COL   9 sha256                 text                          
+   COL  10 sha_verified           boolean                        NOT NULL DEFAULT false
+-  COL  11 created_by             text                           NOT NULL
+-  COL  12 created_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL  13 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
+-  COL  14 upload_fp              text                          
+-  COL  15 upload_id              text                          
+-  COL  16 upload_key             text                          
 -  COL  17 meeting_id             bigint                        
-+  COL  17 activity_id            bigint                        
-   COL  18 is_recording           boolean                        NOT NULL DEFAULT false
-   COL  19 deleted_at             timestamp with time zone      
-   COL  20 deleted_by             text                          
+-  COL  18 is_recording           boolean                        NOT NULL DEFAULT false
+-  COL  19 deleted_at             timestamp with time zone      
+-  COL  20 deleted_by             text                          
++  COL  11 sha_declared_mismatch  boolean                        NOT NULL DEFAULT false
++  COL  12 created_by             text                           NOT NULL
++  COL  13 created_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL  14 updated_at             timestamp with time zone       NOT NULL DEFAULT now()
++  COL  15 upload_fp              text                          
++  COL  16 upload_id              text                          
++  COL  17 upload_key             text                          
++  COL  18 activity_id            bigint                        
++  COL  19 is_recording           boolean                        NOT NULL DEFAULT false
++  COL  20 deleted_at             timestamp with time zone      
++  COL  21 deleted_by             text                          
 +  CON items_activity_id_fkey             FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE SET NULL
    CON items_kind_check                   CHECK ((kind = ANY (ARRAY['folder'::text, 'doc'::text, 'file'::text, 'video'::text])))
 -  CON items_meeting_id_fkey              FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE SET NULL
@@ -159,7 +175,7 @@
  SEQ items_id_seq
  TABLE media_jobs
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('media_jobs_id_seq'::regclass)
-@@ -78,106 +198,6 @@
+@@ -78,106 +199,6 @@
    CON media_jobs_status_check            CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text])))
    IDX CREATE UNIQUE INDEX idx_media_jobs_active ON public.media_jobs USING btree (item_id) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))
  SEQ media_jobs_id_seq
@@ -266,7 +282,7 @@
  TABLE owner_transfers
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
    COL   2 project_id             bigint                         NOT NULL
-@@ -214,22 +234,22 @@
+@@ -214,22 +235,22 @@
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
    COL   2 name                   text                           NOT NULL
    COL   3 description            text                           NOT NULL DEFAULT ''::text
@@ -302,7 +318,7 @@
  SEQ projects_id_seq
  TABLE share_items
    COL   1 token                  text                           NOT NULL
-@@ -275,6 +295,9 @@
+@@ -275,6 +296,9 @@
    CON summaries_item_id_fkey             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON summaries_kind_check               CHECK ((kind = ANY (ARRAY['brief'::text, 'outline'::text, 'decisions'::text])))
    CON summaries_pkey                     PRIMARY KEY (item_id, kind)
@@ -312,7 +328,7 @@
  TABLE transcripts
    COL   1 item_id                bigint                         NOT NULL
    COL   2 text                   text                           NOT NULL
-@@ -286,3 +309,15 @@
+@@ -286,3 +310,15 @@
    COL   8 fine                   jsonb                         
    CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON transcripts_pkey                   PRIMARY KEY (item_id)

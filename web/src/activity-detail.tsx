@@ -550,7 +550,14 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
           读起来像**同一个控件被切成了两截**。它是这次发送的一个修饰语,不是一个独立输入,
           所以去掉边框、宽度按内容收,让描边框在这一小块里**只出现一次**。 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        {/* ⚠★下拉面板要比触发器宽★(2026-08-09 用户:「私聊谁谁已经看不清楚,再宽 1.5 倍」):
+            AntD 的下拉默认与触发器**等宽**,而触发器为了不喧宾夺主是按内容收窄的 ——
+            于是选项被截成「私聊 liaor…」「私聊（记…」,★恰恰把「私聊给谁」这个唯一有信息量的部分切掉了★。
+            `popupMatchSelectWidth={false}` 让面板按内容自己撑开,再给个下限;
+            触发器本身仍然窄(它只需要显示当前选中的那一项)。 */}
         <Select size="small" value={to} onChange={setTo} variant="borderless"
+          popupMatchSelectWidth={false}
+          styles={{ popup: { root: { minWidth: 260 } } }}
           style={{ flex: '0 1 auto', minWidth: 0, marginLeft: -8 }}
           options={[
             { value: 'public', label: '所有参会人' },

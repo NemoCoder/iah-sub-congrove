@@ -138,7 +138,10 @@ function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, vi
 }
 
 /// XHR 上传(fetch 至今无标准上传进度,对抗核查 §7.4b-5):onProgress 喂给 antd Upload 画进度条。
-export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void, ctl?: UploadCtl): Promise<void> {
+/// ★把响应体交出去★(2026-08-09):上传接口会告诉调用方「这份是完全重复的、没有新建行」
+/// (方案 C),而原来这里 `resolve()` 什么都不带 —— 调用方只能一律报「上传完成」,
+/// 而列表里并没有多出东西。**报成功却什么都没发生**比重复本身更让人困惑。
+export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void, ctl?: UploadCtl): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     if (ctl) ctl.xhr = xhr
@@ -147,7 +150,10 @@ export function xhrUpload(url: string, file: File, onProgress: (percent: number)
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)) }
     xhr.onload = () => {
       if (xhr.status === 401) { window.location.href = `/auth/login?return=${encodeURIComponent(window.location.pathname)}`; return }
-      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)) } catch { resolve(undefined) }
+        return
+      }
       else {
         // 后端 JSON 错误取 error 字段;axum 框架层的纯文本错误(如 query 解析失败)取原文,别只剩裸状态码。
         let msg = `${xhr.status}`

@@ -212,6 +212,18 @@ pub fn activity_folder_name(starts_at: chrono::DateTime<chrono::Utc>, title: &st
     format!("{} {}", local.format("%Y-%m-%d"), title.trim())
 }
 
+/// 重名时的下一个名字:`a.pdf` → `a (2).pdf` → `a (3).pdf`。★纯函数,单测够得着★。
+///
+/// ⚠ 扩展名要**留在最后**:`a (2).pdf` 而不是 `a.pdf (2)` —— 后者会让系统按扩展名认类型时失手,
+/// 而人也认不出那还是个 PDF。没有扩展名(如 `README`)就直接缀在后面。
+pub fn numbered_name(name: &str, n: u32) -> String {
+    match name.rfind('.') {
+        // 开头就是点的是隐藏文件(`.gitignore`),那个点不算扩展名分隔符
+        Some(i) if i > 0 => format!("{} ({}){}", &name[..i], n, &name[i..]),
+        _ => format!("{name} ({n})"),
+    }
+}
+
 async fn find_activity_folder(pool: &sqlx::PgPool, pid: i64, mid: i64) -> AppResult<Option<i64>> {
     Ok(sqlx::query_scalar(
         "SELECT id FROM items
@@ -992,6 +1004,50 @@ pub async fn upload(
                     }
                 }
                 let _ = state.storage.delete(&tmp_key).await;
+
+                // ★同名怎么办:分「完全重复」与「新版本」两种,它们的用户意图完全不同★
+                // (2026-08-09 liaoruili:「为啥可以上传两份一模一样的文件」,选了方案 C)。
+                //
+                // 盘上本来就只有一份(内容寻址),所以这不是空间问题 —— 是**人分不清哪个是哪个**,
+                // 「删哪个」变成猜谜。文件管理器不允许同目录重名,网盘也会问你「替换还是保留两份」。
+                //   · 同名 **且同 sha** = 误传了两次 → ★不建新行★,直接告诉他「已经有了」;
+                //   · 同名但内容不同 = 传了新版本 → 自动缀序号,两份都留着。
+                // ⚠ 判据必须放在**算完 sha 之后**:开传的那一刻还不知道内容一不一样。
+                let dup: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM items
+                      WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
+                        AND name = $3 AND sha256 = $4 AND id <> $5 AND deleted_at IS NULL LIMIT 1")
+                    .bind(pid).bind(parent).bind(&fname).bind(&sha).bind(iid)
+                    .fetch_optional(&state.pool).await?;
+                if let Some(exist) = dup {
+                    // 完全重复:回滚这一行。★对象不能删★ —— 它就是那份已存在文件正引用着的 blob。
+                    let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
+                    done.push(serde_json::json!({
+                        "id": exist, "name": fname, "sha256": sha, "size": total, "duplicate": true }));
+                    continue;
+                }
+                // 同名不同内容 → 找一个没被占的序号。上限 999 是防呆:真到那一步说明有人在刷。
+                let clash: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM items WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
+                        AND name = $3 AND id <> $4 AND deleted_at IS NULL LIMIT 1")
+                    .bind(pid).bind(parent).bind(&fname).bind(iid).fetch_optional(&state.pool).await?;
+                let mut fname = fname.clone();
+                if clash.is_some() {
+                    for n in 2..1000u32 {
+                        let cand = numbered_name(&fname, n);
+                        let taken: Option<i64> = sqlx::query_scalar(
+                            "SELECT id FROM items WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
+                                AND name = $3 AND deleted_at IS NULL LIMIT 1")
+                            .bind(pid).bind(parent).bind(&cand).fetch_optional(&state.pool).await?;
+                        if taken.is_none() {
+                            sqlx::query("UPDATE items SET name = $2 WHERE id = $1").bind(iid).bind(&cand)
+                                .execute(&state.pool).await?;
+                            fname = cand;
+                            break;
+                        }
+                    }
+                }
+
                 // ★收尾复核配额★:开传前那次 used 是快照,同一空间并发上传各自都会读到它,
                 // 两个 9GiB 能一起过 10GiB 的闸。按落地时的真实总量再判一次,超了回滚。
                 let (q2, used2) = owner_quota_used(&state.pool, &owner).await?;
@@ -1244,5 +1300,16 @@ mod tests {
     fn 标题两头空白被裁掉() {
         let t = chrono::Utc.with_ymd_and_hms(2026, 8, 9, 2, 0, 0).unwrap();
         assert_eq!(activity_folder_name(t, "  组会  "), "2026-08-09 组会");
+    }
+
+    // ══════ 重名的两种情形(2026-08-09 liaoruili 选的方案 C)══════
+    #[test]
+    fn 重名加序号时扩展名留在最后() {
+        // ★不能写成 `a.pdf (2)`★:那样按扩展名认类型会失手,人也认不出它还是个 PDF
+        assert_eq!(numbered_name("Another day.pdf", 2), "Another day (2).pdf");
+        assert_eq!(numbered_name("a.tar.gz", 3), "a.tar (3).gz", "只认最后一个点");
+        assert_eq!(numbered_name("README", 2), "README (2)", "没有扩展名就直接缀");
+        // 开头的点是隐藏文件,不是扩展名分隔符 —— 否则会得到 ` (2).gitignore`
+        assert_eq!(numbered_name(".gitignore", 2), ".gitignore (2)");
     }
 }
