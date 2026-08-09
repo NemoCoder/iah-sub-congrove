@@ -8,7 +8,7 @@
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
 import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
+import { api, isMaterials, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
 import { TimeRangePicker } from './time-range'
 
@@ -37,8 +37,10 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   useEffect(() => {
     // ★只列我能建会的项目★:后端要求每个关联项目 ≥editor,前端先过滤掉 viewer 的,
     // 免得选了才被拒(选项里放一个必然失败的选择 = 引导人犯错)。
+    // ★「我的活动材料」不进这个下拉★(PRD §J1):它是个人存档区不是协作项目。
+    // 后端也拒(材料区在 require_role 上全只读,关联项目要 ≥editor),这里只是别引导人去点。
     api<Project[]>('/api/projects')
-      .then((ps) => setProjects(ps.filter((p) => p.my_role === 'editor' || p.my_role === 'admin')))
+      .then((ps) => setProjects(ps.filter((p) => !isMaterials(p) && (p.my_role === 'editor' || p.my_role === 'admin'))))
       .catch(() => setProjects([]))
   }, [])
 

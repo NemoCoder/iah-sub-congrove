@@ -312,6 +312,18 @@ const CASES: &[Case] = &[
        "我是参会人,不是发起人", "POST .../materials-project",
        "403 —— 材料区只有 owner 有角色(ADR-0005 单点否决),这里先说清楚,\
         免得他拿着 pid 去 upload 时收到一个费解的 403", "ADR-0005"),
+    c!(deny "POST", "/api/projects/{id}/upload", "★材料区不收散文件★",
+       "pid 是我的「我的活动材料」", "POST /upload(不带 activity_id)",
+       "403 —— 材料区在 require_role 的写闸上一律只读(PRD §J1);\
+        带 activity_id 的才走 require_material_write 放行。★这条不是清单里的一项,\
+        是收口在 require_role 的一道闸★:以后新增的写接口自动被挡", "J1"),
+    c!(deny "POST", "/api/projects/{id}/items", "材料区里不能建文件夹/文档",
+       "pid 是我的「我的活动材料」", "POST {kind:'folder',name:'x'}",
+       "403;§J0b 的那些「文件夹」是活动自己带的,不是人建的", "J1"),
+    c!(deny "PUT", "/api/projects/{id}", "★材料区连主人也改不了名★",
+       "pid 是我的「我的活动材料」", "PUT {name:'随便'}",
+       "403 —— decide_owner 对 kind='materials' 一律 Deny(2026-08-09 收严:原来主人放行)。\
+        改名/拉成员/转移主持人/归档/删项目在 PRD §J1 那张表里全是 ❌", "J1"),
     c!(deny "GET", "/api/activities/{id}/items", "★超管读不到别人材料区里的东西★",
        "我是超管;活动零关联项目,材料在发起人的材料区", "GET .../items",
        "403 —— 超管短路这一条限定在「有关联项目」的活动上(PRD §J1c):\

@@ -854,7 +854,14 @@ pub async fn upload(
     Query(q): Query<UploadQuery>,
     mut mp: Multipart,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    // ★材料区在 require_role 上是全只读的★(PRD §J1),但活动材料必须传得进去 ——
+    // 所以带 activity_id 的上传走 `require_material_write`(材料区认「这是我自己的区」,
+    // 普通项目照旧 ≥editor);不带 activity_id 的照常走 require_role,于是
+    // 「直接往材料区里传散文件」自动被挡住,不必再写一句判断。
+    match q.activity_id {
+        Some(_) => crate::perm::require_material_write(&state.pool, &id, pid).await?,
+        None => { require_role(&state.pool, &id, pid, Role::Editor).await?; }
+    }
     check_parent(&state.pool, pid, q.parent_id).await?;
     let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used >= quota {

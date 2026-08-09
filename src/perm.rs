@@ -81,9 +81,14 @@ pub enum OwnerVerdict {
 
 pub fn decide_owner(kind: &str, owner: &str, me: Option<&str>) -> OwnerVerdict {
     let is_owner = Some(owner) == me;
-    // ★材料区:除 owner 外谁都不行,超管也不行★(ADR-0005)。顺序要紧 ——
-    // 放在超管之后等于没挂,那正是评审抓到的坑。
-    if kind == "materials" && !is_owner {
+    // ★材料区:**谁都不行**,连它自己的主人也不行★(ADR-0005 + PRD §J1,2026-08-09 收严)。
+    //
+    // 原来是 `kind == "materials" && !is_owner` —— 别人拦住了,主人放行。
+    // 可 require_owner 管的是**改名 / 拉成员 / 转移主持人 / 归档 / 删项目**这一组,
+    // 而 PRD §J1 那张表里这些对材料区**全是 ❌**:它是系统建的存档区,不是第二个工作区。
+    // 「主人可以把自己的材料区转让给别人」这种事根本不该存在(转移会把配额一起带走)。
+    // 顺序要紧 —— 放在超管之后等于没挂,那正是评审抓到的坑。
+    if kind == "materials" {
         return OwnerVerdict::Deny;
     }
     if is_owner { OwnerVerdict::Allow } else { OwnerVerdict::AskSuper }
@@ -194,19 +199,53 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
     //   · `require_super`(超管面:配额等)—— 平台资源治理不该被项目状态挡住;
     //   · 一切只读路径(need = Viewer)—— 归档就是为了以后还能查。
     if need >= Role::Editor {
-        let archived: Option<bool> = sqlx::query_scalar(
-            "SELECT archived_at IS NOT NULL FROM projects WHERE id = $1 AND deleted_at IS NULL",
+        let row: Option<(bool, String)> = sqlx::query_as(
+            "SELECT archived_at IS NOT NULL, kind FROM projects WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(project_id)
         .fetch_optional(pool)
         .await?;
-        if archived == Some(true) {
-            return Err(AppError::Archived(
-                "这个项目已归档,是只读的。要继续往里加东西,先让主持人把它恢复为进行中。".into(),
-            ));
+        if let Some((archived, kind)) = row {
+            if archived {
+                return Err(AppError::Archived(
+                    "这个项目已归档,是只读的。要继续往里加东西,先让主持人把它恢复为进行中。".into(),
+                ));
+            }
+            // ★材料区对所有写路径一律只读★(PRD §J1,2026-08-09 liaoruili:「只读的」)。
+            //
+            // ★挂在这一句上,而不是逐个 handler 加判断★ —— 与上面归档那道闸同一个理由,
+            // 也正是 ADR-0005 说的「判据必须是白名单不是清单」:以项目为作用域的入口有
+            // 12 个 /projects/{id}* + 16 个 /items/{id}*,逐条打勾一定会漏一条,
+            // 而收口在这里,**以后新增的任何写接口都自动被挡住**。
+            //
+            // 唯一的两个例外(活动材料的上传与删除)不走这里,走 `require_material_write`
+            // —— 例外是**显式的两处**,而不是「默认放行、逐个去堵」。
+            if kind == "materials" {
+                return Err(AppError::Forbidden);
+            }
         }
     }
     Ok(role)
+}
+
+/// 活动材料的写入(上传 / 删除)—— ★材料区里唯一放行的写路径★。
+///
+/// 普通项目照常要 ≥editor;而「我的活动材料」在 `require_role` 那道闸上是**全只读**的,
+/// 所以那两条正当路径必须从这里过:判据是「这是我自己的材料区」,不是角色档位。
+///
+/// ⚠★为什么不给材料区一个更高的角色了事★:那样 12+16 个项目作用域入口就又全开了。
+/// 宁可在这里写死两个调用点 —— 例外看得见、数得清,而漏掉的清单项看不见。
+pub async fn require_material_write(pool: &PgPool, id: &Identity, project_id: i64) -> AppResult<()> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT kind, owner FROM projects WHERE id = $1 AND deleted_at IS NULL")
+        .bind(project_id).fetch_optional(pool).await?;
+    let Some((kind, owner)) = row else { return Err(AppError::NotFound) };
+    if kind != "materials" {
+        require_role(pool, id, project_id, Role::Editor).await?;
+        return Ok(());
+    }
+    // 材料区:只认主人。别人连「这个项目存在」都不该知道(与 effective_role 的 BLOCK 同口径 → 404)
+    if id.username.as_deref() == Some(owner.as_str()) { Ok(()) } else { Err(AppError::NotFound) }
 }
 
 /// 我能以什么身份看这场活动。★这是活动模块的唯一推导★,别在 handler 里各自拼 SQL。
@@ -441,8 +480,9 @@ mod tests {
     fn 材料区的判据排在超管之前() {
         // 别人的材料区 → ★Deny,而且**不必再问超管**★
         assert_eq!(decide_owner("materials", "alice", Some("bob")), OwnerVerdict::Deny);
-        // 自己的材料区 → 放行
-        assert_eq!(decide_owner("materials", "alice", Some("alice")), OwnerVerdict::Allow);
+        // ★自己的材料区也 Deny★(2026-08-09 收严):require_owner 管的是改名/拉成员/
+        // 转移主持人/归档/删项目,PRD §J1 里这些对材料区全是 ❌ —— 它是系统建的存档区。
+        assert_eq!(decide_owner("materials", "alice", Some("alice")), OwnerVerdict::Deny);
     }
 
     #[test]

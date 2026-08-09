@@ -32,7 +32,7 @@ import { fileSha256 } from './sha256'
 import { effectiveScope, showScopeSwitch } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
-import { api, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
+import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
 /// 「无权限」是**没有任何授权**的第四态,库里不存它——`effective = null` 即是。
@@ -98,10 +98,18 @@ export function ProjectsView({ me }: { me: Me | null }) {
   /// ★归档项目是只读的(D17)★:后端会 409 拒绝一切写操作,前端就不该把按钮亮着 ——
   /// 横幅写着「不能再上传」、按钮却还能点,等于在骗人点一次才告诉他不行。
   /// ⚠ 这不是安全边界(真闸在后端 require_role),只是别让界面说谎。
-  const readOnly = !!cur?.archived_at
+  ///
+  /// ★「我的活动材料」也走同一个只读判据★(2026-08-09 liaoruili:「只读的」):
+  /// 它是系统给每人建的存档区(PRD §J),材料的增删都回到那条活动里做。
+  /// 真闸在后端 —— `require_role` 里 need ≥ Editor 那一段对 kind='materials' 一律 Forbidden,
+  /// 与归档那道闸并排(见 perm.rs)。这里只是别把按钮亮着骗人点。
+  const isMat = isMaterials(cur)
+  const readOnly = !!cur?.archived_at || isMat
   const canEdit = (cur?.my_role === 'editor' || cur?.my_role === 'admin') && !readOnly
   /// 只读时仍然显示的工具栏(回收站是**读**,归档项目照样该能查看已删内容)
-  const showToolbar = cur?.my_role === 'editor' || cur?.my_role === 'admin'
+  /// ⚠ 材料区连回收站都不给:J1b-2 的「材料区回收站」是 M1 的活,后端现在会拒 ——
+  ///   ★亮一个必然 403 的按钮比没有按钮更糟★。
+  const showToolbar = (cur?.my_role === 'editor' || cur?.my_role === 'admin') && !isMat
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
 
   /// 排序(2026-08-04 用户要求)。**文件夹恒在前**,排序只在同类之间比——网盘/资源管理器都是这个惯例,
@@ -416,8 +424,10 @@ export function ProjectsView({ me }: { me: Me | null }) {
             >
               {/* title:名字再长也能悬停看全 —— 截断是布局的妥协,不该让信息真的丢掉 */}
               <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }} title={s.name}>{s.name}</Typography.Text>
-              {s.my_role && ROLE_TAG[s.my_role]}
-              {s.my_role === 'admin' && (
+              {/* ★材料区标「系统 · 只读」而不是角色★:它不是「我在这个项目里是管理员」,
+                  它是系统给我的一块存档区 —— 标成「管理员」会让人以为能拉人、能改名。 */}
+              {isMaterials(s) ? <Tag color="gold">系统 · 只读</Tag> : s.my_role && ROLE_TAG[s.my_role]}
+              {s.my_role === 'admin' && !isMaterials(s) && (
                 <Dropdown menu={spaceMenu(s)} trigger={['click']}>
                   <Button type="text" size="small" onClick={(e) => e.stopPropagation()} style={{ marginLeft: 2 }}>⋯</Button>
                 </Dropdown>
@@ -440,6 +450,7 @@ export function ProjectsView({ me }: { me: Me | null }) {
                 ]}
               />
               {cur.archived_at && <Tag color="default">已归档 · 只读</Tag>}
+              {isMat && <Tag color="gold">系统 · 只读</Tag>}
             </AntSpace>
           }
           extra={
@@ -464,6 +475,12 @@ export function ProjectsView({ me }: { me: Me | null }) {
               状态清楚、入口没了,不必再写一段话解释(2026-08-07 用户:这种啰嗦的说明删掉)。 */}
           {/* 内容操作工具栏(editor+):只有「在项目里干活」的动作,没有项目管理项。
               ★归档时只留「回收站」★——它是读操作,存档项目照样该能查看已删内容。 */}
+          {/* ★材料区要说清「为什么没有上传按钮」★:一个只读的文件页如果不解释,
+              人只会以为是坏了。一句话给出去处(回那条活动),不写成一整段说明。 */}
+          {isMat && (
+            <Alert type="info" showIcon style={{ marginBottom: 10 }}
+              message="不关联项目的个人活动，材料落在这里。这里是只读的——加材料、删材料都回到那条活动里做。" />
+          )}
           {showToolbar && (
             <AntSpace style={{ marginBottom: 10 }} wrap>
               {!readOnly && (
@@ -650,6 +667,9 @@ export function ProjectsView({ me }: { me: Me | null }) {
           <TrashDrawer space={cur} open={trashOpen} onClose={() => setTrashOpen(false)} onChanged={refresh} />
               </>),
             },
+            // ★材料区只有「文档」一个 tab★:成员(只有我一个)、活动(它不关联活动,
+            // 是活动的材料落到它这儿)、设置(改名/归档/删除后端全拒)——三个都是空话。
+            ...(isMat ? [] : [
             {
               key: 'members', label: '成员',
               children: <MembersModal key={`m${cur.id}`} space={cur} me={me} open onClose={() => {}}
@@ -662,7 +682,7 @@ export function ProjectsView({ me }: { me: Me | null }) {
             {
               key: 'settings', label: '设置',
               children: <ProjectSettings space={cur} onChanged={loadProjects} menu={spaceMenu(cur)} />,
-            },
+            }]),
           ]} />
         </Card>
       ) : (

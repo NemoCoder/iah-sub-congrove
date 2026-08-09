@@ -33,6 +33,10 @@ pub struct ProjectRow {
     /// 归档时间;非空 = ★只读存档★(D17)。前端据此隐藏写入入口并显示只读横幅。
     #[sqlx(default)]
     pub archived_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `team` = 普通项目;`materials` = ★「我的活动材料」,系统建的只读存档区★(ADR-0005)。
+    /// 前端据它藏掉全部写入口并打「系统·只读」标 —— 真闸在 perm.rs,这里只管界面别给假按钮。
+    #[sqlx(default)]
+    pub kind: String,
 }
 
 /// 校验 username 是平台注册用户(加成员时用):
@@ -87,7 +91,9 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
         let mut rows: Vec<ProjectRow> =
             // ★超管也看不到别人的材料区★(PRD §J1c):它里面是体检报告、私人录音这类东西。
             // 超管仍看得到「这个人占了多少 GB」(配额页另走 usage),但看不到项目名之外的任何东西。
-            sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at \
+            // ⚠ 超管**自己的**材料区在下面那条分支里(超管也是人),这里滤掉的是全部 ——
+            //   超管面这个列表是「治理视角」,自己的存档区不该混在里面。
+            sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at, kind \
                             FROM projects WHERE deleted_at IS NULL AND kind <> 'materials' \
                             ORDER BY archived_at NULLS FIRST, id")
                 .fetch_all(&state.pool)
@@ -103,23 +109,30 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     // ★排序:进行中在前,归档的沉到后面★(D17)——列表默认是「我手头的活」,
     // 归档的还在同一份数据里(前端可切换筛选),但不该抢占视线。
     type Row = (i64, String, String, String, chrono::DateTime<chrono::Utc>, bool, String, String,
-                Option<chrono::DateTime<chrono::Utc>>);
+                Option<chrono::DateTime<chrono::Utc>>, String);
     let rows: Vec<Row> = sqlx::query_as(
-        // ★材料区不出现在项目列表里★(PRD §J1):它不是第二个工作区,而且列进来就意味着
-        // 「关联项目」下拉里也会冒出它 —— 那等于把个人存档区当协作项目用。
-        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at
+        // ★材料区**要**出现在这个列表里,排在最后★(2026-08-09 liaoruili:「在项目 tab
+        // 里面不是应该有个文件夹吗?只读的」——改判了 PRD §J1「不出现在项目列表里」那一行)。
+        //
+        // 理由是原来那句话解决不了「东西传进去了,人找不到」:PRD §J0b 画的那个页面属于 M1,
+        // 在它做出来之前,材料区是一个**只能写不能看**的黑洞。
+        // 而 §J1 真正要防的是「把个人存档区当协作项目用」——那由**只读**(perm.rs 的写闸)
+        // 与「关联项目下拉里不列它」来保证,不必靠藏起来。
+        //
+        // ⚠ `kind` 一并回给前端:它决定前端要不要藏掉全部写入口、要不要打「系统·只读」标。
+        "SELECT s.id, s.name, s.description, s.created_by, s.created_at, s.no_download, s.hotwords, g.role, s.archived_at, s.kind
            FROM projects s JOIN project_members g ON g.project_id = s.id AND g.username = $1
-          WHERE s.deleted_at IS NULL AND s.kind <> 'materials'
-          ORDER BY s.archived_at NULLS FIRST, s.id",
+          WHERE s.deleted_at IS NULL
+          ORDER BY (s.kind = 'materials'), s.archived_at NULLS FIRST, s.id",
     )
     .bind(username)
     .fetch_all(&state.pool)
     .await?;
     // 一个人在一个项目里只有一行,不再需要跨行合并取 max。
     Ok(Json(rows.into_iter()
-        .map(|(pid, name, description, created_by, created_at, no_download, hotwords, role, archived_at)| ProjectRow {
+        .map(|(pid, name, description, created_by, created_at, no_download, hotwords, role, archived_at, kind)| ProjectRow {
             id: pid, name, description, created_by, created_at, no_download, hotwords,
-            my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0), archived_at,
+            my_role: Role::parse(&role), used_bytes: usage.get(&pid).copied().unwrap_or(0), archived_at, kind,
         }).collect()))
 }
 
