@@ -104,6 +104,9 @@ export type Activity = {
   /// 会后补录的实际时长(分钟)。★D5 三级回退的第 2 级★:录制 > **手工** > 排程。
   /// null = 没填过 —— 统计会退到排程时长,而排程常常离谱(排 2 小时、20 分钟散会)。
   actual_minutes?: number | null
+  /// 这一场提前多少分钟提醒(PRD F3)。★三态★:null=跟随个人默认 / 0=这场不提醒 / >0=提前这么多。
+  /// 值域与下拉选项的唯一真相源在 remind-poll.tsx 的 REMIND_OPTIONS。
+  remind_minutes?: number | null
   /// 活动粒度的材料策略(PRD 6.3.2)。★与项目级叠加不是覆盖★:两处任一禁了就禁。
   no_download?: boolean
   no_share?: boolean

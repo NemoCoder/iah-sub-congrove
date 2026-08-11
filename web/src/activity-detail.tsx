@@ -11,6 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
+import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
@@ -246,6 +247,16 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
+              // ★提醒摆在这里而不是收进某个设置弹窗★:它是「这一场」的属性,
+              // 和地点/线上链接同级;藏起来的结果就是没人知道它可以改。
+              // ⚠ 改这一项**不清 reminded_at**(后端 ActivityPatch 头注):
+              //   「提前 15 分」改成「提前 30 分」时,如果 15 分钟那条已经发过了,
+              //   清了就会再发一遍 —— 而人已经知道这场会了。
+              ...(!canceled && d.can_edit ? [{
+                key: 'rm', label: '提醒',
+                children: <RemindSelect value={m.remind_minutes}
+                  onChange={(v) => patch({ remind_minutes: v })} style={{ width: 180 }} />,
+              }] : []),
               // ★只在会开完之后才出现★(D5 第 2 级):会还没开就问「实际开了多久」是荒谬的,
               // 而且那一栏摆在那里只会让人以为要预填。
               ...(new Date(m.ends_at).getTime() < Date.now() ? [{

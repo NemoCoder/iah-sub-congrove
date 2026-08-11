@@ -119,7 +119,8 @@ pub const APIS: &[Api] = &[
          "建活动。★校验全按类型的能力位走,没有一条是写死的★(ADR-0002):
           needs_project → 关联项目必填 / has_minutes → 记录员必填(D14) /
           allow_past=false → 只能排未来(「会议」,留 5 分钟容差,F0)。
-          ⚠ 这行原文写的是「必须关联至少一个项目」——那是 ADR-0002 之前的规则,已过期",
+          ⚠ 这行原文写的是「必须关联至少一个项目」——那是 ADR-0002 之前的规则,已过期。
+          可选 remind_minutes:不传=跟随个人默认 / 0=★这场不提醒★ / >0=提前这么多分钟(PRD F3)",
          "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
     api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
          "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
@@ -203,6 +204,11 @@ pub const APIS: &[Api] = &[
          "等我整理的纪要(喂给「待我处理」卡)。★判据走 activities_owing_minutes 视图★——\
           与 /api/me/stats 的「待写纪要」同源,免得两份判据分叉(此前 stats 那份漏了 has_minutes,\
           会把自建类型的活动也算成欠纪要)。不设时间下限:欠着的纪要不会因为放久了就不欠", ""),
+    api!("GET", "/api/me/reminders", "活动", "登录",
+         "页面内提醒弹窗的数据源。★since 用**服务端**时间★:响应带 now,前端下次原样送回 ——\
+          用客户端 Date.now() 的话,浏览器时钟快几秒就永远查不到刚发的提醒、慢几秒则每轮重弹同一条,\
+          而两种偏差都无声无息。不带 since 时回空列表(首轮只用来对时),否则一进页面就被早已开完的会糊脸",
+         "since(可选,上轮返回的 now)"),
     api!("POST", "/api/me/unread/read", "活动", "登录",
          "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
           后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),

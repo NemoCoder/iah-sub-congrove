@@ -10,6 +10,7 @@ import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch,
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, isMaterials, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
+import { RemindSelect } from './remind-poll'
 import { TimeRangePicker } from './time-range'
 
 
@@ -24,6 +25,9 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   const [found, setFound] = useState<UserOpt[]>([])
   const [busy, setBusy] = useState(false)
   const [pub, setPub] = useState(false)
+  /// 单场提醒（PRD F3）。★初值 null = 跟随个人默认★，不是「不提醒」——
+  /// 大多数人不会动这一项，默认必须是「照我平时的习惯办」。
+  const [remind, setRemind] = useState<number | null>(null)
   const [projOpen, setProjOpen] = useState(false)
   /// ★参会人与时间提到组件级★:右栏的 chips 与忙闲图都要用它们,
   /// 留在 Form 内部的话右栏读不到(原型就是左表单/右面板并排)。
@@ -164,6 +168,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           location: v.location ?? '',
           online_url: v.online_url ?? '',
           visibility: pub ? 'public' : 'private',
+          remind_minutes: remind,
         }),
       })
       message.success('活动已创建')
@@ -292,6 +297,12 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             后一句当年是 PRD 专门为「公开」这个词的歧义加的 —— 现在按用户要求去掉,
             **这条歧义的兜底只剩后端**(材料权限一律走项目成员身份,与 visibility 无关)。
             记在这儿,免得下一个人以为是漏写的又给加回来。 */}
+        {/* ★放在「公开活动」之前★：提醒是发起每一场都会瞄一眼的东西，
+            而公开与否偶尔才改。表单顺序应当按**看它的频率**排，不是按实现顺序。 */}
+        <Form.Item label="提醒我">
+          <RemindSelect value={remind} onChange={setRemind} size="middle" style={{ width: 200 }} />
+        </Form.Item>
+
         <Form.Item label="公开活动">
           <Switch checked={pub} onChange={setPub} />
         </Form.Item>

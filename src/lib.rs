@@ -11,6 +11,7 @@ pub mod db;
 pub mod error;
 pub mod http;
 pub mod notify;
+pub mod remind;
 pub mod media_ai;
 pub mod perm;
 pub mod registry;
@@ -115,6 +116,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 录屏转写+纪要 worker(docs/VIDEO-SUMMARY.md P1):任务态在 PG,重启自动续跑。
     tokio::spawn(media_ai::run(state.clone()));
+    // 活动提醒(PRD F2/F3)。★本仓第一个「没有请求、到点就得发生」的循环★ ——
+    // 状态落 PG、去重靠行锁,理由见 remind.rs 头注。
+    tokio::spawn(remind::run(state.clone()));
 
     let app = http::build_router(state);
     let listener = TcpListener::bind(&cfg.bind_addr).await?;
