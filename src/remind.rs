@@ -39,6 +39,22 @@ const DEFAULT_REMIND_MIN: i32 = 15;
 /// 而 60 秒会让「提前 5 分钟」这一档的相对误差到 20%。
 const TICK_SEC: u64 = 30;
 
+/// 把分钟数说成人话。
+///
+/// ⚠★2026-08-12 liaoruili 收到真站内信时当场看出来的★：原来是直接 `{mins} 分钟`，
+/// 于是「提前 1 天」那一档发出去的是「**将于 1440 分钟后开始**」——
+/// 数字本身没错，但没有人会去心算 1440 分钟是多久。
+/// ★存储用分钟是对的（一个单位、好比较、好 COALESCE），但**呈现**不该跟着存储走。★
+/// 这正是 CODE-QUALITY 里「易错值」那条的另一面：不只是别把秒当毫秒，
+/// 还包括别把内部表示直接端给人看。
+fn 人话时长(mins: i32) -> String {
+    match mins {
+        m if m % 1440 == 0 => format!("{} 天", m / 1440),
+        m if m % 60 == 0 => format!("{} 小时", m / 60),
+        m => format!("{} 分钟", m),
+    }
+}
+
 /// 后台循环。挂法与 `media_ai::run` 一致（`lib.rs` 里 `tokio::spawn`）。
 pub async fn run(state: AppState) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(TICK_SEC));
@@ -106,8 +122,8 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
 
     for (mid, user, title, starts_at, mins) in &due {
         let body = format!(
-            "{} 将于 {} 分钟后开始（{}）。",
-            title, mins,
+            "{} 将于 {}后开始（{}）。",
+            title, 人话时长(*mins),
             starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).format("%m-%d %H:%M"),
         );
         crate::notify::notify_activity(state, *mid, std::slice::from_ref(user), "活动即将开始", &body).await;
