@@ -4,7 +4,7 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
-const WS = process.env.PW_WS ?? 'ws://172.20.0.14:9333/acf3729be085cb1c063b8a33b2a87794'
+const WS = process.env.PW_WS ?? 'ws://172.20.0.14:9333/congrove'
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 if (!KEY) { console.error('缺 IAH_E2E_KEY'); process.exit(2) }
