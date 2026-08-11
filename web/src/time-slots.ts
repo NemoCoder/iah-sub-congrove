@@ -15,10 +15,42 @@ export const SLOTS_PER_DAY = (24 * 60) / STEP_MIN
 
 /// 持续时长快捷。★先定「开多久」再算结束时刻★ ——
 /// 人脑里想的是「开一小时」,不是「10:00 到 11:00」。
+/// ⚠ 2026-08-11 补上 15 分钟档(PRD G1 列的是 15/30/1h/1.5h/2h/3h,此前少了最短那档)——
+///   站会、答疑这类一刻钟的事没有快捷键,反而是最该有的:它越短,手填结束时间越不划算。
 export const DURATIONS: { m: number; label: string }[] = [
-  { m: 30, label: '30 分钟' }, { m: 60, label: '1 小时' },
+  { m: 15, label: '15 分钟' }, { m: 30, label: '30 分钟' }, { m: 60, label: '1 小时' },
   { m: 90, label: '1.5 小时' }, { m: 120, label: '2 小时' }, { m: 180, label: '3 小时' },
 ]
+
+/// 当前时长落在哪个快捷档上;不在任何一档 = 「自定义」(PRD G1 的双向绑定)。
+/// ★做成纯函数是为了能单测★:双向绑定最容易错在边界(正好 15 分、0、负数、跨天几千分钟),
+/// 而这些用界面点不出来。
+export function matchDuration(mins: number | null): { m: number; label: string } | null {
+  if (mins === null || mins <= 0) return null
+  return DURATIONS.find((d) => d.m === mins) ?? null
+}
+
+/// 默认开始时刻(PRD G0)。★取不取整由**类型**决定,不写死★ ——
+///
+/// ⚠ 2026-08-11:此前恒为「下一个整点」,两类活动都不合适 ——
+///   · 会议:11:00 是对的,但从 10:05 出发要跳到 11:00,白等了 55 分钟;
+///   · 个人记录:「我刚做完、现在记一笔」的真实时刻是 15:37,取整反而要人手动改回去。
+///
+/// PRD 给的理由是★「参会人看到 15:37 会以为发起人填错了」★ —— 即**取整是为了别人看着不别扭**。
+/// 所以判据用 `busy_default`(这类活动默不默认**影响别人**),不是 `has_minutes`(有没有纪要):
+/// 后者只是碰巧在两个预置类型上同向,而前者才是取整这件事的**理由本身**。
+/// 副作用也是对的 —— 自建一个「组内 standup」并勾了占忙闲,它同样取整,因为别人确实会看到。
+///
+/// `stepMin` 为 0 或负 = 不取整(返回原时刻)。向上取整:15:37 → 15:45;15:45 → 15:45(已经在格上不动)。
+export function defaultStart(now: Date, roundTo = 0): Date {
+  const d = new Date(now)
+  d.setSeconds(0, 0)
+  if (roundTo <= 0) return d
+  const m = d.getHours() * 60 + d.getMinutes()
+  const up = Math.ceil(m / roundTo) * roundTo
+  d.setHours(0, 0, 0, 0)
+  return new Date(d.getTime() + up * 60_000)
+}
 
 /// 分钟偏移 → `HH:mm`
 export function hhmm(mins: number): string {

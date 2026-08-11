@@ -229,7 +229,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
                 在此之前这里写死 `noPast` —— 于是「昨天下午改论文改了 3 小时」这种正当的补录
                 在界面上根本选不了日期。后端有真闸(activity_types.rs 的 check_past,带 5 分钟容差)。
                 粒度、扁平时间列、持续时长快捷都在 time-range.tsx 里,三处共用。 */}
-            <TimeRangePicker noPast={!allowPast}
+            <TimeRangePicker noPast={!allowPast} roundStart={!!cap?.busy_default}
               onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
           </Form.Item>
         </Form.Item>
