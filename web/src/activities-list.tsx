@@ -54,9 +54,15 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
 
   const rows = useMemo(() => {
     const k = kw.trim().toLowerCase()
+    // ⚠★「已结束」只归「已结束」那个 tab★（2026-08-11 liaoruili：
+    //   「左边已经有专门已结束的 tab，为啥下面还有已结束？以后这不堆到一起了吗」）。
+    //   原来 joined/mine 两个 tab **完全不按时间过滤**，下面再分成「即将进行/已结束」两组渲染 ——
+    //   于是那个 tab 的存在意义被架空，而「已结束」那一组★只增不减★：
+    //   半年之后打开这一页，上面两条有用的，下面几百条历史，人得先滚过全部历史才看得完今天。
+    //   ★列表页的用途是「我接下来要干什么」，历史归历史那一格。★
     return all
-      .filter((m) => (tab === 'mine' ? m.organizer === me?.username
-        : tab === 'past' ? new Date(m.ends_at).getTime() < now : true))
+      .filter((m) => (tab === 'past' ? new Date(m.ends_at).getTime() < now
+        : new Date(m.ends_at).getTime() >= now && (tab !== 'mine' || m.organizer === me?.username)))
       .filter((m) => proj === 'all' || (m.projects ?? []).some((p) => p.id === proj))
       .filter((m) => !k || m.title.toLowerCase().includes(k) || m.agenda.toLowerCase().includes(k))
       .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
@@ -67,12 +73,11 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
 
   // 待我应答与冲突计算都搬进 TodoCard(★两页共用★),这里不再各算一套
 
-  // 我负责的纪要:我是记录员、会已结束、纪要还没定稿
-  const myMinutes = useMemo(
-    () => all.filter((m) => m.recorder === me?.username
-      && new Date(m.ends_at).getTime() < now && m.minutes_status !== 'done'),
-    [all, me, now],
-  )
+  // ⚠★「我负责的纪要」这张专卡已删★（2026-08-11 liaoruili：「这上下不是一样的吗」）。
+  //   它 2026-08-08 就在这儿，而我 08-10 往「待我处理」里也加了一路纪要待办 ——
+  //   ★同一页上下两张卡列同一批数据，是我加之前没先看它有没有归宿造成的。★
+  //   更实质的是这两张卡当时用的是**两套判据**：这里前端本地算（且漏了 has_minutes），
+  //   那边走后端 activities_owing_minutes 视图。删掉这张，判据就只剩视图一处。
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -97,11 +102,14 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
 
         {loading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : (
           <>
-            {tab !== 'past' && (
-              <Group title="即将进行" items={upcoming} onOpen={onOpen} me={me} />
+            {/* 一个 tab 一组，不再上下并排两组 —— 分组标题也就不必了：
+                tab 上写着「已结束」，下面再写一遍「已结束」是复读。 */}
+            <Group title={tab === 'past' ? '已结束' : '即将进行'}
+              items={tab === 'past' ? past : upcoming} onOpen={onOpen} me={me} />
+            {rows.length === 0 && (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={tab === 'past' ? '还没有结束的活动' : '接下来没有安排'} />
             )}
-            <Group title="已结束" items={past} onOpen={onOpen} me={me} />
-            {rows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有活动" />}
           </>
         )}
       </Card>
@@ -110,26 +118,8 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
         {/* ★待我应答 + 冲突提示 + 私聊未读★:与日程页**同一张卡**(todo-card.tsx)。
             此前两页各写各的 —— 日程页只能点进详情才答复、这页能就地答复,
             同一个动作两套交互,比丑更糟。 */}
-        <TodoCard all={all} onOpen={onOpen} onDone={() => load(true)} style={{ marginBottom: 12 }} />
+        <TodoCard all={all} onOpen={onOpen} onOpenMinutes={onOpenMinutes} onDone={() => load(true)} style={{ marginBottom: 12 }} />
 
-        <Card size="small" title="我负责的纪要">
-          {myMinutes.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待整理的纪要" />
-            : myMinutes.map((m) => {
-              const days = Math.floor((now - new Date(m.ends_at).getTime()) / 864e5)
-              return (
-                <div key={m.id} onClick={() => onOpenMinutes(m.id)} style={{ cursor: 'pointer', marginBottom: 10 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{m.title}</div>
-                  <Space size={6}>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {fmtDay(new Date(m.ends_at))}{days > 0 && ` · 已过 ${days} 天`}
-                    </Typography.Text>
-                    <Tag color="orange">待整理</Tag>
-                  </Space>
-                </div>
-              )
-            })}
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {myMinutes.length} 份待整理</Typography.Text>
-        </Card>
       </div>
     </div>
   )
@@ -189,8 +179,14 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
       <div style={{ flexShrink: 0 }}>
         <Space size={4} wrap>
           {/* 已结束的会看纪要状态,进行中的看我的答复 —— 两者都是「这条现在要我做什么」 */}
+          {/* ⚠★徽章要先问「这个类型有没有纪要这回事」★（2026-08-11）：
+              原来只判 `ended`，于是**个人日程**（`has_minutes=false`）也挂「纪要待整理」——
+              截图里「读 Acemoglu 2024」「（补录）上周跑数据」都被催交一份根本不存在的纪要。
+              判据与后端的 `activities_owing_minutes` 视图同源，只是这里在前端、带不进视图。 */}
           {ended
-            ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
+            ? (m.has_minutes
+              ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
+              : null)
             : tag && <Tag color={tag.c}>{tag.t}</Tag>}
         </Space>
       </div>

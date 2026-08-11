@@ -86,10 +86,12 @@ function evStyle(m: Activity): React.CSSProperties {
   return { background: '#e6fffb', border: '1px solid #0d9488', color: '#00474f' }
 }
 
-export function ScheduleView({ me, onOpenActivity, onNewActivity }: {
+export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity }: {
   /// 当前登录用户名 —— 判「我在这场活动里是什么身份」要用(C0)
   me: string
   onOpenActivity: (id: number) => void
+  /// 待办卡里的纪要那一路直接进整理页(见 todo-card.tsx 的同名 prop)
+  onOpenMinutes: (id: number) => void
   onNewActivity: () => void
 }) {
   const { message } = AntdApp.useApp()
@@ -459,7 +461,7 @@ export function ScheduleView({ me, onOpenActivity, onNewActivity }: {
 
       {/* 右栏:待我处理 + 公开活动广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <TodoCard all={items} onOpen={onOpenActivity} onDone={() => void load(true)} style={{ width: 320 }} />
+      <TodoCard all={items} onOpen={onOpenActivity} onOpenMinutes={onOpenMinutes} onDone={() => void load(true)} style={{ width: 320 }} />
 
       <PublicBoard onOpen={onOpenActivity} />
       </div>

@@ -111,6 +111,9 @@ export type Activity = {
   visibility: 'private' | 'public'
   /// 活动类型名（ADR-0002）。软删的类型历史照常显示名字（L1）。
   type_name?: string | null
+  /// 这个类型有没有纪要这回事（ADR-0002 能力位）。★徽章与「待整理」判据必须带上它★ ——
+  /// 漏了的话个人日程也会被催交纪要（2026-08-11 liaoruili 从界面上看出来的）。
+  has_minutes?: boolean
   status: 'active' | 'canceled'
   created_at: string
   /// 我的答复;不在名单里则 null
