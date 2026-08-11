@@ -173,8 +173,13 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-    <Card title="发起活动" style={{ flex: 1, minWidth: 0 }}
-      extra={<Button size="small" onClick={onCancel}>取消</Button>}>
+    {/* ⚠★这里曾经还有一个 `extra={<Button>取消</Button>}`★(2026-08-12 删):
+        整页同时有两个「取消」——页头一个、表单底一个,点下去做的是同一件事。
+        留底下那个:它和「创建活动」成对,是表单的通用摆法;而页头这个还容易被读成
+        「取消这场活动」(详情页真有这么个按钮,见 activity-detail.tsx),语义撞车。
+        误伤检查过:发起活动是**整页视图不是弹窗**,离开的路不止这一条 ——
+        顶部导航(日程/项目/活动)一直在,不会把人关在表单里出不去。 */}
+    <Card title="发起活动" style={{ flex: 1, minWidth: 0 }}>
       <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 720 }}
         initialValues={{ recorder: me?.username }}>
         {/* ★类型放在最前★：它决定下面哪些字段出现、哪些必填，放后面会让人先填后改。 */}
