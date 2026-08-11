@@ -4,7 +4,7 @@
 |---|---|
 | 相位 | **4（技术设计）** —— 相位 0 的 PRD §F2/F3 已签核（2026-08-07） |
 | 分轨 | **轻量轨**：动 schema + 新接口面，但不新增数据模型、不改权限 |
-| 状态 | ★待评审★。下面「开放问题」一节里的四条要 liaoruili 拍板才能进相位 5 |
+| 状态 | ★相位 4 门禁已过★（2026-08-11）——四条开放问题全部关闭，见 §7；可进相位 5 |
 | 作者 | bot-congrove，2026-08-11 |
 
 ---
@@ -69,8 +69,8 @@ WHERE p.reminded_at IS NULL
   AND p.status <> 'declined'                     -- 拒绝了的人不必再提醒
   AND m.status = 'active'                        -- 取消的会不提醒
   AND p.notified_at IS NOT NULL                  -- ★补录跳过★，见 §3.1
-  AND COALESCE(m.remind_minutes, u.default_remind_minutes) IS NOT NULL   -- NULL = 不提醒
-  AND m.starts_at - make_interval(mins => COALESCE(m.remind_minutes, u.default_remind_minutes)) <= now()
+  AND COALESCE(m.remind_minutes, u.default_remind_minutes, 15) > 0        -- ★见 §7①②★
+  AND m.starts_at - make_interval(mins => COALESCE(m.remind_minutes, u.default_remind_minutes, 15)) <= now()
   AND m.starts_at > now()                        -- ★已经开始的不补发★，见 §3.2
 FOR UPDATE SKIP LOCKED
 ```
@@ -163,7 +163,7 @@ UPDATE activity_participants SET reminded_at = NULL WHERE activity_id = $1
 `docs/openapi-breaking.txt`。
 
 值域与 PRD F3 一致：`不提醒 / 5 / 15 / 30 / 60 / 1440`，另加「自定义」。
-`NULL` = 跟随个人默认；**显式的「不提醒」怎么表达见开放问题 ①**。
+`NULL` = 跟随个人默认，`0` = ★这场不提醒★（§7①）；两者都没有时兜底 15 分钟（§7②）。
 
 ## 5. 页面内弹窗（F2 的后半截）
 
@@ -198,26 +198,49 @@ UPDATE activity_participants SET reminded_at = NULL WHERE activity_id = $1
 
 ---
 
-## 7. 开放问题（★这四条不关闭，不进相位 5★）
+## 7. 开放问题 —— ★四条已全部关闭（2026-08-11 liaoruili 逐条拍板）★
 
-1. **「不提醒」和「跟随默认」怎么区分？**
-   两者在 `remind_minutes` 上都想用 NULL。三个选项：
-   (a) 用 `0` 表示不提醒；(b) 加一个 `remind_off boolean`；(c) 不支持单场关闭，
-   要关就把个人默认关掉。
-   ★我倾向 (a)★——`0` 读作「提前 0 分钟提醒」本来就无意义，拿它当哨兵不会和真实值撞；
-   (b) 多一列多一处要同步，(c) 会让「明天那场我不想被吵」做不到。
+### ① 「不提醒」与「跟随默认」怎么区分 → **用 `0` 当哨兵**
 
-2. **默认值该是多少？** 现在 `default_remind_minutes` 没有行 = 不提醒，
-   于是**所有存量用户默认收不到任何提醒**——功能上线等于没上线。
-   要不要给新用户一个默认（如 15 分钟）？★这是产品判断，不是技术判断。★
+```
+remind_minutes   NULL → 跟随个人默认
+                 0    → ★这场不提醒★
+                 15   → 提前 15 分钟
+```
 
-3. **一场会只提醒一次，还是允许多档？**（手机日历常见「提前 1 天 + 提前 15 分钟」）
-   本设计按**一次**做。多档要把 `remind_minutes` 变成数组、`reminded_at` 变成
-   「已发过哪几档」，复杂度上一个台阶。PRD 没要求，我按一次做，**但先问一句**。
+不加列、不加接口字段；前端下拉多一个「不提醒」选项映射到 0。
+判据落在 §2.2 那条 SQL 的 `COALESCE(...) > 0` 上——★`> 0` 一处同时管掉
+「显式关闭」和「负数脏数据」两件事★。
 
-4. ~~`notified_at` 到底在哪些路径上写入？~~ ★已自行核实并关闭★（见 §3.1）：
-   写入点两处、dev 库 10/10 行有值。核的过程顺带推翻了初稿里「补录靠 notified_at 跳过」
-   这个说法——**它其实是 §3.2 免费给的**。留档在 §3.1，因为那是条很自然的错路。
+### ② 新用户的默认 → **15 分钟兜底**
+
+不改表，只在 `COALESCE` 末尾加一层常量：
+
+```sql
+COALESCE(m.remind_minutes, u.default_remind_minutes, 15) > 0
+```
+
+⚠ 这条**改变了一条无声的系统行为**：本来安静的人上线当天开始收到站内信，
+而他从没要求过。所以：
+
+- 上线时在群里说一声，别让人以为系统抽风；
+- 设置页那句「⚠ 提醒的投递属 M2」要改掉，并写明**默认是 15 分钟、可以关**；
+- ★这个 15 是常量不是列★，写在 `remind.rs` 里加 `const DEFAULT_REMIND_MIN: i32 = 15;`,
+  与 `user_quota` 那个「两处写死同一个数」的已知重复**不同**——这里只有一处。
+
+### ③ 一场会一档还是多档 → **只一档**
+
+`remind_minutes` 保持单个 int、`reminded_at` 保持单个时间戳、改期清一列完事。
+★从一档扩到多档是加法，反过来删才麻烦★——需求真出现了再加不晚。
+
+### ④ ~~`notified_at` 在哪些路径写入~~ —— 我自己核实并关闭
+
+写入点两处、dev 库 10/10 行有值。核的过程顺带推翻了初稿里「补录靠 notified_at 跳过」
+这个说法——**它其实是 §3.2 免费给的**。留档在 §3.1，因为那是条很自然的错路。
+
+---
+
+★四条全关闭 → 相位 4 门禁通过，可进相位 5。★
 
 ---
 

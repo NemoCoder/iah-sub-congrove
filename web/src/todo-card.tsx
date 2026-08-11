@@ -40,10 +40,21 @@ type Transfer = { id: number; project_id: number; project_name: string; from: st
 /// 两种都是欠着，但前者要说的是「去建一份」，后者是「去写完」，文案不该一样。
 type MinutesTodo = { activity_id: number; title: string; starts_at: string; ends_at: string; has_draft: boolean }
 
-export function TodoCard({ all, onOpen, onDone, style }: {
+/// 纪要欠账默认展开几条。★2 是刻意选的★：1 条看不出「这是一类」，
+/// 3 条以上就又开始吃卡了；两条既显出类别、又给邀请和未读留下位置。
+const MINUTES_HEAD = 2
+/// 欠得最久的那笔多少天 —— 折叠行上只说条数看不出急不急。
+const oldestDays = (ms: MinutesTodo[]) =>
+  Math.max(0, ...ms.map((m) => Math.floor((Date.now() - new Date(m.ends_at).getTime()) / 86400_000)))
+
+export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   /// 我能看到的活动（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
   all: Activity[]
   onOpen: (id: number) => void
+  /// ★纪要那一路直接进整理页★（2026-08-09 liaoruili 对已删的「我负责的纪要」卡定的）：
+  /// 点它的人下一步一定是去写，先落到活动详情再点一次「纪要」是白饶的一跳。
+  /// ⚠ 删那张专卡时这个捷径差点跟着丢掉 —— ★删一个界面要连它承载的决定一起搬走★。
+  onOpenMinutes: (id: number) => void
   /// 答复成功后让宿主页重新加载（日历颜色、列表状态都要跟着变）
   onDone: () => void
   style?: React.CSSProperties
@@ -52,6 +63,7 @@ export function TodoCard({ all, onOpen, onDone, style }: {
   const [unread, setUnread] = useState<Unread[]>([])
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [minutes, setMinutes] = useState<MinutesTodo[]>([])
+  const [minutesOpen, setMinutesOpen] = useState(false)
 
   const loadUnread = useCallback(() => {
     api<Unread[]>('/api/me/unread').then(setUnread).catch(() => setUnread([]))
@@ -103,9 +115,23 @@ export function TodoCard({ all, onOpen, onDone, style }: {
           ))}
           {/* ★排在私聊未读之前★：欠一份纪要是**有交付物的活儿**，
               而未读消息多半只是「看一眼」——把重的排在轻的后面，重的就会被划走。 */}
-          {minutes.map((m) => (
-            <MinutesRow key={m.activity_id} m={m} onOpen={onOpen} />
+          {/* ★只展开最新两条,其余折起来★（2026-08-11 liaoruili 看到 6 条把整张卡吃满）。
+              ⚠ 这是我上一版设计判断失误的收口:我写「不设时间下限——欠着的纪要不会因为
+              放久了就不欠」,逻辑没错,但漏了另一半 ——★这张卡的用途是让人**看得见全部
+              待办**,而它自己被一类待办淹掉时,这个用途就没了★。
+              所以不删账(加时间下限等于系统替人把旧账勾了,而欠得越久越该提醒),
+              只是把它折起来:默认两条 + 一行汇总,想算总账点一下全出来。 */}
+          {(minutesOpen ? minutes : minutes.slice(0, MINUTES_HEAD)).map((m) => (
+            <MinutesRow key={m.activity_id} m={m} onOpen={onOpenMinutes} />
           ))}
+          {minutes.length > MINUTES_HEAD && (
+            <a style={{ fontSize: 12 }} onClick={() => setMinutesOpen((v) => !v)}>
+              {minutesOpen
+                ? '收起 ▴'
+                /* 折叠时把「还有几场」和「最久欠了多久」一起说 —— 只说条数看不出急不急 */
+                : `还有 ${minutes.length - MINUTES_HEAD} 场欠着纪要（最久 ${oldestDays(minutes)} 天） 展开 ▾`}
+            </a>
+          )}
           {unread.map((u) => (
             <div key={u.activity_id} style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
               <div style={{ fontSize: 13 }}>

@@ -33,6 +33,18 @@ pub struct ActivityRow {
     /// ⚠ 取的是 `activity_types.name` 而不是 id：软删的类型历史照常显示名字（L1）。
     #[sqlx(default)]
     pub type_name: Option<String>,
+    /// 这个类型有没有纪要这回事（ADR-0002 的能力位）。
+    ///
+    /// ⚠★2026-08-11 liaoruili 从界面上看出来的★：活动列表给**每一条已结束的活动**
+    /// 都挂「纪要待整理」徽章，于是「读 Acemoglu 2024」「（补录）上周跑数据」这些
+    /// **个人日程**也被催交纪要 —— 而那个类型 `has_minutes=false`，压根没有纪要这回事。
+    ///
+    /// ★这是同一个根因的第四次现身★：「我是记录员且纪要非 done」这条判据被各处各写一遍，
+    /// 而漏 `has_minutes` 的那几份都会多算。前三处（/me/stats 两处、待办卡）已经收进
+    /// `activities_owing_minutes` 视图；这一处在**前端**，收不进视图，
+    /// 那就把判据要用的**事实**带给它，让前端也只有一处判断。
+    #[sqlx(default)]
+    pub has_minutes: bool,
     pub title: String,
     pub agenda: String,
     pub organizer: String,
@@ -134,7 +146,7 @@ pub async fn list(
     let rows: Vec<ActivityRow> = sqlx::query_as(
         // ★is_private 必须由 SQL 算★:字段声明了却不算,#[sqlx(default)] 会静静给 false,
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
-        "SELECT m.*, at.name AS type_name, mp.status AS my_status, mp.kind AS my_kind,
+        "SELECT m.*, at.name AS type_name, at.has_minutes, mp.status AS my_status, mp.kind AS my_kind,
                 m.visibility <> 'public' AS is_private,
                 -- ★全部关联项目都归档了吗★(B1):零关联项目的活动恒为 false ——
                 -- 「没有项目」不等于「项目都归档了」,前者是个人活动、活得好好的。
