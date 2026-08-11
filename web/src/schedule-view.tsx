@@ -13,6 +13,7 @@
 import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { UpcomingBar } from './upcoming-bar'
 import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
@@ -75,7 +76,26 @@ function MineIcon({ mine }: { mine: NonNullable<Mine> }) {
   }} />
 }
 
+/// ★这场已经开完了没有★（2026-08-12 liaoruili：「已经结束的有个标识什么的吧？
+/// 不然这么多我一看我都不知道我接下来要参加哪个」）。
+///
+/// ⚠★判 `ends_at` 不判 `starts_at`★：正在开的那场还没结束，它恰恰是此刻最要紧的一条，
+/// 淡化掉就正好淡化错了人最需要看见的东西。
+export const isEnded = (m: Activity) => new Date(m.ends_at).getTime() < Date.now()
+
 function evStyle(m: Activity): React.CSSProperties {
+  // ★已结束的一律淡化，而且**压过「待应答」的红**★。
+  // 会都开完了再红着催我答复是纯噪声：答复的意义在于「我去不去」，
+  // 而这件事已经没有选项了。红色是这张日历上最强的信号，留给还能行动的事。
+  // ⚠ 但**不压过归档**：归档是「整个项目封存了」，那是比时间更硬的状态（且它本来就是灰的）。
+  // 淡化的做法是**保留原色再降透明度**，不是刷成灰：
+  // 刷灰会把「公开/非公开」这层信息一起抹掉，而回头看历史时那层信息照样有用。
+  if (!m.archived && isEnded(m)) {
+    const base = m.is_private
+      ? { background: '#f9f0ff', border: '1px dashed #722ed1', color: '#531dab' }
+      : { background: '#e6fffb', border: '1px solid #0d9488', color: '#00474f' }
+    return { ...base, opacity: 0.42 }
+  }
   // ★归档项目的活动:淡化★(PRD B1)。它照常出现在日历里(B0——日程也是「我做过什么」的记录),
   // 但归档项目是**只读**的:不淡化的话人会点进去想改时间才发现动不了。
   // ⚠ 判在最前面:归档是「这场会已经封存了」,比「我还没答复」更该主导它的观感 ——
@@ -132,6 +152,9 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
 
   /// `silent=true` 不掀 loading —— 见 activity-detail 里同名函数的那段。
   /// ★「待我处理」就地答复走的就是它★:不静默的话答一条整页塌一下(2026-08-09 同一族)。
+  /// ★摘要条的刷新钥匙★:日历每次重载就 +1。
+  /// 不这么做的话,「待答复 2」在你就地答完之后还会挂着 —— ★而它不会报错,只是过时★。
+  const [reloadKey, setReloadKey] = useState(0)
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
@@ -145,6 +168,7 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
       setItems([])
     } finally {
       if (!silent) setLoading(false)
+      setReloadKey((k) => k + 1)
     }
   }, [days, message])
   useEffect(() => { void load() }, [load])
@@ -193,6 +217,13 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
               而那个判断本来就该由类型下拉承担。 */}
           <Button size="small" type="primary" onClick={onNewActivity}>+ 发起活动</Button>
         </div>
+
+        {/* ★「接下来 7 天」摘要★（2026-08-12 liaoruili）——放在工具条**下面、网格上面**：
+            它是对整张日历的一句总结，而不是工具条的一个控件。
+            ⚠ 它自己取数、和当前可视范围无关（见 upcoming-bar.tsx 头注），
+            所以翻到上个月时它照样说的是「从此刻起的 7 天」。
+            三种视图共用一条 —— 「我接下来要干什么」跟你正在看周还是看月无关。 */}
+        <UpcomingBar reloadKey={reloadKey} onOpen={onOpenActivity} />
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
@@ -256,6 +287,13 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                 <div key={m.id} onClick={() => onOpenActivity(m.id)} style={{
                   display: 'flex', gap: 12, padding: '8px 4px', cursor: 'pointer',
                   borderBottom: '1px solid #f5f5f5',
+                  // ★已结束的整行也退一档★:光有「已结束」标签的话,眼睛还是得逐行读标签
+                  // 才分得清哪些在身后 —— 而这张列表是按时间排的,过去和未来的分界
+                  // 本该一眼看到。
+                  // ⚠ 这里用 0.62 而不是日历那边的 0.42:★同一个意思,两种载体★——
+                  //   日历上是色块,淡到 0.42 仍认得出形状和颜色;
+                  //   列表上是**正文**,淡到 0.42 就开始费眼睛了,而回头查历史时它照样要读。
+                  opacity: isEnded(m) ? 0.62 : 1,
                 }}>
                   <div style={{ width: 150, flexShrink: 0, fontSize: 12, color: '#8c8c8c' }}>
                     {WEEK_LABEL[new Date(m.starts_at).getDay()]}
@@ -264,8 +302,13 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {m.title}
+                    {/* ★列表里给明文标签★:周/月视图的格子太小,只能靠淡化;
+                        而列表一行有的是地方,一个字面的「已结束」比让人去分辨深浅可靠得多。
+                        ⚠ 用词是「已结束」不是「已参加」（2026-08-12 liaoruili 定）——
+                        ★系统只知道会开完了，不知道人到没到★，写「已参加」就是替用户断言一件没发生过验证的事。 */}
+                    {isEnded(m) && <Tag style={{ marginLeft: 6 }}>已结束</Tag>}
                     {m.is_private && <Tag color="purple" style={{ marginLeft: 6 }}>非公开</Tag>}
-                    {m.my_status === 'pending' && <Tag color="red" style={{ marginLeft: 4 }}>待应答</Tag>}
+                    {!isEnded(m) && m.my_status === 'pending' && <Tag color="red" style={{ marginLeft: 4 }}>待应答</Tag>}
                   </div>
                 </div>
               ))}
@@ -450,6 +493,9 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
           <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待应答" />
           {/* ★归档也进图例★:它现在是日历上第四种观感,不解释的话人会以为那条会「坏了」 */}
           <LegendDot style={{ background: '#fafafa', border: '1px dashed #d9d9d9' }} text="已归档 · 只读" />
+          {/* ★已结束进图例★:淡化是一种**没有文字的信号**,不解释的话人会以为那条会「显示坏了」
+              —— 归档当初就是这么被误读的。用同一个青色的淡版当样例,正好说明「颜色没变，只是退到后面」 */}
+          <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488', opacity: 0.42 }} text="已结束" />
           {/* ★身份图标也要进图例★(原型图例末尾那一行):三个符号不解释,人只会当成装饰 */}
           <span style={{ color: '#8c8c8c', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
             <span><StarFilled style={{ fontSize: 10, marginRight: 3 }} />我发起</span>
