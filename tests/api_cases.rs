@@ -528,6 +528,40 @@ const CASES: &[Case] = &[
        "GET /api/me/minutes-todo", "不回 —— 没开的会没有纪要", ""),
     c!(deny "GET", "/api/me/minutes-todo", "未登录看不了", "无会话", "GET /api/me/minutes-todo", "401", ""),
 
+    // ── 提醒(PRD F2/F3,2026-08-12)────────────────────────────────────────
+    // ★这几条钉的全是「不该弹却弹了」★:漏弹一条是遗憾,重复弹或弹早已开完的会是事故 ——
+    // 前者用户不会注意到,后者用户当场就看见了。
+    c!("GET", "/api/me/reminders", "★不带 since 回空,只用来对时★", "我有一条刚发出的提醒",
+       "GET /api/me/reminders", "items=[] 且带 now。首次进页面就回一批历史提醒的话,\
+        用户一打开就被几条「XX 将于 15 分钟后开始」糊脸,而那些会**早就开完了**", ""),
+    c!("GET", "/api/me/reminders", "回 since 之后投递的", "上轮拿到 now=T,之后循环给我发了一条",
+       "GET /api/me/reminders?since=T", "回那一条 —— 判据是 reminded_at > since(**投递时刻**),\
+        不是 starts_at:翻页去重靠前者,文案里说的「还有几分钟」才算后者", ""),
+    c!("GET", "/api/me/reminders", "now 必须是**服务端**时间", "任意",
+       "GET /api/me/reminders", "响应带 now,前端下次原样送回。★不能让前端用 Date.now()★——\
+        浏览器时钟快几秒则 since 一直在未来、永远查不到刚发的提醒;慢几秒则每轮重弹同一条。\
+        两种偏差都无声无息,用户只会觉得「提醒时灵时不灵」而我们查不出为什么", ""),
+    c!("GET", "/api/me/reminders", "取消掉的活动不回", "提醒已发出,之后活动被取消",
+       "GET /api/me/reminders?since=T", "不回 —— 已经作废的会不该再冒出来", ""),
+    c!(deny "GET", "/api/me/reminders", "未登录看不了", "无会话", "GET /api/me/reminders", "401", ""),
+
+    // ★复现测试:双层 Option★(2026-08-12 实现前端下拉时发现的存量 bug,规范要求修 bug 先写测试)
+    c!("PUT", "/api/activities/{id}", "★remind_minutes 传 null = 改回「跟随个人默认」★",
+       "这场已经设了 remind_minutes=30",
+       "PUT {remind_minutes: null}", "库里变成 NULL。★原来是静默无效★:字段声明成 Option<i32> +\
+        SQL COALESCE($n, remind_minutes),于是「传了 null」和「压根没传」长得一模一样 ——\
+        用户在界面上选「跟随个人默认」,请求 200、界面照常刷新,而数据库一个字节都没变。\
+        静默失败是最贵的那种:没有报错可查,只有过一阵子有人问「我明明关过」", ""),
+    c!("PUT", "/api/activities/{id}", "不传 remind_minutes 则不动它", "这场已设 remind_minutes=30",
+       "PATCH {title: \"新标题\"}", "remind_minutes 仍是 30 —— 双层 Option 的另一半:\
+        `None`=没传要保持原样,`Some(None)`=显式清空。两者行为必须不同", ""),
+    c!("PUT", "/api/activities/{id}", "★actual_minutes 传 null 也要能清空★", "这场已填实际时长 90",
+       "PUT {actual_minutes: null}", "库里变成 NULL,且 actual_by 保持原样不被覆盖。\
+        ★同一行 SQL 上的同一个存量 bug★:清空「实际时长」此前一直静默无效", ""),
+    c!("PUT", "/api/activities/{id}", "remind_minutes=0 是「这场不提醒」不是「立刻提醒」",
+       "任意", "PUT {remind_minutes: 0}", "存 0;提醒循环的 `COALESCE(...) > 0` 把它排除。\
+        ★0 当哨兵★:「提前 0 分钟提醒」本来就无意义,不会和真实值撞(设计 §7①)", ""),
+
     // ── 站内信(M1 收口)──★钉的是「谁该收到、谁不该收到」★:
     // 该收没收 = 人不知道有会;不该收却收 = 收件箱被淹,真正要紧的那条被埋掉。两种错都致命。
     c!("POST", "/api/activities", "★建会即通知被约的人★", "我约了 A、B",
