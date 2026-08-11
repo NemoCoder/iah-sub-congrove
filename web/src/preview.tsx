@@ -64,6 +64,10 @@ export function fmtSize(n: number | null) {
   if (n == null) return ''
   if (n < 1024) return `${n}B`
   if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`
-  return `${(n / 1048576).toFixed(1)}MB`
+  // ⚠★原来到 MB 就封顶★(2026-08-12 补 GB):个人配额默认 10 GiB,于是「存储配额」
+  // 那一行显示成「已用 94B / 10240.0MB」—— 两个数一个论字节一个论兆,读的人
+  // 得自己心算才知道用了多少。配额是**给人看用了多大比例**的,不是给人做除法的。
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)}MB`
+  return `${(n / 1073741824).toFixed(1)}GB`
 }
 

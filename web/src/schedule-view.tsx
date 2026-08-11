@@ -312,7 +312,7 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                 border: `1px solid ${nightCount ? '#ffe58f' : '#f0f0f0'}`,
                 fontSize: 12, color: '#8c8c8c',
               }}>
-                <span>{nightCount ? '★凌晨这一段有活动被折叠了★' : '凌晨 0–8 点已折叠'}</span>
+                <span>{nightCount ? '凌晨这一段有活动被折叠了' : '凌晨 0–8 点已折叠'}</span>
                 {nightCount > 0 && <Tag color="orange" style={{ margin: 0 }}>这段有 {nightCount} 项</Tag>}
                 <span style={{ marginLeft: 'auto', color: '#0d9488' }}>展开 ▾</span>
               </div>

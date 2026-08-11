@@ -686,7 +686,7 @@ export function ProjectsView({ me, onOpenActivity }: {
                           同理处理」):判据是 `it.activity_id`,与项目是不是材料区无关。 */}
                       {it.activity_id && (
                         <Tooltip title="这是活动材料：名称与位置由活动决定，增删都在活动页里做。点这里去那条活动">
-                          <a onClick={() => onOpenActivity?.(it.activity_id!)}>去活动 →</a>
+                          <a onClick={() => onOpenActivity?.(it.activity_id!)}>去活动 ›</a>
                         </Tooltip>
                       )}
                     </AntSpace>
@@ -1238,7 +1238,7 @@ function ProjectActivities({ projectId }: { projectId: number }) {
               <Typography.Text type="warning" style={{ fontSize: 12 }}>{stats.hours_by_source.scheduled} h 按排程估算</Typography.Text>
             )}
             {/* ★D6★:不说这句,有人会把几个项目的数字相加当总数 */}
-            <span style={{ marginLeft: 12 }}>· 一场会可关联多个项目，跨项目求总数需按活动去重</span>
+            <span style={{ marginLeft: 12 }}>· 一场活动可关联多个项目，跨项目求总数需按活动去重</span>
           </div>
         )}
       </div>
@@ -1262,7 +1262,7 @@ function ProjectActivities({ projectId }: { projectId: number }) {
         {
           title: '', width: 96,
           render: (_, m) => new Date(m.ends_at).getTime() < now
-            ? (m.minutes_status === 'done' ? <Tag color="green">纪要完成</Tag> : <Tag color="orange">待整理</Tag>)
+            ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
             : <Tag color="blue">未开始</Tag>,
         },
       ]} />

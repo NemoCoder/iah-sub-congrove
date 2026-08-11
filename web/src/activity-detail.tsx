@@ -138,7 +138,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
             旁听之后它就从广场消失、进了我的日历 —— 要退出自然该来它自己的页面,
             而不是回广场上找一个已经不在那儿的条目。 */}
         {d.observer && !canceled && (
-          <Popconfirm title="不再旁听这场会？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
+          <Popconfirm title="不再旁听这场活动？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
             onConfirm={async () => {
               try {
                 await api(`/api/activities/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
@@ -200,7 +200,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
 
       {canceled && (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="这场会已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
+          message="这场活动已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
       )}
 
       {/* ★冲突提示条★(原型位置:信息卡之前,红底,抢注意力)。

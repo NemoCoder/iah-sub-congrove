@@ -147,7 +147,7 @@ export function App() {
           background: '#fff7e6', borderBottom: '1px solid #ffd591', color: '#d46b08',
           padding: '6px 22px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12,
         }}>
-          <span>★超管模式生效中★ —— 你现在看得到所有人的项目与活动{me.admin_mode_until
+          <span>超管模式生效中 —— 你现在看得到所有人的项目与活动{me.admin_mode_until
             ? `，${new Date(me.admin_mode_until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 自动关闭` : ''}</span>
           <span style={{ flex: 1 }} />
           <a onClick={() => void toggleAdminMode(false)}>立即退出</a>
