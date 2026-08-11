@@ -61,7 +61,22 @@ async function mkPast(body, startISO, endISO) {
   return id
 }
 
-console.log(`向 ${BASE} 以 ${AS} 的身份灌样例数据…\n`)
+/// ★先等它真的能服务再开灌★(2026-08-10 踩到)。
+/// `kubectl rollout status` 说就绪了,第一个 POST 仍然超时 —— 就绪探针过关与「能干活」
+/// 之间还有一段(连池、JWKS、registry 客户端都要起来)。
+/// ★这个脚本不是幂等的★:半途失败会留下一个「三个项目、零条活动」的库,
+/// 而那种库最坏 —— 它看起来像灌好了。所以宁可在门口多等几秒。
+for (let i = 1; ; i++) {
+  try {
+    const r = await ctx.fetch('/api/activity-types', { timeout: 8000 })
+    if (r.ok()) break
+    if (i > 20) throw new Error(`一直是 ${r.status()}`)
+  } catch (e) { if (i > 20) { console.error('等不到服务:', e.message); process.exit(1) } }
+  if (i === 1) process.stdout.write('等服务起来')
+  process.stdout.write('.')
+  await new Promise((r) => setTimeout(r, 3000))
+}
+console.log(`\n向 ${BASE} 以 ${AS} 的身份灌样例数据…\n`)
 
 // ── 类型:预置两条,取它们的 id(别写死 1/2 —— 清库后序列会变) ──
 const types = await call('GET', '/api/activity-types')
@@ -112,7 +127,15 @@ await mk({ type_id: 会议, title: '公开讲座：因果推断入门', agenda: 
 // ⑧ 已归档项目里的历史会 —— 验 B0/B1:★照常进日历,但淡化 + 标「已归档 · 只读」★
 await mkPast({ type_id: 会议, title: '中期汇报', agenda: '结题材料', recorder: AS,
   project_ids: [p3], participants: [] }, at(-3, 15), at(-3, 17))
-console.log('✓ 活动 7 条（含跨天 / 纯凌晨 / 补录 / 公开 / 归档项目的历史会）')
+
+// ⑨ ★两场欠着纪要的历史会★ —— 「待我处理」里那一路(2026-08-10)要有东西可显示,
+//    而且它的**两种状态文案不同**:「连草稿都没建」要说「去整理」,「草稿写了一半」要说「接着写」。
+//    造一场就只能看到一种,那另一种的文案永远没人看过 —— 这正是样例数据存在的意义。
+const 欠1 = await mkPast({ type_id: 会议, title: '八月第一次组会', agenda: '开题分工', recorder: AS,
+  project_ids: [p1], participants: [] }, at(-5, 10), at(-5, 11, 30))
+const 欠2 = await mkPast({ type_id: 会议, title: '数据口径讨论', agenda: '清洗规则对齐', recorder: AS,
+  project_ids: [p1], participants: [] }, at(-2, 16), at(-2, 17))
+console.log('✓ 活动 9 条（含跨天 / 纯凌晨 / 补录 / 公开 / 归档项目的历史会 / 两场欠纪要的）')
 
 // ⑨ 归档掉 p3 —— ★必须在建完它的历史会之后★:B2 规定「有未开始的活动就不许归档」,
 //    而上面那条是过去的,所以归得掉。顺序反了会被 400 拒,那正是 B2 在起作用。
@@ -130,12 +153,19 @@ const matProj = (await post(`/api/activities/${m5}/materials-project`)).project_
 await upload(matProj, m5, '读书笔记.md', '# Acemoglu 2024\n\n核心论点…\n')
 console.log('✓ 材料 2 份（一份进项目、一份进「我的活动材料」）')
 
-// ── 纪要草稿:让「纪要」那一栏不是空的 ──
+// ── 纪要:三种状态各一,「待我处理」与详情页才看得全 ──
+// ① 未来那场的草稿(详情页「纪要」栏不是空的);
 await put(`/api/activities/${m1}/minutes`, {
   attendees: AS, agenda_text: '1. 上周进展\n2. 数据清洗口径',
   content_md: '（正文待整理）', resolutions: '- 口径按 2020 年不变价', todos: '- 下周三前交清洗脚本', status: 'draft',
 })
-console.log('✓ 纪要草稿 1 份')
+// ② 欠1 **一行都不建** —— 待办卡上应显示「还没建 / 去整理」;
+// ③ 欠2 建成草稿 —— 应显示「已有草稿 / 接着写」。
+await put(`/api/activities/${欠2}/minutes`, {
+  attendees: AS, agenda_text: '清洗规则对齐',
+  content_md: '（写了一半）', resolutions: '', todos: '', status: 'draft',
+})
+console.log('✓ 纪要 2 份草稿（另留一场**完全没建**，供对照两种文案）')
 
 console.log('\n★完成★ —— 打开 https://congrove-dev.sub.ruciah.com 就能看到')
 await ctx.dispose()

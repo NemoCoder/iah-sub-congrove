@@ -15,14 +15,14 @@
 // ★为什么不继续用 DatePicker.RangePicker★:它的时间面板天生是「时/分/秒」分列滚动的,
 // 那是**为任意精度设计的**;而排会只需要 96 个候选,把它们摆平比让人在两列里对齐快得多。
 // 日期仍然用 DatePicker(日历比列表更适合选日期)。
-import { Button, DatePicker, Select, Space, Typography } from 'antd'
+import { Button, DatePicker, Select, Space, Tag, Typography } from 'antd'
 import { useMemo } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 // ★纯逻辑在 time-slots.ts★:那边有单测(候选必须落在整刻钟上等),这边只管渲染。
-import { DURATIONS, STEP_MIN, fmtDur, hhmm, slots } from './time-slots'
+import { DURATIONS, STEP_MIN, defaultStart, fmtDur, hhmm, matchDuration, slots } from './time-slots'
 
 
-export function TimeRangePicker({ value, onChange, noPast = false, size }: {
+export function TimeRangePicker({ value, onChange, noPast = false, roundStart = false, size }: {
   value?: [Dayjs, Dayjs] | null
   onChange?: (v: [Dayjs, Dayjs] | null) => void
   /// 禁掉今天以前的日期与今天已过去的时刻。
@@ -30,13 +30,20 @@ export function TimeRangePicker({ value, onChange, noPast = false, size }: {
   /// **改时间没有这条限制**,因为那也用来**补录**已经开过的会。
   /// 界面比后端更严会让人做不成后端允许的事,而这种「不知道为什么点不了」最难查。
   noPast?: boolean
+  /// 默认开始时刻要不要向上取整到一刻钟(PRD G0)。★由**类型**传进来,这里不猜★ ——
+  /// 判据是 `busy_default`(这类活动默不默认影响别人),理由见 time-slots.ts 的 defaultStart。
+  roundStart?: boolean
   size?: 'small' | 'middle'
 }) {
   const [s, e] = value ?? [null, null]
   const now = dayjs()
 
-  /// 起点缺省:下一个整点(最常见的意图「现在建个会」)。
-  const fallbackStart = useMemo(() => now.add(1, 'hour').startOf('hour'), [/* 每次渲染重算无妨 */ now])
+  /// 起点缺省(PRD G0):**当前时间**;会议这类「别人会看到」的向上取整到一刻钟,其余用真实时刻。
+  /// ⚠ 此前恒为「下一个整点」,两类都不合适:会议从 10:05 出发要跳到 11:00(白等 55 分钟),
+  ///   个人记录则被取整成整点,而「我刚做完、现在记一笔」要的正是 15:37 那个真实时刻。
+  const fallbackStart = useMemo(
+    () => dayjs(defaultStart(now.toDate(), roundStart ? STEP_MIN : 0)),
+    [/* 每次渲染重算无妨 */ now, roundStart])
 
   const emit = (ns: Dayjs, ne: Dayjs) => onChange?.([ns, ne])
 
@@ -123,13 +130,21 @@ export function TimeRangePicker({ value, onChange, noPast = false, size }: {
       </Space>
 
       {/* ★持续时长快捷★:点一下连结束那一列都不用开。
-          还没选开始时间时也能用 —— 那就从「下一个整点」起算。 */}
+          还没选开始时间时也能用 —— 那就从默认起点起算。 */}
       <Space size={4} wrap style={{ marginTop: 8 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12, width: 28, flexShrink: 0 }}>持续</Typography.Text>
         {DURATIONS.map((d) => (
           <Button key={d.m} size="small" type={durMin === d.m ? 'primary' : 'default'}
             onClick={() => setDuration(d.m)}>{d.label}</Button>
         ))}
+        {/* ★「自定义」是**状态**不是动作★(PRD G1 的双向绑定):
+            直接改了结束时间、时长落不到任何一档时(45 分钟、出差 3 天…),
+            这一排会一个都不亮 —— 看起来像「还没选」,而其实是选了个预设外的值。
+            所以补一个标记说清楚。做成 Tag 不做成 Button:它没有可点的动作
+            (要改时长就去上面改结束时间),而一个点了没反应的按钮比没有更糟。 */}
+        {durMin !== null && durMin > 0 && !matchDuration(durMin) && (
+          <Tag color="blue" style={{ marginInlineEnd: 0 }}>自定义 · {fmtDur(durMin)}</Tag>
+        )}
       </Space>
     </div>
   )

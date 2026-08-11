@@ -16,7 +16,7 @@ pub(crate) mod projects;
 use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{middleware, Json, Router};
 use serde_json::json;
@@ -194,10 +194,29 @@ pub fn build_router(state: AppState) -> Router {
 
     // 同源托管前端构建产物(单镜像单端口契约)。静态开放——先加载 SPA 才能登录;
     // /api 在上面已整层挂闸。未知路径回退 index.html 给前端路由。
+    //
+    // ⚠★2026-08-11 liaoruili:「我打不开 dev 的 web 端」——整页空白、标题却是对的★
+    //
+    // 根因在缓存头:此前静态文件**一个 Cache-Control 都不发**,只有 last-modified,
+    // 于是浏览器按启发式规则自己决定缓存多久,把 SPA 外壳(index.html)也缓存住了。
+    // 三件事凑一起就空白:
+    //   ① 浏览器拿**缓存里的旧 index.html**(所以标题「Congrove·汇流」是对的 ——
+    //      那是 index.html 里的静态 <title>,★它出现只证明 HTML 到了,不证明应用启动了★);
+    //   ② 部署换了版本 → JS 文件名哈希变了 → 新那个**不在缓存里**,必须现取;
+    //   ③ 会话过期 → 网关把这个 JS 请求 302 成登录页的 HTML(实测 397 字节 text/html)。
+    // 浏览器拿到 HTML 当模块加载 → 静默失败 → ★空白页,不报错也不跳登录★。
+    //
+    // 修法是 SPA 的标准做法,两类文件两种策略:
+    //   · `/assets/*` 是**内容寻址**的(文件名带哈希,内容一变名字就变)→ 可以永久缓存;
+    //   · `index.html` 是**指针**(指向当前那套 assets)→ ★必须每次回源校验★,
+    //     否则它一旦被缓存住,就成了一个「指向已不存在的资源、又活得比会话久」的僵尸外壳。
     let web_dist = std::env::var("WEB_DIST").unwrap_or_else(|_| "web/dist".into());
     if std::path::Path::new(&web_dist).is_dir() {
         let index = format!("{web_dist}/index.html");
-        app = app.fallback_service(ServeDir::new(&web_dist).fallback(ServeFile::new(index)));
+        let static_svc = ServeDir::new(&web_dist).fallback(ServeFile::new(index));
+        app = app.fallback_service(
+            axum::routing::any_service(static_svc).layer(axum::middleware::from_fn(cache_headers)),
+        );
     }
 
     app.with_state(state)
@@ -215,4 +234,21 @@ async fn readyz(axum::extract::State(state): axum::extract::State<AppState>) -> 
     let ready = pg && s3;
     let code = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
     (code, Json(json!({ "ready": ready, "pg": pg, "s3": s3 })))
+}
+
+/// 静态资源的缓存策略(见 fallback_service 处的长注释)。
+///
+/// ★判据是「这个 URL 的内容会不会变」,不是文件类型★:
+/// · `/assets/index-CGGytgSG.js` —— 名字里带内容哈希,同名文件的内容**永远不变** → 存一年、immutable;
+/// · `/`、`/index.html`、以及所有回退到 index.html 的前端路由 —— 同一个 URL 内容会随部署变
+///   → `no-cache`(可以存,但**每次必须回源校验**,304 依然省流量)。
+///
+/// ⚠ 用 `no-cache` 而不是 `no-store`:后者连 304 协商都不给,每次都全量重下;
+///   而我们要的只是「别拿旧的当新的」,不是「别存」。
+async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let hashed = req.uri().path().starts_with("/assets/");
+    let mut resp = next.run(req).await;
+    let v = if hashed { "public, max-age=31536000, immutable" } else { "no-cache" };
+    resp.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
+    resp
 }

@@ -182,17 +182,28 @@ function MinutesRow({ m, onOpen }: { m: MinutesTodo; onOpen: (id: number) => voi
   /// 拖了多久 —— 光说「待整理」看不出急不急,而「3 天前开完的」会。
   const days = Math.floor((Date.now() - new Date(m.ends_at).getTime()) / 86400_000)
   const ago = days <= 0 ? '今天开完' : days === 1 ? '昨天开完' : `${days} 天前开完`
+  /// ★欠得久了标在**事实**上,不标在按钮上★（2026-08-10 liaoruili：
+  /// 「接着写、去整理、去整理，只有最后一个是有颜色的」）。
+  /// 原来按 `days >= 3` 给按钮上主色，于是同一张卡上三个同类动作两白一蓝 ——
+  /// 读起来像随机的，因为**颜色的理由不在按钮上**（按钮文字完全一样，凭什么一个蓝一个白）。
+  /// 「拖了 5 天」是事实，把红色给这句话，颜色的理由就在它旁边；
+  /// 动作则保持同一个样子 —— 同类的事长得一样，才看得出它们是同类。
+  const overdue = days >= 3
   return (
     <div>
       <div onClick={() => onOpen(m.activity_id)} style={{ cursor: 'pointer', fontSize: 13 }}>
         📝 <b>{m.title}</b> 的纪要等你整理
       </div>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {fmtDay(s)} {fmtHM(s)} · {ago} · {m.has_draft ? '已有草稿' : '还没建'}
-      </Typography.Text>
-      <div>
-        <Button size="small" type={days >= 3 ? 'primary' : 'default'} style={{ marginTop: 6 }}
-          onClick={() => onOpen(m.activity_id)}>
+      {/* ★按钮就跟在这一行后面★（liaoruili：「按钮单独放一行有点浪费空间」）——
+          这张卡在右栏里本来就窄，一条待办占三行的话，四五条就把整栏吃满、
+          后面的看不见了。而「看得见全部待办」正是这张卡唯一的用途。 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {fmtDay(s)} {fmtHM(s)} ·{' '}
+          <span style={overdue ? { color: '#cf1322' } : undefined}>{ago}</span>
+          {' '}· {m.has_draft ? '已有草稿' : '还没建'}
+        </Typography.Text>
+        <Button size="small" onClick={() => onOpen(m.activity_id)}>
           {m.has_draft ? '接着写' : '去整理'}
         </Button>
       </div>

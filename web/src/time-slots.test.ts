@@ -42,3 +42,41 @@ test('每个快捷时长都落在刻度上', () => {
     assert.equal(fmtDur(d.m), d.label.replace(/\s/g, ' '), `按钮文案与 fmtDur 应当一致:${d.label}`)
   }
 })
+
+// ── G0/G1（2026-08-11）──────────────────────────────────────────────
+import { defaultStart, matchDuration } from './time-slots.ts'
+
+test('★取整只发生在「别人会看到」的类型上★（G0）', () => {
+  // 15:37 —— PRD 举的就是这个例子
+  const t = new Date(2026, 7, 11, 15, 37, 42, 500)
+  assert.equal(defaultStart(t, 0).getMinutes(), 37, '不取整时要保住真实时刻（个人记录「我刚做完，现在记」）')
+  assert.equal(defaultStart(t, 0).getSeconds(), 0, '秒要抹掉——15:37:42 这种时间没人想看')
+  const r = defaultStart(t, 15)
+  assert.equal(`${r.getHours()}:${r.getMinutes()}`, '15:45', '会议向上取到下一个一刻钟')
+})
+
+test('已经在刻度上就别动它（G0 边界）', () => {
+  // ⚠ 用 ceil 而不是「加一格再取整」——后者会把 15:45 顶到 16:00，
+  //   于是「我就想 15:45 开会」的人每次都得手动改回去。
+  const t = new Date(2026, 7, 11, 15, 45, 0, 0)
+  const r = defaultStart(t, 15)
+  assert.equal(`${r.getHours()}:${r.getMinutes()}`, '15:45')
+})
+
+test('取整跨到下一个小时 / 跨到明天（G0 边界）', () => {
+  const a = defaultStart(new Date(2026, 7, 11, 15, 46), 15)
+  assert.equal(`${a.getHours()}:${a.getMinutes()}`, '16:0', '15:46 → 16:00')
+  const b = defaultStart(new Date(2026, 7, 11, 23, 50), 15)
+  assert.equal(b.getDate(), 12, '23:50 → 次日 00:00，日期要跟着进位')
+  assert.equal(`${b.getHours()}:${b.getMinutes()}`, '0:0')
+})
+
+test('时长落在哪一档 / 落不到就是「自定义」（G1 双向绑定）', () => {
+  assert.equal(matchDuration(60)?.label, '1 小时')
+  assert.equal(matchDuration(15)?.label, '15 分钟', '★15 分钟这一档是本次补的★')
+  assert.equal(matchDuration(45), null, '45 分钟不在预设里 → 自定义')
+  assert.equal(matchDuration(3 * 24 * 60), null, '跨天（出差 3 天）→ 自定义，PRD 明说快捷只覆盖小时级')
+  assert.equal(matchDuration(0), null, '0 不是一个时长')
+  assert.equal(matchDuration(-30), null, '负数（结束早于开始）不该匹配上任何一档')
+  assert.equal(matchDuration(null), null)
+})
