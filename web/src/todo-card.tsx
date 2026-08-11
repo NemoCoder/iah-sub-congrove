@@ -143,7 +143,11 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
                 marginTop: 4, padding: '4px 8px', background: '#fafafa', borderRadius: 4,
                 fontSize: 12, color: '#595959', borderLeft: '2px solid #d9d9d9',
               }}>{u.body.length > 60 ? `${u.body.slice(0, 60)}…` : u.body}</div>
-              <Button size="small" style={{ marginTop: 6 }} onClick={() => onOpen(u.activity_id)}>回复</Button>
+              {/* 与「去整理」同类:只是跳过去,不改任何状态 —— 同样用轻样式(见 MinutesRow 的注释) */}
+              <div style={{ display: 'flex', marginTop: 4 }}>
+                <Button size="small" type="link" onClick={() => onOpen(u.activity_id)}
+                  style={{ marginLeft: 'auto', padding: 0, height: 'auto', fontSize: 12 }}>回复 ›</Button>
+              </div>
             </div>
           ))}
         </Space>
@@ -229,8 +233,16 @@ function MinutesRow({ m, onOpen }: { m: MinutesTodo; onOpen: (id: number) => voi
           <span style={overdue ? { color: '#cf1322' } : undefined}>{ago}</span>
           {' '}· {m.has_draft ? '已有草稿' : '还没建'}
         </Typography.Text>
-        <Button size="small" onClick={() => onOpen(m.activity_id)}>
-          {m.has_draft ? '接着写' : '去整理'}
+        {/* ★导航类动作用轻样式★（2026-08-12 liaoruili：「这些按钮的风格有点突兀，比较丑」）。
+            两处一起改的理由是**它们本来就不是一类东西**：
+            「接受/待定/拒绝」当场改状态，点错了要去别处撤 —— 值一个实心方框；
+            「去整理/接着写/回复」只是把你送到另一个页面，什么也没发生 —— 不该长得一样重。
+            五行同类动作各画一个描边方框，卡片就变成一列方块了。
+            ⚠★另一半丑在右边缘参差★：按钮跟在长短不一的元信息后面，
+            每行起点都不同。`marginLeft:auto` 把它们推齐成一列，右边缘就干净了。 */}
+        <Button size="small" type="link" onClick={() => onOpen(m.activity_id)}
+          style={{ marginLeft: 'auto', padding: 0, height: 'auto', fontSize: 12 }}>
+          {m.has_draft ? '接着写' : '去整理'} ›
         </Button>
       </div>
     </div>

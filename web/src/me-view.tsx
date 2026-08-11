@@ -142,8 +142,16 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
               value={prefs?.default_remind_minutes ?? undefined}
               onChange={(v) => savePrefs({ default_remind_minutes: v ?? null })}
               options={[5, 10, 15, 30, 60].map((n) => ({ value: n, label: `提前 ${n} 分钟` }))} />
+            {/* ⚠★这句原来是「提醒的**投递**属 M2，这里先把偏好存下来」★(2026-08-12 改)。
+                两个毛病:①`**投递**` 是 markdown 源码,这里不渲染 markdown,用户看到的就是一串星号;
+                ②「M2」是我们的里程碑代号,用户不知道那是什么、更不知道什么时候到。
+                ★对外文案不许出现内部代号和内部标注符号(★ ⚠ **)★ —— 同批还改了
+                「★超管模式生效中★」「★凌晨这一段有活动被折叠了★」两处。
+                现在投递已经实现(src/remind.rs),文案要说的是**默认值**:不选=按默认 15 分钟,
+                清空=这个人不收提醒。这一条必须写出来,否则「没设过偏好的人突然开始收提醒」
+                是一次无声的行为变更。 */}
             <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              ⚠ 提醒的**投递**属 M2，这里先把偏好存下来
+              不选就按默认提前 15 分钟提醒；清空则不提醒。单场活动可以另外单独设。
             </Typography.Text>
           </div>
         </Card>
@@ -205,7 +213,7 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
               {/* ★把「分项目之和 ≥ 总数」讲明白★:一场会可以同时关联多个项目,
                   不说的话看表的人会以为哪边算错了。 */}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                一场会可关联多个项目，因此分项目的次数之和可能大于总次数。
+                一场活动可关联多个项目，因此分项目的次数之和可能大于总次数。
               </Typography.Text>
             </>
           )}

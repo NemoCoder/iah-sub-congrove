@@ -60,6 +60,11 @@ pub struct ActivityRow {
     /// 会后补录的实际时长(分钟,D5 第 2 级)。null = 没填过。
     #[sqlx(default)]
     pub actual_minutes: Option<i32>,
+    /// 这一场提前多少分钟提醒(PRD F3)。★三态★:null=跟随个人默认 / 0=这场不提醒 / >0=提前这么多。
+    /// ⚠ 旁听者那个裁剪版响应**故意不给这一项**:旁听者本来就收不到提醒
+    /// (remind.rs 的 `kind <> 'observer'`),给了反而像是「可以设」。
+    #[sqlx(default)]
+    pub remind_minutes: Option<i32>,
     /// 活动粒度的材料策略(PRD 6.3.2)
     #[sqlx(default)] pub no_download: bool,
     #[sqlx(default)] pub no_share: bool,
@@ -120,6 +125,9 @@ pub struct ActivityIn {
     #[serde(default)] pub project_ids: Vec<i64>,
     /// 一并邀请的人(可空,之后再加)。
     #[serde(default)] pub participants: Vec<String>,
+    /// 这一场提前多少分钟提醒（PRD F3）。三态见 remind.rs：
+    /// 不传/NULL = 跟随个人默认；0 = ★这场不提醒★；>0 = 提前这么多分钟。
+    #[serde(default)] pub remind_minutes: Option<i32>,
 }
 
 /// GET /api/activities —— 时间线入口(D7):我参与的 + 我所在项目的活动,按时间排。
@@ -259,12 +267,12 @@ pub async fn create(
     let mid: i64 = sqlx::query_scalar(
         // busy 取类型的 busy_default 作初值(A3);用户想改逐条改,不改类型。
         "INSERT INTO activities (title, agenda, organizer, recorder, starts_at, ends_at, timezone,
-                               location, online_url, visibility, type_id, busy)
-         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12) RETURNING id")
+                               location, online_url, visibility, type_id, busy, remind_minutes)
+         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12,$13) RETURNING id")
         .bind(title).bind(&input.agenda).bind(username).bind(input.recorder.trim())
         .bind(input.starts_at).bind(input.ends_at).bind(input.timezone.as_deref())
         .bind(&input.location).bind(&input.online_url).bind(vis)
-        .bind(input.type_id).bind(caps.busy_default)
+        .bind(input.type_id).bind(caps.busy_default).bind(input.remind_minutes)
         .fetch_one(&mut *tx).await?;
     for pid in &input.project_ids {
         sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)")
@@ -377,6 +385,13 @@ pub struct Participant {
     pub responded_at: Option<Ts>,
 }
 
+/// 让 `Option<Option<T>>` 能区分「没传」与「传了 null」。
+/// `#[serde(default)]` 负责「没传 → None」；字段一旦出现，这里就把它包成 `Some(...)`。
+fn de_double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where D: serde::Deserializer<'de>, T: serde::Deserialize<'de> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
 #[derive(Deserialize)]
 pub struct ActivityPatch {
     pub title: Option<String>,
@@ -390,10 +405,27 @@ pub struct ActivityPatch {
     /// 活动粒度的材料策略(PRD 6.3.2)。⚠ 与项目级**叠加不是覆盖**:两处任一禁了就禁。
     pub no_download: Option<bool>,
     pub no_share: Option<bool>,
+    /// ⚠★改它不清 reminded_at 是有意的★：把「提前 15 分」改成「提前 30 分」时，
+    /// 如果这个人**已经**按 15 分那档收过提醒了，再发一遍是骚扰而不是补救。
+    /// 清 reminded_at 只发生在**改时间**（reset_after_reschedule）—— 那时旧提醒才真的作废。
+    /// ⚠★双层 Option★（2026-08-12 实现前端下拉时发现的真 bug）：
+    /// 这一列的 `null` 是**一个合法取值**（跟随个人默认），不是「没传」。
+    /// 而原来的写法是 `Option<i32>` + SQL 里 `COALESCE($n, remind_minutes)` ——
+    /// 于是「传了 null」和「压根没传」在后端**长得一模一样**，用户在界面上选
+    /// 「跟随个人默认」，请求 200、界面照常刷新，★数据库里一个字节都没变★。
+    /// 静默失败是最贵的那种失败：没有报错可查，只有过一阵子有人问「我明明关过」。
+    ///
+    /// 双层的读法：`None` = 字段没出现在 JSON 里；`Some(None)` = 显式传了 null；
+    /// `Some(Some(n))` = 传了值。SQL 侧配一个 bool「要不要动这一列」。
+    /// ★凡是「null 有含义」的可空列都得这么写★ —— 同批把 actual_minutes 也改了，
+    /// 它的 null 是「没填过」，此前「清空实际时长」同样是静默无效。
+    #[serde(default, deserialize_with = "de_double_option")]
+    pub remind_minutes: Option<Option<i32>>,
     /// ★会后补录的实际时长★(D5 三级回退的第 2 级,单位**分钟**)。
     /// 绝大多数会不会录屏,而排程时长常常离谱(排 2 小时、20 分钟讲完就散);
     /// 没有这一级,统计出来的数字系统性偏高 —— 而它是要拿去做季度汇报的。
-    pub actual_minutes: Option<i32>,
+    #[serde(default, deserialize_with = "de_double_option")]
+    pub actual_minutes: Option<Option<i32>>,
     /// ★关联项目：只增不减★（2026-08-09 用户）。
     ///
     /// 传进来的 id 会被**并入**现有关联，**永远不删**。理由是关联项目一旦建立，
@@ -403,6 +435,29 @@ pub struct ActivityPatch {
     /// 真要收回，走的是删活动（软删、留痕），不是悄悄摘掉一个项目。
     #[serde(default)]
     pub add_project_ids: Option<Vec<i64>>,
+}
+
+/// ★改期之后要作废的东西★（PRD F2 + D2）。两个入口共用：`update` 与 `accept_counter`。
+///
+/// 抽成一个函数不是为了省几行 —— 是因为**它们本来就是同一件事的两面**：时间变了，
+/// 之前基于旧时间做出的一切都作废。此前只有「答复」一项，两处各写一遍；
+/// 加「提醒」时若只改一处，另一处就会★静默地按旧时间已发过的状态★继续躺着，
+/// 于是改期之后那批人再也收不到提醒 —— 而它不报错。
+///
+/// ⚠★两者的「除了谁」不一样，别顺手写齐★：
+///   · **答复**排除操作人 —— 时间是他改的，他不用再答复一次；
+///   · **提醒不排除任何人** —— 「会快开始了」对发起人同样成立，他也要被叫。
+async fn reset_after_reschedule(
+    tx: &mut sqlx::PgConnection, mid: i64, actor: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE activity_participants SET status='pending', responded_at=NULL,
+                counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
+          WHERE activity_id=$1 AND username <> $2")
+        .bind(mid).bind(actor).execute(&mut *tx).await?;
+    sqlx::query("UPDATE activity_participants SET reminded_at=NULL WHERE activity_id=$1")
+        .bind(mid).execute(&mut *tx).await?;
+    Ok(())
 }
 
 pub async fn update(
@@ -437,7 +492,9 @@ pub async fn update(
     crate::http::activity_types::check_span(s, e).map_err(AppError::BadRequest)?;
     // ★实际时长按**这场活动的跨度**算上界,不写死一天★(F4 连带条):
     // 写死 1440 分钟的话,三天的出差就填不了实际时长。
-    if let Some(am) = p.actual_minutes {
+    // ⚠ 双层 Option 后这里必须是 `Some(Some(..))`：`Some(None)` 是**显式清空**，
+    // 清空没有范围可校验（也不该被上界拦下来）。写成 `Some(am)` 会把内层 Option 当值传进去。
+    if let Some(Some(am)) = p.actual_minutes {
         crate::http::activity_types::check_actual_minutes(am, s, e).map_err(AppError::BadRequest)?;
     }
 
@@ -447,16 +504,21 @@ pub async fn update(
                 recorder=COALESCE($4,recorder), starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
                 visibility=COALESCE($9,visibility),
-                actual_minutes=COALESCE($10,actual_minutes),
-                actual_by=CASE WHEN $10 IS NULL THEN actual_by ELSE $11 END,
-                no_download=COALESCE($12,no_download), no_share=COALESCE($13,no_share),
+                -- ★$10 是「这次要不要动这一列」,$11 才是值★(2026-08-12)。
+                -- 原来写的是 COALESCE($10,actual_minutes) —— 那样「显式清空」和「没传」
+                -- 无法区分,于是清空静默失效。这两列的 null 都是**有含义的值**,不是缺省。
+                actual_minutes=CASE WHEN $10 THEN $11 ELSE actual_minutes END,
+                actual_by=CASE WHEN $10 AND $11 IS NOT NULL THEN $12 ELSE actual_by END,
+                no_download=COALESCE($13,no_download), no_share=COALESCE($14,no_share),
+                remind_minutes=CASE WHEN $15 THEN $16 ELSE remind_minutes END,
                 updated_at=now()
           WHERE id=$1")
         .bind(mid).bind(p.title.as_deref()).bind(p.agenda.as_deref()).bind(p.recorder.as_deref())
         .bind(s).bind(e).bind(p.location.as_deref()).bind(p.online_url.as_deref())
         .bind(p.visibility.as_deref())
-        .bind(p.actual_minutes).bind(id.require_username()?)
+        .bind(p.actual_minutes.is_some()).bind(p.actual_minutes.flatten()).bind(id.require_username()?)
         .bind(p.no_download).bind(p.no_share)
+        .bind(p.remind_minutes.is_some()).bind(p.remind_minutes.flatten())
         .execute(&mut *tx).await?;
     // ★改线上链接留痕★:开会前十分钟换链接是真实场景,事后要能追溯「谁何时改成什么」。
     if let Some(new) = p.online_url.as_deref() {
@@ -482,11 +544,7 @@ pub async fn update(
     // ★改了时间就把所有人的答复清回 pending★:上次的「接受」是对**旧时间**说的,
     // 留着它等于替人答应了一个他没看过的时间。发起人与记录员除外(改的人自己知道)。
     if (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1) {
-        sqlx::query(
-            "UPDATE activity_participants SET status='pending', responded_at=NULL,
-                    counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-              WHERE activity_id=$1 AND username <> $2")
-            .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
+        reset_after_reschedule(&mut tx, mid, id.require_username()?).await?;
     }
     // ★活动材料文件夹的名字跟着活动走★（2026-08-09 liaoruili:「现在改了会议 title,
     // 文件夹名字会一起变吗」——**当时不会,这是个缺陷**）。
@@ -1283,11 +1341,8 @@ pub async fn accept_counter(
     sqlx::query("UPDATE activities SET starts_at=$2, ends_at=$3, updated_at=now() WHERE id=$1")
         .bind(mid).bind(s).bind(e).execute(&mut *tx).await?;
     // 时间变了,所有人的答复都得重来 —— 包括提议者本人:他提的是时间,不等于他一定能来。
-    sqlx::query(
-        "UPDATE activity_participants SET status='pending', responded_at=NULL,
-                counter_starts_at=NULL, counter_ends_at=NULL, counter_reason=NULL
-          WHERE activity_id=$1 AND username <> $2")
-        .bind(mid).bind(id.require_username()?).execute(&mut *tx).await?;
+    // 提醒也一并清（见 reset_after_reschedule 的头注:两者「除了谁」不一样）。
+    reset_after_reschedule(&mut tx, mid, id.require_username()?).await?;
     tx.commit().await?;
     let actor = id.require_username()?;
     audit::record(&state.pool, actor, "activity.accept-counter", &mid.to_string(), &who).await;
@@ -1641,6 +1696,62 @@ pub async fn my_minutes_todo(
     Ok(Json(json!(rows.iter().map(|(mid, title, s, e, draft)| json!({
         "activity_id": mid, "title": title, "starts_at": s, "ends_at": e, "has_draft": draft,
     })).collect::<Vec<_>>())))
+}
+
+#[derive(Deserialize)]
+pub struct RemindersQuery {
+    /// 上一次轮询拿到的 `now`。★不给 = 只回时间戳、不回任何提醒★(见下)。
+    pub since: Option<Ts>,
+}
+
+/// GET /api/me/reminders —— 页面内弹窗的数据源(设计 §5)。
+///
+/// 后台循环(`remind.rs`)把提醒写进站内信,但站内信要人主动去看;
+/// F2 要的是**开着页面就能弹出来**。所以前端每 60 秒问一次「从上次到现在,有没有新提醒发给我」。
+///
+/// ══════ 两个决定,都是为了不重复弹/不漏弹 ══════
+///
+/// ① ★`since` 用**服务端**的时间,不用客户端的★。
+///    响应里带一个 `now`,前端下次原样送回来。看起来绕,但换成前端用 `Date.now()` 的话,
+///    浏览器时钟比服务器快几秒就会**永远查不到**刚发的提醒(since 一直在未来),
+///    慢几秒则**每轮重弹**同一条。而这两种偏差都无声无息 ——
+///    ★用户只会觉得「提醒时灵时不灵」,而我们查不出为什么★。
+///    时钟同步不是我们能假设的前提(用户笔记本合盖再打开就能漂几分钟)。
+///
+/// ② ★不给 `since` 时回空列表,而不是回「最近的全部」★。
+///    首次进页面回一批历史提醒的话,用户一打开就被几条「XX 将于 15 分钟后开始」糊脸,
+///    而那些会**早就开完了**。首轮只用来对时。
+///
+/// ⚠ `reminded_at` 是「投递那一刻」,`starts_at` 是会开始的时刻,别混:
+///   翻页去重靠前者,文案里说的「还有几分钟」算的是后者。
+pub async fn my_reminders(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<RemindersQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let who = id.require_username()?;
+    let now: Ts = sqlx::query_scalar("SELECT now()").fetch_one(&state.pool).await?;
+    let items = match q.since {
+        None => vec![],
+        Some(since) => {
+            let rows: Vec<(i64, String, Ts, Ts)> = sqlx::query_as(
+                "SELECT p.activity_id, m.title, m.starts_at, p.reminded_at
+                 FROM activity_participants p
+                 JOIN activities m ON m.id = p.activity_id
+                 WHERE p.username = $1 AND p.reminded_at > $2
+                   -- 取消的活动不弹:提醒发出去之后被取消,这一轮就别再冒出来了
+                   AND m.status = 'active'
+                 ORDER BY m.starts_at LIMIT 20")
+                .bind(who).bind(since).fetch_all(&state.pool).await?;
+            rows
+        }
+    };
+    Ok(Json(json!({
+        "now": now,
+        "items": items.iter().map(|(mid, title, s, r)| json!({
+            "activity_id": mid, "title": title, "starts_at": s, "reminded_at": r,
+        })).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(Deserialize)]

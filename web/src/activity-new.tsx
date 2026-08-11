@@ -10,6 +10,7 @@ import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch,
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, isMaterials, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
+import { RemindSelect } from './remind-poll'
 import { TimeRangePicker } from './time-range'
 
 
@@ -24,6 +25,9 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   const [found, setFound] = useState<UserOpt[]>([])
   const [busy, setBusy] = useState(false)
   const [pub, setPub] = useState(false)
+  /// 单场提醒（PRD F3）。★初值 null = 跟随个人默认★，不是「不提醒」——
+  /// 大多数人不会动这一项，默认必须是「照我平时的习惯办」。
+  const [remind, setRemind] = useState<number | null>(null)
   const [projOpen, setProjOpen] = useState(false)
   /// ★参会人与时间提到组件级★:右栏的 chips 与忙闲图都要用它们,
   /// 留在 Form 内部的话右栏读不到(原型就是左表单/右面板并排)。
@@ -164,6 +168,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           location: v.location ?? '',
           online_url: v.online_url ?? '',
           visibility: pub ? 'public' : 'private',
+          remind_minutes: remind,
         }),
       })
       message.success('活动已创建')
@@ -173,8 +178,13 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
 
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-    <Card title="发起活动" style={{ flex: 1, minWidth: 0 }}
-      extra={<Button size="small" onClick={onCancel}>取消</Button>}>
+    {/* ⚠★这里曾经还有一个 `extra={<Button>取消</Button>}`★(2026-08-12 删):
+        整页同时有两个「取消」——页头一个、表单底一个,点下去做的是同一件事。
+        留底下那个:它和「创建活动」成对,是表单的通用摆法;而页头这个还容易被读成
+        「取消这场活动」(详情页真有这么个按钮,见 activity-detail.tsx),语义撞车。
+        误伤检查过:发起活动是**整页视图不是弹窗**,离开的路不止这一条 ——
+        顶部导航(日程/项目/活动)一直在,不会把人关在表单里出不去。 */}
+    <Card title="发起活动" style={{ flex: 1, minWidth: 0 }}>
       <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 720 }}
         initialValues={{ recorder: me?.username }}>
         {/* ★类型放在最前★：它决定下面哪些字段出现、哪些必填，放后面会让人先填后改。 */}
@@ -287,6 +297,12 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             后一句当年是 PRD 专门为「公开」这个词的歧义加的 —— 现在按用户要求去掉,
             **这条歧义的兜底只剩后端**(材料权限一律走项目成员身份,与 visibility 无关)。
             记在这儿,免得下一个人以为是漏写的又给加回来。 */}
+        {/* ★放在「公开活动」之前★：提醒是发起每一场都会瞄一眼的东西，
+            而公开与否偶尔才改。表单顺序应当按**看它的频率**排，不是按实现顺序。 */}
+        <Form.Item label="提醒我">
+          <RemindSelect value={remind} onChange={setRemind} size="middle" style={{ width: 200 }} />
+        </Form.Item>
+
         <Form.Item label="公开活动">
           <Switch checked={pub} onChange={setPub} />
         </Form.Item>

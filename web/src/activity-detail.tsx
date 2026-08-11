@@ -11,6 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
+import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { useActivityUpload } from './activity-upload'
@@ -138,7 +139,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
             旁听之后它就从广场消失、进了我的日历 —— 要退出自然该来它自己的页面,
             而不是回广场上找一个已经不在那儿的条目。 */}
         {d.observer && !canceled && (
-          <Popconfirm title="不再旁听这场会？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
+          <Popconfirm title="不再旁听这场活动？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
             onConfirm={async () => {
               try {
                 await api(`/api/activities/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
@@ -200,7 +201,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
 
       {canceled && (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="这场会已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
+          message="这场活动已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
       )}
 
       {/* ★冲突提示条★(原型位置:信息卡之前,红底,抢注意力)。
@@ -246,6 +247,16 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
               { key: 'o', label: '发起人', children: m.organizer },
+              // ★提醒摆在这里而不是收进某个设置弹窗★:它是「这一场」的属性,
+              // 和地点/线上链接同级;藏起来的结果就是没人知道它可以改。
+              // ⚠ 改这一项**不清 reminded_at**(后端 ActivityPatch 头注):
+              //   「提前 15 分」改成「提前 30 分」时,如果 15 分钟那条已经发过了,
+              //   清了就会再发一遍 —— 而人已经知道这场会了。
+              ...(!canceled && d.can_edit ? [{
+                key: 'rm', label: '提醒',
+                children: <RemindSelect value={m.remind_minutes}
+                  onChange={(v) => patch({ remind_minutes: v })} style={{ width: 180 }} />,
+              }] : []),
               // ★只在会开完之后才出现★(D5 第 2 级):会还没开就问「实际开了多久」是荒谬的,
               // 而且那一栏摆在那里只会让人以为要预填。
               ...(new Date(m.ends_at).getTime() < Date.now() ? [{

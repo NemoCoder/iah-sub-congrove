@@ -211,6 +211,12 @@ CREATE TABLE activities (
   -- ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。
   no_download boolean NOT NULL DEFAULT false,
   no_share    boolean NOT NULL DEFAULT false,
+  -- 这一场提前多少分钟提醒(PRD F3 的「单个活动可改」)。三态,见 docs/TECH-DESIGN-M1-remind.md §7①:
+  --   NULL = 跟随个人默认(user_prefs.default_remind_minutes,再没有则兜底 15 分钟)
+  --   0    = ★这场不提醒★（拿 0 当哨兵:「提前 0 分钟提醒」本来就无意义,不会和真实值撞)
+  --   >0   = 提前这么多分钟
+  -- ⚠ 判据统一写成 `COALESCE(...) > 0` —— ★一处同时管掉「显式关闭」和「负数脏数据」★。
+  remind_minutes int CHECK (remind_minutes IS NULL OR remind_minutes >= 0),
   CHECK (ends_at > starts_at)
 );
 -- 忙闲与日历都按时间窗查,且只关心未取消的。
@@ -252,10 +258,19 @@ CREATE TABLE activity_participants (
   -- 建一场未来的会(不是补录)→ 改到昨天 → 判据翻成「是补录」,而那个人早就被通知过、
   -- 也确实参加了。缺陷在判据本身,不在实现方式,即使「现算不存」也一样翻转。
   notified_at  timestamptz,
+  -- ★「这个人这场活动的提醒发过没有」★(PRD F2,2026-08-11)。
+  -- 不建 reminders 待发队列表:队列表要解决「改期之后旧任务怎么办」——要么改期时去删/改
+  -- 队列行(两处写、容易漏),要么发的时候回查活动确认时间没变(那队列行就只是个索引)。
+  -- 而「这个人这场会提醒过没有」本来就是**参会关系的属性**,记在关系行上:改期清一列即可。
+  reminded_at  timestamptz,
   PRIMARY KEY (activity_id, username)
 );
 -- 忙闲是最热路径:按人 + 时间窗查。
 CREATE INDEX IF NOT EXISTS idx_mp_user ON activity_participants (username);
+-- 提醒循环每 30 秒扫一次「还没提醒过的」。不加这个索引就是每 30 秒全表扫参会人。
+-- ⚠ 部分索引只收 reminded_at IS NULL 的行 —— 发过的行会自动离开索引,索引不随历史增长。
+CREATE INDEX idx_ap_pending_remind ON activity_participants (activity_id)
+  WHERE reminded_at IS NULL AND kind <> 'observer';
 
 -- 活动讨论区(D13)。两个频道:public(参会人可见)/ private(仅双方)。
 -- ★私聊对象只限发起人与项目主持人★,不做任意点对点——否则会长成一个 IM。

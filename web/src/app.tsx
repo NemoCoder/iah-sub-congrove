@@ -12,6 +12,7 @@ import { SharePage } from './share-page'
 import { SharesView } from './shares-view'
 import { ApiDocView } from './apidoc-view'
 import { ScheduleView } from './schedule-view'
+import { RemindPoll } from './remind-poll'
 import { ActivityDetailView } from './activity-detail'
 import { ActivityNewView } from './activity-new'
 import { ActivityMinutesView } from './activity-minutes'
@@ -89,6 +90,10 @@ export function App() {
   const display = me?.name || me?.username || '未知用户'
   return (
     <div style={{ minHeight: '100vh', background: '#f4f4f7' }}>
+      {/* ★挂在这里而不是各视图里★：提醒该弹就得弹，跟当前停在哪个页面无关。
+          放进某个视图 = 只有停在那一页的人收得到，而人多半停在别处。
+          点弹窗直接跳到那场活动 —— 提醒说「快开始了」，下一步一定是「那我去看看」。 */}
+      <RemindPoll onOpen={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null) }} />
       <IahHeader
         nav={
           <Segmented
@@ -147,7 +152,7 @@ export function App() {
           background: '#fff7e6', borderBottom: '1px solid #ffd591', color: '#d46b08',
           padding: '6px 22px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12,
         }}>
-          <span>★超管模式生效中★ —— 你现在看得到所有人的项目与活动{me.admin_mode_until
+          <span>超管模式生效中 —— 你现在看得到所有人的项目与活动{me.admin_mode_until
             ? `，${new Date(me.admin_mode_until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 自动关闭` : ''}</span>
           <span style={{ flex: 1 }} />
           <a onClick={() => void toggleAdminMode(false)}>立即退出</a>
