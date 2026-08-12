@@ -46,9 +46,12 @@ export function shownProjects<T extends { name: string; archived_at?: string | n
   all: T[], isMat: (p: T) => boolean, scope: Scope, kw: string,
 ): T[] {
   const 词 = kw.trim().toLowerCase()
+  // ★材料区**一行都不进这个列表**★（2026-08-13 liaoruili 拍板:把它拎到筛选器上面单独一格)。
+  //   在此之前它在「进行中」那一档里置顶显示,于是标签写「进行中 2」、底下却有 3 行 ——
+  //   计数只数真项目,而显示把它算进来了。
+  //   ★根因不是计数写错,是「把一个不属于任何一档的东西塞进按档筛选的列表里」★,
+  //   所以修法是把它挪出去,而不是继续给筛选器打补丁。
   return [
-    // 归档档里不摆材料区 —— 它永远不是归档的
-    ...(scope === 'archived' ? [] : all.filter(isMat)),
     ...all
       .filter((p) => !isMat(p))
       .filter((p) => (scope === 'archived' ? !!p.archived_at : !p.archived_at))
