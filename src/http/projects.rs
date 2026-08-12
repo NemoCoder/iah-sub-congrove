@@ -717,7 +717,10 @@ pub async fn archive(
               ORDER BY m.starts_at LIMIT 5")
             .bind(pid).fetch_all(&state.pool).await?;
         if !pending.is_empty() {
-            let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+            // ★这条文案是给**操作者**看的即时报错,所以用他的时区★(2026-08-12,PRD E0)。
+            // 原来写死东八区 —— 一个纽约用户被拒时看到的「还有没开始的活动:X(08-13 10:00)」
+            // 是北京时间,他去日历上找 10:00 那一场,找不到。
+            let tz = crate::tzutil::of_user(&state.pool, username).await;
             let list = pending.iter()
                 .map(|(t, at)| format!("{}（{}）", t, at.with_timezone(&tz).format("%m-%d %H:%M")))
                 .collect::<Vec<_>>().join("、");

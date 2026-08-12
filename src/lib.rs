@@ -12,6 +12,7 @@ pub mod error;
 pub mod http;
 pub mod notify;
 pub mod remind;
+pub mod tzutil;
 pub mod media_ai;
 pub mod perm;
 pub mod registry;

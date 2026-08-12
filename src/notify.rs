@@ -38,14 +38,15 @@ pub async fn notify_activity(state: &AppState, mid: i64, targets: &[String], tit
     }
 }
 
-/// 「8-13 周三 10:00」—— 站内信正文里的时间格式。
+/// 「08-13 周三 10:00（北京时间）」—— 站内信正文里的时间格式。
 /// ★带星期★:纯数字日期读起来要在脑子里换算一次,而「周三」是人真正安排生活用的单位。
-pub fn fmt_when(t: Ts) -> String {
-    let local = t.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
-    const WD: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-    let wd = WD[local.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
-    format!("{} {wd} {}", local.format("%m-%d"), local.format("%H:%M"))
-}
+///
+/// ⚠★2026-08-12:加了时区参数和时区标注★(PRD E0,liaoruili 拍板的甲案)。
+/// 原来写死东八区且不标 —— 纽约用户读到的「08-13 10:00」是北京时间而他不知道,
+/// ★于是他去自己的日历上找 10:00 那一场,找不到★。
+/// `tz` 传的是**活动自己的**时区(`activities.timezone`),不是收件人的 ——
+/// 理由与两个方案的取舍写在 `tzutil::when_labeled` 的头注里。
+pub fn fmt_when(t: Ts, tz: chrono_tz::Tz) -> String { crate::tzutil::when_labeled(t, tz) }
 
 
 /// 项目相关的站内信(转移主持人等)。与活动版的区别只在 `ref` 前缀与直达链接的形状,
