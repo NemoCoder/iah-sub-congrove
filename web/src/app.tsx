@@ -13,6 +13,8 @@ import { SharesView } from './shares-view'
 import { ApiDocView } from './apidoc-view'
 import { ScheduleView } from './schedule-view'
 import { RemindPoll } from './remind-poll'
+import { TzBanner } from './tz-banner'
+import { setMyTz } from './tz'
 import { ActivityDetailView } from './activity-detail'
 import { ActivityNewView } from './activity-new'
 import { ActivityMinutesView } from './activity-minutes'
@@ -69,6 +71,22 @@ export function App() {
       .catch((e) => { if (e.message !== '未登录') setStatus('error') }) // 401 已由 api.ts 整页跳登录
   }, [])
 
+  /// ★把「我的时区」尽早灌进 tz.ts★（PRD E0；tz.ts 的 setMyTz 头注解释了为什么是模块级状态）。
+  ///
+  /// ⚠★必须在这里、而不是在设置页里灌★：消费它的是 8 个文件里几十处渲染，
+  ///   其中大多数视图用户可能一整天都不打开设置页。在设置页里灌 = 只有去过设置的人时间才是对的。
+  ///
+  /// ⚠★prefs 拉回来之前，页面已经在按浏览器时区渲染了★ —— 这一瞬的闪动是有意接受的：
+  ///   替代方案是「拉到 prefs 之前整页转圈」，而那会让**所有人**（包括 99% 时区一致的国内用户）
+  ///   每次进站都多等一个请求，为的是消除一个只影响少数人的短暂闪动。不划算。
+  ///   `reloadTick` 让灌完之后重渲染一次，把闪动收在一帧里。
+  const [tzTick, setTzTick] = useState(0)
+  useEffect(() => {
+    api<{ timezone: string | null }>('/api/me/prefs')
+      .then((p) => { setMyTz(p.timezone); setTzTick((t) => t + 1) })
+      .catch(() => { /* 拿不到就跟随浏览器 —— 这正是 myTz() 的兜底,不必报错打断人 */ })
+  }, [])
+
   /// 进 / 出超管模式(docs/TECH-DESIGN-admin-mode.md)。
   ///
   /// ★切完必须整页重载★:超管特权影响的是**数据本身**(项目列表、日历里有哪些活动、
@@ -94,6 +112,11 @@ export function App() {
           放进某个视图 = 只有停在那一页的人收得到，而人多半停在别处。
           点弹窗直接跳到那场活动 —— 提醒说「快开始了」，下一步一定是「那我去看看」。 */}
       <RemindPoll onOpen={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null) }} />
+      {/* ★E0 提示条★:挂在最外层而不是某个视图里 —— 「我在按错的时区看时间」这件事
+          跟你停在哪一页无关。key 带上 tzTick:prefs 拉回来之后要重算一次 dev vs set。 */}
+      <div key={tzTick} style={{ maxWidth: 1400, margin: '0 auto', padding: '10px 16px 0' }}>
+        <TzBanner onGoSettings={() => { setView('me'); setActivityId(null); setMinutesOf(null) }} />
+      </div>
       <IahHeader
         nav={
           <Segmented

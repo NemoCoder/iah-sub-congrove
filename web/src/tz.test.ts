@@ -4,7 +4,7 @@
 // 所以这里错一个字，整站的时间就一起错 —— 而那种错**不会报错**。
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { annotate, fmtDay, fmtHM, myTz, partsIn, setMyTz, shiftToTz, tzLabel, wallToUtc } from './tz.ts'
+import { annotate, fmtDay, fmtHM, isTodayCell, myTz, partsIn, sameDayIn, setMyTz, shiftToTz, tzLabel, wallToUtc } from './tz.ts'
 
 const SH = 'Asia/Shanghai', NY = 'America/New_York'
 
@@ -100,4 +100,23 @@ test('⑩ shiftToTz:给布局用的平移 Date,本地取值器读出来是目标
   assert.equal(s.getDate(), 13)                  // ★布局要据此把它摆进 13 号那一列★
   assert.equal(s.getHours(), 7)
   assert.equal(s.getMinutes(), 0)
+})
+
+test('★⑪ 日历格「今天」不能拿 sameDayIn 判★ —— 实测撞到过,整体错一天', () => {
+  // 现场:此刻 2026-08-12T08:53Z(北京 16:53、纽约 04:53)—— ★两边都是 8/12★。
+  const now = new Date('2026-08-12T08:53:00Z')
+  // 日历里 8/12 那一格,是用「浏览器本地那天零点」的 Date 表示的(浏览器=北京时 → 08-11T16:00Z)。
+  // ★它不是一个瞬时,是一个格子的名字。★
+  const 格8月12 = new Date(2026, 7, 12)
+  const 格8月13 = new Date(2026, 7, 13)
+
+  // 正确判据:格子的 Y/M/D 对上「此刻在我的时区里是几号」
+  assert.equal(isTodayCell(格8月12, 'America/New_York', now), true)
+  assert.equal(isTodayCell(格8月13, 'America/New_York', now), false)
+  assert.equal(isTodayCell(格8月12, 'Asia/Shanghai', now), true)
+
+  // ⚠ 用 sameDayIn 会怎样:它把格子当瞬时再投影 → 8/12 那格在纽约变成 8/11,于是判否;
+  //   而 8/13 那格反倒判真 —— ★「今天」的高亮整体后移一格,且不报任何错。★
+  assert.equal(sameDayIn(格8月12, now, 'America/New_York'), false)   // 错在这
+  assert.equal(sameDayIn(格8月13, now, 'America/New_York'), true)    // 也错在这
 })
