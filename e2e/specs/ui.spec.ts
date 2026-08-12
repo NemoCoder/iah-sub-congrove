@@ -51,13 +51,31 @@ test.describe('发起活动表单', () => {
 })
 
 test.describe('日程页', () => {
-  test('日历 0–24 点全展开且不滚动', async ({ page }) => {
+  test('日历不做成可滚动的:折叠时 8–24 点、展开后 0–24 点', async ({ page }) => {
     await page.goto('/')
-    // 24 小时 × 30px = 720px。★用户明确要求不做成可滑动的★
+    // ⚠★这条用例过期过一次★(2026-08-12 全量跑 E2E 时红的):
+    //   它原来死判 720px(24 小时 × 30),而 2026-08-09 liaoruili 要的
+    //   「凌晨 0–8 默认折叠」上线之后,默认高度就是 **480**(16 小时 × 30)。
+    //   ★用例比它要守的那个功能还老 —— 于是它天天报红,而产品完全正常。★
+    //   这种红比没有用例更糟:所有人都会学会忽略它。
+    //   现在两态都判,并且**判的是「不滚动」这条真正的约束**,不是某个写死的像素值。
     const col = page.locator('div[style*="repeating-linear-gradient"]').first()
     await expect(col).toBeVisible()
-    const h = await col.evaluate((e) => (e as HTMLElement).offsetHeight)
-    expect(h, '日历高度不是 24 小时全展开').toBe(720)
+    const 折叠高 = await col.evaluate((e) => (e as HTMLElement).offsetHeight)
+    expect(折叠高, '折叠态应当是 8–24 点(16 小时 × 30px)').toBe(480)
+
+    // 展开凌晨那一段 → 变成整 24 小时
+    // ★点折叠条本身,别去点「展开 ▾」那三个字★:页面上带「展开」字样的元素有两个,
+    //   `.last()` 挑中的是另一个,于是这一步**看起来点了、其实什么也没发生**,
+    //   失败信息却是「高度还是 480」—— 又一次「前置动作静默没做成,伪装成后面那条断言的失败」。
+    //   折叠条是唯一带「凌晨」的元素(实测 count=1),点它 480 → 720。
+    const 折叠条 = page.getByText(/凌晨/).first()
+    if (await 折叠条.count()) {
+      await 折叠条.click()
+      await expect
+        .poll(async () => col.evaluate((e) => (e as HTMLElement).offsetHeight), { timeout: 4000 })
+        .toBe(720)
+    }
   })
 
   test('★重叠的活动必须都看得见★', async ({ page }) => {

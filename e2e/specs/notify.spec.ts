@@ -88,7 +88,12 @@ test.describe('站内信:点得进去', () => {
   test('?activity= 给非法值不炸页面', async ({ page }) => {
     // 参数来自站内信 URL，用户可能手改；解析不认的值应当**退回正常首页**而不是白屏
     await page.goto('/?activity=abc')
-    await expect(page.getByRole('button', { name: /日程/ })).toBeVisible({ timeout: 15_000 })
+    // ★别断言 role=button★：主导航是 AntD 的 Segmented，渲染成 `radio`，不是按钮。
+    // 这条原来写的是 `getByRole('button', {name:/日程/})`，一直红着，而它报的是
+    // 「element(s) not found」—— 长得**和「页面白屏了」一模一样**，于是这条本该守着
+    // 「非法参数不炸页面」的用例，反过来天天诬告页面炸了（2026-08-12 查出）。
+    // 判据跟 acceptance-m1 的 nav() 对齐：认文字，不认它这版被渲染成什么角色。
+    await expect(page.getByText('日程', { exact: true })).toBeVisible({ timeout: 15_000 })
   })
 })
 

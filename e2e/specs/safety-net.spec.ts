@@ -20,6 +20,19 @@ test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
 const tag = () => `${Date.now()}-${Math.floor(Math.random() * 1e4)}`
 
+/// ★造一段**这一轮独有**、长度精确为 n 的内容★（2026-08-12）。
+///
+/// ⚠ 配额那几条用例原来用的是固定内容（`'a'.repeat(3000)`），而它们断言的是**增量**
+/// （「传 3000 字节，用量涨 3000」）。一旦库里躺着一份**内容相同**的旧文件，
+/// 新上传就走内容寻址秒传 → 用量一个字节都不涨 → 用例红。
+/// ★而那时产品是**对的**：它正确地去重了；错的是用例假设了一个干净的库。★
+/// 这一晚就是这么被打穿的：反复跑 E2E 攒下 180 多个残留项目，
+/// 里面全是 `'a'.repeat(3000)`。
+///
+/// 把 tag 拌进内容里，novelty 就由用例自己保证，不再依赖「库是干净的」这个前提。
+const 独有内容 = (n: number, seed = tag()) => (seed + 'x'.repeat(n)).slice(0, n)
+
+
 async function newProject(req: APIRequestContext, name: string, extra: Record<string, unknown> = {}) {
   const r = await req.post('/api/projects', { data: { name, visibility: 'public', ...extra } })
   expect(r.status(), await r.text()).toBe(200)
@@ -145,8 +158,8 @@ test.describe('安全网·配额', () => {
     const a = await newProject(request, `E2E-网-额度A-${tag()}`)
     const b = await newProject(request, `E2E-网-额度B-${tag()}`)
     const before = (await myQuota(request)).used_bytes
-    await upload(request, a, 'a.txt', 'a'.repeat(3000))
-    await upload(request, b, 'b.txt', 'b'.repeat(4000))
+    await upload(request, a, 'a.txt', 独有内容(3000))
+    await upload(request, b, 'b.txt', 独有内容(4000))
     // ★两个项目的占用要加在同一个人头上★ —— 不是各算各的
     expect((await myQuota(request)).used_bytes, '两个项目的用量没汇总到 owner 头上').toBe(before + 7000)
   })
@@ -154,7 +167,9 @@ test.describe('安全网·配额', () => {
   test('★同一 owner 内按 blob 去重,只算一份★', async ({ request }) => {
     const a = await newProject(request, `E2E-网-去重A-${tag()}`)
     const b = await newProject(request, `E2E-网-去重B-${tag()}`)
-    const same = 'dedup'.repeat(1000)   // 5000 字节，同一份内容
+    // ★同一份内容、但这一轮独有★：要测的是「同内容只算一份」，
+    //   所以两次上传必须**彼此相同**，同时**与库里已有的都不同**。
+    const same = 独有内容(5000)
     const before = (await myQuota(request)).used_bytes
     await upload(request, a, 'same.txt', same)
     const mid = (await myQuota(request)).used_bytes
@@ -173,11 +188,12 @@ test.describe('安全网·配额', () => {
     //   (和 2026-08-08「安全网端点全是编的」是同一类错:凭直觉写接口形状。)
     const doc = await request.post(`/api/projects/${pid}/items`, { data: { name: 'v.md', kind: 'doc' } })
     const iid = (await doc.json()).id as number
-    await request.put(`/api/items/${iid}/content`, { data: { text: 'v1'.repeat(500) } })
+    const 一稿 = 独有内容(1000)
+    await request.put(`/api/items/${iid}/content`, { data: { text: 一稿 } })
     const one = (await myQuota(request)).used_bytes
     expect(one, '文档存完要占用量').toBeGreaterThan(0)
     // 改一次内容 → 旧版进 item_versions，两份都占盘，都该算
-    await request.put(`/api/items/${iid}/content`, { data: { text: 'v2'.repeat(900) } })
+    await request.put(`/api/items/${iid}/content`, { data: { text: 独有内容(1800) } })
     expect((await myQuota(request)).used_bytes, '历史版本没被计入 = 用户能靠反复改版白嫖').toBeGreaterThan(one)
   })
 
