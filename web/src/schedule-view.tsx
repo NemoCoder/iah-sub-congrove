@@ -14,7 +14,7 @@ import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Toolt
 import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { UpcomingBar } from './upcoming-bar'
-import { fmtHM, sameDayIn } from './tz'
+import { fmtHM, isTodayCell } from './tz'
 import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
@@ -55,7 +55,7 @@ function addDays(d: Date, n: number): Date {
 }
 // ⚠ isSameDay / hhmm / pad / 星期表 2026-08-12 收敛进 tz.ts —— 它们全是「按浏览器本地时区」判的,
 //   而「今天」这条高亮判错的表现是**高亮错一整列**(见 tz.ts 的 sameDayIn 头注)。
-const isSameDay = (a: Date, b: Date) => sameDayIn(a, b)
+const isSameDay = (cell: Date, _now: Date) => isTodayCell(cell)
 const WEEK_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const hhmm = (d: Date) => fmtHM(d)
 

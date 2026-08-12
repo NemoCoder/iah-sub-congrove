@@ -132,7 +132,22 @@ export function shiftToTz(t: string | Date, tz = myTz()): Date {
   return new Date(p.y, p.m - 1, p.d, p.h, p.min, 0, 0)
 }
 
-/// 两个瞬时在 `tz` 里是不是同一天。
+/// ★一个**日历格**是不是「今天」★。
+///
+/// ⚠★这和 `sameDayIn` 不是一回事，混用会整体错一天★（2026-08-12 实测撞到）：
+/// 日历的 `days[]` 里装的是**日历日期**，用「浏览器本地的那天零点」这个 Date 表示
+/// （8/12 那一格 = `2026-08-11T16:00Z`）。它**不是一个瞬时**，是一个格子的名字。
+/// 拿 `sameDayIn` 去比，等于把那个零点当瞬时再投影到别的时区 —— 8/12 那格投到纽约变成 8/11，
+/// 于是「今天」的高亮整体后移一格。★而且它不报错，只是高亮错了一列。★
+///
+/// 正确的判据是：**格子的 Y/M/D**（本来就是日历日期，不用换算）对上
+/// **此刻在我的时区里是几号**。
+export function isTodayCell(cell: Date, tz = myTz(), now: Date = new Date()): boolean {
+  const p = partsIn(now, tz)
+  return cell.getFullYear() === p.y && cell.getMonth() + 1 === p.m && cell.getDate() === p.d
+}
+
+/// 两个**瞬时**在 `tz` 里是不是同一天。⚠ 别拿它比日历格,见 `isTodayCell`。
 /// ⚠ 原来 schedule-view 里是 `a.getFullYear()===b.getFullYear() && ...` —— 那是**浏览器本地**的同一天。
 /// 「今天」这条高亮、跨天活动的裁剪都靠它,判错的表现是**高亮错一整列**。
 export function sameDayIn(a: string | Date, b: string | Date, tz = myTz()): boolean {
