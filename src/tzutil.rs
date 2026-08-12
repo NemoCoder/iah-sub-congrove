@@ -30,13 +30,11 @@ pub async fn of_user(pool: &sqlx::PgPool, username: &str) -> Tz {
     s.flatten().map(|x| parse(&x)).unwrap_or(FALLBACK)
 }
 
-/// 批量查。★提醒循环一轮最多 200 条，逐个查库是 200 次往返★（设计 §3 步骤 5 的告警）。
-pub async fn of_users(pool: &sqlx::PgPool, names: &[String]) -> std::collections::HashMap<String, Tz> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT username, timezone FROM user_prefs WHERE username = ANY($1)")
-        .bind(names).fetch_all(pool).await.unwrap_or_default();
-    rows.into_iter().map(|(u, t)| (u, t.map(|x| parse(&x)).unwrap_or(FALLBACK))).collect()
-}
+// ⚠★这里原来有个 `of_users`(批量查收件人时区)★，2026-08-12「统一消息时区规则」之后
+//   一个调用者都没有了 —— 消息里的时刻现在一律按**活动自己的**时区说。
+//   ★删掉而不是留着★：它是 `pub`，clippy 不会对公开 API 报死代码，
+//   于是这种函数会一直躺着、看起来像还在用，而实际上没有任何东西验证它还对。
+//   真需要按人查时区时再加回来（git 里有）。
 
 /// 查某场活动自己的时区（`activities.timezone`）。
 /// ★通知/报错里的绝对时刻按**活动的**时区说★（2026-08-12 liaoruili 拍板的「甲案」，见 when_labeled）。
