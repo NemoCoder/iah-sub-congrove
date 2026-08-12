@@ -89,13 +89,21 @@ pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identi
     let usage = usage_map(&state.pool).await?;
     if crate::perm::is_super_now(&state.pool, &id).await? {
         let mut rows: Vec<ProjectRow> =
-            // ★超管也看不到别人的材料区★(PRD §J1c):它里面是体检报告、私人录音这类东西。
+            // ★超管也看不到**别人的**材料区★(PRD §J1c):它里面是体检报告、私人录音这类东西。
             // 超管仍看得到「这个人占了多少 GB」(配额页另走 usage),但看不到项目名之外的任何东西。
-            // ⚠ 超管**自己的**材料区在下面那条分支里(超管也是人),这里滤掉的是全部 ——
-            //   超管面这个列表是「治理视角」,自己的存档区不该混在里面。
+            //
+            // ⚠★这里原来滤掉的是**全部**材料区,包括超管自己那一个★(2026-08-13 逐张看巡检截图发现):
+            //   于是开着超管模式的两小时里,liaoruili 自己的「我的活动材料」从项目页**凭空消失**——
+            //   而它平时是置顶的第一行(2026-08-09 他定的「永远置顶」)。
+            //   ★最该记的是:原注释白纸黑字写着「超管自己的材料区在下面那条分支里(超管也是人)」,
+            //     而上面这条分支 `return` 了,下面那条根本不会执行。★
+            //     ——「设计了 ≠ 执行了」的又一例:注释描述的是意图,代码执行的是另一回事,
+            //     而两者不一致时**没有任何东西会报错**。
+            //   判据改成「不是材料区,或者是我自己的材料区」:别人的照旧一个都看不到。
             sqlx::query_as("SELECT id, name, description, created_by, created_at, no_download, hotwords, archived_at, kind \
-                            FROM projects WHERE deleted_at IS NULL AND kind <> 'materials' \
-                            ORDER BY archived_at NULLS FIRST, id")
+                            FROM projects WHERE deleted_at IS NULL AND (kind <> 'materials' OR owner = $1) \
+                            ORDER BY (kind <> 'materials'), archived_at NULLS FIRST, id")
+                .bind(id.username.as_deref().unwrap_or(""))
                 .fetch_all(&state.pool)
                 .await?;
         rows.iter_mut().for_each(|r| {

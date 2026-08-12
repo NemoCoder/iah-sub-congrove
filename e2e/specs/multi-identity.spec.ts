@@ -204,3 +204,64 @@ test.describe('权限·加入即可见,离开即失去（D3/R1）', () => {
     }
   })
 })
+
+// ★材料区的回收站：列得出、还得了★（PRD §J1b-2，2026-08-08 liaoruili 拍板
+// 「材料区自带回收站，删了能还原」）。
+//
+// ⚠ 这一组是 2026-08-13 全面巡检点出 403 之后补的**复现测试**。
+//   PR #79 只把按钮露了出来，我在那条 PR 里断言「后端本来就允许」——★断言是错的★，
+//   点下去 403。拦它的不是 `effective_role` 的材料区否决（那只对 `owner <> 我` 生效），
+//   而是 `require_role` 里那道**写闸**：它按 `need >= Editor` 判「这像不像写操作」，
+//   而列回收站、还原恰好也要 Editor，于是一起被拦。
+//   ★「读注释」不能代替「执行代码」——那条 PR 我一次都没真点过那个按钮。★
+test.describe('材料区的回收站(J1b-2)', () => {
+  test('★主人列得出自己材料区的回收站★(此前 403)', async () => {
+    const boss = await asUser('liaoruili')
+    try {
+      const ps = await (await boss.get('/api/projects')).json()
+      const mat = (ps as { id: number; kind?: string }[]).find((p) => p.kind === 'materials')
+      expect(mat, 'liaoruili 应当有一个「我的活动材料」').toBeTruthy()
+      const r = await boss.get(`/api/projects/${mat!.id}/trash`)
+      expect(r.status(), '★材料区的回收站按钮就在界面上,点下去必须能列出来★').toBe(200)
+      expect(Array.isArray(await r.json())).toBe(true)
+    } finally { await boss.dispose() }
+  })
+
+  test('★别人连它存在都不该知道★:非主人拿材料区回收站是 404 不是 403', async () => {
+    const boss = await asUser('liaoruili')
+    const 路人 = await asUser('e2e-alice')
+    try {
+      const ps = await (await boss.get('/api/projects')).json()
+      const mat = (ps as { id: number; kind?: string }[]).find((p) => p.kind === 'materials')!
+      // ★放行主人不能顺手放行别人★：403 与 404 可区分 = 一个存在性预言机(perm.rs 头注),
+      // 而材料区的隔离(ADR-0005)口径一直是 404。修「主人被拦」时最容易顺手把这条也放松掉。
+      expect((await 路人.get(`/api/projects/${mat.id}/trash`)).status(),
+        '别人拿别人的材料区回收站必须 404').toBe(404)
+    } finally { await Promise.all([boss.dispose(), 路人.dispose()]) }
+  })
+})
+
+// ★开着超管模式时，自己的「我的活动材料」不能消失★（2026-08-13 逐张看巡检截图发现）。
+//
+// 超管分支原来把**全部** materials 滤掉，包括超管自己那一个 —— 于是开模式的两小时里，
+// 平时置顶的第一行凭空不见了。原注释还写着「超管自己的材料区在下面那条分支里」，
+// 而那条分支在 `return` 之后，根本不会执行。★注释描述意图、代码执行别的，谁都不会报错。★
+//
+// ⚠ 这条用例会**真的开一次超管模式**（这是唯一能验的方式），所以 finally 里一定关回去 ——
+//   本轮巡检就因为脚本顺手点了「进入超管模式」，把 liaoruili 的账号提权了两小时。
+test.describe('超管模式下的项目列表', () => {
+  test('★自己的材料区照常在，别人的一个都不给★', async () => {
+    const boss = await asUser('liaoruili')
+    try {
+      expect((await boss.post('/api/me/admin-mode', { data: { on: true } })).status()).toBe(200)
+      const ps = await (await boss.get('/api/projects')).json() as { kind?: string; created_by?: string }[]
+      const mats = ps.filter((p) => p.kind === 'materials')
+      expect(mats.length, '★开着超管模式时自己的「我的活动材料」不该消失★').toBeGreaterThan(0)
+      expect(mats.every((p) => p.created_by === 'liaoruili'),
+        '★别人的材料区一个都不该出现★(PRD §J1c:里面是体检报告、私人录音这类东西)').toBe(true)
+    } finally {
+      await boss.post('/api/me/admin-mode', { data: { on: false } }).catch(() => {})
+      await boss.dispose()
+    }
+  })
+})

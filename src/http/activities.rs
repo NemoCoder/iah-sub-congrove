@@ -1153,7 +1153,7 @@ pub struct ItemRename { pub name: String }
 ///   ① `activity_id = mid` 必须同时匹配 —— 否则「拿 A 活动的 id 改 B 活动的材料」就是越权;
 ///   ② `kind <> 'folder'` —— 活动文件夹的名字是**从活动派生**的(日期 + 标题),
 ///      手改了它下次活动改标题时又会被覆盖回去,是个假功能;
-///   ③ 走 `require_material_write` —— 材料区在 require_role 上全只读(PRD §J1)。
+///   ③ 走 `require_material_owner` —— 材料区在 require_role 上全只读(PRD §J1)。
 pub async fn rename_activity_item(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -1161,7 +1161,7 @@ pub async fn rename_activity_item(
     Json(p): Json<ItemRename>,
 ) -> AppResult<Json<serde_json::Value>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
-    crate::perm::require_material_write(&state.pool, &id, pid).await?;
+    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     let name = p.name.trim();
     if name.is_empty() { return Err(AppError::BadRequest("名称不能为空".into())) }
@@ -1192,7 +1192,7 @@ pub async fn delete_activity_item(
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     // 材料区在 require_role 上是全只读的(PRD §J1),而「删材料」正是它放行的两条写路径之一
     // —— 普通项目里这个函数就等于 require_role(Editor),行为不变。
-    crate::perm::require_material_write(&state.pool, &id, pid).await?;
+    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     // ★路径里的 mid 必须与这份材料实际归属的活动一致★:否则「在我能编辑的 A 活动下,
     // 报一个属于 B 活动的 item id」就能删掉 B 的材料 —— 一个典型的越权形状。

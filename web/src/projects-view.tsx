@@ -417,6 +417,8 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
   /// ★「我的活动材料」置顶、且不被搜索筛掉★(2026-08-09 liaoruili:「永远置顶」);
   /// ★但它不进「已归档」那一档★(2026-08-13 liaoruili:「已归档里面为啥有我的活动材料」)。
   /// 两条判据为什么分开,见 project-filter.ts 的头注(那里有复现单测)。
+  /// 材料区那一行 —— ★不进下面的列表★,它单独渲染在筛选器之上(见那里的注释)。
+  const materialsRow = projects.find(isMaterials) ?? null
   const shown = shownProjects(projects, isMaterials, effScope, kw)
 
   return (
@@ -439,6 +441,26 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
           <Button size="small" type="primary" onClick={newSpace}>新建</Button>
         </AntSpace>}
       >
+        {/* ★材料区拎到筛选器**上面**,单独一格★（2026-08-13 liaoruili 拍板）。
+            ⚠ 起因是标签写「进行中 2」、底下却有 3 行 —— 计数只数**真项目**(材料区不是项目,PRD §J1),
+              而它又置顶显示在同一个列表里,于是数字和行数天生对不上。
+              同一天刚修过它的另一半(它不该出现在「已归档」那一档)——★两处是同一个根因★:
+              ★把一个「不属于任何一档」的东西塞进按档筛选的列表里,它就会被那个列表的语义染色。★
+              解法不是继续给筛选器打补丁,而是**把它挪出这个列表**:
+              它本来就不是项目,不参与「进行中/已归档」,也不参与搜索。 */}
+        {materialsRow && (
+          <div style={{ marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+            <List.Item
+              onClick={() => setCur(materialsRow)}
+              style={{ cursor: 'pointer', background: cur?.id === materialsRow.id ? '#e6fffb' : undefined,
+                       borderRadius: 6, padding: '6px 8px' }}
+            >
+              <Typography.Text strong={cur?.id === materialsRow.id} ellipsis style={{ flex: 1 }}
+                title={materialsRow.name}>{materialsRow.name}</Typography.Text>
+              <Tag color="gold">系统 · 只读</Tag>
+            </List.Item>
+          </div>
+        )}
         {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
             只过滤本地已加载的列表(项目列表本来就是一次拉全),不打接口。 */}
         {/* ★有归档项目才显示切换★:一个都没有时,多一个开关只是噪音 */}
