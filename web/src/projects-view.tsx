@@ -6,7 +6,7 @@ import {
 } from 'antd'
 import {
   DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
-  ShareAltOutlined, SwapOutlined, UploadOutlined,
+  CopyOutlined, ShareAltOutlined, SwapOutlined, UploadOutlined,
 } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -83,6 +83,8 @@ export function ProjectsView({ me, onOpenActivity }: {
   const [moveDest, setMoveDest] = useState<number | null>(null) // 移动目标文件夹(null = 根)
   const [shareFor, setShareFor] = useState<Item[] | null>(null) // 正在设置公开分享的那些项(可多选)
   const [trashOpen, setTrashOpen] = useState(false)             // 回收站抽屉(项目**内**的条目)
+  const [copying, setCopying] = useState<Item | null>(null)     // 正在复制到别的项目的那一项(J2)
+  const [copyTo, setCopyTo] = useState<number | null>(null)
   /// 项目级回收站(整个项目被软删)。★与上面那个是两件事★:一个装文件,一个装项目。
   const [projTrash, setProjTrash] = useState<{ id: number; name: string; deleted_at: string; days_left: number }[]>([])
   const [projTrashOpen, setProjTrashOpen] = useState(false)
@@ -672,6 +674,15 @@ export function ProjectsView({ me, onOpenActivity }: {
                           试过 FolderOpenOutlined(撞「打开文件夹」)、ExportOutlined(像「导出/新窗口」)、
                           SendOutlined(纸飞机,用户嫌丑)。hover 的「移动到…」补足语义。 */}
                       {canEdit && !it.activity_id && <Tooltip title="移动到…"><a onClick={() => setMoving([it])}><SwapOutlined /></a></Tooltip>}
+                      {/* ★跨项目复制★(PRD J2)。⚠ 与「移动」的可见条件**不同**,是有意的:
+                          移动要求 `!it.activity_id`(活动材料在项目树里是只读的,名字与位置由活动决定),
+                          而复制★恰恰要在活动材料上可用★ —— PRD J2 的原话就是
+                          「把那个 PDF **复制**进课题组的项目」,方向正是从材料区往外。
+                          复制不动源,所以「源只读」不构成障碍。
+                          ⚠ 文件夹不给(后端也拒):递归复制是另一件事,画个按钮再报错等于引导人犯错。 */}
+                      {it.kind !== 'folder' && (
+                        <Tooltip title="复制到其他项目…"><a onClick={() => setCopying(it)}><CopyOutlined /></a></Tooltip>
+                      )}
                       {canEdit && !it.activity_id && (
                         <Tooltip title="删除">
                           <a style={{ color: '#ff4d4f' }} onClick={() => del([it])}><DeleteOutlined /></a>
@@ -785,6 +796,33 @@ export function ProjectsView({ me, onOpenActivity }: {
           )} />
       </Drawer>
     </div>
+      {/* ★复制到其他项目★(PRD J2)。目标只列**我有编辑权、且不是材料区**的项目 ——
+          后端两条都会拒,前端不画必然失败的选项(与「关联项目」下拉同一条原则)。 */}
+      <Modal open={!!copying} title={`复制「${copying?.name ?? ''}」到其他项目`}
+        okText="复制" cancelText="取消" okButtonProps={{ disabled: !copyTo }}
+        onCancel={() => { setCopying(null); setCopyTo(null) }}
+        onOk={async () => {
+          if (!copying || !copyTo) return
+          try {
+            await api(`/api/items/${copying.id}/copy`, {
+              method: 'POST', body: JSON.stringify({ project_id: copyTo }),
+            })
+            message.success('已复制')
+            setCopying(null); setCopyTo(null)
+          } catch (e) { message.error((e as Error).message) }
+        }}>
+        <Select style={{ width: '100%' }} placeholder="选一个项目" value={copyTo ?? undefined}
+          onChange={setCopyTo} showSearch optionFilterProp="label"
+          options={projects.filter((p) => !isMaterials(p) && p.id !== cur?.id
+              && (p.my_role === 'editor' || p.my_role === 'admin') && !p.archived_at)
+            .map((p) => ({ value: p.id, label: p.name }))} />
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+          {/* ★把「几乎免费」讲给用户听★:不解释的话,人会以为复制一份 1GB 的文件要占两份额度,
+              于是不敢用 —— 而这正是 J2 存在的意义(内容寻址下盘上本来就只有一份)。 */}
+          副本是**独立**的：改名或删除都不影响原件。
+          复制到<b>你自己主持的项目</b>不额外占用配额（同一份内容只算一次）。
+        </Typography.Paragraph>
+      </Modal>
     </>
   )
 }
@@ -907,6 +945,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           )}
         />
       </Drawer>
+
     </>
   )
 }

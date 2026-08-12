@@ -124,6 +124,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}/undelete", post(items::undelete))
         .route("/items/{id}/purge", axum::routing::delete(items::purge))
         .route("/items/{id}", get(items::detail).put(items::update).delete(items::remove))
+        .route("/items/{id}/copy", post(items::copy))
         .route("/items/{id}/progress", get(items::progress_get).put(items::progress_put))
         .route("/items/{id}/content", get(items::content_get).put(items::content_put))
         // 公开分享的**管理面**(建/列/撤销;建与列要 ≥editor,见 share.rs 头注)

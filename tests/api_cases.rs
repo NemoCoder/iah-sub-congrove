@@ -545,6 +545,34 @@ const CASES: &[Case] = &[
        "GET /api/me/reminders?since=T", "不回 —— 已经作废的会不该再冒出来", ""),
     c!(deny "GET", "/api/me/reminders", "未登录看不了", "无会话", "GET /api/me/reminders", "401", ""),
 
+    // ── 跨项目复制(PRD J2,2026-08-12)──────────────────────────────────────
+    // ★这几条钉的全是「不该复制却复制了」★:复制**不走下载路径**,
+    // 于是下载上的每一道检查它都绕过了 —— 判据必须在这个 handler 里自己写一遍。
+    c!("POST", "/api/items/{id}/copy", "★源要能读★", "我不是源项目的成员",
+       "POST /api/items/{别人的文件}/copy {project_id:我的项目}", "403 —— 否则就是\
+        「凭一个 id 把别人的文件搬进自己项目」,而内容寻址让这件事**零成本**", ""),
+    c!("POST", "/api/items/{id}/copy", "目标要 editor", "我在目标项目只是 viewer",
+       "POST /api/items/{id}/copy", "403", ""),
+    c!("POST", "/api/items/{id}/copy", "★同一 owner 内复制不占新配额★",
+       "我名下项目 A 有个 1GB 文件,额度快满了",
+       "复制到我名下项目 B", "成功 —— 用量按 blob 去重(GROUP BY s3_key,不带 project_id),\
+        物理上盘里就一份。★为自己的同一份文件收两次费,用户解释不通★(2026-08-08 拍板推翻 PRD 原文)", ""),
+    c!("POST", "/api/items/{id}/copy", "跨 owner 复制算目标 owner 的额度", "目标项目主持人额度已满",
+       "复制过去", "400「目标项目主持人的配额不够」—— 额度归主持人(L3)", ""),
+    c!("POST", "/api/items/{id}/copy", "★副本独立★", "复制完之后改副本的名字 / 删掉副本",
+       "PUT/DELETE 副本", "源不受影响;blob 靠引用计数不被误删", ""),
+    c!("POST", "/api/items/{id}/copy", "回收站里的不给复制", "源已被软删",
+       "POST /api/items/{id}/copy", "404 —— 与改名/移动同一条纪律,要动它先还原。\
+        ★「删了但还能复制出来」等于软删除形同虚设★", ""),
+    c!("POST", "/api/items/{id}/copy", "材料区不能当目标", "target 是「我的活动材料」",
+       "POST /api/items/{id}/copy", "400 —— 它是系统存档区、整块只读,\
+        往里塞东西会绕过「材料归活动」这个结构。★反方向(材料区→项目)是允许的★,\
+        PRD J2 的原话就是「把那个 PDF 复制进课题组的项目」", ""),
+    c!("POST", "/api/items/{id}/copy", "文件夹明确拒绝,不悄悄只复制一层", "源是文件夹",
+       "POST /api/items/{id}/copy", "400 并说清原因 —— 递归复制要处理层级/重名/部分失败回滚,\
+        是另一件事;★悄悄只复制一层比拒绝更糟★,人会以为复制完了", ""),
+    c!(deny "POST", "/api/items/{id}/copy", "未登录", "无会话", "POST /api/items/{id}/copy", "401", ""),
+
     // ★复现测试:双层 Option★(2026-08-12 实现前端下拉时发现的存量 bug,规范要求修 bug 先写测试)
     c!("PUT", "/api/activities/{id}", "★remind_minutes 传 null = 改回「跟随个人默认」★",
        "这场已经设了 remind_minutes=30",
