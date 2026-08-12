@@ -204,3 +204,39 @@ test.describe('权限·加入即可见,离开即失去（D3/R1）', () => {
     }
   })
 })
+
+// ★材料区的回收站：列得出、还得了★（PRD §J1b-2，2026-08-08 liaoruili 拍板
+// 「材料区自带回收站，删了能还原」）。
+//
+// ⚠ 这一组是 2026-08-13 全面巡检点出 403 之后补的**复现测试**。
+//   PR #79 只把按钮露了出来，我在那条 PR 里断言「后端本来就允许」——★断言是错的★，
+//   点下去 403。拦它的不是 `effective_role` 的材料区否决（那只对 `owner <> 我` 生效），
+//   而是 `require_role` 里那道**写闸**：它按 `need >= Editor` 判「这像不像写操作」，
+//   而列回收站、还原恰好也要 Editor，于是一起被拦。
+//   ★「读注释」不能代替「执行代码」——那条 PR 我一次都没真点过那个按钮。★
+test.describe('材料区的回收站(J1b-2)', () => {
+  test('★主人列得出自己材料区的回收站★(此前 403)', async () => {
+    const boss = await asUser('liaoruili')
+    try {
+      const ps = await (await boss.get('/api/projects')).json()
+      const mat = (ps as { id: number; kind?: string }[]).find((p) => p.kind === 'materials')
+      expect(mat, 'liaoruili 应当有一个「我的活动材料」').toBeTruthy()
+      const r = await boss.get(`/api/projects/${mat!.id}/trash`)
+      expect(r.status(), '★材料区的回收站按钮就在界面上,点下去必须能列出来★').toBe(200)
+      expect(Array.isArray(await r.json())).toBe(true)
+    } finally { await boss.dispose() }
+  })
+
+  test('★别人连它存在都不该知道★:非主人拿材料区回收站是 404 不是 403', async () => {
+    const boss = await asUser('liaoruili')
+    const 路人 = await asUser('e2e-alice')
+    try {
+      const ps = await (await boss.get('/api/projects')).json()
+      const mat = (ps as { id: number; kind?: string }[]).find((p) => p.kind === 'materials')!
+      // ★放行主人不能顺手放行别人★：403 与 404 可区分 = 一个存在性预言机(perm.rs 头注),
+      // 而材料区的隔离(ADR-0005)口径一直是 404。修「主人被拦」时最容易顺手把这条也放松掉。
+      expect((await 路人.get(`/api/projects/${mat.id}/trash`)).status(),
+        '别人拿别人的材料区回收站必须 404').toBe(404)
+    } finally { await Promise.all([boss.dispose(), 路人.dispose()]) }
+  })
+})

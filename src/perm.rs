@@ -126,7 +126,7 @@ pub async fn effective_role(pool: &PgPool, id: &Identity, project_id: i64) -> Ap
          --     ② 更反常:`deleted_at IS NULL` 一旦不成立,材料区的 BLOCK **消失** →
          --        super_now 那一支返回 admin → ★超管拿到别人「我的活动材料」的完整读权限★,
          --        正是 PRD §J1c 要防的那件事。
-         -- ★同族的 require_owner / require_material_write 都是「查不到行就 NotFound」(fail-closed),
+         -- ★同族的 require_owner / require_material_owner 都是「查不到行就 NotFound」(fail-closed),
          --   只有这里方向相反 —— 两种写法并存本身就是坑。★
          SELECT 'BLOCK'::text FROM projects WHERE id = $1 AND deleted_at IS NOT NULL
          UNION ALL
@@ -237,7 +237,7 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
             // 12 个 /projects/{id}* + 16 个 /items/{id}*,逐条打勾一定会漏一条,
             // 而收口在这里,**以后新增的任何写接口都自动被挡住**。
             //
-            // 唯一的两个例外(活动材料的上传与删除)不走这里,走 `require_material_write`
+            // 这几条例外(活动材料的上传/删除、回收站的列出/还原)不走这里,走 `require_material_owner`
             // —— 例外是**显式的两处**,而不是「默认放行、逐个去堵」。
             if kind == "materials" {
                 return Err(AppError::Forbidden);
@@ -247,14 +247,27 @@ pub async fn require_role(pool: &PgPool, id: &Identity, project_id: i64, need: R
     Ok(role)
 }
 
-/// 活动材料的写入(上传 / 删除)—— ★材料区里唯一放行的写路径★。
+/// 材料区里放行的那几条正当路径 —— ★判据是「这是我自己的材料区」,不是角色档位★。
 ///
-/// 普通项目照常要 ≥editor;而「我的活动材料」在 `require_role` 那道闸上是**全只读**的,
-/// 所以那两条正当路径必须从这里过:判据是「这是我自己的材料区」,不是角色档位。
+/// 普通项目照常要 ≥editor;而「我的活动材料」在 `require_role` 那道闸上是**全只读**的
+/// (那道闸认的是 `need >= Editor`,即「像写操作」,而不是「真的在写」)。
+///
+/// 现在从这里过的有四条:活动材料的**上传 / 删除**,以及回收站的**列出 / 还原**。
+///
+/// ⚠★后两条是 2026-08-13 全面巡检点出来的★:PR #79 把材料区的「回收站」按钮露了出来,
+///   而我在那条 PR 里断言「后端本来就允许,单点否决只对 `owner <> 我` 生效」——★这个断言是错的★。
+///   拦住它的根本不是 `effective_role` 的否决,是 `require_role` 里那道**写闸**:
+///   它按 `need >= Editor` 判「这像不像写操作」,而列回收站、还原**恰好也要 Editor**,
+///   于是一起被拦 → 点下去 403。
+///   更该记一笔的是:effective_role 的注释里**原话就写着**
+///   「要放行的『回收站还原』与要拦的『上传/删除』在 need 上完全一样」——
+///   ★我把这句话当成了「所以放行」的证据,而它说的正是「所以区分不了、一起拦」★。
+///   ⇒ 读注释不能代替执行代码。那条 PR 我一次都没真点过那个按钮。
 ///
 /// ⚠★为什么不给材料区一个更高的角色了事★:那样 12+16 个项目作用域入口就又全开了。
-/// 宁可在这里写死两个调用点 —— 例外看得见、数得清,而漏掉的清单项看不见。
-pub async fn require_material_write(pool: &PgPool, id: &Identity, project_id: i64) -> AppResult<()> {
+/// 宁可在这里写死几个调用点 —— 例外看得见、数得清,而漏掉的清单项看不见。
+/// ★purge(彻底删除)刻意不在此列★:它绕过软删除、真删 S3,继续要空间 admin。
+pub async fn require_material_owner(pool: &PgPool, id: &Identity, project_id: i64) -> AppResult<()> {
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT kind, owner FROM projects WHERE id = $1 AND deleted_at IS NULL")
         .bind(project_id).fetch_optional(pool).await?;

@@ -682,14 +682,18 @@ pub async fn remove(
     Ok(Json(json!({ "ok": true, "trashed": n })))
 }
 
-/// GET /api/projects/{id}/trash —— 回收站(≥editor)。只列**被直接删除的那一项**
+/// GET /api/projects/{id}/trash —— 回收站(≥editor;材料区认主人)。只列**被直接删除的那一项**
 /// (子树里的行也打了标记,但它们是被连带的,列出来只会刷屏)。
+///
+/// ⚠ 走 `require_material_owner` 而不是 `require_role` —— 后者的写闸按「need >= Editor」
+///   判定,会把材料区的回收站一起拦掉(2026-08-13 巡检点出来的 403,详见那个函数的头注)。
+///   普通项目的口径**一个字没变**:那个函数对非材料区就是 `require_role(Editor)`。
 pub async fn trash(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
-    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, String,
                    chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
         "SELECT i.id, i.kind, i.name, i.size, i.mime, COALESCE(i.deleted_by,''), i.deleted_at, i.mime
@@ -706,15 +710,19 @@ pub async fn trash(
     })).collect()))
 }
 
-/// POST /api/items/{id}/undelete —— 从回收站还原(≥editor)。整棵子树一起还原;
+/// POST /api/items/{id}/undelete —— 从回收站还原(≥editor;材料区认主人)。整棵子树一起还原;
 /// 若它的父目录也在回收站里(没被一起还原),就还原到空间根 —— 否则还原出来的东西看不见。
+///
+/// ⚠ 同 `trash`:材料区的「删了能还原」是 PRD §J1b-2 明写的(2026-08-08 liaoruili 拍板),
+///   而它此前被 require_role 的写闸一并拦掉 —— 露出来的回收站按钮点进去 403、
+///   ★就算列得出来也还不了原★,那不叫回收站。
 pub async fn undelete(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     let pid = project_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     let mut tx = state.pool.begin().await?;
     // ★只还原「和它同一批被删的」行★(v0.3.55 审计)。remove 是一条 UPDATE 打的标记,
@@ -1031,13 +1039,13 @@ pub async fn upload(
     mut mp: Multipart,
 ) -> AppResult<Json<serde_json::Value>> {
     // ★材料区在 require_role 上是全只读的★(PRD §J1),但活动材料必须传得进去 ——
-    // 所以带 activity_id 的上传走 `require_material_write`(材料区认「这是我自己的区」,
+    // 所以带 activity_id 的上传走 `require_material_owner`(材料区认「这是我自己的区」,
     // 普通项目照旧 ≥editor);不带 activity_id 的照常走 require_role,于是
     // 「直接往材料区里传散文件」自动被挡住,不必再写一句判断。
     let actor0 = id.require_username()?;
     match q.activity_id {
         Some(mid) => {
-            crate::perm::require_material_write(&state.pool, &id, pid).await?;
+            crate::perm::require_material_owner(&state.pool, &id, pid).await?;
             // ★A1:活动与项目必须对账★——判权判的是 pid,写的是 mid,少这一句就是越权注入口
             check_activity_target(&state.pool, mid, pid, actor0).await?;
         }
