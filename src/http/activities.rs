@@ -1555,6 +1555,45 @@ pub async fn my_stats(
                             -- **两步就能给他的季度统计塞 9 小时**。
                             AND p.kind = 'attendee' AND p.status = 'accepted')))" } }
 
+    // ══════ ★按类型统计用**另一套口径**★（PRD §K，liaoruili 2026-08-12 拍板）══════
+    //
+    // 与上面 `mine_cte!` 只差一条：**不要求「必须有活着的关联项目」**。
+    //
+    // ⚠★这不是把上面那条「顺手改齐」★（那条注释明令别改，两处口径不同是有意的）——
+    //   是**两张表在回答两个不同的问题**：
+    //     · 按项目答「我为哪个团队花了时间」→ 没有项目的活动在这个问题里没有位置；
+    //     · 按类型答「我在做什么」→ ★PRD §K 举的例子就是「开会 6h、读文献 12h、写作 8h」★，
+    //       而读文献/写作正是**不关联项目的个人日程**。带上那条过滤，这张表里
+    //       就只剩「会议」一类，PRD 举的那一行永远是 0 —— 功能等于没做。
+    //       （实测 dev：3 场个人日程里有关联项目的是 **0 场**。）
+    //
+    // ⚠★代价必须在界面上说出来★：两张表的总时长**对不上**（按类型 ≥ 按项目）。
+    //   本仓有条疤：「两个数字自相矛盾比两个都错更糟，看的人会以为是自己看错了」——
+    //   所以前端在**每张表下面标明各自的口径**，而不是让人自己去猜为什么不等。
+    macro_rules! mine_all_cte { () => { "WITH mine AS (
+        SELECT m.id, m.type_id,
+               COALESCE(
+                 (SELECT max(t.duration_sec)/3600.0
+                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+                 m.actual_minutes/60.0,
+                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
+               ) AS hours,
+               CASE
+                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
+                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
+                 ELSE 'scheduled'
+               END AS src
+        FROM activities m
+        WHERE m.status = 'active' AND m.ends_at <= now()
+          AND m.starts_at >= date_trunc($2, now())
+          AND (m.organizer = $1
+               OR EXISTS (SELECT 1 FROM activity_participants p
+                          WHERE p.activity_id = m.id AND p.username = $1
+                            AND p.kind = 'attendee' AND p.status = 'accepted')))" } }
+
     let (cnt, hours, h_rec, h_man, h_sch, projects, todo): (i64, f64, f64, f64, f64, i64, i64) =
         sqlx::query_as(concat!(mine_cte!(), "
          SELECT count(*)::bigint,
@@ -1573,6 +1612,20 @@ pub async fn my_stats(
                   WHERE o.recorder = $1)::bigint
          FROM mine"))
         .bind(who).bind(range).fetch_one(&state.pool).await?;
+
+    // ★按类型统计(PRD §K,主视角)★ —— 走 mine_all_cte(不要求有关联项目,理由见它的头注)。
+    // ⚠ JOIN activity_types **不过滤软删**:L1 定的是「软删的类型,历史活动照常显示它的名字」——
+    //   把类型删了就让过去三个月的统计凭空少一行,那不是清理,是丢账。
+    let by_type: Vec<(i64, String, i64, f64, f64, f64, f64)> = sqlx::query_as(concat!(mine_all_cte!(), "
+         SELECT t.id, t.name, count(*)::bigint,
+                COALESCE(SUM(x.hours), 0)::float8,
+                COALESCE(SUM(x.hours) FILTER (WHERE x.src = 'recording'), 0)::float8,
+                COALESCE(SUM(x.hours) FILTER (WHERE x.src = 'manual'), 0)::float8,
+                COALESCE(SUM(x.hours) FILTER (WHERE x.src = 'scheduled'), 0)::float8
+           FROM mine x JOIN activity_types t ON t.id = x.type_id
+          GROUP BY t.id, t.name
+          ORDER BY 4 DESC, t.name"))
+        .bind(who).bind(range).fetch_all(&state.pool).await?;
 
     let by_project: Vec<(i64, String, bool, i64, f64, i64)> = sqlx::query_as(concat!(mine_cte!(), "
          SELECT p.id, p.name, p.archived_at IS NOT NULL,
@@ -1618,6 +1671,19 @@ pub async fn my_stats(
             "activities": cnt, "hours": r1(hours), "projects": projects, "minutes_todo": todo,
             // ★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证
             "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
+        },
+        // ★按类型是主视角★(PRD §K:「按项目答『我为哪个团队花了时间』,按类型答『我在做什么』,
+        // 后者才是个人视角的主问题」)。前端把它排在按项目**之前**。
+        //
+        // ⚠★它自带一套 totals,不能复用上面那份★:两张表口径不同(这张不要求有关联项目),
+        //   合计自然对不上。让前端拿上面那份去当这张表的合计 = 制造一个自相矛盾的数字。
+        "by_type": by_type.iter().map(|(id, name, c, h, rec, man, sch)| json!({
+            "type_id": id, "name": name, "count": c, "hours": r1(*h),
+            "hours_by_source": { "recording": r1(*rec), "manual": r1(*man), "scheduled": r1(*sch) },
+        })).collect::<Vec<_>>(),
+        "totals_by_type": {
+            "activities": by_type.iter().map(|x| x.2).sum::<i64>(),
+            "hours": r1(by_type.iter().map(|x| x.3).sum::<f64>()),
         },
         "by_project": by_project.iter().map(|(id, name, arch, c, h, done)| json!({
             "id": id, "name": name, "archived": arch,

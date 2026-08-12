@@ -18,6 +18,10 @@ const TZS = ['Asia/Shanghai', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', '
 type Prefs = { timezone: string | null; default_remind_minutes: number | null }
 
 type Row = { id: number; name: string; archived: boolean; count: number; hours: number; minutes_done: number }
+/// 按类型一行（PRD §K 的主视角）。★没有 minutes_done★：纪要是「会议」这一类才有的事，
+/// 而这张表里还有个人日程 —— 给它一列「纪要完成 0/3」只会让人以为自己欠了三份纪要。
+type TypeRow = { type_id: number; name: string; count: number; hours: number
+  hours_by_source: { recording: number; manual: number; scheduled: number } }
 type Host = { id: number; name: string; archived: boolean; members: number; minutes_pending: number }
 type Stats = {
   range: string
@@ -29,6 +33,11 @@ type Stats = {
     hours_by_source: { recording: number; manual: number; scheduled: number }
   }
   by_project: Row[]
+  /// ⚠★两个字段都给成可选★:线上前后端是**同一个镜像**、契约不会歪,
+  /// 但本地开发时 vite 常常代理到**线上后端**(改前端不必起后端),那一刻它们就是旧的。
+  /// ★少一个字段就整页白屏,是把「版本略有出入」放大成「打不开」★ —— 不值得。
+  by_type?: TypeRow[]
+  totals_by_type?: { activities: number; hours: number }
   hosting: Host[]
 }
 
@@ -174,8 +183,36 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                 <Stat n={data.totals.projects} label="涉及项目" />
                 <Stat n={data.totals.minutes_todo} label="待写纪要" warn />
               </div>
+              {/* ★按类型是**主**视角，排在按项目之前★（PRD §K：「按项目分组回答『我为哪个团队
+                  花了时间』，按类型分组回答『我在做什么』，★后者才是个人视角的主问题★」）。 */}
               <Table
-                size="small" style={{ marginTop: 12 }} rowKey="id" pagination={false}
+                size="small" style={{ marginTop: 12 }} rowKey="type_id" pagination={false}
+                dataSource={data.by_type ?? []}
+                locale={{ emptyText: '这段时间没有已结束的活动' }}
+                title={() => <b style={{ fontSize: 13 }}>按类型 · 我在做什么</b>}
+                columns={[
+                  { title: '活动类型', dataIndex: 'name' },
+                  { title: '次数', dataIndex: 'count', width: 80 },
+                  { title: '时长', dataIndex: 'hours', width: 90, render: (v: number) => `${v} h` },
+                ]}
+                summary={() => (
+                  <Table.Summary.Row>
+                    <Table.Summary.Cell index={0}><b>合计</b></Table.Summary.Cell>
+                    <Table.Summary.Cell index={1}><b>{data.totals_by_type?.activities ?? 0}</b></Table.Summary.Cell>
+                    <Table.Summary.Cell index={2}><b>{data.totals_by_type?.hours ?? 0} h</b></Table.Summary.Cell>
+                  </Table.Summary.Row>
+                )}
+              />
+              {/* ⚠★两张表的口径不同，必须各自写明★（liaoruili 2026-08-12 拍板「个人日程算进按类型」）。
+                  本仓有条疤：「★两个数字自相矛盾比两个都错更糟★，看的人会以为是自己看错了」——
+                  所以不是让人自己去发现「这两个合计怎么不等」，而是当场告诉他为什么。 */}
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                含<b>不关联项目</b>的个人日程（读文献、写作这类）——所以合计通常大于下面那张表。
+              </Typography.Text>
+
+              <Table
+                size="small" style={{ marginTop: 20 }} rowKey="id" pagination={false}
+                title={() => <b style={{ fontSize: 13 }}>按项目 · 我为哪个团队花了时间</b>}
                 dataSource={data.by_project}
                 locale={{ emptyText: '这段时间没有开完的会' }}
                 columns={[
@@ -194,6 +231,10 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                   },
                 ]}
               />
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                只算<b>关联了项目</b>的协作活动；一场活动关联多个项目会在各项目下各计一次。
+              </Typography.Text>
+
               {/* ★时长口径来源★(D5 原话:「这个数字会被用来做汇报,来源不透明就会有争议;
                   标出来源,争议时可追溯」)。三级回退:录制 > 手工补录 > 按排程估算 —— 
                   ★「按排程估算」的那部分最不可信★(排 2 小时、20 分钟散会是常事),
