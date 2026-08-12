@@ -139,8 +139,14 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
     //   对谁都对,急不急由它承担;括号里那个绝对时刻只要**标明是哪个钟**就不会误导 ——
     //   而原来写死东八区又不标,才是真的会让人错过会。
     for (mid, _user, title, starts_at, mins, mtz) in &due {
+        // ⚠★别在这里再套一对括号★(2026-08-12 实地触发一封才看出来):
+        //   `when_labeled` 自己就带「（纽约时间）」那对括号,外面再包一层就成了
+        //   「将于 1 小时后开始（08-12 周三 08:30（纽约时间）））」—— 嵌套括号,读起来像出了 bug。
+        //   ★这是「统一消息时区规则」那一版引入的★:在那之前提醒不带标注,所以看不出来;
+        //   而单测只钉了 `when_labeled` 自己的输出,钉不到**拼进正文之后**长什么样。
+        //   ——★组件各自正确 ≠ 拼起来正确★,这一条只有真发一封才看得见。
         let body = format!(
-            "{} 将于 {}后开始（{}）。",
+            "{} 将于 {}后开始，{}。",
             title, 人话时长(*mins),
             crate::tzutil::when_labeled(*starts_at, crate::tzutil::parse(mtz)),
         );
@@ -162,6 +168,18 @@ mod tests {
     /// 提醒正文里那个绝对时刻必须**带时区标注**,而且按**活动自己的**时区说 ——
     /// 与站内信(notify::fmt_when)同一条规则。
     /// 之前提醒按收件人渲染且不标,与站内信是两套,★读的人分不出哪条按谁的钟★。
+    /// ★钉的是**拼进正文之后**的样子,不只是 when_labeled 自己★ ——
+    /// 上一版就是各自都对、拼起来多了一对括号(见 body 那里的注释)。
+    #[test]
+    fn 提醒正文拼起来不能有嵌套括号() {
+        use chrono::TimeZone;
+        let t = chrono::Utc.with_ymd_and_hms(2026, 8, 12, 12, 30, 0).unwrap();
+        let body = format!("{} 将于 {}后开始，{}。", "读文献", 人话时长(60),
+            crate::tzutil::when_labeled(t, chrono_tz::America::New_York));
+        assert_eq!(body, "读文献 将于 1 小时后开始，08-12 周三 08:30（纽约时间）。");
+        assert!(!body.contains("（0"), "★正文里出现了嵌套括号★: {body}");
+    }
+
     #[test]
     fn 提醒正文的时刻带时区标注() {
         use chrono::TimeZone;
