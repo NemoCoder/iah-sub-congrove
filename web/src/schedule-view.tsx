@@ -14,7 +14,7 @@ import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Toolt
 import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { UpcomingBar } from './upcoming-bar'
-import { fmtHM, isTodayCell } from './tz'
+import { annotate, fmtDay, fmtHM, isTodayCell } from './tz'
 import { api, type Activity } from './api'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
@@ -297,9 +297,15 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                   opacity: isEnded(m) ? 0.62 : 1,
                 }}>
                   <div style={{ width: 150, flexShrink: 0, fontSize: 12, color: '#8c8c8c' }}>
-                    {WEEK_LABEL[new Date(m.starts_at).getDay()]}
-                    {' '}{new Date(m.starts_at).getMonth() + 1}/{new Date(m.starts_at).getDate()}
-                    {' '}{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
+                    {/* ⚠★2026-08-12 补:这三样原来是从 Date 直接读部件的,即**浏览器本地**★——
+                        而同一行的时间在步骤 1 已经换成按我的时区算了,于是
+                        ★一行里出现了两种时区★:跨时区看跨日的会时,钟点已经退回前一天、日期还停在后一天。
+                        这是步骤 1「57 处收敛」里漏掉的几处 —— 它不报错,只在跨时区时露出来,
+                        而当时 setMyTz 还没接线,所以那轮「12 个视图逐字对拍」也照不出来。 */}
+                    {fmtDay(m.starts_at)}
+                    {' '}{fmtHM(m.starts_at)}–{fmtHM(m.ends_at)}
+                    {/* E2:跨时区才标（一致时 annotate 返回空串） */}
+                    {annotate(m.starts_at, m.timezone)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {m.title}
@@ -334,6 +340,10 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                     fontWeight: isToday ? 600 : 400,
                     color: isToday ? '#00474f' : weekend ? '#8c8c8c' : undefined,
                   }}>
+                    {/* ⚠★这里用 getDay()/getDate() 是**对的**,别顺手改成 fmtDay★:
+                        `d` 是**日历格**(那一天的名字),不是一个瞬时 —— 它本来就没有时区可言。
+                        拿 fmtDay(它) 反而会把它当瞬时再投影一次,整排列头错一天
+                        (与 isTodayCell / sameDayIn 的区别是同一回事,见 tz.ts)。 */}
                     {WEEK_LABEL[d.getDay()]} {d.getDate()}{isToday && ' · 今天'}
                   </div>
                 )
@@ -447,7 +457,10 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                       <Tooltip key={m.id} mouseEnterDelay={0.35} title={
                         <div style={{ fontSize: 12, lineHeight: 1.7 }}>
                           <div style={{ fontWeight: 600 }}>{m.title}</div>
-                          <div>{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
+                          {/* ★E2 落在 tooltip 里★:周/月视图的色块太小,塞不下「（北京 09:00）」,
+                              而这条信息又不能不给 —— tooltip 本来就是「这块到底是什么」的答案处。 */}
+                          <div>{fmtHM(m.starts_at)}–{fmtHM(m.ends_at)}
+                            {annotate(m.starts_at, m.timezone)}
                             {projs ? ` · ${projs}` : '（不关联项目）'}</div>
                           <div style={{ color: '#bfbfbf' }}>
                             {mine ? MINE_TEXT[mine] : m.my_status === 'pending' ? '待你应答' : '参与人'}
