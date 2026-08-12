@@ -492,6 +492,100 @@ where
 }
 
 /// PUT /api/items/{id} —— 改名/移动(≥editor)。移动校验目标 parent 同空间,并拒把文件夹挪进自己的子树(成环即整棵树从视图消失)。
+#[derive(Deserialize)]
+pub struct CopyIn {
+    /// 复制到哪个项目
+    pub project_id: i64,
+    /// 目标项目里的哪个文件夹（不给 = 根）
+    #[serde(default)] pub parent_id: Option<i64>,
+    /// 副本叫什么（不给 = 沿用原名）
+    #[serde(default)] pub name: Option<String>,
+}
+
+/// POST /api/items/{id}/copy —— ★跨项目复制★（PRD J2）。
+///
+/// ══════ 为什么它「几乎免费」 ══════
+/// v0.4 已经是内容寻址（`blobs/<sha256>` + 引用计数），所以复制 =
+/// **在目标项目建一行 items 指向同一个 blob**，S3 上一个字节都不增加（秒传用的就是这套）。
+///
+/// ══════ 四道判据，每道都不能少 ══════
+///
+///  ① ★源要能读★（`require_role(源项目, Viewer)`）：不判这条就是百度那个
+///    「凭一个 id 把别人的文件搬进自己项目」的洞 —— 复制不需要下载，
+///    ★所以它绕过了下载路径上的所有检查★，必须自己判一次。
+///  ② ★目标要能写★（`require_role(目标项目, Editor)`）：复制是往目标项目里写。
+///  ③ ★目标项目的 owner 要有额度★：算的是**目标** owner 的（PRD L3：额度归主持人）。
+///    ⚠ 同一 owner 内复制**用量不变** —— 配额 SQL 本来就 `GROUP BY s3_key`
+///    （不带 project_id），物理上盘里就一份，为自己的同一份文件收两次费解释不通
+///    （2026-08-08 liaoruili 推翻了 PRD 原文的「各算一份」）。
+///  ④ ★回收站里的东西不给复制★：与改名/移动同一条纪律（v0.3.55 审计）——
+///    要动它先还原，否则「删了但还能复制出来」等于软删除形同虚设。
+///
+/// ⚠★材料区不能当目标★（ADR-0005 / J1）：它是系统给的个人存档区、整块只读，
+///   往里塞东西会绕过「材料归活动」这个结构。**源**可以是材料区 ——
+///   PRD J2 的原话就是「把那个 PDF 复制进课题组的项目」，方向正是从材料区往外。
+///
+/// ⚠★只复制单个文件/文档，不递归复制文件夹★：M1 的闭环判据说的是
+///   「给其中一条传一个 PDF，并把那个 PDF 复制进课题组的项目」。
+///   递归复制要处理层级、命名冲突、部分失败回滚，是**另一件事**；
+///   现在遇到文件夹**明确拒绝并说清楚**，而不是悄悄只复制一层。
+pub async fn copy(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(iid): Path<i64>,
+    Json(p): Json<CopyIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    // ① 源要能读
+    let src_pid = project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, src_pid, Role::Viewer).await?;
+    // ② 目标要能写
+    require_role(&state.pool, &id, p.project_id, Role::Editor).await?;
+
+    // ⚠ 材料区不能当目标(kind='materials')
+    let dst_kind: String = sqlx::query_scalar("SELECT kind FROM projects WHERE id=$1 AND deleted_at IS NULL")
+        .bind(p.project_id).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    if dst_kind == "materials" {
+        return Err(AppError::BadRequest("「我的活动材料」是系统存档区,不能作为复制目标".into()))
+    }
+
+    // ④ 源必须活着,且不是文件夹
+    let src: (String, String, Option<String>, Option<String>, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT kind, name, mime, s3_key, size, sha256 FROM items
+          WHERE id = $1 AND deleted_at IS NULL")
+        .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    if src.0 == "folder" {
+        return Err(AppError::BadRequest("暂不支持复制文件夹,请逐个复制里面的文件".into()))
+    }
+
+    // ③ 目标 owner 的额度
+    let sz = src.4.unwrap_or(0);
+    let owner = project_owner(&state.pool, p.project_id).await?;
+    let (quota, used) = owner_quota_used(&state.pool, &owner).await?;
+    // ⚠★同一 owner 内复制不该被额度挡★:用量按 blob 去重,复制完 used 根本不变。
+    //   所以先问一句「这个 blob 在目标 owner 名下已经有了吗」——有就不占新空间。
+    let 已有: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM items i JOIN projects pr ON pr.id = i.project_id
+                         WHERE pr.owner = $1 AND pr.deleted_at IS NULL AND i.s3_key = $2)")
+        .bind(&owner).bind(&src.3).fetch_one(&state.pool).await?;
+    if !已有 && used + sz > quota {
+        return Err(AppError::BadRequest("目标项目主持人的配额不够,删些内容或找超管调额度".into()))
+    }
+
+    let name = p.name.as_deref().map(str::trim).filter(|x| !x.is_empty()).unwrap_or(&src.1);
+    // ★副本是独立的一行★:改名/删除互不影响,共享的只有 blob(引用计数保证不被误删)。
+    // ⚠ 不带 activity_id —— 副本与源活动脱钩,否则它会跟着出现在那场活动的材料里。
+    let new_id: i64 = sqlx::query_scalar(
+        "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256, sha_verified)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true) RETURNING id")
+        .bind(p.project_id).bind(p.parent_id).bind(&src.0).bind(name).bind(&src.2)
+        .bind(id.require_username()?).bind(&src.3).bind(sz).bind(&src.5)
+        .fetch_one(&state.pool).await?;
+
+    crate::audit::record(&state.pool, id.require_username()?, "item.copy",
+        &new_id.to_string(), &format!("从 #{iid} 复制到项目 #{}", p.project_id)).await;
+    Ok(Json(json!({ "id": new_id, "name": name })))
+}
+
 pub async fn update(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
