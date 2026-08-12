@@ -301,7 +301,7 @@ pub async fn create(
     // ★约完就通知★:没有这一步,「我约了你」这件事只存在于我的屏幕上
     let who = notify_targets(&state.pool, mid, username).await;
     notify_activity(&state, mid, &who, "有人约你开会",
-        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at))).await;
+        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at, crate::tzutil::parse(input.timezone.as_deref().unwrap_or_default())))).await;
     mark_notified(&state.pool, mid, &who).await?;
     Ok(Json(json!({ "id": mid })))
 }
@@ -580,11 +580,11 @@ pub async fn update(
             .bind(mid).fetch_one(&state.pool).await?;
         if time_changed {
             notify_activity(&state, mid, &who, "活动时间已改",
-                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s))).await;
+                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&cur.4)))).await;
         }
         if link_changed {
             notify_activity(&state, mid, &who, "线上活动链接已改",
-                &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s))).await;
+                &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s, crate::tzutil::parse(&cur.4)))).await;
         }
         // ★ADR-0003 边界①:补录 → 改到未来,必须补发邀请**并置位**★。
         // 上面那两条通知就是「补发邀请」;这里把事实记下来 —— 否则一条从没通知过的活动
@@ -602,7 +602,7 @@ pub async fn cancel(
     Path(mid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_activity_host(&state.pool, &id, mid).await?;
-    let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
+    let (mtitle, starts, mtz): (String, Ts, String) = sqlx::query_as("SELECT title, starts_at, timezone FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let actor = id.require_username()?;
     let mut tx = state.pool.begin().await?;
@@ -629,7 +629,7 @@ pub async fn cancel(
     // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
     let who = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &who, "活动已取消",
-        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts))).await;
+        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts, crate::tzutil::parse(&mtz)))).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -694,12 +694,12 @@ pub async fn invite(
     // ★只通知这一批新加的人★,不打扰早就在名单里的人(他们什么都没变)。
     // 旁听者也不通知:observer 是自助加进来的(D9),他自己知道。
     {
-        let (mtitle, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
+        let (mtitle, starts, mtz): (String, Ts, String) = sqlx::query_as("SELECT title, starts_at, timezone FROM activities WHERE id=$1")
             .bind(mid).fetch_one(&state.pool).await?;
         let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && u != actor).collect();
         notify_activity(&state, mid, &fresh, "有人约你开会",
-            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts))).await;
+            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts, crate::tzutil::parse(&mtz)))).await;
         mark_notified(&state.pool, mid, &fresh).await?;
     }
     Ok(Json(json!({ "ok": true, "invited": n })))
@@ -807,11 +807,11 @@ pub async fn respond(
     // 这条建议就是他能收到的**唯一**信号。它躺在数据库里没人看 = 这个出口不存在。
     // 其余三态(接受/拒绝/待定)不发信 —— 发起人在活动页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
     if st == "counter" {
-        let (mtitle, organizer): (String, String) =
-            sqlx::query_as("SELECT title, organizer FROM activities WHERE id=$1")
+        let (mtitle, organizer, mtz): (String, String, String) =
+            sqlx::query_as("SELECT title, organizer, timezone FROM activities WHERE id=$1")
                 .bind(mid).fetch_one(&state.pool).await?;
         if organizer != username {
-            let when = r.counter_starts_at.map(fmt_when).unwrap_or_else(|| "(未给具体时间)".into());
+            let when = r.counter_starts_at.map(|t| fmt_when(t, crate::tzutil::parse(&mtz))).unwrap_or_else(|| "(未给具体时间)".into());
             let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
                 .map(|x| format!(",理由:{x}")).unwrap_or_default();
             notify_activity(&state, mid, &[organizer], "有人建议改期",
@@ -1350,11 +1350,11 @@ pub async fn accept_counter(
     audit::record(&state.pool, actor, "activity.accept-counter", &mid.to_string(), &who).await;
     // 采纳 = 活动时间真的变了 → ★通知全员★(和 update 改时间同理:别人的答复已被清回 pending),
     // 提议人本人也要收到,他要知道自己的建议被采纳了。
-    let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
+    let (mtitle, mtz): (String, String) = sqlx::query_as("SELECT title, timezone FROM activities WHERE id=$1")
         .bind(mid).fetch_one(&state.pool).await?;
     let all = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &all, "活动时间已改",
-        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s))).await;
+        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&mtz)))).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
 
@@ -1932,7 +1932,11 @@ mod tests {
     #[test]
     fn 站内信时间按北京时间显示并带星期() {
         let t: Ts = "2026-08-13T02:00:00Z".parse().unwrap();   // UTC 02:00 = 北京 10:00
-        assert_eq!(fmt_when(t), "08-13 周四 10:00");
+        // ⚠★2026-08-12 起正文会带时区标注★(甲案):原来是「08-13 周四 10:00」,
+        //   而纽约用户读到那串数字时不知道它是北京时间 —— ★于是他去自己的日历上找 10:00,找不到★。
+        assert_eq!(fmt_when(t, crate::tzutil::FALLBACK), "08-13 周四 10:00（北京时间）");
+        // 同一瞬时按纽约说,是另一个钟点、另一个标注 —— 两句话都对,因为各自都标了是按哪儿的钟
+        assert_eq!(fmt_when(t, chrono_tz::America::New_York), "08-12 周三 22:00（纽约时间）");
     }
 
     /// 跨日的那一格:UTC 当天 20:00 在北京已经是**第二天**凌晨 4 点。
@@ -1940,6 +1944,6 @@ mod tests {
     #[test]
     fn 站内信时间跨日不串日期() {
         let t: Ts = "2026-08-13T20:00:00Z".parse().unwrap();   // 北京 08-14 04:00 周五
-        assert_eq!(fmt_when(t), "08-14 周五 04:00");
+        assert_eq!(fmt_when(t, crate::tzutil::FALLBACK), "08-14 周五 04:00（北京时间）");
     }
 }

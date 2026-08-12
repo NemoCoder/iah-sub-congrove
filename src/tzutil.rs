@@ -38,6 +38,48 @@ pub async fn of_users(pool: &sqlx::PgPool, names: &[String]) -> std::collections
     rows.into_iter().map(|(u, t)| (u, t.map(|x| parse(&x)).unwrap_or(FALLBACK))).collect()
 }
 
+/// 查某场活动自己的时区（`activities.timezone`）。
+/// ★通知/报错里的绝对时刻按**活动的**时区说★（2026-08-12 liaoruili 拍板的「甲案」，见 when_labeled）。
+pub async fn of_activity(pool: &sqlx::PgPool, mid: i64) -> Tz {
+    let s: Option<String> = sqlx::query_scalar("SELECT timezone FROM activities WHERE id = $1")
+        .bind(mid).fetch_optional(pool).await.ok().flatten();
+    s.map(|x| parse(&x)).unwrap_or(FALLBACK)
+}
+
+/// 时区的中文名。
+/// ⚠★这张表在前端 `web/src/tz.ts` 里有一份孪生★：跨语言没法共用，只能两边各留一份。
+///   收的都是同一批常见时区；★改一边记得改另一边★，不然同一场会在站内信里叫「北京」、
+///   在界面上叫别的名字。收不到的原样露出 IANA 名 —— 宁可露英文，不可猜错地名。
+pub fn label(tz: Tz) -> String {
+    match tz.name() {
+        "Asia/Shanghai" | "Asia/Chongqing" => "北京", "Asia/Hong_Kong" => "香港",
+        "Asia/Taipei" => "台北", "Asia/Tokyo" => "东京", "Asia/Seoul" => "首尔",
+        "Asia/Singapore" => "新加坡", "Asia/Bangkok" => "曼谷", "Asia/Dubai" => "迪拜",
+        "Asia/Kolkata" => "新德里", "Europe/London" => "伦敦", "Europe/Paris" => "巴黎",
+        "Europe/Berlin" => "柏林", "Europe/Moscow" => "莫斯科",
+        "America/New_York" => "纽约", "America/Chicago" => "芝加哥", "America/Denver" => "丹佛",
+        "America/Los_Angeles" => "洛杉矶", "America/Toronto" => "多伦多",
+        "Australia/Sydney" => "悉尼", "Pacific/Auckland" => "奥克兰",
+        other => return other.to_string(),
+    }.to_string()
+}
+
+/// 「08-13 周三 10:00（北京时间）」—— ★站内信正文用这个★（甲案，liaoruili 2026-08-12）。
+///
+/// ══════ 为什么标注而不是按收件人渲染 ══════
+/// 乙案（personalize）UX 上更省心，但两条挡住了它：
+///  · `notify_activity(mid, targets: &[String], title, body)` 是**一条正文发给 N 个人**，
+///    personalize 要把 8 个调用点全拆成逐人生成正文 + 逐人投递；
+///  · ★站内信是**存下来的记录**★ —— 按当时的收件人时区渲染之后，
+///    他改了时区再回头看那条旧信，时间又对不上了。
+/// 标注则是**一条对所有人成立、且永远成立**的陈述，正合 PRD E2 自己的原则：
+/// 「跨时区的人看到『凌晨 3:00』会懵……★那个数字必须有个解释★」。
+///
+/// ⚠ 代价说清楚：国内用户也会多看到「（北京时间）」四个字。这是 liaoruili 拍板接受的。
+pub fn when_labeled(t: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
+    format!("{}（{}时间）", when(t, tz), label(tz))
+}
+
 /// 「08-13 周三 10:00」——与原来 `notify::fmt_when` 的格式**逐字一致**，只是时区可指定。
 /// ★带星期★：纯数字日期读起来要在脑子里换算一次，而「周三」是人真正安排生活用的单位。
 pub fn when(t: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
