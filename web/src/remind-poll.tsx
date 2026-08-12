@@ -84,13 +84,26 @@ export function RemindPoll({ onOpen }: { onOpen: (id: number) => void }) {
           if (mins <= 0) continue
           shown.current.add(it.activity_id)
           notification.open({
-            message: '活动即将开始',
-            description: `${it.title} 将于 ${mins} 分钟后开始。`,
+            // ⚠★这条原来是一张素白的小卡片★（2026-08-12 liaoruili：「这个通知一点都不醒目！！」）。
+            //   它和「已保存」那类顺手提示长得一模一样，而它要说的是**你还有 14 分钟就要开会了** ——
+            //   ★重要程度差一个数量级，视觉重量却相同，于是它被当成背景噪声划走。★
+            //   三处加重：橙色警示图标 + 把「还有 N 分钟」放大成主角 + 停留不自动消失（本来就是）。
+            icon: <span style={{ fontSize: 22 }}>⏰</span>,
+            message: <span style={{ fontWeight: 700, fontSize: 15 }}>活动即将开始</span>,
+            description: (
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 600 }}>{it.title}</div>
+                {/* ★数字是这条通知唯一要人立刻读到的东西★，所以它最大、最红 */}
+                <div>还有 <b style={{ fontSize: 22, color: '#cf1322' }}>{mins}</b> 分钟开始</div>
+                <div style={{ color: '#8c8c8c', fontSize: 12 }}>点这里直接打开这场活动 ›</div>
+              </div>
+            ),
+            /// ★带一点底色和红边★：白底白卡在浅色页面上几乎看不见
+            style: { background: '#fff7e6', border: '1px solid #ffbb96', width: 340, cursor: 'pointer' },
             // ★不自动消失★：人可能刚好离开座位十秒。自动关掉的提醒等于没提醒，
             // 而这里最多同时存在几条（已开始的上面已经滤掉了），不会糊满屏。
             duration: 0,
             onClick: () => { onOpen(it.activity_id); notification.destroy() },
-            style: { cursor: 'pointer' },
           })
         }
       } catch {

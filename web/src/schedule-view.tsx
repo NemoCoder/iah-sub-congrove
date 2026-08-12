@@ -57,7 +57,8 @@ function addDays(d: Date, n: number): Date {
 //   而「今天」这条高亮判错的表现是**高亮错一整列**(见 tz.ts 的 sameDayIn 头注)。
 const isSameDay = (cell: Date, _now: Date) => isTodayCell(cell)
 const WEEK_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-const hhmm = (d: Date) => fmtHM(d)
+// ⚠  已删:最后一个调用点(旁听广场)2026-08-12 换成 fmtHM 之后它就没人用了。
+// ★留着一个没人调的薄封装,下一个人会以为「这里有讲究」而照抄它。★
 
 /// ★布局与位置计算已抽到 schedule-layout.ts 并有单测覆盖★——
 /// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让活动在界面上凭空消失。
@@ -523,7 +524,7 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
       <div style={{ width: 320, flexShrink: 0 }}>
       <TodoCard all={items} onOpen={onOpenActivity} onOpenMinutes={onOpenMinutes} onDone={() => void load(true)} style={{ width: 320 }} />
 
-      <PublicBoard onOpen={onOpenActivity} />
+      <PublicBoard onOpen={onOpenActivity} onJoined={() => void load()} />
       </div>
 
     </div>
@@ -535,7 +536,14 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
 ///
 /// 默认只看**近 7 天**(日程右栏的定位是「接下来」,不是全量目录),可切「全部未来」。
 /// ★只列还没结束的★:旁听的意义是「我要去听」,开完的会列在这里只是噪音。
-function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
+function PublicBoard({ onOpen, onJoined }: {
+  onOpen: (id: number) => void
+  /// ★加入旁听后要让**日历**也重载★（2026-08-12 liaoruili：「加入旁听后，日历没有自动刷新加上去」）。
+  /// 原来 observe 之后只 `await load()` —— 那是**广场自己**那份列表的 load，
+  /// 日历从头到尾没重新拉过。于是提示说「已加入我的日程」，而日程上什么都没多出来：
+  /// ★系统说它做了，屏幕上看不见 —— 用户只能理解成「没生效」。★
+  onJoined: () => void
+}) {
   const { message } = AntdApp.useApp()
   const [days, setDays] = useState<7 | 0>(7)      // 0 = 全部未来
   const [rows, setRows] = useState<Activity[]>([])
@@ -556,7 +564,8 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
         method: 'POST', body: JSON.stringify({ observe: true }),
       })
       message.success('已加入我的日程')
-      await load()
+      await load()          // 广场自己的列表（这条会从「可旁听」里消失）
+      onJoined()            // ★日历也要重载★，否则「已加入我的日程」是一句空话
     } catch (e) { message.error((e as Error).message) } finally { setBusy(null) }
   }
 
@@ -578,8 +587,13 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
                 {m.title}
               </div>
               <div style={{ fontSize: 12, color: '#8c8c8c' }}>
-                {new Date(m.starts_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}
-                {' '}{hhmm(new Date(m.starts_at))}–{hhmm(new Date(m.ends_at))}
+                {/* ⚠★又一处「一行两种时区」★(2026-08-12 第二次撞到同一族):
+                    日期原来走 `toLocaleDateString` = **浏览器本地**,而时间走 `hhmm` 已经按我的时区算,
+                    跨时区看跨日的会时两者会打架。★同一个毛病在「57 处收敛」里漏了两次★ ——
+                    第一次是列表模式,这次是旁听广场。判据只有一处(tz.ts),漏的都是**调用点**。 */}
+                {fmtDay(m.starts_at)}
+                {' '}{fmtHM(m.starts_at)}–{fmtHM(m.ends_at)}
+                {annotate(m.starts_at, m.timezone)}
                 {' · '}{m.organizer}
               </div>
               <Space size={4} style={{ marginTop: 4 }} wrap>
@@ -590,12 +604,12 @@ function PublicBoard({ onOpen }: { onOpen: (id: number) => void }) {
                   旁听
                 </Button>
               </Space>
-              {/* ★旁听 ≠ 拿到材料★(D9 与 D3 正交):说在按钮旁边,免得有人以为旁听就能看资料 */}
-              {!m.my_status && (
-                <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
-                  旁听可看议程与地点，看不到活动材料
-                </Typography.Text>
-              )}
+              {/* ⚠★这里原来每一行都挂一句「旁听可看议程与地点,看不到活动材料」★
+                  (2026-08-12 liaoruili:「这一句解释不要」)。它对**每一条**重复一遍,
+                  十条活动就是十遍同样的话 —— ★一句话说十遍就不再是解释,是噪声★,
+                  而噪声会把旁边真正不一样的信息(标题、时间、项目)一起淹掉。
+                  D9 那条「旁听 ≠ 拿到材料」的语义不变,后端照旧拦;
+                  真要提示也该放在卡片标题处说一次,而不是逐行复读。 */}
             </div>
           ))}
         </Space>
