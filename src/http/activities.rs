@@ -921,10 +921,22 @@ pub async fn messages(
                   ORDER BY created_at")
                 .bind(mid).bind(username).bind(&peer).fetch_all(&state.pool).await?
         }
+        // ★默认:公开 + **与我有关的**私聊,合成一条流★
+        // (2026-08-12 liaoruili:「私聊和公开聊天为啥需要切换才能分别看到？腾讯会议已经有例子了」)
+        //
+        // 腾讯会议的做法:私聊与对所有人的消息**在同一个聊天窗口里**,私聊带标记
+        // (meeting.tencent.com/support/topic/1592)。理由很实在 ——
+        // ★分成两个要切换的视图,等于要求人**先猜对方在哪条频道说的话**★,
+        // 而人在开会,不会为了找一句话去逐个频道翻。
+        //
+        // ⚠ 只并**与我有关**的私聊(我发的 or 发给我的):这是隐私边界,不是筛选偏好。
+        //   写成 `channel='private'` 而不带这一条,就是把全场的私聊都端给每个人。
         _ => sqlx::query_as(
                 "SELECT id, sender, channel, peer, body, created_at FROM activity_messages
-                  WHERE activity_id=$1 AND channel='public' ORDER BY created_at")
-                .bind(mid).fetch_all(&state.pool).await?,
+                  WHERE activity_id=$1
+                    AND (channel='public' OR (channel='private' AND (sender=$2 OR peer=$2)))
+                  ORDER BY created_at")
+                .bind(mid).bind(username).fetch_all(&state.pool).await?,
     };
     Ok(Json(rows))
 }

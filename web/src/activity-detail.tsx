@@ -137,16 +137,17 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         {/* ★取消旁听在这里做★(2026-08-07):广场只列「我还没有关系的会」,
             旁听之后它就从广场消失、进了我的日历 —— 要退出自然该来它自己的页面,
             而不是回广场上找一个已经不在那儿的条目。 */}
+        {/* ⚠★这里原来套了一层 Popconfirm★（2026-08-12 liaoruili：「取消旁听不用再次确认，
+            旁边就是旁听按钮，人用户想旁听会自己按回来」）。
+            ★二次确认是给**不可逆**的动作用的★，而取消旁听一秒就能加回来（广场上那条会重新出现）。
+            给可逆动作加确认，只是把成本从「偶尔点错」搬到「每次都多点一下」—— 后者天天发生。 */}
         {d.observer && !canceled && (
-          <Popconfirm title="不再旁听这场活动？" description="它会从你的日历里移除；之后想听可以从公开活动里再加回来。"
-            onConfirm={async () => {
-              try {
-                await api(`/api/activities/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
-                message.success('已取消旁听'); onBack()
-              } catch (e) { message.error((e as Error).message) }
-            }}>
-            <Button size="small">取消旁听</Button>
-          </Popconfirm>
+          <Button size="small" onClick={async () => {
+            try {
+              await api(`/api/activities/${id}/observe`, { method: 'POST', body: JSON.stringify({ observe: false }) })
+              message.success('已取消旁听'); onBack()
+            } catch (e) { message.error((e as Error).message) }
+          }}>取消旁听</Button>
         )}
         <Modal open={addProj} title="再关联一个项目" okText="添加" cancelText="取消"
         onCancel={() => { setAddProj(false); setPickProj([]) }}
@@ -359,6 +360,10 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
             ★又是「只验代码不验设计」★(见记忆 verify-against-design-not-just-code)。
             改期建议目前长在 RespondCard 里(它同时是「我的答复」入口),没有单独一张卡。 */}
         <div style={{ width: 340, flexShrink: 0 }}>
+          {/* ⚠★倒计时放在 `d.participants` 判断**之外**★:旁听者拿不到参会名单,
+              但「还有多久开始」对他一样要紧 —— 他也是要去开这场会的人。
+              第一版顺手写进了那个条件里,等于把旁听者排除掉了。 */}
+          <Countdown startsAt={m.starts_at} endsAt={m.ends_at} />
           {/* 旁听者拿不到名单,那就整块不渲染 */}
           {d.participants && (
             <PeopleCard people={d.participants} mid={id} organizer={m.organizer}
@@ -373,7 +378,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               自相矛盾的状态。想改时间直接改、去不了就取消 —— 后端也会拒。 */}
           {!canceled && m.my_status && m.organizer !== me
             && <RespondCard id={id} mine={m.my_status} onDone={() => load(true)} />}
-          {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} />}
+          {d.participants && <DiscussionCard id={id} organizer={m.organizer} recorder={m.recorder} me={me} />}
         </div>
       </div>
 
@@ -525,8 +530,8 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
 
 /// 活动讨论区(D13)。★放在答复下面★(用户定的位置)。
 /// 只做 public 频道:私聊只能发给发起人/记录员,入口放在参会人行上更自然,M1 先不做。
-function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: string; recorder: string }) {
-  const { message } = AntdApp.useApp()
+function DiscussionCard({ id, organizer, recorder, me }: { id: number; organizer: string; recorder: string; me: string }) {
+  const { message, modal } = AntdApp.useApp()
   const [msgs, setMsgs] = useState<ActivityMessage[]>([])
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -534,8 +539,10 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
   const [to, setTo] = useState<string>('public')
   const load = useCallback(async () => {
     try {
-      const q = to === 'public' ? '' : `?channel=private&peer=${encodeURIComponent(to)}`
-      setMsgs(await api<ActivityMessage[]>(`/api/activities/${id}/messages${q}`))
+      // ★一条流:公开 + 与我有关的私聊★（2026-08-12 liaoruili：「私聊和公开聊天为啥需要切换
+      // 才能分别看到？腾讯会议已经有例子了」）。★「发送至」只决定**这一条发给谁**，不再决定**看哪一条**★ ——
+      // 原来它兼着两件事，于是切到「私聊 X」才看得见 X 说的话，人得先猜对方在哪条频道说的。
+      setMsgs(await api<ActivityMessage[]>(`/api/activities/${id}/messages`))
     } catch { setMsgs([]) }
   }, [id, to])
   useEffect(() => { void load() }, [load])
@@ -543,6 +550,21 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
   const send = async () => {
     const body = text.trim()
     if (!body) return
+    // ★防误发：刚收到的是私聊，却要发给所有人 → 确认一次★（腾讯会议同款做法）。
+    //
+    // ⚠ 这和刚刚**去掉**的「取消旁听二次确认」不矛盾，恰恰是同一条原则的两面：
+    //   ★确认留给**不可逆**的动作★。取消旁听一秒能加回来；
+    //   而把私聊里的话发给全场，发出去就收不回了。
+    const 最后一条 = msgs[msgs.length - 1]
+    if (to === 'public' && 最后一条?.channel === 'private' && 最后一条.sender !== me) {
+      const ok = await new Promise<boolean>((res) => modal.confirm({
+        title: '发给所有参会人？',
+        content: `你刚收到 ${最后一条.sender} 的**私聊**，而这条要发给所有人。`,
+        okText: '发给所有人', cancelText: '我改成私聊',
+        onOk: () => res(true), onCancel: () => res(false),
+      }))
+      if (!ok) return
+    }
     setBusy(true)
     try {
       await api(`/api/activities/${id}/messages`, {
@@ -559,14 +581,25 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
       <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 10 }}>
         {msgs.length === 0
           ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有人说话" />
-          : msgs.map((m) => (
-            <div key={m.id} style={{ marginBottom: 10 }}>
+          : msgs.map((m) => {
+            const 私 = m.channel === 'private'
+            // 「谁跟谁」的私聊:我发出去的写「→ 对方」,别人发给我的写「私聊我」
+            const 私标 = !私 ? null : m.sender === me ? `私聊 → ${m.peer}` : '私聊我'
+            return (
+            /* ★私聊在同一条流里,靠**底色 + 标签**区分,不靠切换视图★（腾讯会议同款）。
+               ⚠ 标签必须说清**方向**:只写「私聊」的话，我自己发出去的和别人发给我的长得一样，
+                 而这两件事在会中要做的反应完全不同。 */
+            <div key={m.id} style={{
+              marginBottom: 10,
+              ...(私 ? { background: '#fffbe6', borderLeft: '3px solid #ffd666', padding: '4px 8px', borderRadius: 4 } : {}),
+            }}>
               <div style={{ fontSize: 12, color: '#8c8c8c' }}>
                 {m.sender} · {fmtTime(m.created_at)}
+                {私标 && <Tag color="gold" style={{ marginLeft: 6, transform: 'scale(.85)' }}>{私标}</Tag>}
               </div>
               <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.body}</div>
             </div>
-          ))}
+          )})}
       </div>
       {/* ★禁掉右下角那个缩放手柄★:它正好落在输入框与下面一行的接缝上,
           两个描边框加一个手柄挤在几个像素里,看着像两个控件粘住了。 */}
@@ -593,13 +626,62 @@ function DiscussionCard({ id, organizer, recorder }: { id: number; organizer: st
           style={{ flex: '0 1 auto', minWidth: 0, marginLeft: -8 }}
           options={[
             { value: 'public', label: '所有参会人' },
-            // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM
-            { value: organizer, label: `私聊 ${organizer}（发起人）` },
-            ...(recorder !== organizer ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
+            // ★私聊对象只有这两位★(D13):不做任意点对点,否则这里会长成一个 IM。
+            // ⚠★把自己排掉★（2026-08-12 liaoruili：「为啥我可以私聊自己？」）——
+            //   我既是发起人又是记录员时，这里原来会列出「私聊 我自己（发起人）」。
+            //   ★给自己发私信不是一个功能，是一个没人想要的状态★：
+            //   它还会进「待我处理」的未读，变成自己给自己制造待办。
+            ...(organizer !== me ? [{ value: organizer, label: `私聊 ${organizer}（发起人）` }] : []),
+            ...(recorder !== organizer && recorder !== me
+              ? [{ value: recorder, label: `私聊 ${recorder}（记录员）` }] : []),
           ]} />
         <Button size="small" type="primary" loading={busy} style={{ marginLeft: 'auto' }}
           disabled={!text.trim()} onClick={send}>发送</Button>
       </div>
+    </Card>
+  )
+}
+
+/// ★倒计时★（2026-08-12 liaoruili：「距离 24 小时以内的活动点进去都做个倒计时，秒表的那种，
+/// 加到参会人上面」）。放在右栏最顶上 —— 它是这一页此刻**最要紧的一个数**。
+///
+/// ══════ 三条 ══════
+///  · ★只在 24 小时以内才出现★：一场下个月的会顶着「还有 719:59:12」除了占地方没有意义，
+///    而且会让真正要紧的那次失去分量（跟通知那条一个道理：处处醒目 = 无处醒目）。
+///  · ★会开着的时候不消失，改说「正在进行」★：这时候人最需要知道的是「我是不是迟到了」。
+///  · ★每一跳都用 `Date.now()` 重算，不做自减★：标签页在后台会被浏览器降频甚至冻结，
+///    自减的计时器一睡就漂；重算则醒来即正确。
+function Countdown({ startsAt, endsAt }: { startsAt: string; endsAt: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  const s = new Date(startsAt).getTime(), e = new Date(endsAt).getTime()
+  const 要显示 = now < e && s - now <= 24 * 3600_000
+  useEffect(() => {
+    if (!要显示) return                       // ★不相关时不挂定时器★，别让每个详情页都白跑一个 1s 循环
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [要显示])
+  if (!要显示) return null
+
+  const 进行中 = now >= s
+  const 秒 = Math.max(0, Math.floor(((进行中 ? e : s) - now) / 1000))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const 钟表 = `${pad(Math.floor(秒 / 3600))}:${pad(Math.floor((秒 % 3600) / 60))}:${pad(秒 % 60)}`
+  /// 最后 5 分钟标红 —— 到这一步「快开始了」才真的要人动起来
+  const 紧 = !进行中 && 秒 <= 300
+  return (
+    <Card size="small" style={{
+      marginBottom: 12, textAlign: 'center',
+      background: 进行中 ? '#e6fffb' : 紧 ? '#fff1f0' : '#fffbe6',
+      borderColor: 进行中 ? '#87e8de' : 紧 ? '#ffa39e' : '#ffe58f',
+    }}>
+      <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+        {进行中 ? '正在进行 · 距结束' : '距开始'}
+      </div>
+      {/* 等宽数字：不等宽的话秒位每跳一次整行都在抖 */}
+      <div style={{
+        fontSize: 28, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+        color: 进行中 ? '#08979c' : 紧 ? '#cf1322' : '#d46b08',
+      }}>{钟表}</div>
     </Card>
   )
 }
@@ -652,7 +734,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
   const { message } = AntdApp.useApp()
   const [open, setOpen] = useState(false)
   const [picked, setPicked] = useState<string[]>([])
-  const [kind, setKind] = useState<'attendee' | 'guest'>('attendee')
+  const [kind, setKind] = useState<'attendee' | 'observer'>('attendee')
   const [found, setFound] = useState<{ username: string; name: string | null }[]>([])
   const [busy, setBusy] = useState(false)
   /// ★选中/回车之后收起下拉★(2026-08-09 liaoruili:「添加参会人 回车后,下拉框还不消失」)。
@@ -691,11 +773,17 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
           open={dropOpen} onDropdownVisibleChange={setDropOpen} onSelect={() => setDropOpen(false)}
           style={{ width: '100%' }} placeholder="输入用户名（没搜到也能直接输入）" notFoundContent={null}
           options={found.map((u) => ({ value: u.username, label: showUser(u.username, u.name) }))} />
+        {/* ⚠★原来这里有个「临时参会人（guest）」选项，而它**选了就会报错**★
+            （2026-08-12 liaoruili：「为啥还有临时参会人的概念！！！临时参会就按照旁听处理即可」）。
+            `activity_participants.kind` 的 CHECK 只允许 `attendee` / `observer` ——
+            guest 早在 0005 迁移就删了，理由与他说的一字不差，schema 注释里写着：
+            「★没有 guest 档★：它和 observer 的可见面完全一样，两个名字装同一件事，
+              只会让判权的人以为有区别」。
+            ★所以这是个界面上还留着、数据库已经不认的死选项★ —— 前端没跟着删。 */}
         <Select value={kind} onChange={setKind} style={{ width: '100%' }}
           options={[
-            { value: 'attendee', label: '参会人' },
-            // ★临时参会人能参会、看不到材料★(D8):选项里就把区别说清楚
-            { value: 'guest', label: '临时参会人（能参会，看不到材料）' },
+            { value: 'attendee', label: '参会人（要答复，能看材料）' },
+            { value: 'observer', label: '旁听（不用答复，看不到材料）' },
           ]} />
       </Space>
     </Modal>

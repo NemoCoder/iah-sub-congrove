@@ -168,7 +168,10 @@ function InviteRow({ m, clash, onOpen, onDone }: {
     try {
       await api(`/api/activities/${m.id}/respond`, { method: 'POST', body: JSON.stringify({ status }) })
       message.success('已答复'); onDone()
-    } catch (err) { message.error((err as Error).message) } finally { setBusy(false) }
+    } catch (err) {
+      message.error((err as Error).message)
+      onDone()          // 同上:答复失败多半是「这条已经不在了」,刷新掉比留着强
+    } finally { setBusy(false) }
   }
   return (
     <div>
@@ -262,7 +265,15 @@ function TransferRow({ t, onDone }: { t: Transfer; onDone: () => void }) {
       })
       message.success(accept ? `你现在是「${t.project_name}」的主持人` : '已拒绝')
       onDone()
-    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+    } catch (e) {
+      message.error((e as Error).message)
+      // ⚠★出错也要刷新★（2026-08-12 liaoruili 撞到：「我已经点击拒绝或者接受了，但是待处理没有消失」）。
+      //   这里最常见的错误恰恰是「没有待答复的转移」—— 也就是**它已经被处理过了**，
+      //   而卡上这一行是过期的。原来只弹一句错、不刷新，于是★那一行永远卡在那里，
+      //   每点一次错一次★，人只会以为功能坏了。
+      //   ★「这个操作失败了」和「这一行本来就不该在」是两回事，而错误提示只说了前者。★
+      onDone()
+    } finally { setBusy(false) }
   }
   return (
     <div>
