@@ -4,7 +4,7 @@
 // 所以这里错一个字，整站的时间就一起错 —— 而那种错**不会报错**。
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { annotate, fmtDay, fmtHM, isTodayCell, myTz, partsIn, sameDayIn, setMyTz, shiftToTz, tzLabel, wallToUtc } from './tz.ts'
+import { annotate, fmtDay, fmtHM, isTodayCell, myTz, partsIn, pickedToUtc, sameDayIn, setMyTz, shiftToTz, tzLabel, utcToPicked, wallToUtc } from './tz.ts'
 
 const SH = 'Asia/Shanghai', NY = 'America/New_York'
 
@@ -119,4 +119,26 @@ test('★⑪ 日历格「今天」不能拿 sameDayIn 判★ —— 实测撞到
   //   而 8/13 那格反倒判真 —— ★「今天」的高亮整体后移一格,且不报任何错。★
   assert.equal(sameDayIn(格8月12, now, 'America/New_York'), false)   // 错在这
   assert.equal(sameDayIn(格8月13, now, 'America/New_York'), true)    // 也错在这
+})
+
+test('★⑫ E1:选择器里那串数字按**活动时区**解释,不是按浏览器★', () => {
+  // 场景:人在浏览器本地时区(测试机是北京),给「北京」的会排 8/12 15:00
+  const 选中 = new Date(2026, 7, 12, 15, 0)          // 选择器给出的就是这组数字
+  assert.equal(pickedToUtc(选中, 'Asia/Shanghai').toISOString(), '2026-08-12T07:00:00.000Z')
+  // ★同样一串数字,说它是纽约时间,得到的是完全不同的瞬时★——差 12 小时
+  assert.equal(pickedToUtc(选中, 'America/New_York').toISOString(), '2026-08-12T19:00:00.000Z')
+  // 伦敦(夏令时 UTC+1)
+  assert.equal(pickedToUtc(选中, 'Europe/London').toISOString(), '2026-08-12T14:00:00.000Z')
+})
+
+test('⑬ E1 往返:存下去再打开「改时间」,数字必须一模一样', () => {
+  // ★不做逆变换的话,一打开编辑框就把时间挪走了,而人只是想改个标题★
+  for (const tz of ['Asia/Shanghai', 'America/New_York', 'Europe/London', 'Australia/Sydney']) {
+    const 选中 = new Date(2026, 7, 12, 15, 30)
+    const 存 = pickedToUtc(选中, tz)
+    const 回 = utcToPicked(存, tz)
+    assert.equal(回.getHours(), 15, `${tz} 小时漂了`)
+    assert.equal(回.getMinutes(), 30, `${tz} 分钟漂了`)
+    assert.equal(回.getDate(), 12, `${tz} 日期漂了`)
+  }
 })
