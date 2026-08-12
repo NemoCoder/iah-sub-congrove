@@ -54,7 +54,14 @@ test.describe('多身份通道自身', () => {
     const boss = await asUser('liaoruili')
     const me = await (await boss.get('/api/me')).json()
     expect(me.username).toBe('liaoruili')
-    expect(me.is_super, 'liaoruili 在 CONGROVE_SUPER_USERS 里').toBe(true)
+    // ⚠★这条过期过一次★(2026-08-12 全量跑 E2E 时红的):原来判的是 `is_super`,
+    //   而 2026-08-09 的超管模式改造把这一位的含义换了 ——
+    //   ★`is_super` = 此刻有没有**特权**(super_now:模式开着才 true),
+    //     `can_super` = 有没有**资格**(app_user.is_super 那一列)★。
+    //   liaoruili 有资格但平时不开模式,于是这条从那天起就一直红,
+    //   而它红的是**用例记着旧语义**,不是产品坏了。
+    //   (docs/TECH-DESIGN-admin-mode.md;api.ts 的 Me 类型注释里也写着同一句。)
+    expect(me.can_super, 'liaoruili 在 CONGROVE_SUPER_USERS 里,应当有超管**资格**').toBe(true)
 
     // ★伪造网关头必须无效★：这条是平台 strip-identity 的回归测试，顺手在这里钉住
     const forged = await pwRequest.newContext({

@@ -79,18 +79,17 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     // 线上链接 —— ★这是「按时开会」那一步的落点★：到点了人要从这里点进去
     await page.getByPlaceholder('腾讯会议 / Zoom 链接').fill(url)
 
-    // 时间：默认值可能是空的，明天这个点开一小时
-    const start = new Date(Date.now() + 26 * 3600_000)
-    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:00`
-    await page.getByPlaceholder('开始日期').fill(fmt(start))
-    await page.keyboard.press('Enter')
+    // 时间:点一下「持续 · 1 小时」——从默认起点(当前时刻,会议类向上取整到一刻钟)起算一小时。
+    //
+    // ⚠★这里原来填的是 `getByPlaceholder('开始日期')`,而那个控件已经不存在了★(2026-08-12 查出):
+    //   时间选择早就换成了 `time-range.tsx` 的「日期 DatePicker + 扁平时间列 + 时长快捷」,
+    //   RangePicker 那两个 placeholder 跟着一起没了。于是这条**验收主线**用例
+    //   一直卡在 `locator.fill` 超时 30 秒 —— 它报的是「等不到元素」,
+    //   ★和「页面没加载出来」长得一模一样★,所以红了很久也没人当回事。
+    //   现在改用时长快捷:它是**一次点击**就把起止都定了的路径,
+    //   既最少依赖控件形态,也正是真人最常走的那条(time-range.tsx §持续)。
+    await page.getByRole('button', { name: '1 小时', exact: true }).click()
     await page.waitForTimeout(400)
-    await page.getByPlaceholder('结束日期').fill(fmt(new Date(start.getTime() + 3600_000)))
-    await page.keyboard.press('Enter')
-    // ⚠ 日期面板按 Enter 之后**还浮在上面**,会挡住下面的「关联项目」——
-    //   表现是「元素找到了但一直 not stable」,重试 44 次然后超时。Escape 收掉它。
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(500)
 
     // ★关联项目是必填★——第一版 spec 漏了这一步,表单正确地标红「至少关联一个项目」把我拦住了。
     // 这条本身就是一次验收:后端的硬约束(活动必须关联项目,材料权限才有来源 D3)在前端有对应提示。
@@ -137,8 +136,9 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
 
     // 参会人卡在**右栏**（原型 meet 视图；2026-08-07 用户第二次指出我放错了位置）
     await expect(page.getByText(/参会人/).first()).toBeVisible()
-    // 「想旁听的人」那一栏没人时也要在 —— 不显示的话发起人不知道有这个位置
-    await expect(page.getByText(/想旁听的人/).first()).toBeVisible()
+    // 「旁听」那一栏没人时也要在 —— 不显示的话发起人不知道有这个位置
+    // ⚠ 这一栏的标题 v0.4.60 就从「想旁听的人」改成了「旁听（N）」,用例晚了 51 个版本才跟上。
+    await expect(page.getByText(/旁听（/).first()).toBeVisible()
   })
 
   test('活动页的列表里也找得到（D7:两个入口）', async ({ page }) => {

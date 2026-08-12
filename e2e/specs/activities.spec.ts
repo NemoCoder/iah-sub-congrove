@@ -70,12 +70,24 @@ test.describe('活动:建与关联项目', () => {
 })
 
 test.describe('活动:答复与建议改期', () => {
-  test('接受邀请', async ({ request }) => {
+  // ⚠★这条原来叫「接受邀请」,拿**发起人自己**去 accept 并断言 200★——
+  //   而 2026-08-09 liaoruili 定了「发起人不答复自己发起的活动」(「发起人怎么还能拒绝呢？」),
+  //   respond 从此对发起人回 400。用例没跟上,于是它红着,红的理由是产品**按决定改对了**。
+  //   ★这类用例最危险的地方在于它读起来完全正当★:「接受邀请回 200」谁看都像该过的,
+  //   于是修的人很容易顺手把闸拆掉,把已经拍板的决定悄悄推翻回去。
+  //   现在把它翻成正面断言那条决定。
+  test('★发起人不答复自己发起的活动★:自己 accept 要被拒', async ({ request }) => {
     const pid = await newProject(request, `E2E-答复-${Date.now()}`)
     const { id } = await (await newActivity(request, [pid])).json()
     const r = await request.post(`/api/activities/${id}/respond`, { data: { status: 'accepted' } })
-    expect(r.status()).toBe(200)
+    expect(r.status(), '发起人自己答复应当 400').toBe(400)
   })
+
+  // 真正的「**被邀请的人**接受邀请」还没有用例:它要第二个**平台上真实存在**的账号
+  // (拉人要过 ensure_platform_user,以 Keycloak 为真相源,编的名字一律 400),
+  // 和 multi-identity.spec.ts 里跳过的那两组同一个前提 —— 待平台 O3b(见 CLAUDE.md)。
+  // ★这里不放 `test.skip(!PEER, …)` 占位★:裸写在 describe 体里的 test.skip(条件)
+  // 跳的是**整个 describe**,会把上面这一组答复用例一起静默跳掉 —— 那比没有用例更坏。
 
   test('★建议改期必须带具体的替代时间★', async ({ request }) => {
     const pid = await newProject(request, `E2E-改期-${Date.now()}`)
@@ -271,10 +283,19 @@ test.describe('项目归档(D17)', () => {
     expect((await request.post(`/api/projects/${pid}/items`, { data: { name: 'y', kind: 'folder' } })).status()).toBe(200)
   })
 
-  test('★归档项目的会不进日历、不产生忙闲★', async ({ request }) => {
+  test('★归档项目的会留在日历上但标出来、不再产生忙闲★', async ({ request }) => {
     const pid = await newProject(request, `E2E-归档日历-${Date.now()}`, 'public')
     const { id: mid } = await (await newActivity(request, [pid])).json()
-    const from = new Date(Date.now() - 3600_000).toISOString()
+    // ★把会挪到过去,否则**根本归档不了**★:项目归档有一道真闸——「还有没开始的活动,
+    //   先处理掉再归档」(2026-08-12 查出)。这条用例原来直接 `await archive(...)`
+    //   **不看返回码**,于是归档被 400 拒掉、测试却继续往下断言 ——
+    //   ★一个没检查返回码的前置步骤,失败时不会报「前置没做成」,而是伪装成后面那条断言的失败★,
+    //   查的人于是去查日历 SQL,而真凶在三行之前。所有前置动作都要 expect 状态码。
+    //   改时间没有「不能选过去」这条限制(那也用来补录,见 time-range.tsx 的头注)。
+    const past = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
+    expect((await request.put(`/api/activities/${mid}`,
+      { data: { starts_at: past(3), ends_at: past(2) } })).status(), '补录到过去应当允许').toBe(200)
+    const from = past(4)
     const to = new Date(Date.now() + 86400_000).toISOString()
 
     // 归档前:会在日历里,也产生忙闲
@@ -283,11 +304,21 @@ test.describe('项目归档(D17)', () => {
     const fbBefore = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(fbBefore.busy.e2e.length).toBeGreaterThan(0)
 
-    await archive(request, pid)
+    expect((await archive(request, pid)).status(), '归档没成功,后面的断言都是空的').toBe(200)
 
-    // 归档后:日历里没有了 —— 日历回答「接下来要做什么」,不是考古现场
+    // 归档后:★活动**照常留在日历上**,但带着 `archived` 标记★(PRD B0,2026-08-07 liaoruili
+    // 推翻了 D17 的这一半:「日程也是我做过什么的记录,归档不该让过去消失」)。
+    //
+    // ⚠★这条用例此前断言的是相反的事(`toBe(false)`),执行的是一条已被明令推翻的决定★——
+    //   代码 2026-08-09 就按 B0 改了(activities.rs 那段注释写得很清楚),用例没跟上,
+    //   于是它每轮都红,而红的理由是「产品按产品负责人的决定改了」。
+    //   ★一条断言旧契约的用例不是「暂时失效」,它是在往反方向拽★:
+    //   谁要是照它去「修」,就等于把 liaoruili 的决定又推翻一次。
     const after = await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()
-    expect(after.some((x: { id: number }) => x.id === mid), '归档项目的会仍占着日历').toBe(false)
+    const row = after.find((x: { id: number }) => x.id === mid)
+    expect(row, '归档项目的会不该从日历上消失(PRD B0)').toBeTruthy()
+    // ★必须**标出来**★:归档项目只读(D17 的这一半仍然成立),不标的话人会点进去想传材料才发现动不了。
+    expect(row.archived, '归档项目的会要带 archived 标记,否则前端淡化不了').toBe(true)
     // 忙闲也没有了 —— 否则历史活动会让人永远约不到你
     const fbAfter = await (await request.get(`/api/freebusy?users=e2e&from=${from}&to=${to}`)).json()
     expect(fbAfter.busy.e2e.length, '归档项目仍在产生忙闲').toBeLessThan(fbBefore.busy.e2e.length)
