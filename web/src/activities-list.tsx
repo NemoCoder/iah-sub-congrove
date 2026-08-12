@@ -10,7 +10,7 @@
 import { App as AntdApp, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity, type Me, type RespondStatus } from './api'
-import { fmtDay, fmtHM } from './tz'
+import { annotate, fmtDay, fmtHM } from './tz'
 import { TodoCard } from './todo-card'
 
 // ⚠ 原来这里也抄了一份 fmtDay/fmtHM,2026-08-12 收敛进 tz.ts(见 todo-card 的注释)。
@@ -152,7 +152,11 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
     }}>
       <div style={{ width: 92, flexShrink: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 13 }}>{fmtDay(s)}</div>
-        <div style={{ fontSize: 12, color: '#8c8c8c' }}>{fmtHM(s)}–{fmtHM(e)}</div>
+        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+          {fmtHM(s)}–{fmtHM(e)}
+          {/* E2:跨时区才标（一致时 annotate 返回空串） */}
+          {annotate(m.starts_at, m.timezone)}
+        </div>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, marginBottom: 3 }}>{m.title}</div>

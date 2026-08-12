@@ -122,6 +122,25 @@ export function wallToUtc(y: number, m: number, d: number, h: number, min: numbe
   return new Date(t)
 }
 
+/// ★E1 的核心：把「用户在选择器里看到并选中的那个墙上时间」按 `tz` 解释成 UTC 瞬时★。
+///
+/// 时间选择器（`TimeRangePicker` / dayjs）给出的 Date 里，Y/M/D/H/M 这组数字
+/// **就是用户看到的那串数字**（选择器显示的是本地时间，他从 15 分钟整槽里挑了一个）。
+/// 我们要的是「按**活动所在时区**读这组数字」。
+///
+/// ⚠★原来是 `v.range[0].toISOString()`★ —— 那是按**浏览器**解释的。
+/// 「我在纽约给北京的组会排 15:00」时，两者差 12–13 小时，
+/// ★而且不会报错★：请求 200、日历上照常出现一场会，只是时间整个错了半天。
+/// 这是整块时区里**最容易写错、也最难发现**的一步（设计 §3 步骤 3）。
+export function pickedToUtc(picked: Date, tz: string): Date {
+  return wallToUtc(picked.getFullYear(), picked.getMonth() + 1, picked.getDate(),
+    picked.getHours(), picked.getMinutes(), tz)
+}
+
+/// `pickedToUtc` 的逆：把库里的瞬时还原成「在 `tz` 里看是几点」的本地 Date，
+/// 好塞回选择器让人接着改。★不做这一步，一打开「改时间」就会把时间挪走★。
+export const utcToPicked = shiftToTz
+
 /// 把一个瞬时按 `tz` 的墙上时间，重新表达成一个「本地时间看起来一样」的 Date。
 /// ★只给布局计算用★（`schedule-layout` 要算「这场会落在哪一天的第几行」）：
 /// 它内部全靠 `getHours()/getDay()` 这类**本地**取值器，喂给它一个平移过的 Date，

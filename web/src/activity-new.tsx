@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, isMaterials, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
 import { RemindSelect } from './remind-poll'
+import { myTz, pickedToUtc, TZ_OPTIONS } from './tz'
 import { TimeRangePicker } from './time-range'
 
 
@@ -28,6 +29,11 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   /// 单场提醒（PRD F3）。★初值 null = 跟随个人默认★，不是「不提醒」——
   /// 大多数人不会动这一项，默认必须是「照我平时的习惯办」。
   const [remind, setRemind] = useState<number | null>(null)
+  /// ★这场活动的时区★（PRD E1）。默认取 `myTz()` —— liaoruili 2026-08-12 拍板
+  /// 「没设过时区的人跟随浏览器」：E0 已经定了「不设默认北京」，这里再默认北京就自相矛盾。
+  /// ⚠ 它不是「谁建的会他在哪」，是★这个时间按哪儿的钟说的★：
+  ///   「我在纽约给北京的组会排 15:00」——指的是北京时间 15:00。
+  const [tz, setTz] = useState<string>(() => myTz())
   const [projOpen, setProjOpen] = useState(false)
   /// ★参会人与时间提到组件级★:右栏的 chips 与忙闲图都要用它们,
   /// 留在 Form 内部的话右栏读不到(原型就是左表单/右面板并排)。
@@ -142,7 +148,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
     // ★补录超过 7 天要确认一次★(PRD F1,liaoruili 定的阈值)。
     // 想补多久以前的都行 —— 这是自己的记录不是报销;但**输错月份**比输错年份常见得多
     // (8 月 8 日打成次年 3 月 1 日),而一周之内的补录才是常态,跨过一周就值得停下来看一眼日期。
-    const start = new Date(v.range[0].toISOString())
+    const start = pickedToUtc(new Date(v.range[0].toISOString()), tz)
     if (allowPast && start.getTime() < Date.now() - 7 * 864e5) {
       const ok = await new Promise<boolean>((res) => modal.confirm({
         title: '确认这个日期吗？',
@@ -161,8 +167,10 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           title: v.title,
           agenda: v.agenda ?? '',
           recorder: needRecorder ? v.recorder : '',
-          starts_at: v.range[0].toISOString(),
-          ends_at: v.range[1].toISOString(),
+          // ★不是 .toISOString()★:那是按**浏览器**解释墙上时间(见 tz.ts::pickedToUtc 头注)
+          starts_at: pickedToUtc(new Date(v.range[0].toISOString()), tz).toISOString(),
+          ends_at: pickedToUtc(new Date(v.range[1].toISOString()), tz).toISOString(),
+          timezone: tz,
           project_ids: needProject ? v.project_ids : [],
           participants: people,
           location: v.location ?? '',
@@ -297,6 +305,16 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
             后一句当年是 PRD 专门为「公开」这个词的歧义加的 —— 现在按用户要求去掉,
             **这条歧义的兜底只剩后端**(材料权限一律走项目成员身份,与 visibility 无关)。
             记在这儿,免得下一个人以为是漏写的又给加回来。 */}
+        {/* ★紧跟「时间」★:它是时间的**修饰**,不是独立的一件事 ——
+            隔开放会让人填完时间就走,回头才发现时区不对。 */}
+        <Form.Item label="时区">
+          <Select size="middle" style={{ width: 260 }} value={tz} onChange={setTz}
+            showSearch optionFilterProp="label" options={TZ_OPTIONS} />
+          <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            上面填的时间按这里的钟算
+          </Typography.Text>
+        </Form.Item>
+
         {/* ★放在「公开活动」之前★：提醒是发起每一场都会瞄一眼的东西，
             而公开与否偶尔才改。表单顺序应当按**看它的频率**排，不是按实现顺序。 */}
         <Form.Item label="提醒我">

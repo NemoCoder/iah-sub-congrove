@@ -11,7 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
-import { fmtHM, fmtStamp } from './tz'
+import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, utcToPicked } from './tz'
 import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
@@ -172,7 +172,12 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           if (!timeEdit) return
           const [a, b] = timeEdit
           if (!b.isAfter(a)) { message.error('结束时间必须晚于开始时间'); return }
-          await patch({ starts_at: a.toISOString(), ends_at: b.toISOString() })
+          // ★与打开时对称★:选择器给的是墙上时间,按活动时区解释成瞬时(E1)
+          const atz = m.timezone || myTz()
+          await patch({
+            starts_at: pickedToUtc(a.toDate(), atz).toISOString(),
+            ends_at: pickedToUtc(b.toDate(), atz).toISOString(),
+          })
           setTimeEdit(null)
         }}>
         {/* ⚠★这里原来是个裸 `showTime` 的 RangePicker★(2026-08-09 用户:「改时间怎么到了时分秒。。。。
@@ -225,11 +230,28 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                 // ★不一致的交互比不能编辑更糟★：它让人以为是坏了。
                 children: (
                   <Space size={6}>
-                    <span>{fmtRange(m.starts_at, m.ends_at)}</span>
+                    <span>
+                      {fmtRange(m.starts_at, m.ends_at)}
+                      {/* ★E2:只有跨时区才标★(PRD)。一致时 annotate 返回空串,
+                          国内 99% 的情况看不到任何多余的字。
+                          「跨时区的人看到『凌晨 3:00』会懵 —— 不知道这是对方的下午,
+                          还是真要自己凌晨爬起来。★那个数字必须有个解释★。」 */}
+                      {annotate(m.starts_at, m.timezone) && (
+                        <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
+                          {annotate(m.starts_at, m.timezone)}
+                        </Typography.Text>
+                      )}
+                    </span>
                     {!!d.can_edit && !canceled && (
                       <Button type="text" size="small" style={{ padding: '0 4px', height: 20 }}
                         title="改时间（所有人的答复会清回待定）"
-                        onClick={() => setTimeEdit([dayjs(m.starts_at), dayjs(m.ends_at)])}>✎</Button>
+                        onClick={() => setTimeEdit([
+                          // ★按**活动自己的**时区还原墙上时间★(E1):直接 dayjs(瞬时) 是按浏览器还原的,
+                          // 一个纽约的人打开北京的会,编辑框里会显示成他的凌晨 —— 他什么都没改就点保存,
+                          // 时间也会被写回成另一个瞬时。★不做逆变换,「打开就挪」★(tz.ts::utcToPicked)。
+                          dayjs(utcToPicked(m.starts_at, m.timezone || myTz())),
+                          dayjs(utcToPicked(m.ends_at, m.timezone || myTz())),
+                        ])}>✎</Button>
                     )}
                   </Space>
                 ),
