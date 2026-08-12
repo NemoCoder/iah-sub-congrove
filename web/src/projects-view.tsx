@@ -450,15 +450,20 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
               它本来就不是项目,不参与「进行中/已归档」,也不参与搜索。 */}
         {materialsRow && (
           <div style={{ marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-            <List.Item
+            {/* ⚠★用 div 自己排,不要 List.Item★:List.Item 的横向布局来自 List 的 context,
+                单独拿出来用时 `flex:1` 推不动右边的标签 —— 「系统 · 只读」会紧贴名字,
+                和下面项目行右对齐的角色标签**对不齐**（2026-08-13 我挪这一格时就这么错了一版,
+                在巡检截图里一眼看出来）。★挪一个组件时,它依赖的上下文不会跟着走。★ */}
+            <div
               onClick={() => setCur(materialsRow)}
-              style={{ cursor: 'pointer', background: cur?.id === materialsRow.id ? '#e6fffb' : undefined,
+              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                       background: cur?.id === materialsRow.id ? '#e6fffb' : undefined,
                        borderRadius: 6, padding: '6px 8px' }}
             >
-              <Typography.Text strong={cur?.id === materialsRow.id} ellipsis style={{ flex: 1 }}
+              <Typography.Text strong={cur?.id === materialsRow.id} ellipsis style={{ flex: 1, minWidth: 0 }}
                 title={materialsRow.name}>{materialsRow.name}</Typography.Text>
-              <Tag color="gold">系统 · 只读</Tag>
-            </List.Item>
+              <Tag color="gold" style={{ marginInlineEnd: 0 }}>系统 · 只读</Tag>
+            </div>
           </div>
         )}
         {/* ★项目一多就必须能搜★:参与十几个项目是常态,靠肉眼在列表里找不现实。
