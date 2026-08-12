@@ -78,9 +78,9 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
     // ⚠ `FOR UPDATE SKIP LOCKED` 必须落在 activity_participants 上（`OF p`）——
     //   不写 `OF p` 的话 PG 会尝试锁住 JOIN 进来的每一张表，
     //   而 `user_prefs` 是 LEFT JOIN、锁不了，直接报错。
-    let due: Vec<(i64, String, String, Ts, i32)> = sqlx::query_as(
+    let due: Vec<(i64, String, String, Ts, i32, String)> = sqlx::query_as(
         "SELECT p.activity_id, p.username, m.title, m.starts_at,
-                COALESCE(m.remind_minutes, u.default_remind_minutes, $1)
+                COALESCE(m.remind_minutes, u.default_remind_minutes, $1), m.timezone
          FROM activity_participants p
          JOIN activities m ON m.id = p.activity_id
          LEFT JOIN user_prefs u ON u.username = p.username
@@ -115,28 +115,36 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
     // 站内信是 best-effort（registry 不可达只 warn），而它**发不出去**和**发两遍**这两种失败
     // 严重度差得远：漏一条提醒是遗憾，重复轰炸是事故。所以宁可标记在前 ——
     // 极端情况下（标记成功、发信失败）丢一条，也不让它有机会发两遍。
-    let ids: Vec<i64> = due.iter().map(|(a, _, _, _, _)| *a).collect();
-    let users: Vec<String> = due.iter().map(|(_, u, _, _, _)| u.clone()).collect();
+    let ids: Vec<i64> = due.iter().map(|(a, ..)| *a).collect();
+    let users: Vec<String> = due.iter().map(|(_, u, ..)| u.clone()).collect();
     sqlx::query(
         "UPDATE activity_participants SET reminded_at = now()
           WHERE (activity_id, username) IN (SELECT * FROM unnest($1::bigint[], $2::text[]))")
         .bind(&ids).bind(&users).execute(&mut *tx).await?;
     tx.commit().await?;
 
-    // ★按**收件人**的时区渲染那个绝对时间★(2026-08-12,PRD E0)。
-    // 原来写死东八区 —— 纽约用户收到的是「将于 15 分钟后开始(08-12 07:00)」而那是北京时间,
-    // ★他照着这个数字安排,就会错过会★。「15 分钟后」这半句本来就是相对的、对谁都对;
-    // 错的一直是括号里那个绝对时刻。
-    // ⚠ 一次查全,不在循环里逐个查库(一轮最多 200 条 = 200 次往返)。
-    let tzs = crate::tzutil::of_users(&state.pool, &users).await;
-    for (mid, user, title, starts_at, mins) in &due {
-        let tz = tzs.get(user).copied().unwrap_or(crate::tzutil::FALLBACK);
+    // ══════ ★消息里的绝对时刻:统一按**活动自己的**时区说,并标出是哪个钟★ ══════
+    // (2026-08-12 liaoruili:「统一！」)
+    //
+    // 这条规则之前是**两套**:提醒按收件人的时区渲染且不标,站内信按活动的时区渲染且标注 ——
+    // 两种消息躺在同一个收件箱里,★读的人分不出哪条是按谁的钟★,那比两条都用同一个"次优"规则更糟。
+    //
+    // 统一到「活动时区 + 标注」而不是「收件人时区」,理由有二(与 tzutil::when_labeled 同源):
+    //  · `notify_activity(mid, targets: &[String], …)` 是**一条正文发给 N 个人**,
+    //    按收件人渲染要把 8 个调用点全拆成逐人生成 + 逐人投递;
+    //  · ★站内信是**存下来的记录**★——按当时的收件人时区渲染之后,
+    //    他改了时区再回头看那条旧信,时间又对不上了。
+    //
+    // ⚠ 代价说清楚:纽约用户仍要自己换算一次。但「将于 15 分钟后开始」这半句本来就是**相对**的、
+    //   对谁都对,急不急由它承担;括号里那个绝对时刻只要**标明是哪个钟**就不会误导 ——
+    //   而原来写死东八区又不标,才是真的会让人错过会。
+    for (mid, _user, title, starts_at, mins, mtz) in &due {
         let body = format!(
             "{} 将于 {}后开始（{}）。",
             title, 人话时长(*mins),
-            starts_at.with_timezone(&tz).format("%m-%d %H:%M"),
+            crate::tzutil::when_labeled(*starts_at, crate::tzutil::parse(mtz)),
         );
-        crate::notify::notify_activity(state, *mid, std::slice::from_ref(user), "活动即将开始", &body).await;
+        crate::notify::notify_activity(state, *mid, std::slice::from_ref(_user), "活动即将开始", &body).await;
     }
     tracing::info!(count = due.len(), "已投递活动提醒");
     Ok(())
@@ -150,6 +158,20 @@ mod tests {
     /// 「提前 1 天」那一档发出去的是「将于 **1440 分钟后**开始」——
     /// 数字没错,但没有人会去心算 1440 分钟是多久。
     /// 按规范「修 bug 先写复现测试」,把它钉在这里:纯函数,不需要库也不需要循环跑起来。
+    /// ★统一规则的锚★(2026-08-12 liaoruili「统一！」):
+    /// 提醒正文里那个绝对时刻必须**带时区标注**,而且按**活动自己的**时区说 ——
+    /// 与站内信(notify::fmt_when)同一条规则。
+    /// 之前提醒按收件人渲染且不标,与站内信是两套,★读的人分不出哪条按谁的钟★。
+    #[test]
+    fn 提醒正文的时刻带时区标注() {
+        use chrono::TimeZone;
+        let t = chrono::Utc.with_ymd_and_hms(2026, 8, 13, 2, 0, 0).unwrap();
+        // 活动在北京 → 「08-13 周四 10:00（北京时间）」
+        assert_eq!(crate::tzutil::when_labeled(t, crate::tzutil::FALLBACK), "08-13 周四 10:00（北京时间）");
+        // 同一场会说成纽约 → 钟点和标注一起变(两句都对,因为各自标了按哪儿的钟)
+        assert_eq!(crate::tzutil::when_labeled(t, chrono_tz::America::New_York), "08-12 周三 22:00（纽约时间）");
+    }
+
     #[test]
     fn 提醒时长要说人话() {
         // ★出事的就是这一个★
