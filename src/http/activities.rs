@@ -484,8 +484,10 @@ pub async fn update(
             return Err(AppError::Forbidden);
         }
     }
-    let cur: (Ts, Ts, String, String) =
-        sqlx::query_as("SELECT starts_at, ends_at, online_url, title FROM activities WHERE id=$1")
+    // ⚠ 多取一个 `timezone`:下面重算材料文件夹名要用**活动自己的**时区
+    //   (不是看的人的 —— 那个名字是存进库的,见 items.rs::activity_folder_name 的注释)。
+    let cur: (Ts, Ts, String, String, String) =
+        sqlx::query_as("SELECT starts_at, ends_at, online_url, title, timezone FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     let (s, e) = (p.starts_at.unwrap_or(cur.0), p.ends_at.unwrap_or(cur.1));
     // 跨度上界与创建同一套(F4)。⚠ 改期**不**受 allow_past 约束 —— 那是修正历史记录的正当场景。
@@ -558,7 +560,7 @@ pub async fn update(
     let title_now = p.title.as_deref().unwrap_or(&cur.3);
     if title_now != cur.3 || s != cur.0 {
         // ★命名规则只有一处★:见 items.rs::activity_folder_name 的注释
-        let name = crate::http::items::activity_folder_name(s, title_now);
+        let name = crate::http::items::activity_folder_name(s, title_now, crate::tzutil::parse(&cur.4));
         sqlx::query("UPDATE items SET name=$2, updated_at=now()
                       WHERE activity_id=$1 AND kind='folder' AND deleted_at IS NULL AND name <> $2")
             .bind(mid).bind(&name).execute(&mut *tx).await?;

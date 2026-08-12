@@ -123,11 +123,18 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
         .bind(&ids).bind(&users).execute(&mut *tx).await?;
     tx.commit().await?;
 
+    // ★按**收件人**的时区渲染那个绝对时间★(2026-08-12,PRD E0)。
+    // 原来写死东八区 —— 纽约用户收到的是「将于 15 分钟后开始(08-12 07:00)」而那是北京时间,
+    // ★他照着这个数字安排,就会错过会★。「15 分钟后」这半句本来就是相对的、对谁都对;
+    // 错的一直是括号里那个绝对时刻。
+    // ⚠ 一次查全,不在循环里逐个查库(一轮最多 200 条 = 200 次往返)。
+    let tzs = crate::tzutil::of_users(&state.pool, &users).await;
     for (mid, user, title, starts_at, mins) in &due {
+        let tz = tzs.get(user).copied().unwrap_or(crate::tzutil::FALLBACK);
         let body = format!(
             "{} 将于 {}后开始（{}）。",
             title, 人话时长(*mins),
-            starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()).format("%m-%d %H:%M"),
+            starts_at.with_timezone(&tz).format("%m-%d %H:%M"),
         );
         crate::notify::notify_activity(state, *mid, std::slice::from_ref(user), "活动即将开始", &body).await;
     }

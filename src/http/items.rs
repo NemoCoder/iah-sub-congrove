@@ -180,10 +180,10 @@ async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> A
         return Ok(fid);
     }
     // 标题里的 `/` 之类不必转义:这是**数据库里的一行**,不是文件系统路径。
-    let (title, starts_at): (String, chrono::DateTime<chrono::Utc>) =
-        sqlx::query_as("SELECT title, starts_at FROM activities WHERE id = $1")
+    let (title, starts_at, tzname): (String, chrono::DateTime<chrono::Utc>, String) =
+        sqlx::query_as("SELECT title, starts_at, timezone FROM activities WHERE id = $1")
             .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    let name = activity_folder_name(starts_at, &title);
+    let name = activity_folder_name(starts_at, &title, crate::tzutil::parse(&tzname));
     let made: Option<i64> = sqlx::query_scalar(
         "INSERT INTO items (project_id, parent_id, kind, name, created_by, activity_id)
          VALUES ($1, NULL, 'folder', $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id")
@@ -207,9 +207,15 @@ async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> A
 /// 文件夹名会比会议日期早一天 —— 与 `notify.rs::fmt_when` 用同一个偏移。
 ///
 /// 日期在前 = 按名字排序就等于按时间排序,一个项目开一年会之后这条比什么都有用。
-pub fn activity_folder_name(starts_at: chrono::DateTime<chrono::Utc>, title: &str) -> String {
-    let local = starts_at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
-    format!("{} {}", local.format("%Y-%m-%d"), title.trim())
+/// ⚠★这一处**不跟着看的人走**,跟着活动自己的时区走★(2026-08-12 实现时纠正的设计)。
+/// 设计里把四处写死东八区一并写成「按收件人的时区」,但这一处根本不是显示 ——
+/// 它是**存进 `items.name` 的文件夹名**:
+///   · 名字一旦建好就固定了,后来者看到的是同一个字符串,「跟着谁走」这个问题本身不成立;
+///   · 同一场会不该因为**谁先点开材料页**而得到不同的文件夹名。
+/// ★「这场会是哪一天的」是活动自己的属性★,而 `activities.timezone` 正是「按哪儿的钟说的」。
+/// 空字符串(老数据 / E1 上线前建的)兜底东八区 —— 与改动前逐字一致。
+pub fn activity_folder_name(starts_at: chrono::DateTime<chrono::Utc>, title: &str, tz: chrono_tz::Tz) -> String {
+    format!("{} {}", starts_at.with_timezone(&tz).format("%Y-%m-%d"), title.trim())
 }
 
 /// 重名时的下一个名字:`a.pdf` → `a (2).pdf` → `a (3).pdf`。★纯函数,单测够得着★。
@@ -1284,14 +1290,14 @@ mod tests {
     #[test]
     fn 文件夹名按东八区取日期() {
         let t = chrono::Utc.with_ymd_and_hms(2026, 8, 8, 23, 0, 0).unwrap();  // = 北京 8-09 07:00
-        assert_eq!(activity_folder_name(t, "组会"), "2026-08-09 组会");
+        assert_eq!(activity_folder_name(t, "组会", crate::tzutil::FALLBACK), "2026-08-09 组会");
     }
 
     /// 日期在前:按名字排序就等于按时间排序(一个项目开一年会之后,这条比什么都有用)。
     #[test]
     fn 按名字排序等于按时间排序() {
-        let a = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 3, 2, 0, 0).unwrap(), "乙会");
-        let b = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 12, 2, 0, 0).unwrap(), "甲会");
+        let a = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 3, 2, 0, 0).unwrap(), "乙会", crate::tzutil::FALLBACK);
+        let b = activity_folder_name(chrono::Utc.with_ymd_and_hms(2026, 8, 12, 2, 0, 0).unwrap(), "甲会", crate::tzutil::FALLBACK);
         assert!(a < b, "8-03 的应排在 8-12 之前,而不是被标题的字序左右:{a} / {b}");
     }
 
@@ -1299,7 +1305,7 @@ mod tests {
     #[test]
     fn 标题两头空白被裁掉() {
         let t = chrono::Utc.with_ymd_and_hms(2026, 8, 9, 2, 0, 0).unwrap();
-        assert_eq!(activity_folder_name(t, "  组会  "), "2026-08-09 组会");
+        assert_eq!(activity_folder_name(t, "  组会  ", crate::tzutil::FALLBACK), "2026-08-09 组会");
     }
 
     // ══════ 重名的两种情形(2026-08-09 liaoruili 选的方案 C)══════
