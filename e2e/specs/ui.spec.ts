@@ -11,6 +11,7 @@
 //     certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n IAH-Internal-CA -i <ca.crt>
 // ★别用 ignoreHTTPSErrors 图省事★——那会把「证书真的错了」和「证书是内网 CA 签的」一起吞掉。
 import { expect, test } from '@playwright/test'
+import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -36,7 +37,12 @@ test.describe('发起活动表单', () => {
     await expect(options.filter({ hasText: 'e2e' }).first()).toBeVisible()
   })
 
-  test('关联项目只列出我有编辑权的', async ({ page }) => {
+  test('关联项目只列出我有编辑权的', async ({ page, request }) => {
+    // ★先给自己造一个项目★:这条用例原来依赖「库里恰好有我能编辑的项目」——
+    // teardown 改彻底(2026-08-13,按 owner 分别扫)之后 e2e 名下被清空，它当场变红。
+    // ★红的不是产品，是用例借了别人留下的数据★，与那三条配额用例同一族。
+    expect((await request.post('/api/projects',
+      { data: { name: `E2E-下拉候选-${Date.now()}` } })).status()).toBe(200)
     await page.goto('/')
     await page.getByRole('button', { name: /发起活动/ }).click()
     // ⚠★别用 hasText 定位表单项★(2026-08-08 踩的):M0-4 给「活动类型」加了能力位徽章,
@@ -78,15 +84,51 @@ test.describe('日程页', () => {
     }
   })
 
-  test('★重叠的活动必须都看得见★', async ({ page }) => {
+  // ⚠★这条用例一直是**空的**★（2026-08-13 逐张看截图时顺手量 DOM 才发现）。两处同时失效:
+  //   ① 选择器 `div[title]` 过滤 `style.position==='absolute' && e.title` —— AntD 6 的 Tooltip
+  //      不再把文字写进 DOM 的 `title` 属性，事件块本身也没有 title，★实测匹配 0 个★;
+  //   ② 就算选对了，它也只在**库里恰好存在重叠活动**时才有断言 ——
+  //      teardown 把测试数据清干净之后，日历上一场重叠都没有，`narrow` 为空、
+  //      for 循环一次都不进、`expect` 一次都不执行，★于是它每轮都绿，而它什么都没验★。
+  //   这正是本仓库反复记的那条:**空断言比不测更坏** —— 不测起码不会给人「这块有人守着」的错觉。
+  //   修法两条一起:自己造两场**必然重叠**的活动，再按真实 DOM(绝对定位的块)量。
+  test('★重叠的活动必须都看得见★', async ({ page, request }) => {
+    // 自己造数据:同一时段两场，必然重叠 —— 不靠库里恰好有什么
+    // ★必须排在白天★:凌晨 0–8 点默认是**折叠**的,排在那一段的会一个块都不渲染 ——
+    //   我第一版写 `now + 3h`，凌晨一点多跑就落进折叠区，于是「造了两场却量到 0 个块」。
+    //   (是上面那句护栏把它抓出来的 —— 没有护栏的话它会安静地退回「空跑也绿」。)
+    const t0 = new Date(); t0.setHours(14, 0, 0, 0)
+    if (t0.getTime() < Date.now()) t0.setDate(t0.getDate() + 1)   // 今天 14 点过了就排明天
+    const t1 = new Date(t0.getTime() + 3600_000)
+    const pr = await request.post('/api/projects', { data: { name: `E2E-重叠-${Date.now()}` } })
+    expect(pr.status(), '建项目失败,后面的断言就没有意义了').toBe(200)
+    const pid = (await pr.json()).id as number
+    for (const i of [1, 2]) {
+      const r = await request.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-重叠-${i}-${Date.now()}`, recorder: 'e2e',
+                starts_at: t0.toISOString(), ends_at: t1.toISOString(), project_ids: [pid] },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+    }
+
     await page.goto('/')
-    await page.waitForTimeout(800)
-    // 取所有事件块的定位信息;同一格里重叠的应当被分到不同的列(left 不同)
-    const boxes = await page.$$eval('div[title]', (els) =>
-      els.filter((e) => (e as HTMLElement).style.position === 'absolute' && (e as HTMLElement).title)
-         .map((e) => ({ top: (e as HTMLElement).style.top, left: (e as HTMLElement).style.left, w: (e as HTMLElement).style.width })))
-    // 按「同一天同一时段」粗略分组:top 相近且宽度不是 100% 的,说明是并排的一簇
+    await page.waitForTimeout(1500)
+    // ★按真实 DOM 取★:绝对定位 + 有 top/height 的那些 div 才是事件块
+    // ⚠★光判「绝对定位」不够★:AntD 的 Tooltip 内部也是一堆绝对定位的 div(箭头、气泡壳),
+    //   它们的 width 是空串、left 是 `0px` —— 于是全落进下面的 `narrow`,
+    //   ★7 个 tooltip 碎片挤在同一个 left 上，把这条用例判成红的（我第一版修就是这么误报的）★。
+    //   事件块的特征是**两个值都用百分比**(left:0%/50%…、width:100%/50%…),按这个筛。
+    const boxes = await page.$$eval('div', (els) =>
+      els.filter((e) => {
+        const st = (e as HTMLElement).style
+        return st.position === 'absolute' && !!st.top && !!st.height
+            && st.left.endsWith('%') && st.width.endsWith('%')
+      }).map((e) => ({ top: (e as HTMLElement).style.top, left: (e as HTMLElement).style.left, w: (e as HTMLElement).style.width })))
+    // ★先证明这条用例**有东西可验**★:上面刚造了两场重叠的,分栏之后必然出现非满宽的块。
+    // 没有这一句的话,选择器再坏一次,它又会安静地退回「空跑也绿」。
     const narrow = boxes.filter((b) => b.w !== '100%')
+    expect(narrow.length, '★刚造了两场重叠的活动,却一个并排块都没有 = 要么没渲染,要么选择器又失效了★')
+      .toBeGreaterThan(0)
     for (const b of narrow) {
       const sameSpot = narrow.filter((x) => x.top === b.top && x.w === b.w)
       const lefts = new Set(sameSpot.map((x) => x.left))

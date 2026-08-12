@@ -28,13 +28,23 @@ const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 const WHO = process.env.AUDIT_USER ?? 'liaoruili'
 const VER = process.env.AUDIT_VER ?? 'v0.4.113'
-const DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${VER}/巡检`
+/// ★每一轮一个独立目录★（2026-08-13 踩的第二个坑）：重跑一小段时编号又从 0001 开始，
+/// **把上一轮的报告和前 11 张截图直接覆盖掉了** —— 全量那份 178 次点击的报告就此没了
+/// （幸好终端日志还在）。截图是证据，证据不能被下一次运行擦掉。
+const RUN = process.env.AUDIT_RUN ?? '全量'
+const DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${VER}/巡检-${RUN}`
 mkdirSync(DIR, { recursive: true })
 
 /// 点了会改数据的名字：不是不测，是只对自己造的数据测（纪律①）
 const 破坏性 = /删\s*除|清\s*空|移\s*除|退\s*出|注\s*销|归\s*档|恢复为|撤\s*销|解\s*除|吊\s*销|转\s*让|转\s*移|还\s*原|彻底|清理|purge/i
-/// 会把页面整个带走的（登出、跳外站）——点了之后后面全废
-const 别点 = /退出登录|IAH 开发平台|开发平台|hub\.ruciah/
+/// 会把页面整个带走的（登出、跳外站），以及**会改账号状态**的。
+///
+/// ⚠★「进入超管模式」是 2026-08-13 第一轮巡检踩的坑★:它不含「删除/归档」这类字眼,
+///   于是溜过了破坏性名单 —— 脚本点了它,把 liaoruili 的账号**提权了两小时**。
+///   ★破坏性不只是「改数据」,还包括「改这个人的权限状态」★:后者更隐蔽,
+///   因为它在界面上什么都不删,只是让这个人此后看得到所有人的东西。
+///   (发现方式也值得记:是我逐张看截图时看见顶部那条黄色横幅才发觉的,报告里一个字都没有。)
+const 别点 = /退出登录|IAH 开发平台|开发平台|hub\.ruciah|超管模式/
 /// 一屏之内可点的东西
 const SEL = 'button:visible, a:visible, [role=tab]:visible, [role=radio]:visible'
 
@@ -66,7 +76,9 @@ const 收弹窗 = async () => {
 
 /// ★巡一屏★：把当前屏上所有可点元素**逐个下标**点一遍，每点一次先复位。
 /// `复位` 必须把页面带回到「这一屏」，否则下一个下标指向的就不是同一个东西了。
+const ONLY = process.env.AUDIT_ONLY
 async function 巡一屏(页面, 复位) {
+  if (ONLY && !页面.includes(ONLY)) return
   await 复位()
   const 全部 = []
   for (const el of await p.locator(SEL).all()) {
@@ -78,9 +90,21 @@ async function 巡一屏(页面, 复位) {
   for (let i = 0; i < 全部.length; i++) {
     const 名 = 全部[i]
     if (别点.test(名)) { 记录.push({ 页面, 序: i, 元素: 名, 结果: '跳过(会离开本站/登出)', 截图: '' }); continue }
-    await 复位()
-    const el = p.locator(SEL).nth(i)
-    if (!(await el.count())) { 记录.push({ 页面, 序: i, 元素: 名, 结果: '★复位后这个位置没有元素了★', 截图: '' }); console.log(`  ✗ [${页面}] #${i} ${名} — 复位后不见了`); continue }
+    // ★复位后按**名字**找回来,不认死下标★（2026-08-13 第一轮巡检暴露的脚本 bug）:
+    //   下标会漂移(点了一下之后列表长短变了、或复位落在了别的屏),
+    //   死认下标的结果是 8 条「复位后这个位置没有元素了」——
+    //   ★而那 8 条的真相是「这个按钮我根本没测到」,不是「它坏了」。★
+    //   把没测到报成异常会掩盖真异常;把没测到报成通过更糟。所以单列一类「未测」。
+    let el = null
+    for (let 轮 = 0; 轮 < 2 && !el; 轮++) {
+      await 复位()
+      const 现在 = await p.locator(SEL).all()
+      const 文 = []
+      for (const e of 现在) 文.push(((((await e.textContent().catch(() => '')) ?? '').trim().replace(/\s+/g, ' ')) || '(无文字)'))
+      if (文[i] === 名) el = p.locator(SEL).nth(i)
+      else { const j = 文.indexOf(名); if (j >= 0) el = p.locator(SEL).nth(j) }
+    }
+    if (!el) { 记录.push({ 页面, 序: i, 元素: 名, 结果: '未测(复位后找不到这个元素)', 截图: '' }); console.log(`  ? [${页面}] #${i} ${名} — 未测:复位后找不到`); continue }
     const 现名 = (((await el.textContent().catch(() => '')) ?? '').trim().replace(/\s+/g, ' ')) || '(无文字)'
     if (破坏性.test(名) || 破坏性.test(现名)) {
       记录.push({ 页面, 序: i, 元素: 名, 结果: '跳过(破坏性,改到 E2E- 数据上测)', 截图: await shot(`${页面}-${i}-跳过-${名}`) })
@@ -170,10 +194,13 @@ for (const 项 of ['个人面板', '我的分享', '我的活动类型', '开发
 }
 
 // ══ 汇总 ══
-const 坏 = 记录.filter((r) => r.结果 !== 'ok' && !r.结果.startsWith('跳过'))
+const 坏 = 记录.filter((r) => r.结果 !== 'ok' && !r.结果.startsWith('跳过') && !r.结果.startsWith('未测'))
+const 未测 = 记录.filter((r) => r.结果.startsWith('未测'))
 writeFileSync(`${DIR}/报告.md`, [
   `# 全面巡检报告 ${VER}`, '',
-  `站点 ${BASE}　身份 ${WHO}　共点 ${记录.length} 处，异常 **${坏.length}** 处，截图 ${n} 张（全部 fullPage）`, '',
+  `站点 ${BASE}　身份 ${WHO}　共点 ${记录.length} 处，异常 **${坏.length}** 处，★未测 ${未测.length} 处★，截图 ${n} 张（全部 fullPage）`, '',
+  ...(未测.length ? ['## ★未测清单★（不是通过,是没点到——必须补）', '',
+    ...未测.map((r) => `- ${r.页面} #${r.序} ${r.元素}：${r.结果}`), ''] : []),
   ...(坏.length ? ['## ★异常清单★', '', '| 页面 | # | 元素 | 结果 | 截图 |', '|---|---|---|---|---|',
     ...坏.map((r) => `| ${r.页面} | ${r.序} | ${r.元素} | ${r.结果} | ${r.截图} |`), ''] : ['## 异常清单', '（无）', '']),
   '## 全部点击记录', '', '| 页面 | # | 元素 | 结果 | 截图 |', '|---|---|---|---|---|',
@@ -181,6 +208,6 @@ writeFileSync(`${DIR}/报告.md`, [
   '## console 错误', ...(错误.length ? [...new Set(错误)].map((e) => '- ' + e) : ['（无）']), '',
   '## HTTP >= 400', ...(网络.length ? [...new Set(网络)].map((e) => '- ' + e) : ['（无）']),
 ].join('\n'))
-console.log(`\n══ 共点 ${记录.length} 处，异常 ${坏.length} 处；截图 ${n} 张；console 错误 ${new Set(错误).size} 种，HTTP>=400 ${new Set(网络).size} 种 ══`)
+console.log(`\n══ 共点 ${记录.length} 处，异常 ${坏.length} 处，未测 ${未测.length} 处；截图 ${n} 张；console 错误 ${new Set(错误).size} 种，HTTP>=400 ${new Set(网络).size} 种 ══`)
 console.log(`报告：${DIR}/报告.md`)
 await b.close()

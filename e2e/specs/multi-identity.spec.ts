@@ -240,3 +240,28 @@ test.describe('材料区的回收站(J1b-2)', () => {
     } finally { await Promise.all([boss.dispose(), 路人.dispose()]) }
   })
 })
+
+// ★开着超管模式时，自己的「我的活动材料」不能消失★（2026-08-13 逐张看巡检截图发现）。
+//
+// 超管分支原来把**全部** materials 滤掉，包括超管自己那一个 —— 于是开模式的两小时里，
+// 平时置顶的第一行凭空不见了。原注释还写着「超管自己的材料区在下面那条分支里」，
+// 而那条分支在 `return` 之后，根本不会执行。★注释描述意图、代码执行别的，谁都不会报错。★
+//
+// ⚠ 这条用例会**真的开一次超管模式**（这是唯一能验的方式），所以 finally 里一定关回去 ——
+//   本轮巡检就因为脚本顺手点了「进入超管模式」，把 liaoruili 的账号提权了两小时。
+test.describe('超管模式下的项目列表', () => {
+  test('★自己的材料区照常在，别人的一个都不给★', async () => {
+    const boss = await asUser('liaoruili')
+    try {
+      expect((await boss.post('/api/me/admin-mode', { data: { on: true } })).status()).toBe(200)
+      const ps = await (await boss.get('/api/projects')).json() as { kind?: string; created_by?: string }[]
+      const mats = ps.filter((p) => p.kind === 'materials')
+      expect(mats.length, '★开着超管模式时自己的「我的活动材料」不该消失★').toBeGreaterThan(0)
+      expect(mats.every((p) => p.created_by === 'liaoruili'),
+        '★别人的材料区一个都不该出现★(PRD §J1c:里面是体检报告、私人录音这类东西)').toBe(true)
+    } finally {
+      await boss.post('/api/me/admin-mode', { data: { on: false } }).catch(() => {})
+      await boss.dispose()
+    }
+  })
+})
