@@ -27,3 +27,31 @@ export const effectiveScope = (scope: Scope, archivedCount: number): Scope =>
 /// 「切项目时记得 setPtab('items')」那种写法解决不了下一处,因为它要求每个新入口都记得。
 export const effectiveTab = (tab: string, keys: string[]): string =>
   keys.includes(tab) ? tab : (keys[0] ?? tab)
+
+/// 左栏最终显示哪些行 —— 材料区置顶 + 项目按 scope/搜索筛。
+///
+/// ★材料区不参与搜索,但**要参与「进行中 / 已归档」**★
+/// （2026-08-13 liaoruili 截图:「已归档里面为啥有我的活动材料」）。
+///
+/// ⚠ 我原来把这两件事当成同一条规则,写成「永远置顶、永远显示」。
+///   置顶那一半是对的(2026-08-09 liaoruili 明确要的),★但「永远显示」不该覆盖到「已归档」这一档★:
+///   - 搜索是**在同一份列表里找**,材料区被关键词筛掉一次,人就会以为它没了 → 该豁免;
+///   - 「已归档」不是筛选,是**换了一份列表**:那一格里的每一行都在宣称「我是归档的」。
+///     把一个永不归档的系统格子摆进去,它就被这份列表的语义标成了归档 ——
+///     ★破绽是计数与行数对不上:标签写「已归档 1」,底下却列出两行。★
+///     (计数早就只数真项目了,漏的是显示这一侧。)
+///
+/// 所以判据分开:搜索豁免它,scope 不豁免它。
+export function shownProjects<T extends { name: string; archived_at?: string | null }>(
+  all: T[], isMat: (p: T) => boolean, scope: Scope, kw: string,
+): T[] {
+  const 词 = kw.trim().toLowerCase()
+  return [
+    // 归档档里不摆材料区 —— 它永远不是归档的
+    ...(scope === 'archived' ? [] : all.filter(isMat)),
+    ...all
+      .filter((p) => !isMat(p))
+      .filter((p) => (scope === 'archived' ? !!p.archived_at : !p.archived_at))
+      .filter((p) => !词 || p.name.toLowerCase().includes(词)),
+  ]
+}

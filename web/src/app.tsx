@@ -64,6 +64,14 @@ export function App() {
   const [activityId, setActivityId] = useState<number | 'new' | null>(deepLinkActivityId)
   // 纪要是活动的子页:非空时盖在详情之上(返回回到详情,不是回日历)
   const [minutesOf, setMinutesOf] = useState<number | null>(null)
+  /// ★「从哪儿来的」★:只有跨 tab 的跳转才需要它(项目页 →「去活动」)。
+  /// 同一个 tab 内的进出(日程/活动点开一条会)本来就退得回去,不记。
+  /// ⚠ 存的是**离开时的落点**(哪个 tab + 哪个项目),不是一部历史栈 ——
+  ///   本应用不引路由库(见本文件头注),真做浏览器式的前进后退是另一个量级的事;
+  ///   这里要解决的只是「一次跨 tab 的跳转要负责把人送回来」。
+  const [backTo, setBackTo] = useState<{ view: View; projectId: number | null } | null>(null)
+  /// 回到项目页时先选中哪个项目(即 backTo.projectId 的落地)
+  const [backToProject, setBackToProject] = useState<number | null>(null)
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -111,7 +119,7 @@ export function App() {
       {/* ★挂在这里而不是各视图里★：提醒该弹就得弹，跟当前停在哪个页面无关。
           放进某个视图 = 只有停在那一页的人收得到，而人多半停在别处。
           点弹窗直接跳到那场活动 —— 提醒说「快开始了」，下一步一定是「那我去看看」。 */}
-      <RemindPoll onOpen={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null) }} />
+      <RemindPoll onOpen={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null); setBackTo(null) }} />
       {/* ★E0 提示条★:挂在最外层而不是某个视图里 —— 「我在按错的时区看时间」这件事
           跟你停在哪一页无关。key 带上 tzTick:prefs 拉回来之后要重算一次 dev vs set。 */}
       <div key={tzTick} style={{ maxWidth: 1400, margin: '0 auto', padding: '10px 16px 0' }}>
@@ -121,7 +129,9 @@ export function App() {
         nav={
           <Segmented
             value={view}
-            onChange={(v) => { setView(v as View); setActivityId(null); setMinutesOf(null) }}
+            // ★手动切 tab = 来路作废★:否则下次从活动列表点开一条会,「返回」还写着「返回项目」,
+            //   点下去把人送到一个他并没有来过的地方 —— ★错的返回比没有返回更坏★。
+            onChange={(v) => { setView(v as View); setActivityId(null); setMinutesOf(null); setBackTo(null); setBackToProject(null) }}
             options={[
               { value: 'schedule', label: '日程' },
               { value: 'projects', label: '项目' },
@@ -151,7 +161,7 @@ export function App() {
             ],
             onClick: ({ key }) => {
               if (key === 'adminmode') { void toggleAdminMode(!me?.is_super); return }
-              if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null) }
+              if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null); setBackTo(null); setBackToProject(null) }
             },
           }}>
             <Button type="text" style={{ height: 'auto', padding: '4px 8px' }}>
@@ -199,15 +209,31 @@ export function App() {
           ) : activityId === 'new' ? (
             <ActivityNewView me={me} onCreated={(id) => setActivityId(id)} onCancel={() => setActivityId(null)} />
           ) : activityId != null ? (
-            <ActivityDetailView id={activityId} me={me?.username ?? ''} onBack={() => setActivityId(null)} onOpenMinutes={setMinutesOf}
-              backLabel="返回活动" />
+            <ActivityDetailView id={activityId} me={me?.username ?? ''} onOpenMinutes={setMinutesOf}
+              onBack={() => {
+                setActivityId(null)
+                // 从项目页跳过来的:原路退回那个项目,而不是留在活动列表
+                if (backTo) { setView(backTo.view); setBackToProject(backTo.projectId); setBackTo(null) }
+              }}
+              backLabel={backTo ? '返回项目' : '返回活动'} />
           ) : (
             <ActivitiesListView me={me} onOpen={setActivityId} onOpenMinutes={setMinutesOf} onNew={() => setActivityId('new')} />
           )
         ) : view === 'projects' ? (
           // 项目页里点「去活动 →」直接切到活动详情(活动材料的文件夹在项目树里是只读的,
           // 要改就得回那条活动 —— 给它一条路,别让人自己去活动列表里找)
-          <ProjectsView me={me} onOpenActivity={(aid) => { setView('activities'); setActivityId(aid); setMinutesOf(null) }} />
+          //
+          // ★但要记住来路★（2026-08-13 liaoruili:「我从项目点击去活动，返回却到了活动tab」）:
+          //   这一跳**换了根 tab**,而「返回」只知道把 activityId 清掉 ——
+          //   于是人落在活动列表里,而他从来没打算去那儿。
+          //   ★一个把你送去别处的链接,必须自己负责把你送回来★;
+          //   靠用户再点一次顶部「项目」不算返回,他还得自己找回原来那个项目。
+          //   所以连**离开时选中的项目**一起记下,返回时原样落回去。
+          <ProjectsView me={me} initialProjectId={backToProject}
+            onOpenActivity={(aid, fromProject) => {
+              setBackTo({ view: 'projects', projectId: fromProject ?? null })
+              setView('activities'); setActivityId(aid); setMinutesOf(null)
+            }} />
         )
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />
           : view === 'apis' ? <ApiDocView />

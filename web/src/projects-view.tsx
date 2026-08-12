@@ -29,7 +29,7 @@ const PARENT_ROW_ID = -1_000_000
 /// 上传任务(表格里以「伪行」呈现,id 取负数与真实 item 区分)。
 type UpTask = { key: string; file: File; percent: number; running: boolean; ctl: UploadCtl; hashing?: boolean }
 import { fileSha256 } from './sha256'
-import { effectiveScope, effectiveTab, showScopeSwitch } from './project-filter'
+import { effectiveScope, effectiveTab, showScopeSwitch, shownProjects } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
 import { fmtStamp } from './tz'
@@ -55,11 +55,17 @@ const fmtTime = fmtStamp
 /// - 项目里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function ProjectsView({ me, onOpenActivity }: {
+export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
   me: Me | null
   /// 跳到某条活动的详情页。★由 app.tsx 注入而不是在这里改 URL★:
   /// 本应用整层不引路由库(app.tsx 头注的既有约定),视图切换是状态,不是地址。
-  onOpenActivity?: (activityId: number) => void
+  /// 第二个参数是**离开时选中的项目**,给「返回」用(见 initialProjectId)。
+  onOpenActivity?: (activityId: number, fromProjectId?: number | null) => void
+  /// 进来时先选中哪个项目。★这是「从活动详情返回」用的★（2026-08-13 liaoruili:
+  /// 「我从项目点击去活动，返回却到了活动tab」）—— 切走时本视图整个被卸载,
+  /// 选中的项目、右侧的 tab 全丢了;光把根 tab 切回「项目」,人落回的还是列表根,
+  /// ★而他明明是从「我的活动材料」里点出去的★。返回要回到**他离开的地方**,不是这一层的门口。
+  initialProjectId?: number | null
 }) {
   const { message, modal } = AntdApp.useApp()
   const [projects, setProjects] = useState<Project[]>([])
@@ -92,10 +98,13 @@ export function ProjectsView({ me, onOpenActivity }: {
   const loadProjects = useCallback(async () => {
     const s = await api<Project[]>('/api/projects')
     setProjects(s)
-    setCur((c) => (c ? s.find((x: Project) => x.id === c.id) || null : null))
+    // ★没选中时用 initialProjectId 兜★:那是「从活动详情返回」带回来的落点。
+    // 用 `||` 而不是覆盖已有选择 —— 列表刷新(重命名/归档)不该把人正看着的项目换掉。
+    setCur((c) => (c ? s.find((x: Project) => x.id === c.id) || null
+                     : (initialProjectId ? s.find((x: Project) => x.id === initialProjectId) || null : null)))
     // 回收站空是常态,拉失败也不该影响主列表 —— 静默兜底
     try { setProjTrash(await api('/api/projects/trash')) } catch { setProjTrash([]) }
-  }, [])
+  }, [initialProjectId])
   const loadItems = useCallback(async (pid: number) => {
     setItems(await api<Item[]>(`/api/projects/${pid}/items`))
   }, [])
@@ -405,16 +414,10 @@ export function ProjectsView({ me, onOpenActivity }: {
   /// 修法是**派生**而不是同步状态:控件的可见性与筛选值来自同一个事实,不会各说各话。
   /// 两者都抽到 project-filter.ts 并有单测(含这个 bug 的复现用例)。
   const effScope = effectiveScope(scope, archivedCount)
-  /// ★「我的活动材料」永远置顶、永远显示★(2026-08-09 liaoruili:「永远置顶」)。
-  /// 它不参与「进行中 / 已归档」筛选,也不参与搜索 —— 那两个筛的是**项目**,
-  /// 而它不是项目(PRD §J1),是每个人固定的那一格。被搜索词筛掉一次,人就会以为它没了。
-  const shown = [
-    ...projects.filter(isMaterials),
-    ...projects
-      .filter((p) => !isMaterials(p))
-      .filter((p) => (effScope === 'archived' ? !!p.archived_at : !p.archived_at))
-      .filter((p) => !kw.trim() || p.name.toLowerCase().includes(kw.trim().toLowerCase())),
-  ]
+  /// ★「我的活动材料」置顶、且不被搜索筛掉★(2026-08-09 liaoruili:「永远置顶」);
+  /// ★但它不进「已归档」那一档★(2026-08-13 liaoruili:「已归档里面为啥有我的活动材料」)。
+  /// 两条判据为什么分开,见 project-filter.ts 的头注(那里有复现单测)。
+  const shown = shownProjects(projects, isMaterials, effScope, kw)
 
   return (
     <>
@@ -707,7 +710,7 @@ export function ProjectsView({ me, onOpenActivity }: {
                           同理处理」):判据是 `it.activity_id`,与项目是不是材料区无关。 */}
                       {it.activity_id && (
                         <Tooltip title="这是活动材料：名称与位置由活动决定，增删都在活动页里做。点这里去那条活动">
-                          <a onClick={() => onOpenActivity?.(it.activity_id!)}>去活动 ›</a>
+                          <a onClick={() => onOpenActivity?.(it.activity_id!, cur?.id ?? null)}>去活动 ›</a>
                         </Tooltip>
                       )}
                     </AntSpace>
