@@ -18,10 +18,10 @@
 import { Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Activity } from './api'
+import { fmtDay, fmtHM, fmtWeek } from './tz'
 
-const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-const pad = (n: number) => String(n).padStart(2, '0')
-const 时刻 = (d: Date) => `${WEEK[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+/// ⚠ 原来这里也抄了一份 pad/星期表(2026-08-12 收敛进 tz.ts,见 todo-card 的注释)。
+const 时刻 = (t: string) => `${fmtWeek(t)} ${fmtDay(t).split(' ')[0]} ${fmtHM(t)}`
 
 export function UpcomingBar({ reloadKey, onOpen }: {
   /// 日历每次重载就 +1，让这条跟着刷新（答复完一条邀请，计数要当场变）
@@ -78,7 +78,7 @@ export function UpcomingBar({ reloadKey, onOpen }: {
           · 最近一场{' '}
           {/* 点得进去：看到「最近一场是周四的评审会」，下一步一定是「点开看看」 */}
           <a onClick={() => onOpen(最近.id)}>
-            {时刻(new Date(最近.starts_at))} {最近.title}
+            {时刻(最近.starts_at)} {最近.title}
           </a>
         </span>
       )}

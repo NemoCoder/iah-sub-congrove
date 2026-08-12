@@ -18,15 +18,14 @@ import { App as AntdApp, Button, Card, Empty, Popconfirm, Progress, Space, Spin,
 import { useCallback, useEffect, useState } from 'react'
 import { api, showUser, type ActivityDetail, type ActivityItem, type Minutes } from './api'
 import { InlineEdit } from './inline-edit'
+import { fmtStamp } from './tz'
 import { useActivityUpload } from './activity-upload'
 import { useRenameActivityItem } from './activity-item-rename'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 
 const pad = (n: number) => String(n).padStart(2, '0')
-const fmtTime = (s: string) => {
-  const d = new Date(s)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
+// ⚠ 原来这里抄了第 3 份 fmtTime(2026-08-12 收敛进 tz.ts)。`pad` 留着给 mmss 用。
+const fmtTime = fmtStamp
 const mmss = (sec: number) => `${pad(Math.floor(sec / 60))}:${pad(Math.floor(sec % 60))}`
 
 type Job = { status: string; stage: string; progress: number; error: string | null }

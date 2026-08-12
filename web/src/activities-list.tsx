@@ -10,12 +10,10 @@
 import { App as AntdApp, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity, type Me, type RespondStatus } from './api'
+import { fmtDay, fmtHM } from './tz'
 import { TodoCard } from './todo-card'
 
-const pad = (n: number) => String(n).padStart(2, '0')
-const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
-const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+// ⚠ 原来这里也抄了一份 fmtDay/fmtHM,2026-08-12 收敛进 tz.ts(见 todo-card 的注释)。
 
 export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   me: Me | null

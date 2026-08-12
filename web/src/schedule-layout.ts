@@ -7,6 +7,13 @@
 
 /// 布局只关心「什么时候开始、什么时候结束」,不关心活动的其它字段 ——
 /// 用最小接口而不是 import Activity,免得纯函数被业务类型绑住(测试里也好造数据)。
+// ⚠★这里必须写 `.ts` 扩展名★：本文件被 `node --test --experimental-strip-types` 直接加载，
+// 而 Node 的 ESM 解析**不做扩展名补全**（Vite 做，所以 tsc 和 dev server 都不报）。
+// 写成 './tz' 的后果是：类型检查过、页面跑得起来，★只有单测挂★ —— 而且挂的方式是
+// 整个测试文件加载失败（ERR_MODULE_NOT_FOUND），不是某条断言红，
+// 一眼看过去像是测试本身坏了。★同一份代码被两套工具链加载，缝就在这种地方。★
+import { myTz, wallToUtc } from './tz.ts'
+
 export type Span = { starts_at: string; ends_at: string }
 
 export type Box<T> = { item: T; top: number; height: number; left: string; width: string }
@@ -28,11 +35,17 @@ export const NIGHT_END_H = 8
 ///
 /// `fromH` = 网格从几点开始画（折叠凌晨时是 8，展开时是 0）。
 /// 完全落在 `fromH` 之前的事件返回 null —— 它在折叠状态下本来就不该出现。
-export function slot(s: Span, day: Date, fromH = 0): { top: number; height: number } | null {
+/// ⚠★`tz` 决定「这一天从哪一刻开始」★(2026-08-12 加,PRD E1/E2):
+/// 原来是 `new Date(day).setHours(0,0,0,0)` —— 那是**浏览器本地**的零点。
+/// 一个把时区设成纽约的人看北京的会时,布局仍按纽约的零点切分,
+/// ★于是活动会被摆进错误的日期列★ —— 而它不报错、不越界,只是位置错了,
+/// 比文字显示错更难发现(设计 §8 把它单列为一条风险)。
+/// 默认 `myTz()`:没设过时区的人拿到的就是浏览器时区,与改动前**逐像素等价**。
+export function slot(s: Span, day: Date, fromH = 0, tz = myTz()): { top: number; height: number } | null {
   const from0 = new Date(s.starts_at).getTime()
   const to0 = new Date(s.ends_at).getTime()
-  const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
-  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1)
+  const dayStart = wallToUtc(day.getFullYear(), day.getMonth() + 1, day.getDate(), 0, 0, tz)
+  const dayEnd = new Date(dayStart.getTime() + 24 * 3600_000)
   if (to0 <= dayStart.getTime() || from0 >= dayEnd.getTime()) return null
   const gridStart = dayStart.getTime() + fromH * 3600_000
   if (to0 <= gridStart) return null          // 整段都在折叠区里
@@ -109,11 +122,13 @@ export function layout<T extends Span>(items: T[], day: Date, fromH = 0): Box<T>
 /// ★「几点开始」和「哪一段可见」是两件事,跨天活动把它们劈开了。★
 ///
 /// 按**可见的那几天**逐天判重叠;同一条活动跨两天只算一次(用 index 去重,调用方传的是同一个数组)。
-export function nightHiddenCount(items: Span[], days: Date[], nightEndH = NIGHT_END_H): number {
+export function nightHiddenCount(items: Span[], days: Date[], nightEndH = NIGHT_END_H, tz = myTz()): number {
   const hit = new Set<number>()
   for (const d of days) {
-    const bandStart = new Date(d); bandStart.setHours(0, 0, 0, 0)
-    const bandEnd = new Date(bandStart); bandEnd.setHours(nightEndH, 0, 0, 0)
+    // ⚠ 与 `slot` 同一个理由:折叠带的边界也必须按**看的人的时区**切(见 slot 头注)。
+    // 两处必须用同一条推导 —— 不然会出现「提示说藏了 3 项、展开却是别的 3 项」。
+    const bandStart = wallToUtc(d.getFullYear(), d.getMonth() + 1, d.getDate(), 0, 0, tz)
+    const bandEnd = new Date(bandStart.getTime() + nightEndH * 3600_000)
     items.forEach((m, i) => {
       const from = new Date(m.starts_at).getTime()
       const to = new Date(m.ends_at).getTime()
