@@ -11,6 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
+import { fmtHM, fmtStamp } from './tz'
 import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
@@ -20,11 +21,9 @@ import { ShareModal } from './share-modal'
 import { TimeRangePicker } from './time-range'
 
 const pad = (n: number) => String(n).padStart(2, '0')
-const fmtTime = (s: string) => {
-  const d = new Date(s)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+// ⚠ `fmtTime` 原来在 **3 个文件**里各抄了一份(本文件 / projects-view / activity-minutes),
+//   `fmtHM` 另有 2 份 —— 2026-08-12 全部收敛进 tz.ts(见 todo-card 头上那段注释)。
+const fmtTime = fmtStamp
 const fmtRange = (a: string, b: string) => {
   const s = new Date(a), e = new Date(b)
   const sameDay = s.toDateString() === e.toDateString()

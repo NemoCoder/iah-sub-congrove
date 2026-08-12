@@ -23,11 +23,11 @@
 import { App as AntdApp, Badge, Button, Card, Empty, Space, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Activity, type RespondStatus } from './api'
+import { fmtDay, fmtHM } from './tz'
 
-const pad = (n: number) => String(n).padStart(2, '0')
-const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-const fmtDay = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} ${WD[d.getDay()]}`
-const fmtHM = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+// ⚠★这三个函数原来在这里抄了一份★(activities-list / upcoming-bar / activity-minutes 各还有一份)。
+//   2026-08-12 收敛进 tz.ts —— 复制出来的格式化器是时区支持最先撞上的墙:
+//   ★改一处、漏三处,而漏掉的那三处不会报错,只会有几个视图默默显示错的时间。★
 
 const overlaps = (a: Activity, b: Activity) =>
   new Date(a.starts_at) < new Date(b.ends_at) && new Date(b.starts_at) < new Date(a.ends_at)

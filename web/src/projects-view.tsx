@@ -32,6 +32,7 @@ import { fileSha256 } from './sha256'
 import { effectiveScope, effectiveTab, showScopeSwitch } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
+import { fmtStamp } from './tz'
 import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -45,11 +46,8 @@ const ROLE_TAG: Record<Role, ReactNode> = {
   viewer: <Tag>{ROLE_LABEL.viewer}</Tag>,
 }
 
-function fmtTime(s: string) {
-  const d = new Date(s)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+// ⚠ 原来这里抄了第 2 份 fmtTime(2026-08-12 收敛进 tz.ts)。
+const fmtTime = fmtStamp
 
 /// 网盘式项目视图(2026-08-03 重做)。**两套操作严格分开**:
 /// - 项目所有者的事(授权管理 / 安全设置 / 重命名项目 / 删除项目)→ 只在左栏项目行的
