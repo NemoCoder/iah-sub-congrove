@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { effectiveScope, effectiveTab, showScopeSwitch, type Scope } from './project-filter.ts'
+import { effectiveScope, effectiveTab, showScopeSwitch, shownProjects, type Scope } from './project-filter.ts'
 
 test('有归档项目时,切换控件显示且按选择筛选', () => {
   assert.equal(showScopeSwitch(2), true)
@@ -29,4 +29,36 @@ test('可选 tab 少了时,选中值要回落而不是指着不存在的 key', (
   assert.equal(effectiveTab(stale, ['items']), 'items', 'tab 没了却还选着它 = 右边整块空白')
   // 回到有全部 tab 的项目,原来的选择照常保留
   assert.equal(effectiveTab(stale, ['items', 'members', 'activities', 'settings']), 'settings')
+})
+
+/// ★「已归档里为啥有我的活动材料」的复现测试★（2026-08-13 liaoruili 截图）。
+/// 材料区永不归档,却因为「永远显示」被无条件置顶进了归档档 ——
+/// 于是它被那一格的语义标成了归档,而计数(只数真项目)说「已归档 1」、底下却有两行。
+test('材料区不进「已归档」那一档', () => {
+  type P = { name: string; kind: string; archived_at: string | null }
+  const all: P[] = [
+    { name: '我的活动材料', kind: 'materials', archived_at: null },
+    { name: '在做的项目', kind: 'team', archived_at: null },
+    { name: '2025 结题项目', kind: 'team', archived_at: '2026-08-01T00:00:00Z' },
+  ]
+  const isMat = (p: P) => p.kind === 'materials'
+
+  const 归档档 = shownProjects(all, isMat, 'archived', '')
+  assert.deepEqual(归档档.map((p) => p.name), ['2025 结题项目'],
+    '★材料区永不归档,不该出现在「已归档」里★（计数与行数对不上就是这个 bug）')
+
+  const 进行中 = shownProjects(all, isMat, 'active', '')
+  assert.deepEqual(进行中.map((p) => p.name), ['我的活动材料', '在做的项目'], '进行中里它照旧置顶')
+})
+
+/// ★但搜索仍然豁免它★:搜索是「在同一份列表里找」,被关键词筛掉一次人就以为它没了。
+/// 这两条判据分开,是这次修复的要点 —— 原来它们被写成了同一条。
+test('材料区不被搜索词筛掉', () => {
+  type P = { name: string; kind: string; archived_at: string | null }
+  const all: P[] = [
+    { name: '我的活动材料', kind: 'materials', archived_at: null },
+    { name: '在做的项目', kind: 'team', archived_at: null },
+  ]
+  const out = shownProjects(all, (p: P) => p.kind === 'materials', 'active', '不存在的词')
+  assert.deepEqual(out.map((p) => p.name), ['我的活动材料'], '搜不到别的,材料区那一格也要在')
 })
