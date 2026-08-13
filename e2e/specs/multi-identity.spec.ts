@@ -236,7 +236,10 @@ test.describe('材料区的回收站(J1b-2)', () => {
       expect(mat, 'liaoruili 应当有一个「我的活动材料」').toBeTruthy()
       const r = await boss.get(`/api/projects/${mat!.id}/trash`)
       expect(r.status(), '★材料区的回收站按钮就在界面上,点下去必须能列出来★').toBe(200)
-      expect(Array.isArray(await r.json())).toBe(true)
+      // v0.4.136 起回 {total, items}(加分页,去掉写死的 LIMIT 500)
+      const 体 = await r.json()
+      expect(Array.isArray(体.items), '★回收站要回 {total, items}★').toBe(true)
+      expect(typeof 体.total, '★没有 total,界面就不知道回收站里到底有多少★').toBe('number')
     } finally { await boss.dispose() }
   })
 

@@ -157,11 +157,22 @@ pub async fn list(
 pub async fn mine(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
+    axum::extract::Query(q): axum::extract::Query<crate::http::Page>,
+) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
     // ★item_deleted★(v0.3.55 审计):主项进了回收站,这条链接就已经 404 了(见 live()),
     // 但列表原先只按撤销/过期/次数算状态,照样显示绿色「有效」—— 使用者会以为链接还能用。
     // 项数也只数**没删的**根,和访客那边真正列得出来的项数对上。
+    //
+    // ★真分页,不是写死 LIMIT★(2026-08-13 改,同 items::trash):原来是 `LIMIT 500` 不带 total,
+    //   分享攒过 500 条之后,更早的链接在「我的分享」里**看不见也撤不掉** ——
+    //   ★而分享是全系统唯一绕过项目授权的入口,撤不掉的分享是安全问题,不是体验问题。★
+    // ⚠ 这里**没**用 items::trash 那招 `COUNT(*) OVER()`:这条 SELECT 已经 16 列,
+    //   而 sqlx 只给到 16 元组实现 `FromRow`,再加一列直接编译不过。所以总数单独查一次。
+    //   (换成具名 struct 也行,但为一个计数改整条查询的返回类型不划算。)
+    let (limit, offset) = q.slice();
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM share_links WHERE created_by = $1")
+        .bind(me).fetch_one(&state.pool).await?;
     let rows: Vec<(String, i64, String, String, Option<String>, String,
                    Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool,
                    chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
@@ -176,14 +187,18 @@ pub async fn mine(
            JOIN items  i ON i.id = l.item_id
            JOIN projects s ON s.id = i.project_id
           WHERE l.created_by = $1
-          ORDER BY l.created_at DESC LIMIT 500",
-    ).bind(me).fetch_all(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt, gone)| json!({
-        "token": token, "item_id": iid, "kind": kind, "name": name, "mime": mime, "space": space,
-        "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
-        "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
-        "item_count": if cnt > 0 { cnt } else { 1 }, "item_deleted": gone,
-    })).collect()))
+          ORDER BY l.created_at DESC LIMIT $2 OFFSET $3",
+    ).bind(me).bind(limit).bind(offset).fetch_all(&state.pool).await?;
+    let total = total.0;
+    Ok(Json(json!({
+        "total": total,
+        "items": rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt, gone)| json!({
+            "token": token, "item_id": iid, "kind": kind, "name": name, "mime": mime, "space": space,
+            "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
+            "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
+            "item_count": if cnt > 0 { cnt } else { 1 }, "item_deleted": gone,
+        })).collect::<Vec<_>>(),
+    })))
 }
 
 /// DELETE /api/shares/{token} —— 撤销(创建者或空间 admin)。保留行,便于事后审计与统计。

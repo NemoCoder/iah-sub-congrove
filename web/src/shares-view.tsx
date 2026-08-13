@@ -34,11 +34,24 @@ export function SharesView() {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
 
+  // ★分页换成服务端的★(2026-08-13)。原来这里也有 `pagination={{pageSize:20}}`,看着像做了分页 ——
+  //   ★但它翻的是后端 `LIMIT 500` 截下来的那 500 条★:第 501 条起,翻到天荒地老也翻不出来,
+  //   而界面上没有任何迹象。这比不分页坏得多:不分页至少人知道自己看到的是全部。
+  //   ⚠ 分享是全系统唯一绕过项目授权的出口 —— ★列不出来的分享就是撤不掉的分享★,
+  //     这条是安全问题,不是体验问题。
+  const [页, set页] = useState(1)
+  const [总数, set总数] = useState(0)
+  const 每页 = 20
   const load = useCallback(async () => {
     setLoading(true)
-    try { setRows(await api<Row[]>('/api/shares/mine')) } catch { setRows([]) } finally { setLoading(false) }
-  }, [])
+    try {
+      const r = await api<{ items: Row[]; total: number }>(`/api/shares/mine?page=${页}&size=${每页}`)
+      setRows(r.items); set总数(r.total)
+    } catch { setRows([]); set总数(0) } finally { setLoading(false) }
+  }, [页])
   useEffect(() => { void load() }, [load])
+  // 撤销掉当前页最后一条之后别停在空页上(同 TrashDrawer 的理由)
+  useEffect(() => { if (!loading && rows.length === 0 && 页 > 1) set页((n) => n - 1) }, [loading, rows.length, 页])
 
   /// 复制带内容名的文案。⚠ **提取码这里给不出**——库里存的是加盐哈希,只有生成那一刻能看到;
   /// 所以这条文案只带链接,提取码要分享者自己记着(UI 上已说明)。
@@ -59,7 +72,9 @@ export function SharesView() {
       </Typography.Paragraph>
       {/* 10 列,窄屏放不下 —— 给横向滚动而不是让它们互相挤扁(v0.3.55)。 */}
       <Table size="small" rowKey="token" dataSource={rows} loading={loading} scroll={{ x: 1150 }}
-        pagination={{ pageSize: 20, hideOnSinglePage: true }}
+        pagination={{ current: 页, pageSize: 每页, total: 总数, onChange: set页,
+                      size: 'small', showSizeChanger: false, hideOnSinglePage: true,
+                      showTotal: (t) => `共 ${t} 条` }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有发出过分享链接" /> }}
         columns={[
           { title: '内容', dataIndex: 'name', ellipsis: true,

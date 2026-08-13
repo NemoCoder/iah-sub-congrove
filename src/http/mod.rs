@@ -28,6 +28,32 @@ use tower_http::trace::TraceLayer;
 use crate::auth;
 use crate::state::AppState;
 
+/// ★分页参数(`?page=1&size=20`)★ —— 2026-08-13 liaoruili:「为啥要写死 limit 500。。。
+/// 以后不要再出这种建议！！！！这是业务逻辑问题！！！」
+///
+/// ★这条纪律值钱在它区分了两种「列表很长」★:
+///   · **写死 LIMIT** = 第 501 条起**悄悄消失**。库里还在、还占配额,界面上没有、也不提示。
+///     人看到的是「回收站空了」,而真相是「回收站还有 300 条」——★这是数据正确性问题,不是体验问题★。
+///   · **不分页** = 一长串滚不完。难看,但**东西都在**,人至少知道自己看到的是全部。
+/// 后者可以晚点改,前者不能存在。所以:★凡是要限量,就必须同时给出 total 和翻页;
+/// 只给 LIMIT 不给 total,等于让界面替数据库撒谎。★
+#[derive(serde::Deserialize)]
+pub struct Page {
+    #[serde(default)]
+    pub page: Option<i64>,
+    #[serde(default)]
+    pub size: Option<i64>,
+}
+impl Page {
+    /// 返回 (limit, offset)。size 有上限只是防一次拉爆内存 —— ★它不会让数据消失★,
+    /// 因为 total 照实返回、翻页翻得到。这和写死 LIMIT 500 的区别就在这一句。
+    pub fn slice(&self) -> (i64, i64) {
+        let size = self.size.unwrap_or(20).clamp(1, 200);
+        let page = self.page.unwrap_or(1).max(1);
+        (size, (page - 1) * size)
+    }
+}
+
 pub fn build_router(state: AppState) -> Router {
     // 超管面:用户治理 + 配额 + 全局审计。require_super 叠在 require_auth 里层(403 不是 401)。
     let admin = Router::new()

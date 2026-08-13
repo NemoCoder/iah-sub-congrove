@@ -2,7 +2,7 @@
 // 前端只做显隐(my_role),真判权在后端(perm.rs)——按钮藏了 API 也会 403,别当安全边界。
 import {
   Alert, App as AntdApp, Breadcrumb, Button, Card, Drawer, Dropdown, Empty, Input, List, Modal, Popconfirm,
-  Progress, Segmented, Select, Space as AntSpace, Table, Tabs, Tag, Tooltip, TreeSelect, Typography, Upload,
+  Pagination, Progress, Segmented, Select, Space as AntSpace, Table, Tabs, Tag, Tooltip, TreeSelect, Typography, Upload,
 } from 'antd'
 import {
   DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
@@ -166,6 +166,22 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       (a, b) => (a.kind === 'folder' ? 0 : 1) - (b.kind === 'folder' ? 0 : 1) || (sortAsc ? cmp(a, b) : -cmp(a, b)),
     )
   }, [items, cwd, sortKey, sortAsc])
+  // ★文件列表分页★(2026-08-13 liaoruili:「这几个回收站、分享、文件夹,都要做分页」)。
+  //
+  // ⚠★这一处和回收站/我的分享**不是同一类问题**,所以修法也不同★:
+  //   `GET /api/projects/{id}/items` **没有任何 LIMIT**,它一次返回整个项目的条目,
+  //   前端再按 `parent_id === cwd` 自己分层显示 —— ★一条数据都没丢★,长只是显示问题。
+  //   那两处是后端写死 LIMIT 把数据吃掉了,必须改后端;这里改前端就够,
+  //   ★而且必须改前端★:一旦改成服务端按页取,前端的 `byId` / 面包屑 / 「..」上一层
+  //   全都依赖「整棵树在手」,会一起坏掉。
+  //   (真到几万条要改服务端时,得连带把树导航一起重做 —— 那是另一件事,不是这次。)
+  const [文页, set文页] = useState(1)
+  const 文每页 = 20
+  const 文总页 = Math.max(1, Math.ceil(rows.length / 文每页))
+  const 文有效页 = Math.min(文页, 文总页)   // 进了个只有 3 条的子目录还停在第 5 页 = 空白
+  const 本页行 = rows.slice((文有效页 - 1) * 文每页, 文有效页 * 文每页)
+  // 换目录/换项目/改排序都回第一页
+  useEffect(() => { set文页(1) }, [cwd, cur?.id, sortKey, sortAsc])
   // 面包屑:顺 parent 链上溯。
   const trail = useMemo(() => {
     const out: Item[] = []
@@ -670,7 +686,13 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
             }}
           >
             <Table
-              size="small" rowKey="id" dataSource={[...parentRow, ...upRows, ...rows]} pagination={false}
+              // ★「..」和「上传中」两种伪行永远留在每一页顶上,不参与分页★:
+              //   把「返回上一层」翻到第 3 页去,人在第 3 页就出不来了。
+              // ⚠★翻页器**不能**交给 Table 自己管★(2026-08-13 差点写错):
+              //   antd 的 Table 在 `dataSource.length > pageSize` 时会**再自己切一刀**,
+              //   而这里的 dataSource 已经是切好的一页 + 两种伪行 —— 于是第 2 页会被
+              //   二次切成只剩一行。分页器单独放在表格下面(和「公开活动」那处同一做法)。
+              size="small" rowKey="id" dataSource={[...parentRow, ...upRows, ...本页行]} pagination={false}
               // 受控排序:伪行(..、上传中)不能被卷进排序,所以自己算 dataSource,
               // 这里只把表头的箭头状态同步过去。
               onChange={(_p, _f, so) => {
@@ -703,9 +725,16 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                         </a>
                         {/* ★只读要看得见★:D10 说活动材料在项目树里不可改,可在此之前
                             界面上唯一的痕迹是「操作列少了三个图标」—— 那是**没有**,不是**说明**。
-                            标只打在文件夹上:一场活动的材料整块归它,逐个文件再标一遍纯是噪音。 */}
+                            标只打在文件夹上:一场活动的材料整块归它,逐个文件再标一遍纯是噪音。
+                            ⚠★2026-08-13 liaoruili:「你只读加个锁就行,这样 活动·只读 太罗嗦,
+                              占空间 还被分成了两行」★—— 名字长一点的文件夹会把这个 Tag 挤到第二行,
+                              于是**一行数据占两行高**,整张表都跟着松散。换成一把安静的小锁:
+                              ★说明搬进 tooltip,视觉上只留一个记号★(同一条思路在 496 行那个
+                              「我的活动材料」的锁上已经用过一次)。 */}
                         {it.activity_id && it.kind === 'folder' && (
-                          <Tag color="gold" style={{ marginLeft: 8 }}>活动 · 只读</Tag>
+                          <Tooltip title="活动材料：在项目里只读。改名、增删都回到那条活动里做">
+                            <LockOutlined style={{ marginLeft: 6, color: '#d48806' }} />
+                          </Tooltip>
                         )}
                         {/* ★传输校验对不上就说出来★(A2/D3):预签名分片上没有 checksum,
                             complete 只对字节数,所以保长度的损坏能整条过闸。不拦你用,
@@ -793,6 +822,13 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                 },
               ]}
             />
+            {/* ★只有真需要翻页时才出现★:三五个文件的项目底下挂一个「1」的翻页器纯是噪音。 */}
+            {rows.length > 文每页 && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 4px 2px' }}>
+                <Pagination size="small" current={文有效页} pageSize={文每页} total={rows.length}
+                  showSizeChanger={false} onChange={set文页} showTotal={(t: number) => `共 ${t} 项`} />
+              </div>
+            )}
           </div>
 
           {/* 预览抽屉:文档编辑器 / 视频播放 / PDF·图片预览 / 版本历史 */}
@@ -1262,18 +1298,38 @@ function TrashDrawer({ space, open, onClose, onChanged }:
   const { message, modal } = AntdApp.useApp()
   const [rows, setRows] = useState<TrashRow[]>([])
   const [loading, setLoading] = useState(false)
+  // ★服务端分页★(2026-08-13):后端原来写死 `LIMIT 500` 且不给总数 —— 第 501 条起
+  //   **在界面上凭空消失**,而它还在库里、还占着配额。这不是「列表太长」,是数据不见了。
+  //   所以这里的翻页必须是**真去服务端要下一页**,不是把已经拿到的数组切一刀。
+  const [页, set页] = useState(1)
+  const [总数, set总数] = useState(0)
+  const 每页 = 20
   const load = useCallback(async () => {
     setLoading(true)
-    try { setRows(await api<TrashRow[]>(`/api/projects/${space.id}/trash`)) } catch { setRows([]) } finally { setLoading(false) }
-  }, [space.id])
+    try {
+      const r = await api<{ items: TrashRow[]; total: number }>(
+        `/api/projects/${space.id}/trash?page=${页}&size=${每页}`)
+      setRows(r.items); set总数(r.total)
+    } catch { setRows([]); set总数(0) } finally { setLoading(false) }
+  }, [space.id, 页])
   useEffect(() => { if (open) void load() }, [open, load])
+  // 换项目/重开抽屉都回到第一页 —— 停在上一个项目的第 7 页上只会看到空列表
+  useEffect(() => { set页(1) }, [space.id, open])
+  // ★还原/彻底删之后当前页可能空了★:删光最后一页的内容,停在那一页会显示「回收站是空的」,
+  //   而其实前面还有 100 条 —— 又一次「界面替数据撒谎」。所以往前退一页。
+  useEffect(() => { if (!loading && rows.length === 0 && 页 > 1) set页((n) => n - 1) }, [loading, rows.length, 页])
 
   return (
     <Drawer title="🗑 回收站" open={open} onClose={onClose} width={640}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用项目配额</b>。
       </Typography.Paragraph>
-      <Table size="small" rowKey="id" dataSource={rows} loading={loading} pagination={false}
+      <Table size="small" rowKey="id" dataSource={rows} loading={loading}
+        // ★把 total 交给 AntD 自己算页数★:它显示的「共 N 条」直接来自服务端,
+        //   人一眼能看出回收站里到底有多少 —— 这正是写死 LIMIT 时缺的那句话。
+        pagination={{ current: 页, pageSize: 每页, total: 总数, onChange: set页,
+                      size: 'small', showSizeChanger: false, hideOnSinglePage: true,
+                      showTotal: (t) => `共 ${t} 条` }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="回收站是空的" /> }}
         columns={[
           { title: '名称', dataIndex: 'name', ellipsis: true,
