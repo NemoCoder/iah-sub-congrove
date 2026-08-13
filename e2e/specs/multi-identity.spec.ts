@@ -28,7 +28,16 @@ test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 /// 所以「加入即可见 / 离开即失去」「正式参会人 vs 旁听者」这两组需要一个**平台上真实存在**的账号。
 /// ★没配就跳过，而不是拿 liaoruili 去跑★——那会给真人反复发站内信。
 /// 已向平台申请两个专用 E2E 账号；到位后配上这个变量，下面两组自动生效。
-const PEER = process.env.IAH_E2E_PEER
+/// ★平台已交付(2026-08-13,群 msg 298)★:调用方是开了 e2e_key 的子系统时,
+/// `users/exists` 承认保留前缀 `e2e` / `e2e-*` 为**虚拟 dev-only 测试身份**
+/// (正则 `e2e(-[a-z0-9._-]{1,32})?`)。于是拉人不再需要一个 Keycloak 里真实存在的账号,
+/// 「两个测试号互相邀请」的多人协作 E2E 终于跑得起来 —— 这就是挂了很久的 O3b。
+///
+/// ⚠★默认值从「没配就跳过」改成 `e2e-b`★:在此之前这两组一直 skip,
+///   而**长期 skip 的用例和不存在的用例没有区别** —— 它守的那条线一天都没被守过。
+///   实测:`PUT /projects/{id}/members {usernames:['e2e-b']}` 回 200 added:1,
+///   而编造的名字仍然 400(平台的校验没被放松,只是承认了这一个保留前缀)。
+const PEER = process.env.IAH_E2E_PEER ?? 'e2e-b'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const tag = () => `${Date.now()}-${Math.floor(Math.random() * 1e4)}`
@@ -155,9 +164,13 @@ test.describe('权限·旁听者不得提权', () => {
   })
 
   test('正式参会人照常能看名单、能答复（★证明上面拦的是旁听者,不是把所有人都拦了★）', async () => {
-    test.skip(!PEER, '需要 IAH_E2E_PEER(平台上真实存在的第二个账号) —— 拉人要过 Keycloak 校验')
+    // ⚠★这条原来邀请的是 `PEER`,而本组的「路人」是 `e2e-passerby` —— **邀错了人**★
+    //   (2026-08-13 平台交付 e2e-* 虚拟身份、这条从长期 skip 里放出来才暴露)。
+    //   当时只有 PEER 一个账号可邀请,于是把「要邀的人」和「手上有的账号」混成了一件事;
+    //   现在任意 e2e-* 都能邀,直接邀这一组自己的那位路人 —— 判据才对得上断言。
+    //   ★长期 skip 的用例不只是没在跑,它还悄悄地烂着：解冻时才发现它连对象都写错了。★
     const inv = await organizer.put(`/api/activities/${mid}/participants`, {
-      data: { usernames: [PEER], kind: 'attendee' },
+      data: { usernames: ['e2e-passerby'], kind: 'attendee' },
     })
     expect(inv.status(), await inv.text()).toBe(200)
 

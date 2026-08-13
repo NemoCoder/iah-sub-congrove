@@ -53,32 +53,31 @@ const MINUTES_HEAD = 2
 /// 于是同一个毛病换一类待办又复发一次，而且更狠（24 条）。
 /// ★一条只在一处执行的原则，等于没有原则★：现在四段共用这一个组件，
 /// 下一类待办加进来时，它是折叠的默认就是对的，不必再想起这条教训。
-function 折叠段<T>({ items, keyOf, render, 折叠文案, head = MINUTES_HEAD }: {
+/// ★一张卡只有**一条**折叠行,文案统一★（2026-08-13 liaoruili：
+/// 「不要写什么，直接写还有 X 条需要处理事项即可，不一定都是整理纪要」）。
+///
+/// ⚠ 上一版是**每段各出一条**折叠行（「还有 N 场邀请等你答复」「还有 N 场欠着纪要（最久 5 天）」…）。
+///   四段各说各的,一张卡上最多能冒出四条折叠行 —— ★这张卡是让人**一眼看清还剩多少事**的,
+///   而不是让人读四行统计★。而且分段的文案还会误导:折起来的那 X 条**不一定都是纪要**,
+///   人看到「还有 3 场欠着纪要」就以为剩下的全是纪要,于是根本不点开。
+/// 所以:每段照旧只展开 head 条(★这一条不动★——不然一类待办多起来会把别的类挤没),
+/// 但折叠行只有一条、放在卡片最后,说的是**总数**。
+function 折叠段<T>({ items, keyOf, render, open, head = MINUTES_HEAD }: {
   items: T[]
   keyOf: (x: T) => Key
   render: (x: T) => ReactNode
-  /// 折叠行的文案。★只说条数看不出急不急★，所以由各段自己给（纪要那段还会带上「最久几天」）。
-  折叠文案: (剩余: number) => string
+  /// 开合由卡片统一控制 —— 四段要么一起展开、要么一起收起
+  open: boolean
   head?: number
 }) {
-  const [open, setOpen] = useState(false)
   return (
     <>
       {(open ? items : items.slice(0, head)).map((x) => (
         <Fragment key={keyOf(x)}>{render(x)}</Fragment>
       ))}
-      {items.length > head && (
-        <a style={{ fontSize: 12 }} onClick={() => setOpen((v) => !v)}>
-          {open ? '收起 ▴' : `${折叠文案(items.length - head)} 展开 ▾`}
-        </a>
-      )}
     </>
   )
 }
-/// 欠得最久的那笔多少天 —— 折叠行上只说条数看不出急不急。
-const oldestDays = (ms: MinutesTodo[]) =>
-  Math.max(0, ...ms.map((m) => Math.floor((Date.now() - new Date(m.ends_at).getTime()) / 86400_000)))
-
 export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   /// 我能看到的活动（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
   all: Activity[]
@@ -95,6 +94,8 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   const [unread, setUnread] = useState<Unread[]>([])
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [minutes, setMinutes] = useState<MinutesTodo[]>([])
+  /// 四段共用一个开合 —— 一张卡只有一条折叠行(见 `折叠段` 的头注)
+  const [open, setOpen] = useState(false)
 
   const loadUnread = useCallback(() => {
     api<Unread[]>('/api/me/unread').then(setUnread).catch(() => setUnread([]))
@@ -111,6 +112,9 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   const accepted = all.filter((m) => m.my_status === 'accepted')
 
   const total = pending.length + unread.length + transfers.length + minutes.length
+  /// ★被折起来的总条数★:四段各自超出 head 的部分加起来 —— 折叠行只报这一个数。
+  const 折起 = [pending, transfers, minutes, unread]
+    .reduce((n, xs) => n + Math.max(0, xs.length - MINUTES_HEAD), 0)
 
   const markAll = async () => {
     try {
@@ -137,14 +141,12 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有待办" />
       ) : (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <折叠段 items={pending} keyOf={(m) => m.id}
-            折叠文案={(n) => `还有 ${n} 场邀请等你答复`}
+          <折叠段 items={pending} keyOf={(m) => m.id} open={open}
             render={(m) => (
               <InviteRow m={m} onOpen={onOpen} onDone={onDone}
                 clash={accepted.find((x) => x.id !== m.id && overlaps(x, m))} />
             )} />
-          <折叠段 items={transfers} keyOf={(t) => t.id}
-            折叠文案={(n) => `还有 ${n} 个项目要转给你`}
+          <折叠段 items={transfers} keyOf={(t) => t.id} open={open}
             render={(t) => <TransferRow t={t} onDone={() => { loadUnread(); onDone() }} />} />
           {/* ★排在私聊未读之前★：欠一份纪要是**有交付物的活儿**，
               而未读消息多半只是「看一眼」——把重的排在轻的后面，重的就会被划走。 */}
@@ -154,12 +156,9 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
               待办**,而它自己被一类待办淹掉时,这个用途就没了★。
               所以不删账(加时间下限等于系统替人把旧账勾了,而欠得越久越该提醒),
               只是把它折起来:默认两条 + 一行汇总,想算总账点一下全出来。 */}
-          <折叠段 items={minutes} keyOf={(m) => m.activity_id}
-            /* 折叠时把「还有几场」和「最久欠了多久」一起说 —— 只说条数看不出急不急 */
-            折叠文案={(n) => `还有 ${n} 场欠着纪要（最久 ${oldestDays(minutes)} 天）`}
+          <折叠段 items={minutes} keyOf={(m) => m.activity_id} open={open}
             render={(m) => <MinutesRow m={m} onOpen={onOpenMinutes} />} />
-          <折叠段 items={unread} keyOf={(u) => u.activity_id}
-            折叠文案={(n) => `还有 ${n} 条私聊未读`}
+          <折叠段 items={unread} keyOf={(u) => u.activity_id} open={open}
             render={(u) => (
             <div style={{ borderTop: pending.length ? '1px solid #f5f5f5' : undefined, paddingTop: pending.length ? 10 : 0 }}>
               <div style={{ fontSize: 13 }}>
@@ -178,6 +177,11 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
               </div>
             </div>
           )} />
+          {折起 > 0 && (
+            <a style={{ fontSize: 12 }} onClick={() => setOpen((v) => !v)}>
+              {open ? '收起 ▴' : `还有 ${折起} 条需要处理事项 展开 ▾`}
+            </a>
+          )}
         </Space>
       )}
     </Card>
