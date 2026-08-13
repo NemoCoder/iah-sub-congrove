@@ -118,23 +118,77 @@ test.describe('日程页', () => {
     //   它们的 width 是空串、left 是 `0px` —— 于是全落进下面的 `narrow`,
     //   ★7 个 tooltip 碎片挤在同一个 left 上，把这条用例判成红的（我第一版修就是这么误报的）★。
     //   事件块的特征是**两个值都用百分比**(left:0%/50%…、width:100%/50%…),按这个筛。
-    const boxes = await page.$$eval('div', (els) =>
-      els.filter((e) => {
+    //
+    // ★★判据换成「屏幕上有没有真的压在一起」★★（2026-08-13 全量跑出 1 条 flaky 才发现）:
+    //   我上一版按 `top + width` 分组、比 `left` 是否互不相同 —— ★这个键漏了「哪一列」★。
+    //   `left`/`width` 是**各自那一天那一列内部**的百分比:周二 14:00 与周四 14:00 的两个块,
+    //   top 一样、width 一样、left 都是 `0%` → 被判成「叠在一起」,而它们在屏幕上离着几百像素。
+    //   ★所以它红不红取决于那几天恰好有没有会 —— 这就是那条 flaky 的成因。★
+    //   ⚠ flaky 不是「基本能过」,是**判据本身写错了**,只是错得不总是暴露;重试变绿最容易让人放过它。
+    //   现在直接量 `boundingBox()` 判**矩形相交**:这才是「都看得见」的字面意思,
+    //   也天然不关心那些百分比是相对谁算的。
+    // ⚠★一次 `$$eval` 在页内算完,别逐个元素来回问浏览器★:
+    //   我第一版对**每个 div** 各发一次 evaluate + boundingBox —— 页面上上千个 div,
+    //   几百次往返直接把用例拖到 30 秒超时。★那次超时是我的实现慢,不是产品慢★,
+    //   而报错只说「Test timeout」,看起来像页面卡死。
+    const boxes = await page.$$eval('div', (els) => els
+      .filter((e) => {
         const st = (e as HTMLElement).style
         return st.position === 'absolute' && !!st.top && !!st.height
             && st.left.endsWith('%') && st.width.endsWith('%')
-      }).map((e) => ({ top: (e as HTMLElement).style.top, left: (e as HTMLElement).style.left, w: (e as HTMLElement).style.width })))
-    // ★先证明这条用例**有东西可验**★:上面刚造了两场重叠的,分栏之后必然出现非满宽的块。
-    // 没有这一句的话,选择器再坏一次,它又会安静地退回「空跑也绿」。
-    const narrow = boxes.filter((b) => b.w !== '100%')
-    expect(narrow.length, '★刚造了两场重叠的活动,却一个并排块都没有 = 要么没渲染,要么选择器又失效了★')
-      .toBeGreaterThan(0)
-    for (const b of narrow) {
-      const sameSpot = narrow.filter((x) => x.top === b.top && x.w === b.w)
-      const lefts = new Set(sameSpot.map((x) => x.left))
-      // ★同一位置同宽度的多个盒子,left 必须互不相同★——相同就是叠在一起,等于有活动看不见。
-      // 这是 v0.4.2 修的那个 bug(三个以上重叠时后来者全宽覆盖)。
-      expect(lefts.size, '有事件盒子叠在同一位置 = 活动在界面上消失了').toBe(sameSpot.length)
+      })
+      .map((e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })
+      .filter((r) => r.width > 0 && r.height > 0))
+    // ★先证明这条用例**有东西可验**★:刚造了两场重叠的,分栏之后必然出现「比满宽窄」的块。
+    // 没有这一句,选择器再坏一次它就又安静地退回「空跑也绿」。
+    const 满宽 = Math.max(...boxes.map((b) => b.width), 0)
+    expect(boxes.filter((b) => b.width < 满宽 * 0.95).length,
+      '★刚造了两场重叠的活动,却一个并排块都没有 = 要么没渲染,要么选择器又失效了★').toBeGreaterThan(0)
+    // ★两两判相交★:压在一起就是「有活动在界面上消失了」(v0.4.2 修的那个 bug 要守的东西)。
+    const 相交 = (a: typeof boxes[0], b: typeof boxes[0]) =>
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    for (let m = 0; m < boxes.length; m++) {
+      for (let n = m + 1; n < boxes.length; n++) {
+        expect(相交(boxes[m], boxes[n]),
+          `★两个事件块压在一起 = 有活动看不见:${JSON.stringify(boxes[m])} / ${JSON.stringify(boxes[n])}★`).toBe(false)
+      }
     }
+  })
+})
+
+// ★取消了的活动:只说一句「活动已取消」,不再摊开细节★
+// （2026-08-13 liaoruili：「如果已经取消，具体信息就别显示了，直接做个取消页面，就像 404 页面那样」
+//   「这些啰嗦的解释不要了，直接活动已取消即可」；并专门纠正过★用词是「活动」不是「会议」★）。
+//
+// ⚠ 之前是照常渲染整页、只在顶上挂一条带长解释的 Alert —— 议程、地点、链接、名单、讨论区
+//   全都还摆着，而它们此刻**一条都不该再被行动**。
+//   ★一屏可操作的东西配一句「已取消」，读起来像「还能去」。★
+test.describe('取消了的活动', () => {
+  test('★只显示「活动已取消」,细节一概不摊开★', async ({ page, request }) => {
+    const t = Date.now()
+    const pid = (await (await request.post('/api/projects', { data: { name: `E2E-取消页-${t}` } })).json()).id
+    const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(10, 0, 0, 0)
+    const r = await request.post('/api/activities', {
+      data: { type_id: 会议, title: `E2E-取消页-活动-${t}`, recorder: 'e2e', project_ids: [pid],
+              starts_at: 明天.toISOString(), ends_at: new Date(明天.getTime() + 3600e3).toISOString(),
+              agenda: 'E2E议程不该出现', location: 'E2E地点不该出现',
+              online_url: 'https://meeting.tencent.com/e2e-不该出现' },
+    })
+    expect(r.status(), await r.text()).toBe(200)
+    const mid = (await r.json()).id as number
+    expect((await request.delete(`/api/activities/${mid}`)).status(), '取消(DELETE=置 canceled,不是真删)').toBe(200)
+
+    await page.goto(`/?activity=${mid}`)
+    await page.waitForTimeout(2500)
+    const 屏 = (await page.locator('body').textContent()) ?? ''
+    expect(屏, '★要有「活动已取消」这句话★').toContain('活动已取消')
+    // ★细节一条都不许露★ —— 这几条是「还能去」的信号，取消之后一个都不该在
+    for (const 不该有 of ['E2E议程不该出现', 'E2E地点不该出现', 'meeting.tencent.com/e2e-不该出现']) {
+      expect(屏, `★取消页不该摊开细节,却看到了：${不该有}★`).not.toContain(不该有)
+    }
+    // ★也不该再有那段长解释★（他明确说「啰嗦的解释不要了」）
+    expect(屏, '★长解释已经去掉了,别又加回来★').not.toContain('删掉之后没人说得清')
+    // ★用词是「活动」不是「会议」★：M0 起「会议」只是众多类型之一
+    expect(屏, '★别写成「会议已取消」—— 会议只是活动类型之一★').not.toContain('会议已取消')
   })
 })
