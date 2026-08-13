@@ -18,6 +18,28 @@
          (antd 6 的 dist 里也不再单独提供 reset.css,所以这一条得我们自己写。) -->
     <style>
       html, body { margin: 0; padding: 0; }
+
+      /* ★markdown 渲染的样式★（2026-08-13）。
+         ⚠ `.cg-md` 这个类名在 preview.tsx 里挂了很久,**却从来没有被定义过** ——
+           于是 react-markdown 吐出来的 <table> 是一张**没有任何边框**的表:
+           内容都在,却塌成几行松散文字,看起来像「表格没渲染出来」。
+           (是拿 qwen3.8-max 看 md 预览截图时发现的:它说「表格未以带格线的表格形式呈现」。)
+         ★这不是预览功能的问题,是全站的★:站内文档、活动纪要用的是同一个 MarkdownView。
+         放在这里而不是新起 css 文件:全仓库只有这一处全局样式(见上面 body reset 那条注释),
+         再开一个文件就多一处要记得同步的地方。 */
+      .cg-md table { border-collapse: collapse; margin: 10px 0; max-width: 100%; }
+      .cg-md th, .cg-md td { border: 1px solid #e8e8e8; padding: 6px 10px; text-align: left; }
+      .cg-md th { background: #fafafa; font-weight: 600; }
+      .cg-md blockquote { margin: 10px 0; padding: 2px 12px; border-left: 3px solid #d9d9d9; color: #595959; }
+      .cg-md code { background: #f5f5f5; border-radius: 3px; padding: 1px 5px; font-size: .92em; }
+      .cg-md pre { background: #f5f5f5; border-radius: 6px; padding: 10px 12px; overflow-x: auto; }
+      .cg-md pre code { background: none; padding: 0; }
+      .cg-md img { max-width: 100%; }
+      .cg-md h1, .cg-md h2, .cg-md h3 { margin: 18px 0 8px; line-height: 1.4; }
+      .cg-md h1 { font-size: 22px; } .cg-md h2 { font-size: 18px; } .cg-md h3 { font-size: 16px; }
+      .cg-md > :first-child { margin-top: 0; }
+      /* 长链接/长路径不撑破容器 —— 纪要里贴会议链接是常事 */
+      .cg-md a { word-break: break-all; }
     </style>
   </head>
   <body>
