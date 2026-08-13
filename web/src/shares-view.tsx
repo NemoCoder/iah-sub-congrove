@@ -1,6 +1,6 @@
 // 「我的分享」——把发出去的公开链接集中在一处(2026-08-05 用户:别散在每个文件的对话框里)。
 // 只列**我自己创建的**:别人的分享与我无关,也不该让我看见。
-import { App as AntdApp, Card, Empty, Popconfirm, Space as AntSpace, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Card, Empty, Popconfirm, Table, Tag, Typography } from 'antd'
 import { CopyOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useState } from 'react'
 import { ItemIcon } from './preview'
@@ -99,9 +99,12 @@ export function SharesView() {
               <a style={{ color: '#ff4d4f' }}>撤销</a>
             </Popconfirm>)) },
         ]} />
-      <AntSpace style={{ marginTop: 10 }}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 条</Typography.Text>
-      </AntSpace>
+      {/* ⚠★这一句原来写的是 `共 {rows.length} 条`,改成服务端分页之后当场变成谎话★
+          (2026-08-14 实拍第 2 页时看见的):`rows` 只剩**本页那 20 条**,
+          于是页面右下角写着「共 49 条」、左下角写着「共 20 条」—— ★两个数字自相矛盾★。
+          本仓库有条疤原话是「两个数字自相矛盾比两个都错更糟,看的人会以为是自己看错了」。
+          分页器里的 showTotal 已经把总数说清楚了,这里再说一遍就是**第二个真相源** ——
+          ★同一个数字只该有一处在讲★,所以直接删掉它。 */}
     </Card>
   )
 }

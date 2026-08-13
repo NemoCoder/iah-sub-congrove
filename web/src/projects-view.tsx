@@ -904,7 +904,17 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
         <Alert type="info" showIcon style={{ marginBottom: 12 }}
           message="删掉的项目在这里保留 30 天"
           description="期间文件一个字节都没删，还原后内容原样回来。⚠ 已发出去的公开链接在删除那一刻就失效了，还原不会恢复它们。" />
+        {/* ★这是**第二个**回收站,别和项目内那个混★(2026-08-14 实拍才发现漏了它):
+            上面那个 TrashDrawer 列的是**项目里删掉的文件**(走服务端分页,后端原来写死 LIMIT 500);
+            这一个列的是**删掉的项目本身**(`GET /api/projects/trash`)。
+            ★我上一轮只做了前者,而实拍时这里已经堆了 37 条滚不完★ —— 用户说「回收站要分页」时
+            指的是他看得见的那个,而"回收站"在界面上有两个入口。
+            这条接口**没有 LIMIT**,一条不丢,所以前端分页就够(判据同项目文件列表)。 */}
         <List size="small" dataSource={projTrash}
+          pagination={projTrash.length > 10
+            ? { pageSize: 10, size: 'small', align: 'center', showSizeChanger: false,
+                showTotal: (n) => `共 ${n} 个` }
+            : false}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="回收站是空的" /> }}
           renderItem={(t) => (
             <List.Item actions={[
