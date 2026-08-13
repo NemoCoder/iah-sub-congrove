@@ -87,9 +87,9 @@ export default async function teardown() {
   //     谁也枚举不了。所以 acceptance-v05 已改成**固定名**(见那个文件),
   //     一旦有人再写回模板,下面这句会当场把它喊出来 —— ★喊出来比静静漏掉强★。
   const 身份们 = [process.env.IAH_E2E_ADMIN ?? 'liaoruili', ...扫出身份()]
-  let nm = 0, np = 0
+  let nm = 0, np = 0, nt = 0
   for (const who of 身份们) await 清一轮(who)
-  if (nm || np) console.log(`\n[teardown] 清理测试数据:活动 ${nm} 场、项目 ${np} 个`)
+  if (nm || np || nt) console.log(`\n[teardown] 清理测试数据:活动 ${nm} 场、项目 ${np} 个、自建活动类型 ${nt} 个`)
 
   async function 清一轮(who: string) {
   const ctx = await request.newContext({
@@ -108,6 +108,16 @@ export default async function teardown() {
         await ctx.delete(`/api/activities/${m.id}`).catch(() => {})
         nm++
       }
+    }
+    // ★自建的活动类型也要清★(2026-08-14 补):此前只清项目和活动,
+    //   而 acceptance-v05 的 M1 每轮都建一个自己的活动类型 —— ★身份改成固定名之后,
+    //   它们一轮攒一个,攒到 10 个时下拉框(虚拟滚动)里新建的那个已经被挤出视口、
+    //   DOM 里都没有,用例点不到,90 秒超时。★
+    //   ⚠ 症状是「等 option 超时」,看起来像下拉框坏了 —— 而真凶是**没人负责回收的垃圾**。
+    //   只删 `owner` 非空(=自建)且名字带前缀的,平台内置类型碰不到。
+    const ts = await (await ctx.get('/api/activity-types')).json().catch(() => [])
+    for (const x of Array.isArray(ts) ? ts : []) {
+      if (x.owner && MINE.test(x.name)) { await ctx.delete(`/api/activity-types/${x.id}`).catch(() => {}); nt++ }
     }
     // 项目
     const ps = await (await ctx.get('/api/projects')).json().catch(() => [])
