@@ -423,7 +423,20 @@ CREATE VIEW activities_owing_minutes AS
   JOIN activity_types t ON t.id = m.type_id AND t.has_minutes
   LEFT JOIN activity_minutes n ON n.activity_id = m.id
   WHERE m.status = 'active' AND m.ends_at < now()
-    AND (n.activity_id IS NULL OR n.status <> 'done');
+    AND (n.activity_id IS NULL OR n.status <> 'done')
+    -- ★关联的项目全被删了就不再欠了★（2026-08-13 沙箱全点巡检抓到）。
+    --
+    -- ⚠ 同一条规则在日历那边**早就有**（notify.spec 钉着「删掉项目后它的会不再出现在日历里」），
+    --   这个视图却没跟上 —— 于是 e2e 的「待整理纪要」里躺着 50 条**孤儿活动**：
+    --   项目早被 teardown 删了，它们却永远欠着纪要，而★点「去整理」进去，材料那一栏还 403★
+    --   （activity_items 要求「在**未删**的关联项目里是成员」，这些活动一条也不满足）。
+    --   ★一个永远消不掉、点进去还报错的待办，比没有这条待办更坏。★
+    -- ⚠ 判据是「有关联项目、但一个活的都没有」——**没有关联项目的个人活动照常欠着**，
+    --   它的材料落在自己的材料区，跟项目死活无关（PRD §J0）。
+    AND NOT (EXISTS (SELECT 1 FROM activity_projects ap WHERE ap.activity_id = m.id)
+         AND NOT EXISTS (SELECT 1 FROM activity_projects ap2
+                           JOIN projects p2 ON p2.id = ap2.project_id AND p2.deleted_at IS NULL
+                          WHERE ap2.activity_id = m.id));
 
 
 -- 播放进度:每人每视频记一条,换设备/清缓存都还在(所以不放 localStorage);

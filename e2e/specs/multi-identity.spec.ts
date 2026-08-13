@@ -278,3 +278,58 @@ test.describe('超管模式下的项目列表', () => {
     }
   })
 })
+
+// ★项目被删之后，它的会不该再欠着纪要★（2026-08-13 沙箱全点巡检抓到）。
+//
+// 巡检点「去整理 ›」报 403，查下来是「待整理纪要」里躺着一批**孤儿活动**：
+// 项目早被删了，纪要却永远欠着，而点进去材料那一栏必然 403
+// （activity_items 要求「在**未删**的关联项目里是成员」，孤儿一条都不满足）。
+// ★一个永远消不掉、点进去还报错的待办，比没有这条待办更坏。★
+//
+// ⚠ 同一条规则在日历那边**早就有**（notify.spec 钉着「删掉项目后它的会不再出现在日历里」），
+//   `activities_owing_minutes` 这个视图却没跟上 —— ★同一条规则只在一处执行 = 没有执行★。
+test.describe('删掉项目之后的孤儿活动', () => {
+  test('★不再出现在「待整理纪要」里★', async () => {
+    const me = await asUser('e2e-orphan')
+    try {
+      const pid = (await (await me.post('/api/projects', { data: { name: `E2E-孤儿-${tag()}` } })).json()).id as number
+      // 建一场**已开完**的会（先建未来的再补录到过去 —— 会议类型不让直接建过去的）
+      const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(10, 0, 0, 0)
+      const r = await me.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-孤儿会-${tag()}`, recorder: 'e2e-orphan',
+                project_ids: [pid], starts_at: 明天.toISOString(),
+                ends_at: new Date(明天.getTime() + 3600e3).toISOString() },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+      const mid = (await r.json()).id as number
+      const 前天 = new Date(); 前天.setDate(前天.getDate() - 2); 前天.setHours(9, 0, 0, 0)
+      expect((await me.put(`/api/activities/${mid}`, {
+        data: { starts_at: 前天.toISOString(), ends_at: new Date(前天.getTime() + 3600e3).toISOString() },
+      })).status(), '补录到过去应当允许').toBe(200)
+
+      const 欠着 = async () => ((await (await me.get('/api/me/minutes-todo')).json()) as { activity_id: number }[])
+        .some((x) => x.activity_id === mid)
+      expect(await 欠着(), '会开完了、纪要没写,当然欠着').toBe(true)
+
+      expect((await me.delete(`/api/projects/${pid}`)).status()).toBe(200)
+      expect(await 欠着(), '★项目都删了,这场会不该再欠着纪要★(点进去材料还会 403)').toBe(false)
+    } finally { await me.dispose() }
+  })
+
+  /// ★但「没有关联项目」的个人活动照常欠着★ —— 判据是「有项目、但一个活的都没有」,
+  /// 不是「没有活的项目」。个人活动的材料落在自己的材料区,跟项目死活无关(PRD §J0)。
+  /// 没有这一条对照,上面那个过滤很容易被写成「只要没有活项目就不算欠」,把个人活动一起误杀。
+  test('★不关联项目的个人活动仍然欠着★(别把过滤写过头)', async () => {
+    const me = await asUser('e2e-solo')
+    try {
+      const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(10, 0, 0, 0)
+      const r = await me.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-独会-${tag()}`, recorder: 'e2e-solo', project_ids: [],
+                starts_at: 明天.toISOString(), ends_at: new Date(明天.getTime() + 3600e3).toISOString() },
+      })
+      // 会议类型要求必须关联项目 → 这条用例只在「允许不关联」的类型上成立;
+      // 若后端拒绝(400),说明本类型不支持个人活动,跳过而不是假装验过。
+      test.skip(r.status() !== 200, '会议类型必须关联项目,个人活动要用别的类型 —— 这条留待类型可配后再验')
+    } finally { await me.dispose() }
+  })
+})

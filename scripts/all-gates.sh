@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# 一条命令跑完所有门禁 —— ★提交前跑它,别再手拼一串 &&★。
+#
+# ══ 为什么有这个脚本 ══
+# 2026-08-13 我把一条**编译不过**的提交推进了 PR:那次是把 `pnpm typecheck` 和 `git commit`
+# 写成了两行,前者失败拦不住后者。改用 `&&` 串起来之后又踩第二个坑 ——
+# ★`grep -c` 在计数为 0 时退出码是 1，而 0 正是「没有 warning」这个好结果★,
+# 于是整条链在「全绿」的那一刻断掉。
+#
+# ⇒ 两个教训写进这个脚本:
+#   ① ★门禁的通过/失败不能靠管道里最后一个命令的退出码猜★,每道闸各自明确判定;
+#   ② ★一道闸「没跑成」必须算红,不能算绿★ —— 本仓库栽过五次「工具没跑 → 输出为空 → 报绿」。
+#
+# 用法:
+#   bash scripts/all-gates.sh          # 全部(要 CONGROVE_DEV_DSN 的那两道自动跳过并**标记为未跑**)
+#   bash scripts/all-gates.sh --ci     # 只跑 CI 里那几道(不连库)
+set -uo pipefail
+cd "$(dirname "$0")/.."
+CI_ONLY=${1:-}
+# ⚠★变量名只能用 ASCII★:bash 的 identifier 不接受中文(和 TS/Rust 不一样,那两处我一直在用中文名),
+#   写成 `declare -a 结果=()` 会直接 `syntax error near unexpected token '('` —— 我刚踩过。
+declare -a RESULTS=()
+FAILED=0
+
+gate() {   # gate <名字> <命令...>
+  local name=$1; shift
+  local out rc
+  out=$("$@" 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then RESULTS+=("  ✓ $name")
+  else RESULTS+=("  ✗ ★$name★"); FAILED=1
+       printf '%s\n' "── $name 的输出 ──" "$out" | tail -25; fi
+}
+
+gate "cargo clippy(零 warning)" cargo clippy --all-targets --locked -- -D warnings
+gate "cargo test"               cargo test --locked
+gate "旧命名(改名残留)"          bash scripts/no-meeting.sh --all   # no-meeting:allow —— 这一行是**调用那个门禁脚本本身**,文件名里就带这个词,改不了
+gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
+gate "前端 test"                 bash -c 'cd web && pnpm test'
+
+if [ "$CI_ONLY" != "--ci" ]; then
+  if [ -n "${CONGROVE_DEV_DSN:-}" ]; then
+    gate "SQL 对真库 PREPARE" python3 scripts/sql-prepare-check.py
+    gate "schema 对拍"        bash scripts/schema-check.sh check
+  else
+    # ★没跑 ≠ 通过★:缺 DSN 时明确标出来,免得看报告的人以为这两道也绿了
+    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）")
+  fi
+  gate "接口面 api-check" bash scripts/api-check.sh check
+fi
+
+printf '\n══ 门禁汇总 ══\n'
+printf '%s\n' "${RESULTS[@]}"
+[ $FAILED -eq 0 ] && echo "★全部通过★" || echo "★有门禁未通过 —— 不要提交★"
+exit $FAILED
