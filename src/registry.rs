@@ -87,6 +87,16 @@ impl Registry {
     /// POST /api/notifications/send —— 投站内信(sender 平台侧固定 sub:congrove,不可伪报)。
     /// `ref_` 幂等:同 recipient+ref 不重复投。失败只记 warn,不影响业务(fire-and-forget 用)。
     pub async fn notify(&self, recipient: &str, title: &str, body: &str, url: Option<&str>, ref_: Option<&str>) {
+        // ★所有站内信标题一律以「Congrove」开头★（2026-08-13 liaoruili）。
+        //
+        // ⚠★挂在这一处,不去改那十几个调用点★:站内信在平台收件箱里是**和别的子系统混在一起**的,
+        //   一条「活动时间已改」不说是谁改的,收件人得点开才知道来自哪个系统。
+        //   2026-08-09 他就为「项目转移申请」提过一次,当时我只给**那一条**加了前缀 ——
+        //   于是十几条里只有一条带产品名,其余照旧。★同一条要求在一处执行 = 没有执行。★
+        //   收口在这个唯一出口上,以后新增的任何站内信自动带上,不必再想起这条约定。
+        //   已经带前缀的不重复加(那条老的、以及万一有人手写了前缀)。
+        let title = 带产品名(title);
+        let title = title.as_str();
         let run = async {
             let t = self.token().await?;
             let mut payload = serde_json::json!({ "recipient": recipient, "title": title, "body": body });
@@ -108,5 +118,36 @@ impl Registry {
         if let Err(e) = run.await {
             tracing::warn!(error = %e, recipient, "站内信投递失败(不影响业务)");
         }
+    }
+}
+
+/// 站内信标题一律以「Congrove」开头 —— ★抽成纯函数是为了能单测★,
+/// 也为了这条规则有一个**看得见的名字**:下次有人想在别处拼标题时,会先撞见它。
+pub fn 带产品名(title: &str) -> String {
+    if title.starts_with("Congrove") { title.to_string() } else { format!("Congrove {title}") }
+}
+
+#[cfg(test)]
+mod 标题前缀 {
+    use super::带产品名;
+
+    #[test]
+    fn 没有前缀的补上() {
+        assert_eq!(带产品名("会议邀请"), "Congrove 会议邀请");
+        assert_eq!(带产品名("活动时间已改"), "Congrove 活动时间已改");
+    }
+
+    /// ★已经带了就不重复加★:历史上「项目转移申请」那条是手写前缀的,
+    /// 收口之后如果不判这一下,它会变成「Congrove Congrove 项目转移申请」。
+    #[test]
+    fn 已经带前缀的不重复() {
+        assert_eq!(带产品名("Congrove 项目转移申请"), "Congrove 项目转移申请");
+    }
+
+    /// 空标题也不该退化成裸产品名后面吊一个空格 —— 但这属于调用方不该发生的输入,
+    /// 这里只钉住「不 panic、且仍带前缀」这一条。
+    #[test]
+    fn 空标题不炸() {
+        assert_eq!(带产品名(""), "Congrove ");
     }
 }

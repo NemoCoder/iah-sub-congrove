@@ -598,9 +598,9 @@ pub async fn transfer(
     };
     audit::record(&state.pool, actor, "project.transfer.offer", &pid.to_string(),
         &format!("主持人 {actor} → {to}(待对方接受)")).await;
-    // ★标题带上产品名★(2026-08-09 用户):站内信和邮件在收件箱里是和别的系统混在一起的,
-    // 「有人要把项目转给你」这种无主语标题,人拿到手第一反应是「哪个项目?哪个系统?」
-    crate::notify::notify_project(&state, pid, &[to.to_string()], "Congrove 项目转移申请",
+    // ⚠ 产品名前缀★不在这里加★,收口在 `registry.rs::notify`(2026-08-13):
+    //   这里曾经是全系统唯一带「Congrove」的一条,其余十几条都没有 —— 同一条要求只在一处执行等于没执行。
+    crate::notify::notify_project(&state, pid, &[to.to_string()], "项目转移申请",
         &format!("{actor} 想把项目「{name}」的主持人转给你。接受后由你负责这个项目。")).await;
     Ok(Json(json!({ "ok": true, "transfer_id": tid })))
 }
