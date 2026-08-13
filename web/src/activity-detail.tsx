@@ -222,8 +222,14 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
       {/* ★纪要入口已挪到材料卡片的第三个 tab★(2026-08-09 用户):
             同一件事原来有三个入口(顶栏「活动纪要」、右上角「整理纪要」、原型里的 tab),
             留一个就够。旁听者拿不到纪要 —— 那块卡片本来就只对参会人渲染。 */}
+        {/* ⚠ 取消确认原来挂着一句「记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消」
+            （2026-08-13 liaoruili:「去除下面的啰嗦的解释」）。
+            ★确认框要的是「点下去会发生什么」,不是「我们为什么这么设计」★ ——
+            前者一句话,后者属于文档;而这句解释在**每次**取消时都读一遍,读第二遍就是噪声。
+            ⚠ 注释放在这里(children 位置),★别塞进 `{cond && (` 后面★ —— 那是表达式位置,
+              JSX 花括号注释在那儿是语法错(我今天第二次踩,第一次在公开活动的空状态)。 */}
         {d.can_edit && !canceled && (
-          <Popconfirm title="取消这场活动？" description="记录会保留下来（谁邀了谁、谁拒了是协作事实），只是标记为已取消。"
+          <Popconfirm title="取消这场活动？"
             onConfirm={async () => {
               try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load(true) } catch (e) { /* 失败由下方错误区呈现 */ }
             }}>
@@ -817,8 +823,13 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
             ★所以这是个界面上还留着、数据库已经不认的死选项★ —— 前端没跟着删。 */}
         <Select value={kind} onChange={setKind} style={{ width: '100%' }}
           options={[
-            { value: 'attendee', label: '参会人（要答复，能看材料）' },
-            { value: 'observer', label: '旁听（不用答复，看不到材料）' },
+            // ⚠ 原来是「参会人（要答复，能看材料）」「旁听（不用答复，看不到材料）」
+            //（2026-08-13 liaoruili:「直接是参会人和旁听，不要括号里啰嗦的解释」）。
+            // ★下拉选项是**标签**不是说明书★:两个选项都拖着一句括号,读起来像两段话而不是两个选项,
+            // 而「参会人 / 旁听」这两个词本身已经说清了区别。
+            // ⚠ 这里是**数组字面量**不是 JSX children,只能用 `//`,写 `{/* */}` 会直接语法错(我刚踩过)。
+            { value: 'attendee', label: '参会人' },
+            { value: 'observer', label: '旁听' },
           ]} />
       </Space>
     </Modal>

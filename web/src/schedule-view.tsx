@@ -337,9 +337,11 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                   <div key={i} style={{
                     padding: '6px 4px', textAlign: 'center', fontSize: 12,
                     borderBottom: '1px solid #f0f0f0',
-                    background: isToday ? '#e6fffb' : weekend ? '#fafafa' : undefined,
+                    // ★表头这一格也归暖黄★:它是那一列的**顶端**,颜色必须和列身、顶线连成一条 ——
+                    //   原来青底青字配暖黄的列,是同一个「今天」被涂成两种颜色。
+                    background: isToday ? '#fff4d6' : weekend ? '#fafafa' : undefined,
                     fontWeight: isToday ? 600 : 400,
-                    color: isToday ? '#00474f' : weekend ? '#8c8c8c' : undefined,
+                    color: isToday ? '#874d00' : weekend ? '#8c8c8c' : undefined,
                   }}>
                     {/* ⚠★这里用 getDay()/getDate() 是**对的**,别顺手改成 fmtDay★:
                         `d` 是**日历格**(那一天的名字),不是一个瞬时 —— 它本来就没有时区可言。
@@ -436,12 +438,22 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                   <div key={i} style={{
                     position: 'relative', height: dayPx(fromH),
                     borderLeft: '1px solid #f0f0f0',
-                    background: 是今天 ? '#fbfffe' : weekend ? '#fafafa' : undefined,
+                    // ★暖黄,不是青★（2026-08-13 liaoruili:「今天的底纹还是有点淡,而且和公开活动
+                    //   颜色一样了是不是？」——他说得对)。
+                    //   我原来用的是极淡的青 `#fbfffe`,而★「公开」活动块本身就是青的(#e6fffb)★ ——
+                    //   底色和块同色系,块面融进底色、整列发糊,「今天」反而更不跳。
+                    //   ⚠ 三档并排拿 qwen3.8-max 比过:暖黄与青(公开)、紫(不公开)都拉开色相距离,
+                    //     一眼认得出今天,又不淹没任何一类事件块;冷灰蓝偏冷、和青挨得太近,不行。
+                    //   ★背景要和前景**不同色系**,不是「更淡一点」—— 同色系再淡也是糊。★
+                    background: 是今天 ? '#fffbe8' : weekend ? '#fafafa' : undefined,
                     // ★记号是表头那条青线向下延伸的 2px★ —— 不是通栏竖线,也不是有色块。
                     //   三档并排拿 qwen3.8-max 看过:通栏竖线「把网格从中间劈开,视觉重量最大」;
                     //   只留极浅底色则「列身扫一眼分辨不出,差屏幕上等于没标」;
                     //   ★这条短线「几乎不增加醒目度,却给视线一个锚点」★ —— 正是「有个标识就行」。
-                    boxShadow: 是今天 ? 'inset 0 2px 0 #0d9488' : undefined,
+                    // ★顶线也走暖黄★（2026-08-13 liaoruili:「顶线也需要是黄色系列,
+                    //   不然显得不连续」）—— 底色换了色系,记号还留在旧色系上,
+                    //   ★同一个「今天」被劈成两种颜色,读起来像两件事★。
+                    boxShadow: 是今天 ? 'inset 0 2px 0 #faad14' : undefined,
                     // 每小时一条横线:用 repeating gradient,省掉 24 个 DOM 节点 × 7 列
                     backgroundImage: `repeating-linear-gradient(#f5f5f5 0 1px, transparent 1px ${HOUR_PX}px)`,
                   }}>
