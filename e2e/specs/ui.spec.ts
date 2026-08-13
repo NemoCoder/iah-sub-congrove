@@ -242,9 +242,20 @@ test.describe('公开活动广场(可旁听)', () => {
       await page.waitForTimeout(2500)
       const 卡 = page.locator('.ant-card').filter({ hasText: '公开活动' }).first()
       await expect(卡, '★日程页右栏得有「公开活动」这张卡★').toBeVisible({ timeout: 10_000 })
-      // 目标那一场可能被折叠了（默认只露 5 场）——先展开
-      const 展开 = 卡.getByText(/还有 \d+ 场公开活动/)
-      if (await 展开.count()) { await 展开.first().click(); await page.waitForTimeout(800) }
+      // ★广场从「折叠展开」换成了真分页(v0.4.133),这里要跟着换成翻页去找★（2026-08-14 才红）。
+      //   原来这段是「if 看见『还有 N 场公开活动』就点展开」—— 那个元素早就不存在了,
+      //   `if` 直接跳过、整段变成**空操作**,而用例照旧绿。
+      //   ★它绿只是因为广场上的场次一直不够翻页(每页 5 场)★:今天多灌了几场公开活动,
+      //   刚发的那场落到第 2 页,它当场就红了。
+      //   ⚠★一个「找不到就跳过」的前置动作,在它要守的东西消失之后,不会报错,只会安静地失效。★
+      //     这和「凌晨折叠」「摘要行假通过」是同一族:用例还在,判据已经空了。
+      //   现在按**人的走法**:一页页翻过去找,翻到头还没有才算真没有。
+      const 行定位 = () => 卡.locator('div[style*="border-bottom"]').filter({ hasText: 标题 }).first()
+      for (let i = 0; i < 10 && !(await 行定位().count()); i++) {
+        const 下一页 = 卡.locator('.ant-pagination-next:not(.ant-pagination-disabled)')
+        if (!(await 下一页.count())) break     // 翻到最后一页了
+        await 下一页.first().click(); await page.waitForTimeout(700)
+      }
       // ⚠★别用 `.filter({hasText}).last()` 够那一行★:`.last()` 拿到的是最里层、只装着标题的
       //   那个 div —— 里面根本没有按钮,于是点击等 90 秒超时,而报错只说「click 超时」,
       //   ★看起来像按钮坏了/页面卡死,其实是我指错了元素★(今天第三次栽在 `.last()` 上)。

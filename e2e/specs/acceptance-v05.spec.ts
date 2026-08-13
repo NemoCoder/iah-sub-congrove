@@ -40,6 +40,28 @@ async function 开页(page: Page, who: string) {
 const 接口 = (who: string): Promise<APIRequestContext> => pwRequest.newContext({
   baseURL: BASE, extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': who },
 })
+/// ★「在日历上看得到」必须真的在**日历格子里**看得到★（2026-08-14 跨过午夜才暴露）。
+///
+/// 原来这里直接 `page.getByText(标题)` —— 两个坑一起中：
+/// ① ★假通过★：页面顶上有一句摘要「接下来 7 天 2 场 · 最近一场 周五 8/14 00:45 <标题>」，
+///    `getByText` 先命中的是**它**。于是「日历上看得到」这条判据,实际上验的是
+///    「摘要行里提到过」—— ★两笔活动只有第一笔有摘要,所以第一条一直绿、第二条才露馅。★
+///    判据说的是日历,那就必须钉在日历的**块**上。
+/// ② ★凌晨 0–8 点默认是折叠的★：这条用例用表单默认时间建活动 = 建在"现在"附近,
+///    半夜跑就整个落进折叠区,一个块都不渲染。ui.spec 的重叠用例注释里早写过这一条
+///    (「必须排在白天…凌晨一点多跑就落进折叠区」)，★而这份 spec 没吃到那条教训 ——
+///    同一个坑在两份文件里各踩一次,又是「一条只在一处执行的规矩」。★
+/// 修法：先把凌晨那段展开（人看不到时本来就会去点它），再在**绝对定位的事件块**里找标题。
+async function 在日历上(page: Page, 标题: string) {
+  const 折叠条 = page.getByText(/凌晨这一段有活动被折叠了/)
+  if (await 折叠条.count()) { await 折叠条.first().click(); await page.waitForTimeout(800) }
+  // 事件块的特征:绝对定位 + 百分比 left/width(同 ui.spec 那条重叠用例的判据)
+  const 块 = page.locator('div[style*="position: absolute"]').filter({ hasText: 标题 })
+  await expect(块.first(),
+    `★「${标题}」不在日历格子里 —— 记下的事看不见等于没记（注意别拿页顶摘要行当数）★`)
+    .toBeVisible({ timeout: 10_000 })
+}
+
 const nav = async (page: Page, 名: '日程' | '项目' | '活动') => {
   await page.getByText(名, { exact: true }).first().click(); await page.waitForTimeout(900)
 }
@@ -95,9 +117,8 @@ test.describe('v0.5 验收', () => {
 
       // ③ 日历上看得到（判据的「在日历上看到它们」）
       await 开页(page, 我)
-      await expect(page.getByText(`E2E-M1-读 Acemoglu-${t}`).first(),
-        '★记下的事必须出现在日历上 —— 看不见等于没记★').toBeVisible({ timeout: 10_000 })
-      await expect(page.getByText(`E2E-M1-写周报-${t}`).first()).toBeVisible()
+      await 在日历上(page, `E2E-M1-读 Acemoglu-${t}`)
+      await 在日历上(page, `E2E-M1-写周报-${t}`)
 
       // ④ 给其中一条传一个 PDF（走接口造文件，落点仍是「我的活动材料」）
       const 活动 = (await (await api.get(`/api/activities?from=${new Date(Date.now() - 864e5).toISOString()}&to=${new Date(Date.now() + 864e5).toISOString()}`)).json())
