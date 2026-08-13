@@ -420,19 +420,28 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
                 //
                 // 在此之前只有**表头那一格**是青底的,而人的视线一落进网格就没有参照了 ——
                 // 七列长得一模一样,要确认「这个块是今天还是明天」得抬头去数列。
-                // ⚠★用极浅的底色 + 两侧竖线,不用强色块★:这一列里还要摆事件块,
-                //   底色一深,块上那套「公开/非公开/待应答」的颜色语言就被压住了 ——
-                //   ★背景是用来定位的,不该和前景抢信息。★
-                //   竖线比底色更关键:底色浅到不干扰时,边界反而是眼睛真正抓得住的东西。
+                // ⚠★只留一个记号,不要划出一条通栏★（2026-08-13 liaoruili 第二轮:
+                //   「还是很丑。。。不要太明显，有个标识就行」）。
+                //   我上一版给它加了**两侧 2px 青色竖线** —— 那等于在网格中间竖起一道栏杆:
+                //   七列本来是等价的、连续的一张表,一道实线把它劈成「今天」和「别的」两块,
+                //   ★而人要读的是**跨列的时间关系**(这周哪天空、明天几点)，栏杆恰好把它切断了。★
+                //   现在只留一层几乎看不出的底色:眼睛扫过去知道「是这一列」,
+                //   但它不构成边界、不抢事件块的颜色、也不打断横向阅读。
+                //   ★标识 ≠ 强调。要的是「找得到」,不是「盯着它」。★
+                //   表头那一格(青底 + 「· 今天」)仍在,那才是明确的标签;底色只是它向下的延伸。
                 // ⚠ 变量名别叫 today —— 外层已有一个 `const today = new Date()`,
                 //   同名会把它遮蔽掉,而遮蔽出来的是个 boolean:后面谁再用 today 当日期就静默错。
                 const 是今天 = isSameDay(d, today)
                 return (
                   <div key={i} style={{
                     position: 'relative', height: dayPx(fromH),
-                    borderLeft: 是今天 ? '2px solid #0d9488' : '1px solid #f0f0f0',
-                    borderRight: 是今天 ? '2px solid #0d9488' : undefined,
-                    background: 是今天 ? '#f0fdfa' : weekend ? '#fafafa' : undefined,
+                    borderLeft: '1px solid #f0f0f0',
+                    background: 是今天 ? '#fbfffe' : weekend ? '#fafafa' : undefined,
+                    // ★记号是表头那条青线向下延伸的 2px★ —— 不是通栏竖线,也不是有色块。
+                    //   三档并排拿 qwen3.8-max 看过:通栏竖线「把网格从中间劈开,视觉重量最大」;
+                    //   只留极浅底色则「列身扫一眼分辨不出,差屏幕上等于没标」;
+                    //   ★这条短线「几乎不增加醒目度,却给视线一个锚点」★ —— 正是「有个标识就行」。
+                    boxShadow: 是今天 ? 'inset 0 2px 0 #0d9488' : undefined,
                     // 每小时一条横线:用 repeating gradient,省掉 24 个 DOM 节点 × 7 列
                     backgroundImage: `repeating-linear-gradient(#f5f5f5 0 1px, transparent 1px ${HOUR_PX}px)`,
                   }}>
