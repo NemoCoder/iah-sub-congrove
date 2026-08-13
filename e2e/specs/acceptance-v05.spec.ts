@@ -85,10 +85,19 @@ test.describe('v0.5 验收', () => {
       await page.waitForTimeout(600)
       await page.locator('.ant-dropdown-menu-item:visible').filter({ hasText: '我的活动类型' }).first().click()
       await page.waitForTimeout(1200)
-      await page.getByPlaceholder(/新类型的名字/).fill(`读文献${t}`)
+      // ⚠★类型名必须带 `E2E-` 前缀★(2026-08-14 栽了):原来叫「读文献<t>」——
+      //   ★不带前缀就落不进 teardown 的清理规则★(那条规矩是「所有 spec 造的东西都以 E2E- 开头」)。
+      //   身份改成固定名之后,类型一轮攒一个,攒到 10 个时下拉框(虚拟滚动)里
+      //   新建的那个已经不在视口内 → DOM 里根本没有 → 点击等 90 秒超时,
+      //   ★报错只说「等 option 超时」,看起来像下拉坏了,其实是垃圾把它挤下去了。★
+      // ⚠★类型名后端限死 12 个字★:第一版改成「E2E-读文献-<6位>」共 14 个字,
+      //   接口直接 400「类型名最多 12 个字」→ 列表里当然没有,而用例报的是
+      //   「★自建的类型要出现在列表里★」—— ★又一次:症状指向界面,真凶是入参被拒。★
+      //   现在是「E2E-文献<4位>」共 10 个字,既带前缀(落得进 teardown)又在限内。
+      await page.getByPlaceholder(/新类型的名字/).fill(`E2E-文献${t.slice(-4)}`)
       await page.getByRole('button', { name: btn('新建') }).first().click()
       await page.waitForTimeout(1200)
-      await expect(page.getByText(`读文献${t}`).first(), '★自建的类型要出现在列表里★').toBeVisible()
+      await expect(page.getByText(`E2E-文献${t.slice(-4)}`).first(), '★自建的类型要出现在列表里★').toBeVisible()
 
       // ② 记两笔「今天做的事」——★不关联任何项目★（这是 M1 的核心：新用户没有项目）
       const 记一笔 = async (标题: string) => {
@@ -104,7 +113,7 @@ test.describe('v0.5 验收', () => {
           .locator('.ant-select').first().click()
         await page.waitForTimeout(600)
         await page.locator('.ant-select-dropdown:visible .ant-select-item-option')
-          .filter({ hasText: `读文献${t}` }).first().click()
+          .filter({ hasText: `E2E-文献${t.slice(-4)}` }).first().click()
         await page.waitForTimeout(600)
         await page.getByPlaceholder('如：8 月第二次组会').fill(标题)
         await page.getByRole('button', { name: '1 小时', exact: true }).click()
