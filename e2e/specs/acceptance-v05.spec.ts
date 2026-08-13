@@ -11,6 +11,11 @@
 //   （比如提醒是不是真投递了）。判据说的是「人能不能做成」，那就得用人的方式做一遍。
 // ② ★每期用一个干净身份★：M1 那句话的主语是「**从没建过项目的**新用户」——
 //   拿一个已经有 20 个项目的账号去跑，等于把判据里最要紧的限定词丢了。
+//   ⚠★身份名用固定名（`e2e-m1`），不再拿时间戳拼★（2026-08-13 改）:
+//     拼出来的名字每轮都不一样 → ★teardown 枚举不到它 → 这些身份造的活动永远留在
+//     liaoruili 的日历和「公开活动」栏里★（实拍时看见 8/14 一整列都是 E2E 讲座）。
+//     「干净」现在由 teardown 每轮清干净来保证,而不是靠每轮换个新名字来回避 ——
+//     ★换名字看着像隔离,实质是把垃圾扔在别人院子里。★
 //
 // ★全套 Playwright 一律跑在 .14 的有头浏览器上★(见 playwright.config.ts 的注释),
 // 所以直接 `npx playwright test specs/acceptance-v05.spec.ts` 就能在那台屏幕上看着它走。
@@ -49,7 +54,7 @@ test.describe('v0.5 验收', () => {
     // ★这条判据本身就长★:建类型 → 记两笔 → 看日历 → 传文件 → 进材料区 → 复制进课题组,
     // 六段全走界面。默认 30s 是给单点用例的,这里必然超 —— ★超时不是产品慢,是判据长★。
     test.slow()
-    const t = tag(), 我 = `e2e-m1-${t}`
+    const t = tag(), 我 = 'e2e-m1'
     const api = await 接口(我)
     try {
       // ① 自建一个活动类型（判据里的「①配置自己」）
@@ -146,7 +151,7 @@ test.describe('v0.5 验收', () => {
   // 判据原文：★日历上随便指一块，不点开就能说出「这是谁张罗的、属于哪个项目、我要不要去」★；
   //            归档一个还有未来活动的项目会被拒绝，并且**告诉我是哪几场**
   test('★M2 看得清：hover 就说得出「谁张罗的/哪个项目/要不要去」★', async ({ page }) => {
-    const t = tag(), 我 = `e2e-m2a-${t}`
+    const t = tag(), 我 = 'e2e-m2a'
     const api = await 接口(我)
     try {
       const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M2-项目-${t}` } })).json()).id
@@ -179,7 +184,7 @@ test.describe('v0.5 验收', () => {
   })
 
   test('★M2 归档拦截：还有未开始的活动就不许归档，并且说清是哪几场★', async ({ page }) => {
-    const t = tag(), 我 = `e2e-m2b-${t}`
+    const t = tag(), 我 = 'e2e-m2b'
     const api = await 接口(我)
     try {
       const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M2-归档-${t}` } })).json()).id
@@ -200,7 +205,7 @@ test.describe('v0.5 验收', () => {
   // 判据原文：★一个把时区设成纽约的人，看到北京的组会显示为本地时间并标注「（北京 15:00）」；
   //            会前 15 分钟收到提醒，点进去直接落在那场活动上★
   test('★M3 不出错：纽约时区的人看北京的会 —— 显示本地时间 + 标注原始时区★', async ({ page }) => {
-    const t = tag(), 我 = `e2e-m3a-${t}`
+    const t = tag(), 我 = 'e2e-m3a'
     const api = await 接口(我)
     try {
       expect((await api.put('/api/me/prefs', { data: { timezone: 'America/New_York' } })).status()).toBe(200)
@@ -233,7 +238,7 @@ test.describe('v0.5 验收', () => {
 
   test('★M3 提醒：到点投递，点进去直接落在那场活动上★', async ({ page }) => {
     test.slow()   // 后台循环 30s 扫一次 + 前端 60s 轮询,这条天生慢
-    const t = tag(), 我 = `e2e-m3b-${t}`
+    const t = tag(), 我 = 'e2e-m3b'
     const api = await 接口(我)
     try {
       const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M3-提醒-${t}` } })).json()).id
@@ -271,7 +276,7 @@ test.describe('v0.5 验收', () => {
   // 判据原文：★季度末，我能说出「这季度开会 18 小时、读文献 32 小时」，
   //            并且知道其中多少来自录制、多少是我手填的、多少只是按排程估的★
   test('★M4 说得清：按类型的小时数 + 三种口径来源，界面上都看得到★', async ({ page }) => {
-    const t = tag(), 我 = `e2e-m4-${t}`
+    const t = tag(), 我 = 'e2e-m4'
     const api = await 接口(我)
     try {
       const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M4-项目-${t}` } })).json()).id
