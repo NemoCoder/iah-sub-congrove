@@ -120,6 +120,27 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
   const m = d.activity
   const canceled = m.status === 'canceled'
 
+  // ★取消了就只说「活动已取消」,别再摊开细节★（2026-08-13 liaoruili:
+  //   「如果已经取消，具体信息就别显示了，直接做个取消页面，就像 404 页面那样」
+  //    「这些啰嗦的解释不要了，直接活动已取消即可」）。
+  //
+  // ⚠ 原来是**照常渲染整页**、只在顶上挂一条带长解释的 Alert:
+  //   议程、地点、链接、参会名单、讨论区、纪要……全都还摆着,而它们此刻**一条都不该再被行动**。
+  //   ★一屏可操作的东西 + 一句「已取消」,读起来像「还能去」——人得读完那条提示才知道白看了。★
+  //   现在换成一页话说完:标题 + 已取消 + 返回。想知道「谁邀了谁、谁拒了」那些协作事实,
+  //   数据都还在库里(取消不是删除),只是**不摆在脸上**。
+  // ⚠ 用词是「**活动**已取消」不是「会议」(2026-08-13 他专门纠正):
+  //   M0 起「会议」只是众多活动类型里的一个,写死「会议」又是把一类的名字当成全体的名字。
+  if (canceled)
+    return (
+      <Card size="small" style={{ maxWidth: 560, margin: '48px auto', textAlign: 'center' }}>
+        <div style={{ fontSize: 40, lineHeight: 1, marginBottom: 12 }}>🚫</div>
+        <Typography.Title level={4} style={{ margin: '0 0 6px' }}>活动已取消</Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 20 }}>{m.title}</Typography.Paragraph>
+        <Button onClick={onBack}>{backLabel}</Button>
+      </Card>
+    )
+
   return (
     <div>
       <Space style={{ marginBottom: 12 }} wrap>
@@ -204,10 +225,6 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
         )}
       </Space>
 
-      {canceled && (
-        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="这场活动已取消" description="记录保留下来,是因为「谁邀了谁、谁拒了」是协作事实,删掉之后没人说得清当时发生过什么。" />
-      )}
 
       {/* ★冲突提示条★(原型位置:信息卡之前,红底,抢注意力)。
           D1 定了私密项目的日程对发起人完全隐形 —— 他不知道你这个时段忙,
