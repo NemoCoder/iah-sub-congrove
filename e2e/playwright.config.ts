@@ -40,6 +40,12 @@ export default defineConfig({
   }]],
   use: {
     baseURL: BASE,
+    // ★E2E_REMOTE=1 时跑在 .14 那台的有头浏览器上，屏幕上看得见★
+    // （liaoruili 的常规要求：「playwright 一定要走 14 的机器，这样我可以看到」）。
+    // 默认仍是本机无头 —— 全量跑 78 条时开着窗口既慢又抢桌面。
+    ...(process.env.E2E_REMOTE ? {
+      connectOptions: { wsEndpoint: 'ws://172.19.0.14:9333/congrove' },
+    } : {}),
     // ★key 为空时不要注入空 header★:Traefik 的路由规则按 `HeadersRegexp(X-IAH-E2E-Key, .+)` 匹配,
     // 空值匹配不上等于没带,但显式发一个空头容易让人误判「带了却没生效」。
     extraHTTPHeaders: KEY ? { 'X-IAH-E2E-Key': KEY } : {},
