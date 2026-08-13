@@ -274,3 +274,57 @@ test.describe('公开活动广场(可旁听)', () => {
     } finally { await 他.dispose() }
   })
 })
+
+// ★「建议改期」里的时间控件真的能选★（2026-08-13 liaoruili：「建议改期的日期时间无法选择，
+// 这个点击 playwright 做了吗！！」——★没做★，而且这个「没做」很具体：
+// 巡检确实点了「建议改期」并报 ✓，但那个 ✓ 只证明**弹窗打开了**；
+// 纪律②是「弹窗只开不确认」，于是弹窗**里面**的控件一次都没被碰过。
+// ★「点开了」和「里面能用」是两件事，而报告只报得出前一件。★)
+//
+// 真凶：`TimeRangePicker` 是**受控**组件（显示完全由 `value` 决定），
+// 而这一处只传了 `onChange`、没回传 `value` —— 选了日期，控件照旧显示空的，且不报任何错。
+test.describe('建议改期', () => {
+  test('★选了时间就要显示出来,并且提交按钮要活过来★', async ({ page, request }) => {
+    test.slow()
+    const t = Date.now()
+    const 他 = await pwRequest.newContext({
+      baseURL: process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com',
+      extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': 'e2e-organizer' },
+    })
+    try {
+      // 别人约我 → 我这边才会出现「建议改期」
+      const pid = (await (await 他.post('/api/projects', { data: { name: `E2E-改期-${t}` } })).json()).id
+      await 他.put(`/api/projects/${pid}/members`, { data: { usernames: ['e2e'], role: 'editor' } })
+      const 后天 = new Date(); 后天.setDate(后天.getDate() + 2); 后天.setHours(10, 0, 0, 0)
+      const r = await 他.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-改期-活动-${t}`, recorder: 'e2e-organizer', project_ids: [pid],
+                starts_at: 后天.toISOString(), ends_at: new Date(后天.getTime() + 3600e3).toISOString() },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+      const mid = (await r.json()).id as number
+      expect((await 他.put(`/api/activities/${mid}/participants`,
+        { data: { usernames: ['e2e'], kind: 'attendee' } })).status()).toBe(200)
+
+      await page.goto(`/?activity=${mid}`)
+      await page.waitForTimeout(2500)
+      await page.getByRole('button', { name: /建议改期/ }).first().click()
+      await page.waitForTimeout(800)
+
+      // ★提交按钮此刻必须是灰的★（还没选时间）—— 先钉住这一头，
+      //   否则后面「它活过来了」就证明不了是**选时间**让它活的。
+      const 提交 = page.getByRole('button', { name: /提交改期建议/ })
+      await expect(提交, '★还没选时间,提交按钮就该是灰的★').toBeDisabled()
+
+      // 选一个时长 —— 这是 time-range 里最短的一条路径（一次点击定起止）
+      await page.getByRole('button', { name: '1 小时', exact: true }).first().click()
+      await page.waitForTimeout(600)
+
+      // ★控件上要**看得见**选中的时间★ —— 这正是那个 bug：选了却不显示
+      const 日期框 = page.locator('input[placeholder="请选择日期"], .ant-picker-input input').first()
+      await expect.poll(async () => (await 日期框.inputValue().catch(() => '')) || '', { timeout: 5000 })
+        .toMatch(/\d{4}-\d{2}-\d{2}/)
+      // ★而且提交按钮要活过来★ —— 「显示了」和「表单认了」是两件事，两条都要钉
+      await expect(提交, '★选了时间,提交按钮就该能点 —— 不然这条路根本走不通★').toBeEnabled()
+    } finally { await 他.dispose() }
+  })
+})

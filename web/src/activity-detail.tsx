@@ -485,7 +485,15 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
   const [showCounter, setShowCounter] = useState(mine === 'counter')
+  /// ★两份 state 是刻意的★:提交要 ISO 字符串,而 `TimeRangePicker` 是**受控**的、要 Dayjs。
+  /// ⚠★这里原来只存字符串、不给控件回传 `value`★（2026-08-13 liaoruili:「建议改期的日期时间
+  ///   无法选择」）—— 控件的显示完全由 `value` 决定(`const [s, e] = value ?? [null, null]`),
+  ///   不回传就是:你选了日期 → onChange 触发 → 父组件确实存下了 → 而控件照旧显示空的。
+  ///   ★选了等于没选,而且不报任何错。★
+  ///   同一文件里「改时间」那处(TimeRangePicker value={timeEdit})是对的 ——
+  ///   ★同一个组件两处用法不一致,坏的那处恰好是没人测过的那处。★
   const [range, setRange] = useState<[string, string] | null>(null)
+  const [rangeD, setRangeD] = useState<[Dayjs, Dayjs] | null>(null)
   const [reason, setReason] = useState('')
 
   const send = async (status: RespondStatus) => {
@@ -539,8 +547,11 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
           </Typography.Paragraph>
           {/* 建议一个**将来**的时段才有意义,所以这里 noPast */}
           <div style={{ marginBottom: 8 }}>
-            <TimeRangePicker noPast size="small"
-              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)} />
+            <TimeRangePicker noPast size="small" value={rangeD}
+              onChange={(v) => {
+                setRangeD(v && v[0] && v[1] ? [v[0], v[1]] : null)
+                setRange(v && v[0] && v[1] ? [v[0].toISOString(), v[1].toISOString()] : null)
+              }} />
           </div>
           <Input.TextArea rows={2} size="small" placeholder="原因（选填）" value={reason}
             onChange={(e) => setReason(e.target.value)} style={{ marginBottom: 8 }} />

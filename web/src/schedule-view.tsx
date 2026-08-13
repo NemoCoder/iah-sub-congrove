@@ -10,7 +10,7 @@
 // 颜色三分(与后端 is_private / my_status 对齐,图例在日历下方):
 //   公开的活动 = 青色实框 / 非公开的活动 = 紫色虚框 / 待应答 = 红色。
 //   ★判据是活动自己的 visibility(M0 起),不是「关联了什么项目」★——用词别再写「私密项目」。
-import { App as AntdApp, Button, Card, Empty, Segmented, Space, Spin, Tag, Tooltip, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Pagination, Segmented, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { UpcomingBar } from './upcoming-bar'
@@ -563,7 +563,13 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
 /// ★只列还没结束的★:旁听的意义是「我要去听」,开完的会列在这里只是噪音。
 /// 广场默认展开几场。★5 比待办卡的 2 多★:待办是「要我做的事」,少而重;
 /// 广场是「有什么可听的」,看的是**有没有值得点开的**,太少就等于没在推荐。
-const BOARD_HEAD = 5
+/// 广场每页几场。★2026-08-13 liaoruili:「公开活动没有做分页呢！！！！现在还是一长串,
+/// 几十场一直下滑」——他说得对,而这是我判断错了★:
+/// 我当时明确写过「不做真正的分页:广场是扫一眼有什么可听的,不是目录,翻页比展开重」,
+/// 于是做成了「先露 5 场 + 展开」。★问题出在「展开」那一下:它把**全部**几十场一次性倒出来★,
+/// 正是他先前为「待我处理」抱怨过的同一个形状(「怎么这么长,没有做分页呢」)。
+/// ★「折叠」只在总数不多时等价于分页;总数一多,展开就等于没有折叠。★
+const BOARD_PAGE = 5
 
 function PublicBoard({ onOpen, onJoined }: {
   onOpen: (id: number) => void
@@ -577,13 +583,20 @@ function PublicBoard({ onOpen, onJoined }: {
   const [days, setDays] = useState<7 | 0>(7)      // 0 = 全部未来
   const [rows, setRows] = useState<Activity[]>([])
   const [busy, setBusy] = useState<number | null>(null)
-  /// ★广场也要折叠★（2026-08-13 liaoruili：「怎么这么长，没有做分页呢」）。
+  /// ★广场分页★（2026-08-13 liaoruili 两次指出「没有做分页」）。
   /// 这一屏上「待我处理」和「公开活动」是同一个毛病的两个实例:
   /// 都是**条数不由我们控制**的列表(转移请求多少条看别人发多少,公开活动多少场看全平台),
   /// 而它们都住在**右栏**——右栏一长，左边的日历就被拉到滚不完的地方去。
   /// ★不设上限的列表，等于把版面的控制权交给了数据★。
   /// 这里不做真正的分页:广场是「扫一眼有什么可听的」，不是目录，翻页反而比展开重。
-  const [open, setOpen] = useState(false)
+  const [页, setPage] = useState(1)
+  /// ★生效的页码是**派生**的,不是存的那个★:旁听掉一场之后这一页可能就不存在了
+  /// (最后一页只剩一条,点完旁听它就空了),而 `页` 还停在那儿 → 一片空白、且看不出为什么。
+  /// ⚠ 本仓库修过同一族的 bug:「恢复最后一个归档项目之后卡在『已归档』筛选上,
+  ///   列表永远空、连切回去的按钮都没有」(project-filter.ts 的头注)。
+  ///   ★修法一样:不同步两份状态,而是让取值从**当前事实**推出来。★
+  const 总页 = Math.max(1, Math.ceil(rows.length / BOARD_PAGE))
+  const 有效页 = Math.min(页, 总页)
 
   const load = useCallback(async () => {
     try { setRows(await api<Activity[]>(`/api/activities/public${days ? `?days=${days}` : ''}`)) }
@@ -627,7 +640,7 @@ function PublicBoard({ onOpen, onJoined }: {
           description={days ? '近 7 天没有可旁听的公开活动' : '没有可旁听的公开活动'} />
       ) : (
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
-          {(open ? rows : rows.slice(0, BOARD_HEAD)).map((m) => (
+          {rows.slice((有效页 - 1) * BOARD_PAGE, 有效页 * BOARD_PAGE).map((m) => (
             <div key={m.id} style={{ borderBottom: '1px solid #f5f5f5', paddingBottom: 8 }}>
               <div onClick={() => onOpen(m.id)} style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                 {m.title}
@@ -658,10 +671,14 @@ function PublicBoard({ onOpen, onJoined }: {
                   真要提示也该放在卡片标题处说一次,而不是逐行复读。 */}
             </div>
           ))}
-          {rows.length > BOARD_HEAD && (
-            <a style={{ fontSize: 12 }} onClick={() => setOpen((v) => !v)}>
-              {open ? '收起 ▴' : `还有 ${rows.length - BOARD_HEAD} 场公开活动 展开 ▾`}
-            </a>
+          {rows.length > BOARD_PAGE && (
+            <Pagination
+              size="small" align="center" simple
+              current={有效页} pageSize={BOARD_PAGE} total={rows.length}
+              onChange={setPage}
+              /* ★simple 模式★:右栏只有 320px 宽,标准分页器的页码 + 跳转 + 每页条数
+                 会挤成两行还换行 —— 这里只需要「第几页 / 共几页 + 前后翻」。 */
+            />
           )}
         </Space>
       )}
