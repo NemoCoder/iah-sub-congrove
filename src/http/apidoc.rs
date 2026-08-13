@@ -237,7 +237,7 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/projects/{id}/precheck", "内容", "≥editor",
          "秒传预检。★命中且我本来就读得到同 sha 的内容才免传★(防「凭哈希认领他人文件」)",
          "sha256, size, name, mime, parent_id"),
-    api!("GET", "/api/projects/{id}/trash", "内容", "≥editor", "回收站(只列删除动作的根)", ""),
+    api!("GET", "/api/projects/{id}/trash", "内容", "≥editor", "回收站(只列删除动作的根);★分页★,回 {total, items}", "page, size"),
     api!("GET", "/api/items/{id}", "内容", "≥viewer", "条目详情", ""),
     api!("PUT", "/api/items/{id}", "内容", "≥editor", "改名 / 移动", "name, parent_id"),
     api!("DELETE", "/api/items/{id}", "内容", "≥editor", "★软删除★:整棵子树打标记进回收站,S3 不动", ""),
@@ -281,7 +281,7 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/items/{id}/shares", "分享", "≥editor",
          "建公开链接。★这是全系统唯一绕过项目成员身份的入口★",
          "code, expires_days, max_visits, allow_download, items[]"),
-    api!("GET", "/api/shares/mine", "分享", "登录", "我发出去的全部分享(跨项目)", ""),
+    api!("GET", "/api/shares/mine", "分享", "登录", "我发出去的全部分享(跨项目);★分页★,回 {total, items}", "page, size"),
     api!("DELETE", "/api/shares/{token}", "分享", "创建者本人无条件 / 他人需 admin", "撤销分享链接", ""),
 
     // ── 公开分享(访客面,不需登录)──

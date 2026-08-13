@@ -692,22 +692,36 @@ pub async fn trash(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
+    axum::extract::Query(q): axum::extract::Query<crate::http::Page>,
+) -> AppResult<Json<serde_json::Value>> {
     crate::perm::require_material_owner(&state.pool, &id, pid).await?;
+    // ★真分页,不是写死 LIMIT★(2026-08-13 改):原来是 `LIMIT 500` 且不返回 total ——
+    //   删满 500 条之后,第 501 条起在界面上**凭空消失**,而它还在库里、还占着配额
+    //   (「配额仍计入回收站」是明写的规矩)。★人以为清干净了,实际没有★,
+    //   而且界面一个字都不提示。这不是「列表太长」,是**界面替数据库撒谎**。
+    //   `COUNT(*) OVER()` 一次查询同时拿到本页和总数,不多跑一趟。
+    let (limit, offset) = q.slice();
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, String,
-                   chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
-        "SELECT i.id, i.kind, i.name, i.size, i.mime, COALESCE(i.deleted_by,''), i.deleted_at, i.mime
+                   chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
+        "SELECT i.id, i.kind, i.name, i.size, i.mime, COALESCE(i.deleted_by,''), i.deleted_at,
+                COUNT(*) OVER() AS total
            FROM items i
           WHERE i.project_id = $1 AND i.deleted_at IS NOT NULL
             -- 只要「删除动作的根」:父节点没被删(或没有父节点)的那些
             AND (i.parent_id IS NULL OR NOT EXISTS (
                   SELECT 1 FROM items p WHERE p.id = i.parent_id AND p.deleted_at IS NOT NULL))
-          ORDER BY i.deleted_at DESC LIMIT 500",
-    ).bind(pid).fetch_all(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, by, at, _)| json!({
-        "id": id, "kind": kind, "name": name, "size": size, "mime": mime,
-        "deleted_by": by, "deleted_at": at,
-    })).collect()))
+          ORDER BY i.deleted_at DESC LIMIT $2 OFFSET $3",
+    ).bind(pid).bind(limit).bind(offset).fetch_all(&state.pool).await?;
+    // ★空页也要回 total=0 而不是省略字段★:前端拿不到 total 会退化成「不知道有多少」,
+    //   那就又回到了「看到的就是全部」的错觉。
+    let total = rows.first().map(|r| r.7).unwrap_or(0);
+    Ok(Json(json!({
+        "total": total,
+        "items": rows.into_iter().map(|(id, kind, name, size, mime, by, at, _)| json!({
+            "id": id, "kind": kind, "name": name, "size": size, "mime": mime,
+            "deleted_by": by, "deleted_at": at,
+        })).collect::<Vec<_>>(),
+    })))
 }
 
 /// POST /api/items/{id}/undelete —— 从回收站还原(≥editor;材料区认主人)。整棵子树一起还原;

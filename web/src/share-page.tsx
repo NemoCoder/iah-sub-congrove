@@ -153,7 +153,13 @@ export function SharePage({ token }: { token: string }) {
           <Button size="small" onClick={() => setCwd(multi ? null : item.id)}>回到分享根目录</Button>
         )}
       </Space>
-      <Table size="small" rowKey="id" dataSource={rows} pagination={false}
+      {/* ★访客页也分页★(2026-08-13):`/pub/share/{token}/list` **没有上限**,分享一个
+          几千文件的文件夹会一次全吐给访客 —— 数据没丢(所以不必改后端),但页面滚不完。
+          交给 Table 自己分页是安全的:这里的 dataSource 就是完整的当前层,没有伪行,
+          不存在项目文件列表那个「已经切过一刀又被切一次」的问题。
+          `simple` 是刻意的:访客页要尽量安静,一个「1/3」比一排页码合适。 */}
+      <Table size="small" rowKey="id" dataSource={rows}
+        pagination={{ pageSize: 20, simple: true, align: 'center', hideOnSinglePage: true }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个文件夹是空的" /> }}
         columns={[
           { title: '名称', dataIndex: 'name',

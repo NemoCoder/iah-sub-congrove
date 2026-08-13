@@ -292,8 +292,12 @@ test.describe('安全网·公开分享', () => {
     const token = (await (await request.post(`/api/items/${iid}/shares`, { data: {} })).json()).token as string
     expect((await request.get(PUB(token))).status()).toBe(200)
 
-    const list = (await (await request.get('/api/shares/mine')).json()) as { token: string }[]
-    expect(list.find((x) => x.token === token), '「我的分享」里应当列得出来').toBeTruthy()
+    // ⚠★响应体是 {total, items} 不是数组★(v0.4.136 加分页时改的):原来后端写死 `LIMIT 500`
+    //   不给总数,第 501 条起在「我的分享」里看不见也**撤不掉** —— 而分享是全系统唯一
+    //   绕过项目授权的出口,撤不掉的分享是安全问题。
+    const list = (await (await request.get('/api/shares/mine')).json()) as { total: number; items: { token: string }[] }
+    expect(list.items.find((x) => x.token === token), '「我的分享」里应当列得出来').toBeTruthy()
+    expect(list.total, '★分页必须带 total★:没有它,界面就不知道自己看到的是不是全部').toBeGreaterThan(0)
     // ★撤销按 token 不按行 id★(`DELETE /api/shares/{token}`)
     expect((await request.delete(`/api/shares/${token}`)).status()).toBe(200)
 
@@ -312,8 +316,8 @@ test.describe('安全网·公开分享', () => {
     // v0.3.55 一次补了 11 处的那条纪律，整个公开分享面当时全漏了
     expect((await request.get(PUB(token))).status(), '★删了就不该再取得到★').toBe(404)
     // 链接本身没被撤销,只是内容没了 —— 「我的分享」里应当标出来(item_deleted),否则用户不知道链接为什么废了
-    const mine = (await (await request.get('/api/shares/mine')).json()) as { token: string; item_deleted?: boolean }[]
-    expect(mine.find((x) => x.token === token)?.item_deleted, '「我的分享」要标出内容已删').toBe(true)
+    const mine = (await (await request.get('/api/shares/mine')).json()) as { items: { token: string; item_deleted?: boolean }[] }
+    expect(mine.items.find((x) => x.token === token)?.item_deleted, '「我的分享」要标出内容已删').toBe(true)
   })
 })
 
