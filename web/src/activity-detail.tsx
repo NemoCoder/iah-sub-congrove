@@ -133,12 +133,19 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
   //   M0 起「会议」只是众多活动类型里的一个,写死「会议」又是把一类的名字当成全体的名字。
   if (canceled)
     return (
-      <Card size="small" style={{ maxWidth: 560, margin: '48px auto', textAlign: 'center' }}>
+      // ★在剩余空间里垂直居中★:第一版写死 `margin: 48px auto`,卡片贴在顶上、下面空一大半,
+      //   头重脚轻(qwen3.8-max 看实拍时点出来的:「略显头重脚轻」)。
+      //   404 那类状态页的惯用观感就是**居中**——页面上只有一句话时,它该落在视线中央。
+      //   减掉的 160px 是页眉 + 外层 padding,量出来的。
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    minHeight: 'calc(100vh - 160px)' }}>
+      <Card size="small" style={{ maxWidth: 560, width: '100%', textAlign: 'center' }}>
         <div style={{ fontSize: 40, lineHeight: 1, marginBottom: 12 }}>🚫</div>
         <Typography.Title level={4} style={{ margin: '0 0 6px' }}>活动已取消</Typography.Title>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 20 }}>{m.title}</Typography.Paragraph>
         <Button onClick={onBack}>{backLabel}</Button>
       </Card>
+      </div>
     )
 
   return (
