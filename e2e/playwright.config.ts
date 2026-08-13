@@ -40,12 +40,21 @@ export default defineConfig({
   }]],
   use: {
     baseURL: BASE,
-    // ★E2E_REMOTE=1 时跑在 .14 那台的有头浏览器上，屏幕上看得见★
-    // （liaoruili 的常规要求：「playwright 一定要走 14 的机器，这样我可以看到」）。
-    // 默认仍是本机无头 —— 全量跑 78 条时开着窗口既慢又抢桌面。
-    ...(process.env.E2E_REMOTE ? {
-      connectOptions: { wsEndpoint: 'ws://172.19.0.14:9333/congrove' },
-    } : {}),
+    // ★★所有 Playwright 一律跑在 .14 那台的有头浏览器上★★
+    // （2026-08-13 liaoruili：「playwright 永远要在 .14 上有头跑！！这台机器就是所有子系统
+    //   测试用的！！你随便用，不是用来办公的，我不用」）。
+    //
+    // ⚠★这里没有开关,是刻意的★:我上一版做成了 `E2E_REMOTE=1` 才走 .14,默认本机无头 ——
+    //   理由写的是「全量跑开着窗口会占他桌面」，★而那个约束是我自己编的★:那台机器本来就是
+    //   专用测试机、没人办公。一个「默认不给人看」的开关，实际效果就是**大多数时候他看不见**。
+    // ⚠ .14 连不上时**整轮直接失败**,不静默回落本机 —— 回落等于测试跑了他却不知道跑过,
+    //   而「他能看见」正是这条规矩的全部目的。要临时本机跑就改这一行,别加环境变量绕过去。
+    connectOptions: { wsEndpoint: 'ws://172.19.0.14:9333/congrove' },
+    // ⚠★这里**不开** ignoreHTTPSErrors★:那会把「证书真的错了」和「证书是内网 CA 签的」
+    //   一起吞掉(ui.spec 头注)。.14 上的浏览器已经装了内网 CA ——
+    //   `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n IAH-Internal-CA -i <ca.crt>`
+    //   (2026-08-13 装的;那台机器上原本连 certutil 都没有,一并装了 libnss3-tools)。
+    //   ★装 CA 而不是关校验,差别在于:证书哪天真过期/换错,这套测试会红,而不是继续绿着。★
     // ★key 为空时不要注入空 header★:Traefik 的路由规则按 `HeadersRegexp(X-IAH-E2E-Key, .+)` 匹配,
     // 空值匹配不上等于没带,但显式发一个空头容易让人误判「带了却没生效」。
     extraHTTPHeaders: KEY ? { 'X-IAH-E2E-Key': KEY } : {},

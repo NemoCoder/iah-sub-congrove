@@ -12,7 +12,8 @@
 // ② ★每期用一个干净身份★：M1 那句话的主语是「**从没建过项目的**新用户」——
 //   拿一个已经有 20 个项目的账号去跑，等于把判据里最要紧的限定词丢了。
 //
-// 想在屏幕上看着它跑：`E2E_REMOTE=1 npx playwright test specs/acceptance-v05.spec.ts`
+// ★全套 Playwright 一律跑在 .14 的有头浏览器上★(见 playwright.config.ts 的注释),
+// 所以直接 `npx playwright test specs/acceptance-v05.spec.ts` 就能在那台屏幕上看着它走。
 import { expect, request as pwRequest, test, type APIRequestContext, type Page } from '@playwright/test'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
