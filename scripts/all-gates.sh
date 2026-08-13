@@ -46,6 +46,16 @@ if [ "$CI_ONLY" != "--ci" ]; then
     RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）")
   fi
   gate "接口面 api-check" bash scripts/api-check.sh check
+  # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——
+  #   生成的契约里响应只写 `{"description":"成功"}`、没有 schema,于是把响应体
+  #   从 `[...]` 改成 `{total, items}`(2026-08-13,货真价实的破坏性变更)时,
+  #   ★八道门禁一道都没红★。这一道直接对着**真实响应**比形状,那次改动实测会被它抓住。
+  #   ⚠ 它要跑 golden.mjs 打真实请求,比别的闸慢(约 40s),且同样进不了 CI。
+  if [ -n "${IAH_E2E_KEY:-}" ]; then
+    gate "响应体形状对拍" bash scripts/shape-check.sh check
+  else
+    RESULTS+=("  ? 未跑:响应体形状对拍（缺 IAH_E2E_KEY）")
+  fi
 fi
 
 printf '\n══ 门禁汇总 ══\n'
