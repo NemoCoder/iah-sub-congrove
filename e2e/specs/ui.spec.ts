@@ -10,7 +10,7 @@
 // 正确做法是把 CA 装进 Chromium 用的 NSS 库(一次性,见 ../README.md):
 //     certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n IAH-Internal-CA -i <ca.crt>
 // ★别用 ignoreHTTPSErrors 图省事★——那会把「证书真的错了」和「证书是内网 CA 签的」一起吞掉。
-import { expect, test } from '@playwright/test'
+import { expect, request as pwRequest, test } from '@playwright/test'
 import { 会议 } from './_presets'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
@@ -190,5 +190,68 @@ test.describe('取消了的活动', () => {
     expect(屏, '★长解释已经去掉了,别又加回来★').not.toContain('删掉之后没人说得清')
     // ★用词是「活动」不是「会议」★：M0 起「会议」只是众多类型之一
     expect(屏, '★别写成「会议已取消」—— 会议只是活动类型之一★').not.toContain('会议已取消')
+  })
+})
+
+// ★公开活动广场 · 可旁听★（2026-08-13 liaoruili 指出「你没有测试公开活动」——他说得对，
+// 87 条里一条都没覆盖到这块）。这一组走完整闭环：
+//   别人发的公开会出现在我的广场 → 我点旁听 → 它进我的日历 → 它从广场消失。
+//
+// ⚠★必须由**别人**发起★：广场按设计滤掉「我已经与之有关」的会（我发起/我参与/我已旁听），
+//   用自己的身份造等于白造 —— 它永远不会出现在自己的广场里。
+test.describe('公开活动广场(可旁听)', () => {
+  test('★别人的公开会列得出 → 旁听 → 进我日历 → 从广场消失★', async ({ page, request }) => {
+    test.slow()
+    const t = Date.now()
+    const 他 = await pwRequest.newContext({
+      baseURL: process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com',
+      extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': 'e2e-lecturer' },
+    })
+    try {
+      const pid = (await (await 他.post('/api/projects', { data: { name: `E2E-广场-项目-${t}` } })).json()).id
+      const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(15, 0, 0, 0)
+      const 标题 = `E2E-公开讲座-${t}`
+      const r = await 他.post('/api/activities', {
+        data: { type_id: 会议, title: 标题, recorder: 'e2e-lecturer', project_ids: [pid], visibility: 'public',
+                starts_at: 明天.toISOString(), ends_at: new Date(明天.getTime() + 2 * 3600e3).toISOString(),
+                agenda: '一、引言', location: '明德 1016' },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+      const mid = (await r.json()).id as number
+
+      // ① 它出现在**我**的广场里（我与它毫无关系）
+      const 广场 = async () => (await (await request.get('/api/activities/public')).json()) as { id: number }[]
+      expect((await 广场()).some((x) => x.id === mid), '★别人发的公开会要出现在我的广场里★').toBe(true)
+
+      // ② 界面上点「旁听」——★走按钮，不打接口★：这条用例要验的正是那张卡能不能用
+      await page.goto('/')
+      await page.waitForTimeout(2500)
+      const 卡 = page.locator('.ant-card').filter({ hasText: '公开活动' }).first()
+      await expect(卡, '★日程页右栏得有「公开活动」这张卡★').toBeVisible({ timeout: 10_000 })
+      // 目标那一场可能被折叠了（默认只露 5 场）——先展开
+      const 展开 = 卡.getByText(/还有 \d+ 场公开活动/)
+      if (await 展开.count()) { await 展开.first().click(); await page.waitForTimeout(800) }
+      // ⚠★别用 `.filter({hasText}).last()` 够那一行★:`.last()` 拿到的是最里层、只装着标题的
+      //   那个 div —— 里面根本没有按钮,于是点击等 90 秒超时,而报错只说「click 超时」,
+      //   ★看起来像按钮坏了/页面卡死,其实是我指错了元素★(今天第三次栽在 `.last()` 上)。
+      //   广场的每一行是带下边框的容器(PublicBoard 里 `borderBottom` 那个 div),按它定位。
+      const 行 = 卡.locator('div[style*="border-bottom"]').filter({ hasText: 标题 }).first()
+      await expect(行, '★刚发的那场要在卡里看得到★').toBeVisible({ timeout: 10_000 })
+      await 行.getByRole('button', { name: /旁\s*听/ }).first().click()
+      await page.waitForTimeout(2000)
+
+      // ③ 它从广场消失（我已经与它有关了）
+      await expect.poll(async () => (await 广场()).some((x) => x.id === mid), { timeout: 8000 })
+        .toBe(false)
+
+      // ④ ★它进了我的日历★ —— 「已加入我的日程」不能只是一句提示
+      //   (2026-08-12 liaoruili 撞过：加入旁听后日历没自动刷新)
+      const from = new Date(Date.now() - 864e5).toISOString()
+      const to = new Date(Date.now() + 3 * 864e5).toISOString()
+      const 我的 = (await (await request.get(`/api/activities?from=${from}&to=${to}`)).json()) as { id: number }[]
+      expect(我的.some((x) => x.id === mid), '★点了旁听就得进我的日历,否则那句提示是空话★').toBe(true)
+      await expect(page.getByText(标题).first(), '★页面上也要看得见(不刷新等于没生效)★')
+        .toBeVisible({ timeout: 10_000 })
+    } finally { await 他.dispose() }
   })
 })
