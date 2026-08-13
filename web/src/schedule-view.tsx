@@ -416,11 +416,23 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
               </div>
               {days.map((d, i) => {
                 const weekend = i === 0 || i === 6
+                // ★今天整列都要看得出来★（2026-08-13 liaoruili：「把今天整个一列看看怎么标识出来」）。
+                //
+                // 在此之前只有**表头那一格**是青底的,而人的视线一落进网格就没有参照了 ——
+                // 七列长得一模一样,要确认「这个块是今天还是明天」得抬头去数列。
+                // ⚠★用极浅的底色 + 两侧竖线,不用强色块★:这一列里还要摆事件块,
+                //   底色一深,块上那套「公开/非公开/待应答」的颜色语言就被压住了 ——
+                //   ★背景是用来定位的,不该和前景抢信息。★
+                //   竖线比底色更关键:底色浅到不干扰时,边界反而是眼睛真正抓得住的东西。
+                // ⚠ 变量名别叫 today —— 外层已有一个 `const today = new Date()`,
+                //   同名会把它遮蔽掉,而遮蔽出来的是个 boolean:后面谁再用 today 当日期就静默错。
+                const 是今天 = isSameDay(d, today)
                 return (
                   <div key={i} style={{
                     position: 'relative', height: dayPx(fromH),
-                    borderLeft: '1px solid #f0f0f0',
-                    background: weekend ? '#fafafa' : undefined,
+                    borderLeft: 是今天 ? '2px solid #0d9488' : '1px solid #f0f0f0',
+                    borderRight: 是今天 ? '2px solid #0d9488' : undefined,
+                    background: 是今天 ? '#f0fdfa' : weekend ? '#fafafa' : undefined,
                     // 每小时一条横线:用 repeating gradient,省掉 24 个 DOM 节点 × 7 列
                     backgroundImage: `repeating-linear-gradient(#f5f5f5 0 1px, transparent 1px ${HOUR_PX}px)`,
                   }}>
@@ -508,9 +520,13 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
           <LegendDot style={{ background: '#fff1f0', border: '1px solid #ff4d4f' }} text="待应答" />
           {/* ★归档也进图例★:它现在是日历上第四种观感,不解释的话人会以为那条会「坏了」 */}
           <LegendDot style={{ background: '#fafafa', border: '1px dashed #d9d9d9' }} text="已归档 · 只读" />
-          {/* ★已结束进图例★:淡化是一种**没有文字的信号**,不解释的话人会以为那条会「显示坏了」
-              —— 归档当初就是这么被误读的。用同一个青色的淡版当样例,正好说明「颜色没变，只是退到后面」 */}
-          <LegendDot style={{ background: '#e6fffb', border: '1px solid #0d9488', opacity: 0.42 }} text="已结束" />
+          {/* ⚠★「已结束」不进图例★（2026-08-13 liaoruili：「把已结束的图例去除」）。
+              淡化本身**保留**——已结束的活动照旧退到后面（evStyle 里的 opacity 0.42）,
+              去掉的只是图例里这一格。
+              ★我当初加它的理由(「淡化是没有文字的信号,不解释会被当成显示坏了」)在这里不成立★:
+              一排图例里,「已结束」和「公开」用的是同一个青色、只差透明度 ——
+              人分辨不出那点差,反而多出一格要读的东西。★图例每多一格,整排就更难扫一眼看懂★,
+              而「颜色淡了 = 过去了」是不用教的常识。 */}
           {/* ★身份图标也要进图例★(原型图例末尾那一行):三个符号不解释,人只会当成装饰 */}
           <span style={{ color: '#8c8c8c', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
             <span><StarFilled style={{ fontSize: 10, marginRight: 3 }} />我发起</span>

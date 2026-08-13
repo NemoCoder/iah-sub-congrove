@@ -6,7 +6,7 @@ import {
 } from 'antd'
 import {
   DeleteOutlined, DownloadOutlined, EditOutlined, FileAddOutlined, FolderAddOutlined,
-  CopyOutlined, ShareAltOutlined, SwapOutlined, UploadOutlined,
+  CopyOutlined, ShareAltOutlined, SwapOutlined, UploadOutlined, InboxOutlined, LockOutlined,
 } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -449,20 +449,55 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
               解法不是继续给筛选器打补丁,而是**把它挪出这个列表**:
               它本来就不是项目,不参与「进行中/已归档」,也不参与搜索。 */}
         {materialsRow && (
-          <div style={{ marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+          <div style={{ marginBottom: 10 }}>
             {/* ⚠★用 div 自己排,不要 List.Item★:List.Item 的横向布局来自 List 的 context,
-                单独拿出来用时 `flex:1` 推不动右边的标签 —— 「系统 · 只读」会紧贴名字,
-                和下面项目行右对齐的角色标签**对不齐**（2026-08-13 我挪这一格时就这么错了一版,
-                在巡检截图里一眼看出来）。★挪一个组件时,它依赖的上下文不会跟着走。★ */}
+                单独拿出来用时 `flex:1` 推不动右边的标签(2026-08-13 我挪这一格时就这么错了一版)。
+                ★挪一个组件时,它依赖的上下文不会跟着走。★
+
+                ★2026-08-13 二改:liaoruili「感觉太分裂了」★。上一版是「名字 + 金色大标签 + 一条实线」,
+                三处都在把它往外推:
+                  ① ★金色标签是全卡最重的颜色★ —— 下面项目行的角色标签是淡紫/淡绿,
+                     它一亮就成了整张卡的视觉重心,而它其实是最不需要被强调的一行(它天天在,不用找);
+                  ② 一条实线分隔 = 宣布「这是另一个区」,可它明明还是「我的东西」里的一件;
+                  ③ 没有图标,一行光秃秃的文字浮在筛选器上面,读起来像个走失的标题。
+                改法照通用做法(Notion/Drive 的固定入口):**图标 + 与下面同一套行高**,
+                把「只读」降成一个安静的小锁,分隔线换成极浅的一条 + 呼吸空间。
+                ★它要显得「在同一份清单里、只是被钉住了」,而不是「另外一个东西」。★ */}
+            {/* ★白底 + 左侧一条青竖条★（liaoruili:「感觉太分裂了，美化一下」）。
+                这一格改了四版,每版都渲染出来拿 qwen3.8-max 并排看 —— ★颜色和层级这类事,
+                看代码判断不了,必须看图★。四版各自被否掉的理由都记在这里,免得以后有人绕回去:
+                · ①浅青底 →「分不开,『我的活动材料』看着也像被选中」:
+                  ★青色是这张卡的「选中」语言★(项目行选中就是 #e6fffb),平时就穿它 = 长期像被选中;
+                · ②中性灰底 →「和下方『进行中/已归档』的灰底太接近,两条灰 bar 相邻,层级含糊」:
+                  ★Segmented 的轨道本来就是灰的★,再放一条灰 bar 在它正上方,糊成一片;
+                · ③白底 + 一圈淡边 →「更像下面那个搜索输入框,而不像同级的可选项」:
+                  ★带框的盒子在这一列里已经有主人了(搜索框)★,再来一个就是两个东西抢同一种形状;
+                · ④白底 + 左侧 3px 青竖条 + 青图标 + 灰锁 → 过。
+                  它和项目行是同一套「行」的语言(都是白底一行),而竖条与图标把「被钉住」说清楚 ——
+                  ★用位置和一个记号表达特殊,而不是用另一种形状。★ */}
             <div
               onClick={() => setCur(materialsRow)}
+              onMouseEnter={(e) => { if (cur?.id !== materialsRow.id) e.currentTarget.style.background = '#fafafa' }}
+              onMouseLeave={(e) => { if (cur?.id !== materialsRow.id) e.currentTarget.style.background = '#fff' }}
               style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-                       background: cur?.id === materialsRow.id ? '#e6fffb' : undefined,
-                       borderRadius: 6, padding: '6px 8px' }}
+                       background: cur?.id === materialsRow.id ? '#e6fffb' : '#fff',
+                       borderLeft: '3px solid #0d9488', borderRadius: '0 6px 6px 0',
+                       padding: '7px 8px', transition: 'background .15s' }}
             >
-              <Typography.Text strong={cur?.id === materialsRow.id} ellipsis style={{ flex: 1, minWidth: 0 }}
-                title={materialsRow.name}>{materialsRow.name}</Typography.Text>
-              <Tag color="gold" style={{ marginInlineEnd: 0 }}>系统 · 只读</Tag>
+              <InboxOutlined style={{ color: '#0d9488', fontSize: 15, flexShrink: 0 }} />
+              {/* ★锁贴在名字后面,不摆到最右★:最右那一列在别的行上是「⋯」菜单,
+                  一个孤零零的小锁摆在那儿会被读成「坏掉的菜单按钮」(第一版就是这样)。
+                  它是**属性**不是**身份**,不该和下面那排角色标签抢同一档视觉重量;
+                  文字留在 tooltip 里 —— 要解释的人 hover 就有,不要的人不必每次都读一遍。 */}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}>
+                <Typography.Text strong={cur?.id === materialsRow.id} ellipsis
+                  title={materialsRow.name}>{materialsRow.name}</Typography.Text>
+                <Tooltip title="系统给你的存档区：只读。加材料、删材料都回到那条活动里做">
+                  {/* ★颜色加深一档★:第一版 #bfbfbf/11px 在浅底上「几乎要仔细看才注意到」(qwen3.8-max)。
+                      「不抢眼」的方向对,但看不见就等于没有。 */}
+                  <LockOutlined style={{ color: '#8c8c8c', fontSize: 12, flexShrink: 0 }} />
+                </Tooltip>
+              </span>
             </div>
           </div>
         )}
