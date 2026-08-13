@@ -1045,6 +1045,13 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
   const [diagName, setDiagName] = useState('')
   const [diag, setDiag] = useState<Diagnose | null>(null)
   const [hot, setHot] = useState(space.hotwords ?? '')
+  /// ★这一屏的写操作只有管理员能做★（2026-08-13 沙箱全点巡检抓到）:
+  /// 巡检以一个**只是「可编辑」**的身份点了术语表的「保存」→ `PUT /api/projects/{id}` 403。
+  /// 后端拒得对(改项目设置要 admin),★错在前端把这个按钮画了出来★ ——
+  /// 仓库里为材料区回收站写过同一句话:**亮一个必然 403 的按钮比没有按钮更糟**。
+  /// ⚠ 名单本身**照旧给非管理员看**:知道「谁在这个项目里」是协作的基本信息,
+  ///   要拦的是「改」,不是「看」。所以是把写控件收起来,不是把整个 tab 藏掉。
+  const 可管理 = space.my_role === 'admin'
 
   const load = useCallback(async () => {
     const r = await api<MemberList>(`/api/projects/${space.id}/members`)
@@ -1090,7 +1097,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
         进了项目就能看到<b>本项目全部资料</b>，包括他加入之前的历史；移出即失去全部。
       </Typography.Paragraph>
 
-      <AntSpace.Compact style={{ width: '100%', marginBottom: 10 }}>
+      {可管理 && <AntSpace.Compact style={{ width: '100%', marginBottom: 10 }}>
         {/* ★mode="tags" 而不是 "multiple"★:允许把没搜到的用户名直接敲进去 ——
             候选只覆盖登录过汇流的人,而后端能拉任何平台用户(见 searchUsers 上面的注释)。
             用 multiple 的话,新同事永远加不进来。真伪由后端 ensure_platform_user 判,加错了会被拒。 */}
@@ -1105,7 +1112,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
             { value: 'admin', label: '管理员' },
           ]} />
         <Button type="primary" onClick={addBatch}>批量添加</Button>
-      </AntSpace.Compact>
+      </AntSpace.Compact>}
 
       <Table size="small" rowKey="username" dataSource={members} pagination={false}
         columns={[
@@ -1122,7 +1129,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
             title: '角色', width: 140,
             render: (_, m) => (
               <Select size="small" value={m.role} style={{ width: 118 }}
-                disabled={m.username === owner}
+                disabled={m.username === owner || !可管理}
                 onChange={(r) => changeRole(m, r as Role)}
                 options={[
                   { value: 'viewer', label: '只读成员' },
@@ -1204,7 +1211,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
           </span>} />
       )}
 
-      <Typography.Text strong style={{ display: 'block', marginTop: 18 }}>转写术语表</Typography.Text>
+      {可管理 && <><Typography.Text strong style={{ display: 'block', marginTop: 18 }}>转写术语表</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 8px' }}>
         空格分隔。人名与专业词按项目不同，只有本项目的人知道自己的词。
       </Typography.Paragraph>
@@ -1219,7 +1226,12 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
             message.success('已保存'); onChanged()
           } catch (e) { message.error((e as Error).message) }
         }}>保存</Button>
-      </AntSpace.Compact>
+      </AntSpace.Compact></>}
+      {!可管理 && (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 16 }}>
+          只有项目管理员能加人、改角色和维护转写术语表。
+        </Typography.Paragraph>
+      )}
     </>
   )
   // inline:直接吐内容(项目页的「成员」tab);否则仍是弹窗
