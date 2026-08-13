@@ -300,7 +300,16 @@ pub async fn create(
     audit::record(&state.pool, username, "activity.create", &mid.to_string(), title).await;
     // ★约完就通知★:没有这一步,「我约了你」这件事只存在于我的屏幕上
     let who = notify_targets(&state.pool, mid, username).await;
-    notify_activity(&state, mid, &who, "有人约你开会",
+    // ★标题用「<类型名>邀请」,不写「有人约你开会」★（2026-08-13 liaoruili:「直接说 会议邀请」）。
+    //
+    // ⚠★为什么取类型名而不是写死「会议」★:邀请对**任何**活动类型都会发,
+    //   而 M0 起「会议」只是众多类型里的一个(ADR-0002,类型决定表单)。
+    //   写死的话,一场「读书会」的邀请会被标成「会议邀请」—— 又一次把某一类的名字当成了全体的名字,
+    //   那正是 M0 花了整整一轮把「会议」改名「活动」要根除的东西。
+    //   取类型名:会议 → 「Congrove 会议邀请」(正是他要的),读书会 → 「Congrove 读书会邀请」。
+    let 类型名: String = sqlx::query_scalar("SELECT name FROM activity_types WHERE id=$1")
+        .bind(input.type_id).fetch_optional(&state.pool).await?.unwrap_or_else(|| "活动".into());
+    notify_activity(&state, mid, &who, &format!("{类型名}邀请"),
         &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at, crate::tzutil::parse(input.timezone.as_deref().unwrap_or_default())))).await;
     mark_notified(&state.pool, mid, &who).await?;
     Ok(Json(json!({ "id": mid })))
@@ -698,7 +707,11 @@ pub async fn invite(
             .bind(mid).fetch_one(&state.pool).await?;
         let fresh: Vec<String> = input.usernames.iter().map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && u != actor).collect();
-        notify_activity(&state, mid, &fresh, "有人约你开会",
+        // 同 create:标题取活动**自己的**类型名(见那里的头注),不写死「会议」
+        let 类型名: String = sqlx::query_scalar(
+            "SELECT t.name FROM activities a JOIN activity_types t ON t.id = a.type_id WHERE a.id=$1")
+            .bind(mid).fetch_optional(&state.pool).await?.unwrap_or_else(|| "活动".into());
+        notify_activity(&state, mid, &fresh, &format!("{类型名}邀请"),
             &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts, crate::tzutil::parse(&mtz)))).await;
         mark_notified(&state.pool, mid, &fresh).await?;
     }
@@ -814,7 +827,7 @@ pub async fn respond(
             let when = r.counter_starts_at.map(|t| fmt_when(t, crate::tzutil::parse(&mtz))).unwrap_or_else(|| "(未给具体时间)".into());
             let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
                 .map(|x| format!(",理由:{x}")).unwrap_or_default();
-            notify_activity(&state, mid, &[organizer], "有人建议改期",
+            notify_activity(&state, mid, &[organizer], "改期建议",
                 &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
         }
     }
