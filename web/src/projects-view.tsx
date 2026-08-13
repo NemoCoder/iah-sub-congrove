@@ -40,10 +40,12 @@ import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Rol
 /// 库里存的仍是 viewer/editor/admin:迁移只增不改,换值要重写 space_grants 全表并同步 perm.rs,
 /// 收益只是换个字面。所以只在这里做**唯一一处**「存储值 → 用词」映射,别在别处再写第二套。
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', editor: '可编辑', viewer: '只读' }
+/// ⚠ `marginInlineEnd: 0`:AntD 的 Tag 自带右外边距,放进「固定宽度的槽」里会把右边缘顶歪 ——
+/// 对齐做了一半反而更显乱(标签排齐了、右边缘没排齐)。
 const ROLE_TAG: Record<Role, ReactNode> = {
-  admin: <Tag color="purple">{ROLE_LABEL.admin}</Tag>,
-  editor: <Tag color="green">{ROLE_LABEL.editor}</Tag>,
-  viewer: <Tag>{ROLE_LABEL.viewer}</Tag>,
+  admin: <Tag color="purple" style={{ marginInlineEnd: 0 }}>{ROLE_LABEL.admin}</Tag>,
+  editor: <Tag color="green" style={{ marginInlineEnd: 0 }}>{ROLE_LABEL.editor}</Tag>,
+  viewer: <Tag style={{ marginInlineEnd: 0 }}>{ROLE_LABEL.viewer}</Tag>,
 }
 
 // ⚠ 原来这里抄了第 2 份 fmtTime(2026-08-12 收敛进 tz.ts)。
@@ -536,14 +538,25 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
             >
               {/* title:名字再长也能悬停看全 —— 截断是布局的妥协,不该让信息真的丢掉 */}
               <Typography.Text strong={cur?.id === s.id} ellipsis style={{ flex: 1 }} title={s.name}>{s.name}</Typography.Text>
-              {/* ★材料区标「系统 · 只读」而不是角色★:它不是「我在这个项目里是管理员」,
-                  它是系统给我的一块存档区 —— 标成「管理员」会让人以为能拉人、能改名。 */}
-              {isMaterials(s) ? <Tag color="gold">系统 · 只读</Tag> : s.my_role && ROLE_TAG[s.my_role]}
-              {s.my_role === 'admin' && !isMaterials(s) && (
-                <Dropdown menu={spaceMenu(s)} trigger={['click']}>
-                  <Button type="text" size="small" onClick={(e) => e.stopPropagation()} style={{ marginLeft: 2 }}>⋯</Button>
-                </Dropdown>
-              )}
+              {/* ★角色标签与「⋯」各占一个**固定宽度的槽**★（2026-08-13 liaoruili:「管理员 可编辑 没有对齐，感觉有点乱」）。
+                  两处原因叠在一起,行与行才对不齐:
+                   ① ★「⋯」只有管理员那行才渲染★ —— 有它的行标签被往左顶,没它的贴到最右,
+                      于是标签的右边缘在两个位置之间来回跳;
+                   ② 标签自身宽度还不一样(管理员/可编辑 3 字、只读 2 字),左边缘也参差。
+                  ★靠「刚好排在一起」是排不齐的,必须给它们各自一个不随内容变的槽。★
+                  槽宽 76/24 是量出来的:76 装得下最长的「管理员」还留一点余量。
+                  ⚠ 材料区那一行已经不在这个列表里(它在筛选器上面单独一格),
+                    所以这里不再判 isMaterials —— ★留着一个永远命中不了的分支会让人以为它还有用。★ */}
+              <span style={{ display: 'inline-flex', justifyContent: 'flex-end', width: 76, flexShrink: 0 }}>
+                {s.my_role && ROLE_TAG[s.my_role]}
+              </span>
+              <span style={{ display: 'inline-flex', justifyContent: 'center', width: 24, flexShrink: 0 }}>
+                {s.my_role === 'admin' && (
+                  <Dropdown menu={spaceMenu(s)} trigger={['click']}>
+                    <Button type="text" size="small" onClick={(e) => e.stopPropagation()}>⋯</Button>
+                  </Dropdown>
+                )}
+              </span>
             </List.Item>
           )}
         />
