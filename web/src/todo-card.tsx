@@ -40,9 +40,15 @@ type Transfer = { id: number; project_id: number; project_name: string; from: st
 /// 两种都是欠着，但前者要说的是「去建一份」，后者是「去写完」，文案不该一样。
 type MinutesTodo = { activity_id: number; title: string; starts_at: string; ends_at: string; has_draft: boolean }
 
-/// 每一段默认展开几条。★2 是刻意选的★：1 条看不出「这是一类」，
-/// 3 条以上就又开始吃卡了；两条既显出类别、又给别的段留下位置。
-const MINUTES_HEAD = 2
+/// 每一段默认展开几条。
+///
+/// ★2026-08-13 liaoruili 改成 5★：「待处理 提醒最多显示 2 条太少，修改为最多显示 5 条，
+/// 5 条以上的折叠」。
+/// ⚠ 我原来定 2 的理由是「3 条以上就又开始吃卡了」—— ★那是在**每段各出一条折叠行**的年代★:
+///   四段各露 2 条 + 四行汇总,卡片确实会被撑长。而现在整张卡只有**一条**折叠行(见 `折叠段`),
+///   同样的高度预算下每段能露得更多 —— ★上一个决定的前提没了,数字就该跟着改，
+///   而不是守着一个当时算对、现在算错的值。★
+const 每段展开条数 = 5
 
 /// ★每一段都要折叠，不是只折纪要那一段★
 /// （2026-08-13 liaoruili 截图：待我处理 24 条转移请求全量铺开，「怎么这么长，没有做分页呢」）。
@@ -62,7 +68,7 @@ const MINUTES_HEAD = 2
 ///   人看到「还有 3 场欠着纪要」就以为剩下的全是纪要,于是根本不点开。
 /// 所以:每段照旧只展开 head 条(★这一条不动★——不然一类待办多起来会把别的类挤没),
 /// 但折叠行只有一条、放在卡片最后,说的是**总数**。
-function 折叠段<T>({ items, keyOf, render, open, head = MINUTES_HEAD }: {
+function 折叠段<T>({ items, keyOf, render, open, head = 每段展开条数 }: {
   items: T[]
   keyOf: (x: T) => Key
   render: (x: T) => ReactNode
@@ -114,7 +120,7 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   const total = pending.length + unread.length + transfers.length + minutes.length
   /// ★被折起来的总条数★:四段各自超出 head 的部分加起来 —— 折叠行只报这一个数。
   const 折起 = [pending, transfers, minutes, unread]
-    .reduce((n, xs) => n + Math.max(0, xs.length - MINUTES_HEAD), 0)
+    .reduce((n, xs) => n + Math.max(0, xs.length - 每段展开条数), 0)
 
   const markAll = async () => {
     try {
