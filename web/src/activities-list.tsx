@@ -7,7 +7,7 @@
 // ★右栏的冲突提示是这一页的灵魂★(D1/D2):私密项目的日程对发起人完全隐形,
 // 他不知道你那个时段忙 —— 所以必须在**你自己**收到邀请时标红提醒,并把「改期」放在手边。
 // 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
-import { App as AntdApp, Button, Card, Empty, Input, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Empty, Input, Pagination, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Activity, type Me, type RespondStatus } from './api'
 import { annotate, fmtDay, fmtHM } from './tz'
@@ -26,9 +26,12 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   const { message } = AntdApp.useApp()
   const [all, setAll] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
+  /// ⚠ 换 tab / 改搜索词时**回到第一页**:否则停在第 5 页去看一份新筛出来的短列表,
+  ///   人看到的是空白,而原因(「你还停在第 5 页」)一个字都没写在屏幕上。
   const [tab, setTab] = useState<'joined' | 'mine' | 'past'>('joined')
   const [kw, setKw] = useState('')
   const [proj, setProj] = useState<number | 'all'>('all')
+  const [页, setPage] = useState(1)
 
   /// `silent=true` 不掀 loading（同 activity-detail / schedule-view）：
   /// 右栏「待我处理」就地答复后只需要刷新数据，不需要把整页重建一次。
@@ -77,6 +80,15 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   //   更实质的是这两张卡当时用的是**两套判据**：这里前端本地算（且漏了 has_minutes），
   //   那边走后端 activities_owing_minutes 视图。删掉这张，判据就只剩视图一处。
 
+  /// ★每页 20 场★:这一栏是**主列表**(宽 ~900px、一行一场),不是右栏的小卡片,
+  /// 20 场刚好一屏多一点 —— 少了翻页太勤,多了又回到「一直下滑」。
+  const 每页 = 20
+  const 当前 = tab === 'past' ? past : upcoming
+  /// ★生效页码是派生的★(与公开活动广场同一处教训):换 tab / 改搜索词之后总数会变,
+  /// 存着的页码可能已经越界 → 一片空白且看不出为什么。
+  const 总页 = Math.max(1, Math.ceil(当前.length / 每页))
+  const 有效页 = Math.min(页, 总页)
+
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       <Card style={{ flex: 1, minWidth: 0 }} styles={{ body: { padding: 16 } }}>
@@ -87,14 +99,14 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           <Button size="small" type="primary" onClick={onNew}>+ 发起活动</Button>
           <Segmented
-            size="small" value={tab} onChange={(v) => setTab(v as typeof tab)}
+            size="small" value={tab} onChange={(v) => { setTab(v as typeof tab); setPage(1) }}
             options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' }, { value: 'past', label: '已结束' }]}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 场</Typography.Text>
           <span style={{ flex: 1 }} />
           <Input.Search size="small" allowClear placeholder="搜索标题、议程…" style={{ width: 220 }}
-            onChange={(e) => setKw(e.target.value)} />
-          <Select size="small" style={{ width: 140 }} value={proj} onChange={setProj}
+            onChange={(e) => { setKw(e.target.value); setPage(1) }} />
+          <Select size="small" style={{ width: 140 }} value={proj} onChange={(v) => { setProj(v); setPage(1) }}
             options={[{ value: 'all' as const, label: '全部项目' }, ...projectOpts]} />
         </div>
 
@@ -102,8 +114,23 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
           <>
             {/* 一个 tab 一组，不再上下并排两组 —— 分组标题也就不必了：
                 tab 上写着「已结束」，下面再写一遍「已结束」是复读。 */}
+            {/* ★分页★（2026-08-13 liaoruili:「活动页面也没有做分页；我参与的现在超级多；
+                已结束以后会更多」）—— ★这是同一个形状的第三处★:
+                待我处理、公开活动广场、这里。共同点是**条数不由我们控制**:
+                参与的会只会越来越多,已结束的更是只增不减。
+                ★一个只增不减的列表,不分页就是「迟早滚不完」,不是「暂时还好」。★
+                所以这次不等第四处被指出来,顺手把全站还剩的无界列表一起查了(见提交信息)。 */}
             <Group title={tab === 'past' ? '已结束' : '即将进行'}
-              items={tab === 'past' ? past : upcoming} onOpen={onOpen} me={me} />
+              items={(tab === 'past' ? past : upcoming).slice((有效页 - 1) * 每页, 有效页 * 每页)}
+              onOpen={onOpen} me={me} />
+            {当前.length > 每页 && (
+              <div style={{ textAlign: 'center', marginTop: 12 }}>
+                <Pagination size="small" current={有效页} pageSize={每页} total={当前.length}
+                  showSizeChanger={false}
+                  showTotal={(t, r) => `第 ${r[0]}–${r[1]} 场，共 ${t} 场`}
+                  onChange={setPage} />
+              </div>
+            )}
             {rows.length === 0 && (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={tab === 'past' ? '还没有结束的活动' : '接下来没有安排'} />
