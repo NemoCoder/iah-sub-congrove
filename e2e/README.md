@@ -36,6 +36,23 @@ certutil -d sql:$HOME/.pki/nssdb -L    # 应当列出 IAH-Internal-CA
 ★别改用 `ignoreHTTPSErrors: true` 图省事★:那会把「证书真的错了」和「证书是内网 CA 签的」
 一起吞掉,以后证书出问题时测试还是绿的。
 
+### ★装在**跑浏览器的那台机器**上,而不是跑 npx 的这台★(2026-08-13 踩到)
+
+全套测试跑在 **172.19.0.14** 的有头浏览器上(见 playwright.config.ts),
+所以 CA 要装进**那台**的 NSS 库 —— 在 iah101 上装一百遍也没用,浏览器根本不在这儿。
+那台机器(`lrlmac`, Ubuntu 24.04)上原本连 `certutil` 都没有,需要先 `apt install libnss3-tools`。
+
+⚠★装完必须重启浏览器服务★:Chromium **只在启动时读 NSS**。
+那台上的浏览器进程当时已经跑了三天多,装完 CA 照旧 `ERR_CERT_AUTHORITY_INVALID` ——
+★我差点以为是装错了★。
+
+```bash
+ssh liaoruili@172.19.0.14 'systemctl --user restart pw-ui.service'
+```
+
+服务名 `pw-ui.service`(「Playwright headed browser server (congrove UI 巡查)」),
+工作目录 `~/uiverify`,入口 `ws-server.mjs`,端口 9333。
+
 截图脚本 `shot.mjs` 里另有 emoji 字体的说明(headless 容器默认没有,🔔 会变豆腐块)。
 
 ★凭证只从 `~/.config/iah/` 读,绝不入库★。
