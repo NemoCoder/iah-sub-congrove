@@ -613,8 +613,14 @@ function PublicBoard({ onOpen, onJoined }: {
           options={[{ value: 7, label: '近 7 天' }, { value: 0, label: '全部' }]} />
       }>
       {rows.length === 0 ? (
+        {/* ★文案必须带「可旁听」这个限定★（2026-08-13 拿 qwen3.8-max 看真页面时抓到）:
+            原文写「近 7 天没有公开活动」,而**同一屏的日历上就摆着一场公开讲座** ——
+            广场按设计滤掉了「我已经与之有关」的会(我发起/我参与/我已旁听,见 observe 那段注释),
+            所以它对我确实是空的,可那句话说的是**另一件事**,而且是假的。
+            ★空状态最容易写成谎话★:它描述的是「这个列表为什么空」,
+            而写的人心里想的是「这个列表空了」—— 两者只有在没有过滤条件时才等价。 */}
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={days ? '近 7 天没有公开活动' : '暂无公开活动'} />
+          description={days ? '近 7 天没有可旁听的公开活动' : '没有可旁听的公开活动'} />
       ) : (
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           {(open ? rows : rows.slice(0, BOARD_HEAD)).map((m) => (
