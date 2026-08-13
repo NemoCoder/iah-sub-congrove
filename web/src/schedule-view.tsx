@@ -164,7 +164,14 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
       //   —— 而它看起来「就是没安排」,没有任何报错。(2026-08-09 改月视图时发现。)
       const from = days[0].toISOString()
       const to = addDays(days[days.length - 1], 1).toISOString()
-      setItems(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))
+      // ★我拒绝掉的活动不进日程★（2026-08-14 liaoruili:「我拒绝的会议为啥出现在日程中？」）。
+      //   后端 `/api/activities` 一直把 `declined` 也返回 —— 它必须返回,因为活动页新加的
+      //   「已拒绝」tab 要用它;★该做过滤的是「日程」这个视图,不是接口★。
+      //   语义上很直接:日程回答的是「我接下来要去哪」,而我已经说了不去。
+      //   ⚠ 顺带把这些也一并干净了:顶部「接下来 7 天 N 场」的计数、重叠分栏、冲突提示 ——
+      //     它们全都从 `items` 派生,★在源头滤掉比逐处判 my_status 少一整类漏网★。
+      const 全部 = await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+      setItems(全部.filter((m) => m.my_status !== 'declined'))
     } catch (e) {
       message.error((e as Error).message)
       setItems([])

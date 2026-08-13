@@ -247,6 +247,28 @@ pub async fn project_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
         .ok_or(AppError::NotFound)
 }
 
+/// 同 `project_of`,但**已经进回收站的条目一律当不存在**(404)。
+///
+/// ★为什么要有第二个函数,而不是把 `project_of` 直接改严★:
+/// `undelete` / `purge` / 引用计数 / 配额 **必须**解析得到已删的条目 —— 改严了它们全废。
+/// 所以两个语义并存,由调用方选:★读内容的路径用 `_alive`,回收站生命周期用原来那个。★
+///
+/// ⚠★这个洞是 2026-08-14 的软删矩阵抓出来的,共 5 处★
+/// (`/versions` `/progress` `/subtitles.vtt` `/analysis` `items/{id}/shares`)。
+/// 它们躲过了 v0.3.55 那次「一次补齐 11 处」,也躲得过任何
+/// 「读 items 的 SQL 必须带 deleted_at IS NULL」的静态检查 —— 原因是同一个:
+/// ★它们的数据查询根本不碰 `items` 表★,查的是 `item_versions` / `play_progress` /
+/// `transcripts` / `media_jobs` / `share_links` 这些**兄弟表**,只在最开始用
+/// `project_of` 解析一下归属。于是「读的是不是已删内容」这件事,在 SQL 层面看不出来。
+/// 其中 `/subtitles.vtt` 和 `/analysis` 漏的是**内容本身**(字幕正文、AI 摘要正文)。
+pub async fn project_of_alive(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
+    sqlx::query_scalar("SELECT project_id FROM items WHERE id = $1 AND deleted_at IS NULL")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ItemRow {
     pub id: i64,
@@ -308,7 +330,7 @@ pub async fn detail(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<ItemRow>> {
-    let pid = project_of(&state.pool, iid).await?;
+    let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
         "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
@@ -965,7 +987,7 @@ pub async fn versions(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<Vec<VersionRow>>> {
-    let pid = project_of(&state.pool, iid).await?;
+    let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let rows: Vec<VersionRow> = sqlx::query_as(
         "SELECT id, size, sha256, label, created_by, created_at FROM item_versions WHERE item_id = $1 ORDER BY id DESC",
