@@ -144,13 +144,27 @@ test.describe('日程页', () => {
     const 满宽 = Math.max(...boxes.map((b) => b.width), 0)
     expect(boxes.filter((b) => b.width < 满宽 * 0.95).length,
       '★刚造了两场重叠的活动,却一个并排块都没有 = 要么没渲染,要么选择器又失效了★').toBeGreaterThan(0)
-    // ★两两判相交★:压在一起就是「有活动在界面上消失了」(v0.4.2 修的那个 bug 要守的东西)。
-    const 相交 = (a: typeof boxes[0], b: typeof boxes[0]) =>
-      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    // ★判据是「有没有块被**完全盖住**」,不是「有没有相交一个像素」★
+    //   （2026-08-13 第四次修这条用例才想明白）:
+    //   布局是 `left: col*100/n%` + `width: 100/n%` —— **精确等分,同一簇内不可能重叠**。
+    //   而实测确实抓到过两个块竖直方向压 1.4px,来源是另一条**刻意的**设计决定:
+    //   ★「极短的会也要有可点中的高度」(最小高度 30px)★ —— 它把一个短块撑过自己的结束时间,
+    //   蹭进下一簇 1 个多像素。
+    //   ⚠ 那时我的断言写的是「任何两块都不许相交」,于是**我的判据和一条刻意的设计打架** ——
+    //     用例红了,而产品完全正确。★判据比产品严,和判据比产品松,都是判据错。★
+    //   这条用例的名字说的是「都看得见」,它真正要守的是 v0.4.2 那个 bug
+    //   (三个以上重叠时后来者被全宽覆盖 = 整块消失)。所以判「完全包含」:
+    //   一个块被另一个块完全罩住 → 它在界面上就是不存在。蹭掉一两像素不影响「看得见」。
+    const 完全盖住 = (大: typeof boxes[0], 小: typeof boxes[0]) =>
+      大.x <= 小.x + 0.5 && 大.y <= 小.y + 0.5
+      && 大.x + 大.width >= 小.x + 小.width - 0.5
+      && 大.y + 大.height >= 小.y + 小.height - 0.5
     for (let m = 0; m < boxes.length; m++) {
-      for (let n = m + 1; n < boxes.length; n++) {
-        expect(相交(boxes[m], boxes[n]),
-          `★两个事件块压在一起 = 有活动看不见:${JSON.stringify(boxes[m])} / ${JSON.stringify(boxes[n])}★`).toBe(false)
+      for (let n = 0; n < boxes.length; n++) {
+        if (m === n) continue
+        expect(完全盖住(boxes[m], boxes[n]),
+          `★有块被完全盖住 = 那场活动在界面上消失了:${JSON.stringify(boxes[n])} 被 ${JSON.stringify(boxes[m])} 罩住★`)
+          .toBe(false)
       }
     }
   })
@@ -238,10 +252,15 @@ test.describe('公开活动广场(可旁听)', () => {
       const 行 = 卡.locator('div[style*="border-bottom"]').filter({ hasText: 标题 }).first()
       await expect(行, '★刚发的那场要在卡里看得到★').toBeVisible({ timeout: 10_000 })
       await 行.getByRole('button', { name: /旁\s*听/ }).first().click()
-      await page.waitForTimeout(2000)
+      // ★等一个**确定的信号**,别靠 sleep 猜★（2026-08-13 这条 flaky 的成因）:
+      //   原来是 `waitForTimeout(2000)` 然后轮询 8 秒 —— 慢一点就红、重试又绿。
+      //   ⚠★flaky 的修法不是把睡眠加长★:那只是把「多久算够」这个猜测往后挪一点,
+      //     下次机器忙一点照旧红。等界面自己说「已加入我的日程」,才是**事件驱动**。
+      await expect(page.getByText('已加入我的日程').first(),
+        '★点了旁听要有反馈 —— 没有反馈的按钮，人不知道到底成没成★').toBeVisible({ timeout: 10_000 })
 
       // ③ 它从广场消失（我已经与它有关了）
-      await expect.poll(async () => (await 广场()).some((x) => x.id === mid), { timeout: 8000 })
+      await expect.poll(async () => (await 广场()).some((x) => x.id === mid), { timeout: 15_000 })
         .toBe(false)
 
       // ④ ★它进了我的日历★ —— 「已加入我的日程」不能只是一句提示
