@@ -8,6 +8,33 @@
 // 超时、被 Ctrl-C 时会漏 —— 而漏掉的正好是失败那轮,最容易堆积。
 // 前缀扫描是幂等的:漏了这次,下次照样清掉。
 import { request } from '@playwright/test'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+/// ★把「都有哪些测试身份」这件事从**名单**改成**推导**★（见下面 `身份们` 处的长注）。
+/// 扫 `specs/*.ts` 与 `*.mjs` 里所有引号包着的 `e2e` / `e2e-xxx` 字面量。
+function 扫出身份(): string[] {
+  const 根 = new URL('.', import.meta.url).pathname
+  const 文件 = [
+    ...readdirSync(join(根, 'specs')).filter((f) => f.endsWith('.ts')).map((f) => join(根, 'specs', f)),
+    ...readdirSync(根).filter((f) => f.endsWith('.mjs')).map((f) => join(根, f)),
+  ]
+  // ⚠ 这里扫的是**目录里现有的文件**,包含没被 git 跟踪的临时脚本 —— 这是**故意的**:
+  //   本地随手写的 verify-xxx.mjs 造的数据,也该被同一轮清掉。
+  //   代价是「干净 checkout 上扫到的身份可能更少」,所以约束是:★别把身份只写在临时脚本里★
+  //   (2026-08-13 核过一遍,当时未跟踪文件里没有任何独有身份)。
+  const 有 = new Set<string>(['e2e'])   // 默认身份,配置里就带着
+  let 模板 = 0
+  for (const f of 文件) {
+    const s = readFileSync(f, 'utf8')
+    for (const m of s.matchAll(/['"](e2e(?:-[a-z0-9]+)*)['"]/g)) 有.add(m[1])
+    // 模板拼的身份枚举不了 —— ★不能静静放过,要喊★
+    模板 += [...s.matchAll(/[`'"]e2e-[a-z0-9-]*\$\{/g)].length
+  }
+  if (模板) console.warn(`\n[teardown] ⚠★有 ${模板} 处用模板拼身份名(e2e-xxx-\${…})★——` +
+    '它们每轮都是新名字,这里枚举不到,数据会永远留在 dev 上。请改成固定名。')
+  return [...有]
+}
 
 /// 测试造的项目/活动一律用这些前缀。
 ///
@@ -44,7 +71,22 @@ export default async function teardown() {
   //   修法不是去开管理员模式（那会让 teardown 依赖一个会过期的状态，
   //   而且开模式本身要写 audit_log —— 用清理脚本刷审计日志是坏主意），
   //   而是★按 owner 分别扫★：每个造数据的身份自己清自己的，不依赖任何特权。
-  const 身份们 = [process.env.IAH_E2E_ADMIN ?? 'liaoruili', 'e2e', 'e2e-host', 'e2e-owner']
+  //
+  // ⚠★这张身份名单本身就是**第四次**同一族失败★（2026-08-13 实拍时看见的）:
+  //   上面那段话说「清理规则和命名规则必须是同一条」,然后紧接着**手写了一张第二名单** ——
+  //   spec 里实际用了 9 个身份(e2e-alice / e2e-b / e2e-lab / e2e-lecturer / e2e-organizer /
+  //   e2e-orphan / e2e-passerby / e2e-solo …),这里只列了 4 个。
+  //   ★于是另外 5 个身份造的公开活动永远留在 liaoruili 的日历和「公开活动」栏里★
+  //   (实拍那张图上 8/14 一整列都是 `E2E-公开讲座-*`,发起人 e2e-lecturer)。
+  //   ★一条只在一处执行的原则等于没有原则★ —— 这是本仓库反复记的那句,而我又一次
+  //   把它写在注释里、却在下一行破坏它。
+  //
+  // 修法和前三次一样:★不再维护第二张名单,改成从 spec 源码里推导★。
+  //   身份名是写死在源码里的字符串,grep 得出来 —— 那就让它当唯一真相源。
+  //   ⚠ 推导不出来的只有**模板拼出来的**身份(`e2e-m1-${t}` 这种):它每轮都是新名字,
+  //     谁也枚举不了。所以 acceptance-v05 已改成**固定名**(见那个文件),
+  //     一旦有人再写回模板,下面这句会当场把它喊出来 —— ★喊出来比静静漏掉强★。
+  const 身份们 = [process.env.IAH_E2E_ADMIN ?? 'liaoruili', ...扫出身份()]
   let nm = 0, np = 0
   for (const who of 身份们) await 清一轮(who)
   if (nm || np) console.log(`\n[teardown] 清理测试数据:活动 ${nm} 场、项目 ${np} 个`)
