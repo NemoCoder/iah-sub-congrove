@@ -79,6 +79,7 @@ pub fn build_router(state: AppState) -> Router {
         // 归档/恢复(D17):★走 require_owner 不走 require_role★——
         // 后者对归档项目拒绝一切写操作,那样归档之后就再也解不开了
         .route("/projects/{id}/archive", post(projects::archive))
+        .route("/projects/{id}/archive-blockers", get(projects::archive_blockers))
         // ★项目回收站★(2026-08-09 审计 A5:删项目改成真软删除,liaoruili 拍板)。
         // ⚠ trash 必须排在 `/projects/{id}` 之前吗?——不必:axum 的路由匹配静态段优先于
         //   `{id}` 通配,`/projects/trash` 不会被吃成 id="trash"。

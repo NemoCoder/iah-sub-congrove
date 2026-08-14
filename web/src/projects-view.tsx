@@ -340,6 +340,68 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
   }
 
   // ── 项目所有者操作(admin;只在左栏项目「⋯」里)────────────────────────────
+  /// ★归档被挡时的对话框★:把挡路的活动全列出来,一键取消并归档。
+  /// ⚠★无权取消的必须单独标出来★:取消是「发起人 / 记录员」的权限(activities::remove),
+  ///   批量里最坏的事就是**默不作声地跳过几条** —— 人以为都处理完了,回头再点归档还是被拒,
+  ///   而且他不知道是哪几场、为什么。所以这些行标灰 + 一句「你不是发起人/记录员」,
+  ///   并且主按钮的文案会如实说「取消其中 N 场」而不是「全部取消」。
+  const 归档拦截弹窗 = (s: Project,
+    挡: { total: number; items: { id: number; title: string; starts_at: string; can_cancel: boolean }[] }) => {
+    const 可取消 = 挡.items.filter((x) => x.can_cancel)
+    modal.confirm({
+      title: `还有 ${挡.total} 场没开始的活动,归不了档`,
+      width: 560,
+      icon: null,
+      content: (
+        <div>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+            归档 = 变成只读存档。这些活动还没开始,先处理掉再归档。
+          </Typography.Paragraph>
+          <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 6 }}>
+            {挡.items.map((x) => (
+              <div key={x.id} style={{ padding: '8px 10px', borderBottom: '1px solid #fafafa',
+                                       opacity: x.can_cancel ? 1 : 0.55 }}>
+                <div style={{ fontWeight: 600 }}>{x.title}</div>
+                <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                  {fmtTime(x.starts_at)}
+                  {!x.can_cancel && <span style={{ color: '#d46b08' }}>　·　你不是发起人/记录员,取消不了这场</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {可取消.length < 挡.total && (
+            <Typography.Paragraph type="warning" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              其中 <b>{挡.total - 可取消.length}</b> 场你取消不了 —— 请找发起人处理,或把本项目从它的关联里去掉。
+            </Typography.Paragraph>
+          )}
+        </div>
+      ),
+      okText: 可取消.length ? `取消这 ${可取消.length} 场并归档` : '知道了',
+      okButtonProps: { danger: true, disabled: !可取消.length },
+      cancelText: '先不归档',
+      onOk: async () => {
+        // ★逐条取消,失败的如实报★ —— 不能「大致成功」就当成功
+        const 失败: string[] = []
+        for (const x of 可取消) {
+          try { await api(`/api/activities/${x.id}`, { method: 'DELETE' }) }
+          catch (e) { 失败.push(`${x.title}(${(e as Error).message})`) }
+        }
+        if (失败.length) {
+          message.error(`有 ${失败.length} 场没取消成功:${失败.join('、')}`)
+          throw new Error('部分取消失败')   // 抛出去让弹窗留着,别让人以为成了
+        }
+        if (可取消.length < 挡.total) {
+          message.warning(`已取消 ${可取消.length} 场;还有 ${挡.total - 可取消.length} 场你取消不了,项目仍未归档`)
+          throw new Error('还有挡路的')
+        }
+        try { await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: true }) }) }
+        catch (e) { message.error((e as Error).message); throw e }
+        message.success(`已取消 ${可取消.length} 场并归档`)
+        await loadProjects()
+      },
+    })
+  }
+
   const spaceMenu = (s: Project) => ({
     items: [
       // ★菜单里每一项都要有图标★(2026-08-09 用户):只有这一项没有,
@@ -352,7 +414,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       { key: 'archive', label: s.archived_at ? '↩ 恢复为进行中' : '📦 归档项目' },
       { key: 'delete', label: <span style={{ color: '#ff4d4f' }}>🗑 删除项目</span> },
     ],
-    onClick: ({ key }: { key: string }) => {
+    onClick: async ({ key }: { key: string }) => {
       setCur(s)
       if (key === 'members') setGrantsOpen(true)
       if (key === 'rename') {
@@ -368,6 +430,23 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       }
       if (key === 'archive') {
         const on = !s.archived_at
+        // ★挡路的活动:先问清楚,直接摆出来 + 一键取消★
+        // （2026-08-14 liaoruili:「你这个错误有问题,你要直接弹出来要取消的项目列表,
+        //   然后一键取消之类的功能;而且确认和红字同时显示 啥意思呢」）。
+        //
+        // ⚠★上一版的毛病有两层★:
+        //   ① 只把「不行」说出来,没解决**人接下来要干什么** —— 红字里列 5 场,
+        //      人还得自己一场场去找、一场场取消;
+        //   ② ★确认框和红字同时挂在屏幕上★ —— 等于同时问「确定吗」又答「不行」,
+        //      两个对话框语义打架,人不知道该看哪个。
+        // 所以现在是:**先查**,有挡路的就换一个对话框(屏幕上永远只有一个),
+        //   把它们全列出来,一键取消并归档;没有挡路的才走原来那个确认框。
+        if (on) {
+          let 挡: { total: number; items: { id: number; title: string; starts_at: string; can_cancel: boolean }[] }
+          try { 挡 = await api(`/api/projects/${s.id}/archive-blockers`) }
+          catch (e) { message.error((e as Error).message); return }
+          if (挡.total > 0) { 归档拦截弹窗(s, 挡); return }
+        }
         modal.confirm({
           title: on ? '归档这个项目？' : '恢复为进行中？',
           // ★确认框的说明不能删★:它是决策点,删了就是让人盲选。但压到两行 ——

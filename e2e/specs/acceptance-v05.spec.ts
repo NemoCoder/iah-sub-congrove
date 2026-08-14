@@ -252,15 +252,25 @@ test.describe('v0.5 验收', () => {
       await page.waitForTimeout(700)
       await page.locator('.ant-dropdown-menu-item:visible').filter({ hasText: '归档项目' }).first().click()
       await page.waitForTimeout(700)
-      await page.getByRole('button', { name: /归\s*档/ }).last().click()
-
-      // ③ ★界面必须把「是哪几场」说出来★ —— 判据的后半句在这里才算真的验到。
-      //   ⚠ `onOk` 里是 `await api(...)` 且**没有 try/catch**:后端回 400 时它抛异常,
-      //     `message.success` 不执行 —— 那句话到底有没有显示给人,全看 antd 怎么处理这个
-      //     rejection。★这正是接口用例盖住的那一半。★
+      // ③ ★弹出来的必须是「挡路的那几场」+ 一键取消★,而不是一句红字
+      //   （2026-08-14 liaoruili:「你要直接弹出来要取消的项目列表,然后一键取消之类的功能;
+      //     而且确认和红字同时显示 啥意思呢」）。
+      await expect(page.getByText(/还有 \d+ 场没开始的活动,归不了档/).first(),
+        '★没弹出「挡路清单」那个对话框★').toBeVisible({ timeout: 10_000 })
       await expect(page.getByText(new RegExp(`E2E-M2-未来会-${t}`)).first(),
-        '★界面上没把「是哪几场」显示出来 —— 人只知道归不了档,不知道该去处理什么★')
-        .toBeVisible({ timeout: 10_000 })
+        '★清单里没列出是哪几场 —— 人不知道该去处理什么★').toBeVisible()
+      // ★屏幕上只能有一个对话框★:上一版是「确认框 + 红字」同时挂着,等于同时问「确定吗」又答「不行」
+      expect(await page.locator('.ant-modal:visible').count(),
+        '★同时挂了不止一个对话框 —— 语义打架,人不知道该看哪个★').toBe(1)
+
+      // ④ ★一键取消之后要真的归档成功★ —— 只验「弹出来了」等于只验了一半:
+      //   那个按钮点下去做没做成、项目到底归没归档,才是人要的结果。
+      await page.getByRole('button', { name: /取消这 \d+ 场并归档/ }).click()
+      await expect(page.getByText(/已取消 \d+ 场并归档/).first(),
+        '★点了一键取消,却没归档成功★').toBeVisible({ timeout: 15_000 })
+      // 用接口复核一次:界面说成了,库里也得真成了
+      const 复核 = await (await api.get(`/api/projects/${pid}`)).json()
+      expect(复核.archived_at, '★界面说归档了,后端却没有★').toBeTruthy()
     } finally { await api.dispose() }
   })
 

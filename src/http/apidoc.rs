@@ -100,6 +100,7 @@ pub const APIS: &[Api] = &[
           接受后原主持人保留 admin(交棒不是逐出)。⚠ 归档项目的 pending **仍可接受**,否则归档把请求永久卡死", "accept"),
     api!("DELETE", "/api/projects/{id}/transfer", "项目", "owner",
          "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", ""),
+    api!("GET", "/api/projects/{id}/archive-blockers", "项目", "主持人", "★谁挡着归档★:未开始的活动清单(带 can_cancel),给「一键取消并归档」用", ""),
     api!("POST", "/api/projects/{id}/archive", "项目", "owner",
          "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,但不能再上传/改内容;配额仍占。
           ⚠★有没开始的活动就拒绝归档★(PRD B2):归档 = 做完了,还有排在未来的活动就是没做完;
