@@ -1834,6 +1834,14 @@ pub async fn my_reminders(
                  WHERE p.username = $1 AND p.reminded_at > $2
                    -- 取消的活动不弹:提醒发出去之后被取消,这一轮就别再冒出来了
                    AND m.status = 'active'
+                   -- ★拒绝了的也不弹★(2026-08-14 liaoruili 截图:「我不是已经拒绝了 为啥还有提醒」)。
+                   -- ⚠ 投递侧(remind.rs)**早就**有 `p.status <> 'declined'`,注释还写着
+                   --   「拒绝了的人不必再提醒」—— 但它只管**要不要发**。
+                   --   真实顺序常常是:先发出去(reminded_at 落库)、人看到之后才去拒。
+                   --   ★于是「已经发过」这个事实继续在拉取侧生效,toast 照弹★。
+                   -- 这和 ADR-0003 是同一族:存的是「当时发生过」的事实,
+                   --   读的时候却没有再问一次「现在还成不成立」。两侧都要判,缺一边就是这个症状。
+                   AND p.status <> 'declined'
                  ORDER BY m.starts_at LIMIT 20")
                 .bind(who).bind(since).fetch_all(&state.pool).await?;
             rows

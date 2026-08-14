@@ -94,4 +94,30 @@ test.describe('拒绝掉的活动', () => {
       await expect(page.getByText(标题), '★「已结束」不该收拒掉的活动★').toHaveCount(0)
     } finally { await Promise.all([host.dispose(), mine.dispose()]) }
   })
+
+  test('★拒绝之后,提醒不该再弹★', async () => {
+    // liaoruili 截图:「我不是已经拒绝了 为啥还有提醒」——右上角还在弹「活动即将开始」。
+    //
+    // ★根因是两侧只判了一侧★:投递侧(`remind.rs`)早就有 `p.status <> 'declined'`,
+    //   注释还写着「拒绝了的人不必再提醒」—— 但它只管**要不要发**。
+    //   真实顺序常常是:先发出去(`reminded_at` 落库)、人看到了才去拒。
+    //   于是「已经发过」这个事实继续在**拉取侧**(`/api/activities/reminders`)生效,toast 照弹。
+    // ⚠ 这和 ADR-0003 同族:★存的是「当时发生过」的事实,读的时候没再问一次「现在还成不成立」★。
+    //
+    // 这条用例走接口而不是等 toast:toast 要真等到会前 N 分钟才弹,
+    // ★而判据是「拉取接口还返不返回它」—— 那正是 toast 的唯一数据来源。★
+    const t = `${Date.now()}`.slice(-6)
+    const { id, host, mine } = await 造一场被我拒掉的活动(t)
+    try {
+      // 直接把「已经提醒过」这个事实造出来:发起人点「提醒」→ 落 reminded_at
+      const rm = await host.post(`/api/activities/${id}/remind`, { data: {} })
+      // ⚠ `remind` 对已拒绝的人可能本来就不发(投递侧已判) —— 那样这条也该绿,
+      //   但**得把它的返回码带进报错信息**,否则将来它红了会分不清是哪一侧的问题。
+      const 我的 = await (await mine.get('/api/activities/reminders')).json() as
+        { items: { activity_id: number }[] }
+      expect(我的.items.some((x) => x.activity_id === id),
+        `★拒绝掉的活动还在提醒列表里 —— 右上角就会继续弹「活动即将开始」★(remind 接口 ${rm.status()})`)
+        .toBe(false)
+    } finally { await Promise.all([host.dispose(), mine.dispose()]) }
+  })
 })
