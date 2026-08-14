@@ -28,7 +28,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   const [loading, setLoading] = useState(true)
   /// ⚠ 换 tab / 改搜索词时**回到第一页**:否则停在第 5 页去看一份新筛出来的短列表,
   ///   人看到的是空白,而原因(「你还停在第 5 页」)一个字都没写在屏幕上。
-  const [tab, setTab] = useState<'joined' | 'mine' | 'past'>('joined')
+  const [tab, setTab] = useState<'joined' | 'mine' | 'declined' | 'past'>('joined')
   const [kw, setKw] = useState('')
   const [proj, setProj] = useState<number | 'all'>('all')
   const [页, setPage] = useState(1)
@@ -61,7 +61,20 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
     //   于是那个 tab 的存在意义被架空，而「已结束」那一组★只增不减★：
     //   半年之后打开这一页，上面两条有用的，下面几百条历史，人得先滚过全部历史才看得完今天。
     //   ★列表页的用途是「我接下来要干什么」，历史归历史那一格。★
+    // ★我拒绝掉的只归「已拒绝」这一格★（2026-08-14 liaoruili:「现在我拒绝的与我接受的放到一起了」）。
+    //   ⚠ 它同时要从 `joined` **和** `past` 里摘掉 —— 只摘前一格的话,拒绝掉的会在时间过去之后
+    //     又从「已结束」里冒出来,★人会以为「我不是拒了吗，怎么还记在我账上」★。
+    //   「已拒绝」不按时间切:拒掉的多半已经过去了,再按「即将进行」筛一遍就永远是空的。
+    //   排序也反过来 —— 这一格是回看,最近拒的最该在最前面。
+    if (tab === 'declined') {
+      return all
+        .filter((m) => m.my_status === 'declined')
+        .filter((m) => proj === 'all' || (m.projects ?? []).some((p) => p.id === proj))
+        .filter((m) => !k || m.title.toLowerCase().includes(k) || m.agenda.toLowerCase().includes(k))
+        .sort((a, b) => b.starts_at.localeCompare(a.starts_at))
+    }
     return all
+      .filter((m) => m.my_status !== 'declined')
       .filter((m) => (tab === 'past' ? new Date(m.ends_at).getTime() < now
         : new Date(m.ends_at).getTime() >= now && (tab !== 'mine' || m.organizer === me?.username)))
       .filter((m) => proj === 'all' || (m.projects ?? []).some((p) => p.id === proj))
@@ -83,7 +96,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   /// ★每页 20 场★:这一栏是**主列表**(宽 ~900px、一行一场),不是右栏的小卡片,
   /// 20 场刚好一屏多一点 —— 少了翻页太勤,多了又回到「一直下滑」。
   const 每页 = 20
-  const 当前 = tab === 'past' ? past : upcoming
+  const 当前 = tab === 'past' ? past : tab === 'declined' ? rows : upcoming
   /// ★生效页码是派生的★(与公开活动广场同一处教训):换 tab / 改搜索词之后总数会变,
   /// 存着的页码可能已经越界 → 一片空白且看不出为什么。
   const 总页 = Math.max(1, Math.ceil(当前.length / 每页))
@@ -100,7 +113,8 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
           <Button size="small" type="primary" onClick={onNew}>+ 发起活动</Button>
           <Segmented
             size="small" value={tab} onChange={(v) => { setTab(v as typeof tab); setPage(1) }}
-            options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' }, { value: 'past', label: '已结束' }]}
+            options={[{ value: 'joined', label: '我参与的' }, { value: 'mine', label: '我发起的' },
+                      { value: 'declined', label: '已拒绝' }, { value: 'past', label: '已结束' }]}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>共 {rows.length} 场</Typography.Text>
           <span style={{ flex: 1 }} />
@@ -120,8 +134,8 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
                 参与的会只会越来越多,已结束的更是只增不减。
                 ★一个只增不减的列表,不分页就是「迟早滚不完」,不是「暂时还好」。★
                 所以这次不等第四处被指出来,顺手把全站还剩的无界列表一起查了(见提交信息)。 */}
-            <Group title={tab === 'past' ? '已结束' : '即将进行'}
-              items={(tab === 'past' ? past : upcoming).slice((有效页 - 1) * 每页, 有效页 * 每页)}
+            <Group title={tab === 'past' ? '已结束' : tab === 'declined' ? '已拒绝' : '即将进行'}
+              items={当前.slice((有效页 - 1) * 每页, 有效页 * 每页)}
               onOpen={onOpen} me={me} />
             {当前.length > 每页 && (
               <div style={{ textAlign: 'center', marginTop: 12 }}>
@@ -133,7 +147,8 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
             )}
             {rows.length === 0 && (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={tab === 'past' ? '还没有结束的活动' : '接下来没有安排'} />
+                description={tab === 'past' ? '还没有结束的活动'
+                  : tab === 'declined' ? '你还没有拒绝过任何活动' : '接下来没有安排'} />
             )}
           </>
         )}

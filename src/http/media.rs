@@ -575,7 +575,7 @@ pub async fn analysis(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let job: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT status, stage, progress, error FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1",
@@ -621,7 +621,7 @@ pub async fn subtitles(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Response> {
-    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<(String, Option<serde_json::Value>, Option<serde_json::Value>, Option<serde_json::Value>)> =
         sqlx::query_as("SELECT text, segments, char_ts, fine FROM transcripts WHERE item_id=$1")

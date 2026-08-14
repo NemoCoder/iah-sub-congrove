@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::audit;
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::http::items::project_of;
+use crate::http::items::{project_of, project_of_alive};
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
@@ -136,7 +136,7 @@ pub async fn list(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
-    let pid = project_of(&state.pool, iid).await?;
+    let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let rows: Vec<(String, Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool, String,
                    chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
