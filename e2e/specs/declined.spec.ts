@@ -101,23 +101,53 @@ test.describe('拒绝掉的活动', () => {
     // ★根因是两侧只判了一侧★:投递侧(`remind.rs`)早就有 `p.status <> 'declined'`,
     //   注释还写着「拒绝了的人不必再提醒」—— 但它只管**要不要发**。
     //   真实顺序常常是:先发出去(`reminded_at` 落库)、人看到了才去拒。
-    //   于是「已经发过」这个事实继续在**拉取侧**(`/api/activities/reminders`)生效,toast 照弹。
+    //   于是「已经发过」这个事实继续在**拉取侧**(`GET /api/me/reminders`)生效,toast 照弹。
     // ⚠ 这和 ADR-0003 同族:★存的是「当时发生过」的事实,读的时候没再问一次「现在还成不成立」★。
     //
-    // 这条用例走接口而不是等 toast:toast 要真等到会前 N 分钟才弹,
-    // ★而判据是「拉取接口还返不返回它」—— 那正是 toast 的唯一数据来源。★
+    // ══ 这条用例写坏过三次,每一次都是「绿得毫无意义」,记在这 ══
+    // ① 路径写成 `/api/activities/reminders` —— **不存在**,回的不是 JSON 而是「Invalid URL」,
+    //    `.json()` 直接抛。它在修复前后都红,★而红的理由根本不是那个 bug★ ——
+    //    我却拿这个红当成「用例复现了问题」写进了 PR 描述。
+    //    ★「它红了」不等于「它红在我以为的地方」。★ 真实路径是 `/api/me/reminders`。
+    // ② `since` 不给的话服务端**直接回空数组**(`my_reminders` 的 `None => vec![]`),
+    //    于是 `some(...)` 恒为 false —— 白捡一个绿,而且看起来完全正常。
+    // ③ 用 `e2e` 这个身份跑:它名下符合条件的提醒有 **54 条**,而接口 `ORDER BY starts_at LIMIT 20`
+    //    —— ★我造的那场被截在第 20 名之外,于是「查不到」和「被过滤掉」长得一模一样。★
+    //    改用专用身份 `e2e-remind`(干净、且 teardown 从 spec 源码推导身份,会自动清它)。
+    //
+    // ★最要紧的一条:必须先等提醒**真的投递出去**★。`reminded_at` 只由后台循环写
+    //   (30 秒一跳),手动 `remind` 接口只给 pending 的人发站内信、不写这个字段。
+    //   不等到它出现就去拒,那么列表本来就是空的 —— ★这条用例会绿,而我改的那句 SQL 一次都没被执行到。★
+    test.setTimeout(180_000)
     const t = `${Date.now()}`.slice(-6)
-    const { id, host, mine } = await 造一场被我拒掉的活动(t)
+    const 收件人 = 'e2e-remind'
+    const host = await 主(发起人), 他 = await 主(收件人)
     try {
-      // 直接把「已经提醒过」这个事实造出来:发起人点「提醒」→ 落 reminded_at
-      const rm = await host.post(`/api/activities/${id}/remind`, { data: {} })
-      // ⚠ `remind` 对已拒绝的人可能本来就不发(投递侧已判) —— 那样这条也该绿,
-      //   但**得把它的返回码带进报错信息**,否则将来它红了会分不清是哪一侧的问题。
-      const 我的 = await (await mine.get('/api/activities/reminders')).json() as
-        { items: { activity_id: number }[] }
-      expect(我的.items.some((x) => x.activity_id === id),
-        `★拒绝掉的活动还在提醒列表里 —— 右上角就会继续弹「活动即将开始」★(remind 接口 ${rm.status()})`)
-        .toBe(false)
-    } finally { await Promise.all([host.dispose(), mine.dispose()]) }
+      const pid = (await (await host.post('/api/projects', { data: { name: `E2E-提醒-项目-${t}` } })).json()).id as number
+      await host.put(`/api/projects/${pid}/members`, { data: { username: 收件人, role: 'editor' } }).catch(() => {})
+      // 40 分钟后开始 + 提前 60 分钟提醒 = ★立刻落进提醒窗口★,下一跳就发
+      const 开始 = new Date(Date.now() + 40 * 60_000)
+      const r = await host.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-提醒-${t}`, recorder: 发起人, project_ids: [pid],
+                participants: [收件人], remind_minutes: 60,
+                starts_at: 开始.toISOString(), ends_at: new Date(开始.getTime() + 3600e3).toISOString() },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+      const id = (await r.json()).id as number
+      const since = new Date(Date.now() - 864e5).toISOString()
+      const 提醒里有它 = async () => {
+        const 回 = await 他.get(`/api/me/reminders?since=${encodeURIComponent(since)}`)
+        expect(回.status(), await 回.text()).toBe(200)
+        return ((await 回.json()) as { items: { activity_id: number }[] }).items.some((x) => x.activity_id === id)
+      }
+      // ★防呆:先证明它**真的被提醒了**★(后台循环 30s 一跳,给到 4 跳)
+      await expect.poll(提醒里有它, { timeout: 130_000, intervals: [5_000] })
+        .toBe(true)
+
+      // 现在才去拒 —— 这正是用户遇到的顺序
+      expect((await 他.post(`/api/activities/${id}/respond`, { data: { status: 'declined' } })).status()).toBe(200)
+      expect(await 提醒里有它(),
+        '★拒绝掉的活动还在提醒列表里 —— 右上角就会继续弹「活动即将开始」★').toBe(false)
+    } finally { await Promise.all([host.dispose(), 他.dispose()]) }
   })
 })

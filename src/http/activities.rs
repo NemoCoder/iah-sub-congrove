@@ -1437,7 +1437,10 @@ pub async fn public_list(
                      AND NOT EXISTS (SELECT 1 FROM activity_projects m2
                                        JOIN projects p2 ON p2.id = m2.project_id
                                       WHERE m2.activity_id = m.id AND p2.archived_at IS NULL))
-          ORDER BY m.starts_at LIMIT 200")
+          -- ★不设 LIMIT★(2026-08-14):原来写死 200,公开活动一多就**静默看不到** ——
+          --   而这是「广场」,看不到就等于没发生。天然有界:上面已经筛掉了
+          --   已结束(`ends_at > now()`)、我已参与、以及可选的 `days` 窗口。
+          ORDER BY m.starts_at")
         .bind(username).bind(days)
         .fetch_all(&state.pool).await?;
     Ok(Json(rows))
@@ -1783,7 +1786,10 @@ pub async fn my_minutes_todo(
     let rows: Vec<(i64, String, Ts, Ts, bool)> = sqlx::query_as(
         "SELECT activity_id, title, starts_at, ends_at, has_draft
          FROM activities_owing_minutes WHERE recorder = $1
-         ORDER BY ends_at DESC LIMIT 50")
+         -- ★不设 LIMIT★(2026-08-14):原来写死 50,超过就**静默断掉** ——
+         --   而「待写纪要」是欠账清单,欠得越多越不该藏起来。
+         --   天然有界:它只数**我当记录员、且还没定稿**的活动,而且前端(TodoCard)本来就折叠。
+         ORDER BY ends_at DESC")
         .bind(who).fetch_all(&state.pool).await?;
 
     Ok(Json(json!(rows.iter().map(|(mid, title, s, e, draft)| json!({
@@ -1842,7 +1848,23 @@ pub async fn my_reminders(
                    -- 这和 ADR-0003 是同一族:存的是「当时发生过」的事实,
                    --   读的时候却没有再问一次「现在还成不成立」。两侧都要判,缺一边就是这个症状。
                    AND p.status <> 'declined'
-                 ORDER BY m.starts_at LIMIT 20")
+                   -- ★只要**还没开始**的★(2026-08-14 liaoruili:「为啥又莫名其妙使用 limit」)。
+                   -- 这一条和下面去掉 LIMIT 是同一件事的两半,原来的写法是
+                   --   `ORDER BY m.starts_at LIMIT 20`,**没有**这个条件 ——
+                   -- 于是早就开完的活动按开始时间排在最前,★把 20 个名额吃光★,
+                   -- 真正「马上要开始」的反而被挤出去。而这个接口的全部用途就是弹
+                   -- 「还有 N 分钟开始」:前端拿到已开始的会直接 `mins <= 0 continue` 扔掉。
+                   -- ★于是那 20 条大半是垃圾,而该弹的静默不弹★ —— 症状是「提醒失灵」,
+                   -- 没有任何报错,人只会以为「这次没提醒我」。实测 e2e 名下 54 条符合条件、
+                   -- 只返 20 条,我造的那场就在被截掉的里面。
+                   -- ⚠★判据本来只写在前端★(remind-poll 的 `mins <= 0`),
+                   --   服务端不判就意味着「谁来取都得自己再判一遍」—— 与 remind.rs 的
+                   --   `m.starts_at > now()`(「已经开始的不补发」)是同一条,现在两处一致。
+                   AND m.starts_at > now()
+                 -- ★不设 LIMIT★:加了上面那条之后,结果天然被「已提醒 + 尚未开始」双重夹住,
+                 --   不会无限增长;而写死一个 LIMIT 又不给总数,就是让接口替数据撒谎
+                 --   (回收站 / 我的分享那两处 LIMIT 500 是同一个病,已改真分页)。
+                 ORDER BY m.starts_at")
                 .bind(who).bind(since).fetch_all(&state.pool).await?;
             rows
         }

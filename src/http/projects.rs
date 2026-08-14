@@ -718,8 +718,13 @@ pub async fn archive(
     //   处置是★把是哪几场列出来★,让他自己决定(把 A 从关联里去掉,或直接取消它)——
     //   静默跳过等于允许「项目归档了、名下还有未来的会」。
     if want {
-        let pending: Vec<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-            "SELECT m.title, m.starts_at FROM activities m
+        // ★列 5 场,但把总数一起带出来★(2026-08-14 liaoruili 拍板「等 N 场」)。
+        //   原来是写死 `LIMIT 5` 且不给总数 —— 卡着 12 场时,报错只说得出 5 场,
+        //   ★人处理完这 5 场再来归档,又被拒,还是只看到 5 场★:不知道还剩多少、要来几轮。
+        //   这里的 5 是**刻意的举例**(全列出来一行报错会长到没法读),
+        //   所以判据是「限量必须同时说出总数」——`COUNT(*) OVER()` 一次查询带回来。
+        let pending: Vec<(String, chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
+            "SELECT m.title, m.starts_at, COUNT(*) OVER() AS total FROM activities m
                JOIN activity_projects mp ON mp.activity_id = m.id
               WHERE mp.project_id = $1 AND m.status = 'active' AND m.starts_at > now()
               ORDER BY m.starts_at LIMIT 5")
@@ -730,10 +735,15 @@ pub async fn archive(
             // 是北京时间,他去日历上找 10:00 那一场,找不到。
             let tz = crate::tzutil::of_user(&state.pool, username).await;
             let list = pending.iter()
-                .map(|(t, at)| format!("{}（{}）", t, at.with_timezone(&tz).format("%m-%d %H:%M")))
+                .map(|(t, at, _)| format!("{}（{}）", t, at.with_timezone(&tz).format("%m-%d %H:%M")))
                 .collect::<Vec<_>>().join("、");
+            let total = pending[0].2;
+            // 只有真的没列全时才加那半句 —— 5 场以内说「等 5 场」是废话
+            let 还有 = if total > pending.len() as i64 {
+                format!("等 {total} 场")
+            } else { String::new() };
             return Err(AppError::BadRequest(format!(
-                "还有没开始的活动,先处理掉再归档:{list}。（取消它们,或把本项目从它的关联里去掉）")));
+                "还有没开始的活动,先处理掉再归档:{list}{还有}。（取消它们,或把本项目从它的关联里去掉）")));
         }
     }
     let n = sqlx::query(
