@@ -290,7 +290,12 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
     let name = ''
     modal.confirm({
       title: kind === 'folder' ? '新建文件夹' : '新建文档',
-      content: <Input placeholder="名称" onChange={(e) => (name = e.target.value)} />,
+      // 与「新建项目」同一条理由:新建不是警告(见 newSpace 那段注释)。
+      // ★只改一处会更糟★:那样「新建项目」中性、「新建文件夹」警告,同一个动作两种脸。
+      icon: kind === 'folder' ? <FolderAddOutlined style={{ color: '#1677ff' }} />
+        : <FileAddOutlined style={{ color: '#1677ff' }} />,
+      content: <Input placeholder={kind === 'folder' ? '文件夹名' : '文档名'}
+        onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
           await api(`/api/projects/${cur!.id}/items`, { method: 'POST', body: JSON.stringify({ kind, name, parent_id: cwd }) })
@@ -303,6 +308,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
     let name = it.name
     modal.confirm({
       title: `重命名「${it.name}」`,
+      icon: <EditOutlined style={{ color: '#1677ff' }} />,   // 改名随时能改回来,不是警告
       content: <Input defaultValue={it.name} onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
@@ -421,6 +427,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
         let name = s.name
         modal.confirm({
           title: '重命名项目',
+          icon: <EditOutlined style={{ color: '#1677ff' }} />,   // 同上:改名不是警告
           content: <Input defaultValue={s.name} onChange={(e) => (name = e.target.value)} />,
           onOk: async () => {
             await api(`/api/projects/${s.id}`, { method: 'PUT', body: JSON.stringify({ name, description: s.description }) })
@@ -448,7 +455,13 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
           if (挡.total > 0) { 归档拦截弹窗(s, 挡); return }
         }
         modal.confirm({
-          title: on ? '归档这个项目？' : '恢复为进行中？',
+          // ★把项目名写进标题★(2026-08-15 逐张看巡检截图看出来的):原来是「归档这个项目?」——
+          //   **哪个项目它不说**。而这个动作的入口之一是列表行尾的「…」菜单,
+          //   那个下拉是**渲染在触发行下方**的,视觉上正好压住并且看起来像挂在**下一行**上
+          //   (截图 0042/0112 里,「AI 模型评测」的菜单压在「联合项目·因果推断 15908」身上)。
+          //   ★于是「归档」成了唯一一个不告诉你目标是谁的确认框★ —— 而删除、移出、转主持人
+          //   都是写名字的。补齐它,让确认框自己承担「你选对了吗」这一问。
+          title: on ? `归档项目「${s.name}」？` : `把「${s.name}」恢复为进行中？`,
           // ★确认框的说明不能删★:它是决策点,删了就是让人盲选。但压到两行 ——
           // 「变成什么」和「不是什么」,其余(配额/日历/忙闲)在文档里,不在这个弹窗里。
           content: on
@@ -500,6 +513,11 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
     let name = ''
     modal.confirm({
       title: '新建项目',
+      // ★新建是个无风险动作,别套警告图标★(2026-08-15 逐张看巡检截图看出来的):
+      //   `modal.confirm` 默认给橙色感叹号,于是「新建项目」和「归档这个项目?」「删除项目「X」?」
+      //   顶着**一模一样的警告标记**。★什么都是警告,就等于没有警告★ —— 真到删除那一下,
+      //   那个图标已经不再让人停顿了。这里换成中性的编辑图标,把橙色留给真会造成损失的动作。
+      icon: <EditOutlined style={{ color: '#1677ff' }} />,
       content: <Input placeholder="项目名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
@@ -913,6 +931,15 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                 },
               ]}
             />
+            {/* ★空文件夹也要说话★(2026-08-15 逐张看巡检截图看出来的):
+                进到空的活动文件夹里,画面上只有一行「..」,底下一片空白 —— 而**项目根目录**为空时
+                是有「这里还是空的——上传文件,或把文件拖进来」的。同一个「这里没东西」两种表现。
+                ★根因是表格的 `locale.emptyText` 压根不会触发★:dataSource 里还有 `parentRow` 那一行,
+                `length !== 0`,AntD 认为表格非空。所以补在表格外面,而不是去改 emptyText。 */}
+            {cwd != null && 本页行.length === 0 && upRows.length === 0 && (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ margin: '4px 0 12px' }}
+                description={canEdit ? '这个文件夹是空的——上传文件,或把文件拖进来' : '这个文件夹是空的'} />
+            )}
             {/* ★只有真需要翻页时才出现★:三五个文件的项目底下挂一个「1」的翻页器纯是噪音。 */}
             {rows.length > 文每页 && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 4px 2px' }}>
@@ -1314,13 +1341,26 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
                   <a>转主持人</a>
                 </Popconfirm>
               )}
+              {/* ★把自己移出时要说「你」,不是「他」★(2026-08-15 逐张看巡检截图看出来的):
+                  非管理员在成员页看到的那个红色「移出」**只出现在自己这一行**(自己退出项目),
+                  可弹窗照旧写「把 liaoruili 移出项目?**他**将立刻看不到…」——
+                  ★用第三人称描述一件正在对自己做的、不可逆的事,人容易读成「在处理别人」而顺手确认★,
+                  而这一下之后他就进不来这个项目了(要再进得找主持人)。
+                  三条后果一个字不改,只把人称和标题按「是不是我自己」切换。 */}
               <Popconfirm
-                title={`把 ${m.username} 移出项目？`}
-                description={<div style={{ maxWidth: 320, fontSize: 12 }}>
+                title={me?.username === m.username ? '退出这个项目？' : `把 ${m.username} 移出项目？`}
+                description={me?.username === m.username ? (
+                  <div style={{ maxWidth: 320, fontSize: 12 }}>
+                    · <b>你</b>将立刻看不到本项目全部资料，包括你自己参与过的活动<br />
+                    · 你上传的材料<b>全部留下</b>，署名保留<br />
+                    · <b>你创建的、指向本项目的公开链接会被一并撤销</b><br />
+                    · 要再进来，得请<b>主持人</b>重新拉你
+                  </div>
+                ) : (<div style={{ maxWidth: 320, fontSize: 12 }}>
                   · 他将立刻看不到本项目全部资料，包括他自己参与过的活动<br />
                   · 他上传的材料<b>全部留下</b>，署名保留<br />
                   · <b>他创建的、指向本项目的公开链接会被一并撤销</b>
-                </div>}
+                </div>)}
                 onConfirm={async () => {
                   try {
                     const r = await api<{ revoked_links: number }>(
@@ -1332,7 +1372,8 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
                     await load(); onChanged()
                   } catch (e) { message.error((e as Error).message) }
                 }}>
-                <a style={{ color: '#ff4d4f' }}>移出</a>
+                {/* 链接文字也跟着换:自己那一行叫「退出」——「移出」听起来是在处理别人。 */}
+                <a style={{ color: '#ff4d4f' }}>{me?.username === m.username ? '退出' : '移出'}</a>
               </Popconfirm>
               </AntSpace>)),
           },
@@ -1344,8 +1385,14 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
       </Typography.Paragraph>
       <AntSpace.Compact style={{ width: '100%', marginBottom: 8 }}>
         <Input value={diagName} onChange={(e) => setDiagName(e.target.value)} placeholder="用户名" />
-        <Button onClick={async () => {
-          if (!diagName.trim()) return
+        {/* ★空用户名时把按钮禁掉,别留一个「点了什么都不做」的按钮★
+            (2026-08-15 逐张看巡检截图看出来的,六个项目全一样):
+            原来是 `onClick` 里 `if (!diagName.trim()) return` —— 静默 return,而按钮**可点**。
+            于是点下去页面毫无反应,人分不清是「查了但没这个人」「我没权限查」还是「页面坏了」,
+            ★而这三种情况下一步该做的事完全不同★。禁用态自解释,不必再加一句提示文案。
+            ⚠ 巡检报告永远抓不到这一格:它只认「点不动 / 前端报错 / HTTP≥400」,
+              而这里点得动、不报错、连请求都没发。 */}
+        <Button disabled={!diagName.trim()} onClick={async () => {
           try {
             setDiag(await api<Diagnose>(
               `/api/projects/${space.id}/diagnose?username=${encodeURIComponent(diagName.trim())}`))
@@ -1420,8 +1467,11 @@ function TrashDrawer({ space, open, onClose, onChanged }:
   //   而其实前面还有 100 条 —— 又一次「界面替数据撒谎」。所以往前退一页。
   useEffect(() => { if (!loading && rows.length === 0 && 页 > 1) set页((n) => n - 1) }, [loading, rows.length, 页])
 
+  // ★宽度 640 → 760★(2026-08-15 逐张看巡检截图看出来的):后面四列是写死的
+  //   92 + 148 + 100 + 130 = 470,「名称」只分得到约 130px,于是文件名被截成「博士论文一…」——
+  //   而回收站里恰恰**只剩名字可认**(内容已经看不到了),名字截掉就等于让人猜该还原哪一个。
   return (
-    <Drawer title="🗑 回收站" open={open} onClose={onClose} width={640}>
+    <Drawer title="🗑 回收站" open={open} onClose={onClose} width={760}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用项目配额</b>。
       </Typography.Paragraph>
