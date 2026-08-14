@@ -378,7 +378,19 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
             : '恢复后就能继续往里加东西了。',
           okText: on ? '归档' : '恢复',
           onOk: async () => {
-            await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: on }) })
+            // ★被拒时必须把后端那句话显示出来★（2026-08-14 把 M2 验收用例改成走界面才发现）:
+            //   原来这里**没有 try/catch** —— 后端因「还有没开始的活动」回 400 时,
+            //   `api()` 抛异常 → antd 保持弹窗开着、`message.success` 不执行,
+            //   ★而错误被整个吞掉:人点了归档,什么都没发生,也不知道为什么★。
+            //   M2 的判据原文是「归档被拒**并且说清是哪几场**」—— 那半句此前**只在接口里成立**,
+            //   界面上一个字都没有。而那条验收用例只验了接口,于是它绿了好几天。
+            //   ⚠ 抛出去(而不是吞掉)才能让 antd 把弹窗留着 —— 人改完再点一次就好。
+            try {
+              await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: on }) })
+            } catch (e) {
+              message.error((e as Error).message)
+              throw e
+            }
             message.success(on ? '已归档' : '已恢复为进行中')
             await loadProjects()
           },

@@ -28,6 +28,7 @@
 //   (前端那一半另有保证:`app.tsx` 的 `sharePageToken()` 在 `/api/me` **之前**就把
 //    `/s/{token}` 这条路由劫走,所以未登录也不会被弹去登录。)
 import { expect, request as pwRequest, test } from '@playwright/test'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -158,3 +159,7 @@ test.describe('公开分享·访客界面', () => {
     } finally { await api.dispose() }
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('分享访客页')

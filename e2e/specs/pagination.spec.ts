@@ -20,6 +20,7 @@
 //   · 前端分页(项目文件列表 / 访客分享页 / 项目回收站):后端本来就一条不丢,
 //     错只可能错在界面 —— 那就必须**在界面上**数行,造够跨页的数据。
 import { expect, request as pwRequest, test, type APIRequestContext, type Page } from '@playwright/test'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -288,3 +289,7 @@ async function 走遍所有页(page: Page, 行选择器: string, 认: RegExp, �
   }
   await 逐页核对({ 页数: 页.length, 名, 期望, 取一页: async (p) => 页[p - 1] })
 }
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('分页')

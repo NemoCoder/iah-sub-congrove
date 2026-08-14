@@ -14,6 +14,7 @@
 //   这个缺口是**已知的**，等平台的 X-IAH-E2E-User 多身份头（群里已提）。
 //   在那之前，应答那一步只有 api_cases 的契约描述 + 后端单测兜着。
 import { expect, test, type Page } from '@playwright/test'
+import { 每条都留图 } from './_shot'
 
 // ★AntD 会给「两个汉字」的按钮自动插一个空格★:页面上是「新 建」「取 消」「确 定」「今 天」,
 // 不是「新建」「取消」。第一版 spec 全按我以为的文案写,于是每一个都定位不到 ——
@@ -148,3 +149,7 @@ test.describe('M1 验收:一个人能不能把会约成', () => {
     await expect(page.getByText(/即将进行|没有活动/).first()).toBeVisible({ timeout: 20_000 })
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('M1验收')

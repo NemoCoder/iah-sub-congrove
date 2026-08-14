@@ -12,6 +12,7 @@
 // ★别用 ignoreHTTPSErrors 图省事★——那会把「证书真的错了」和「证书是内网 CA 签的」一起吞掉。
 import { expect, request as pwRequest, test } from '@playwright/test'
 import { 会议 } from './_presets'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -345,3 +346,7 @@ test.describe('建议改期', () => {
 // `use.extraHTTPHeaders`★(探针实测:那样建出来的上下文 GET /api/me 回 200 且带身份)。
 // 我一度按「新建上下文 = 干净访客」写过一版,注释信誓旦旦,而它测的根本不是匿名访问 ——
 // ★注释里的断言也是断言,它同样会撒谎,并且没有任何门禁去核它。★
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('界面')

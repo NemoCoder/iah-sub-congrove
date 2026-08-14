@@ -8,6 +8,7 @@
 //      而不是首页让人自己去找是哪一场（那样通知只完成了一半）。
 import { expect, test, type APIRequestContext } from '@playwright/test'
 import { 会议 } from './_presets'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -146,3 +147,7 @@ test.describe('公开活动广场:只列我还没有关系的会', () => {
       '★自己发起的会不该出现在广场★').toBe(false)
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('通知')

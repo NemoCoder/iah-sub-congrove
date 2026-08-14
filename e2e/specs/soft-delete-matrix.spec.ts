@@ -26,6 +26,7 @@
 //   那个入口**本来就是坏的/路径拼错了** —— 那样它会一直绿,而且绿得毫无意义。
 import { expect, request as pwRequest, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -178,3 +179,7 @@ test.describe('软删除之后,所有读它的入口都闭上', () => {
     } finally { await api.dispose() }
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('软删矩阵')
