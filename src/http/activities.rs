@@ -831,6 +831,33 @@ pub async fn respond(
                 &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
         }
     }
+    // ★拒绝出席的人如果还挂着记录员,责任不能凭空蒸发★
+    // （2026-08-14 liaoruili:「已拒绝为啥还看得到 纪要待整理？？？？」,他拍板选 B）。
+    //
+    // `activities_owing_minutes` 只看 `m.recorder = 我`,**完全没看我作为参与人的答复状态** ——
+    // 于是拒绝出席之后,只要我还挂着记录员,系统就一直催我写一场我没去的会的纪要。
+    //
+    // ⚠★两种修法都有明显坏处,他选的是 B★:
+    //   A：拒绝就不再催我 → ★这场会的纪要从此没人写、也没人知道★,它安静地消失在所有人的待办里;
+    //   B：仍然挂在我名下,但**当场通知发起人另指派** → 多一步打扰,但★责任不会凭空蒸发★。
+    //   本仓库反复踩过同一类坑:**「安静地消失」比「烦人地留着」难查得多** ——
+    //   纪要没人写,要等到几周后有人翻记录才发现。
+    //
+    // ⚠ 这里**不自动改 recorder**:指派记录员是发起人的决定,系统替他改等于偷偷换人;
+    //   而且换给谁也没有正确答案。给他一条明确的站内信,让他去改。
+    if st == "declined" {
+        let 我是记录员: bool = sqlx::query_scalar(
+            "SELECT recorder = $2 FROM activities WHERE id = $1")
+            .bind(mid).bind(username).fetch_one(&state.pool).await?;
+        if 我是记录员 && organizer != username {
+            let 标题: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
+                .bind(mid).fetch_one(&state.pool).await.unwrap_or_default();
+            notify_activity(&state, mid, std::slice::from_ref(&organizer), "记录员拒绝了出席,请另指派",
+                &format!("{username} 拒绝出席「{标题}」,但他仍是这场活动的记录员 —— \
+                          请改指派别人,否则这场的纪要不会有人写。")).await;
+        }
+        return Ok(Json(json!({ "ok": true, "status": st, "still_recorder": 我是记录员 })));
+    }
     Ok(Json(json!({ "ok": true, "status": st })))
 }
 

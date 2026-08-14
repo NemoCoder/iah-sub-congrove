@@ -506,16 +506,27 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
     if (status === 'counter' && !range) { message.warning('请先选一个你方便的时间段'); return }
     setBusy(true)
     try {
-      await api(`/api/activities/${id}/respond`, {
-        method: 'POST',
-        body: JSON.stringify({
-          status,
-          ...(status === 'counter' && range
-            ? { counter_starts_at: range[0], counter_ends_at: range[1], counter_reason: reason || null }
-            : {}),
-        }),
-      })
-      message.success('已答复')
+      const 回 = await api<{ ok: boolean; status: string; still_recorder?: boolean }>(
+        `/api/activities/${id}/respond`, {
+          method: 'POST',
+          body: JSON.stringify({
+            status,
+            ...(status === 'counter' && range
+              ? { counter_starts_at: range[0], counter_ends_at: range[1], counter_reason: reason || null }
+              : {}),
+          }),
+        })
+      // ★拒绝了但我还是记录员 —— 当场告诉我★
+      // （2026-08-14 liaoruili:「已拒绝为啥还看得到 纪要待整理？？？？」,他选了方案 B）。
+      //   `activities_owing_minutes` 只看 `recorder = 我`,不看我的答复状态 ——
+      //   所以拒绝之后这场的纪要仍然挂在我名下。★后端已经当场通知发起人另指派★,
+      //   但如果只通知他、不告诉我,我就会一直纳闷「我都拒了为什么还催我写纪要」——
+      //   ★而那正是他问出来的那句话。★
+      if (回?.still_recorder) {
+        message.warning('已拒绝。⚠ 你仍是这场的记录员,纪要还挂在你名下 —— 已通知发起人另指派', 6)
+      } else {
+        message.success('已答复')
+      }
       onDone()
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }

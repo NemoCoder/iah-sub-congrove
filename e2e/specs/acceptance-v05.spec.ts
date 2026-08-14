@@ -255,9 +255,25 @@ test.describe('v0.5 验收', () => {
       // ③ ★弹出来的必须是「挡路的那几场」+ 一键取消★,而不是一句红字
       //   （2026-08-14 liaoruili:「你要直接弹出来要取消的项目列表,然后一键取消之类的功能;
       //     而且确认和红字同时显示 啥意思呢」）。
-      await expect(page.getByText(/还有 \d+ 场没开始的活动,归不了档/).first(),
-        '★没弹出「挡路清单」那个对话框★').toBeVisible({ timeout: 10_000 })
-      await expect(page.getByText(new RegExp(`E2E-M2-未来会-${t}`)).first(),
+      // ⚠★锚在「可见的那个弹窗」里,别用 `getByText(...).first()`★（2026-08-14 栽在这):
+      //   antd 的确认框把标题**渲染了两份**(一份不可见,给无障碍/测量用),
+      //   `getByText` 命中 2 个而 `.first()` 挑中的是**隐藏那份** → `toBeVisible()` 等到超时,
+      //   ★而屏幕上那个明明在（失败截图里清清楚楚）★。
+      //   这和之前 `.last()` 挑中最内层文本节点是同一族:**挑第几个 ≠ 挑对了那个**。
+      // ⚠★antd 把确认框标题渲染成**两个**元素★(`.ant-modal-title` 与 `.ant-modal-confirm-title`),
+      //   于是定位器同时命中 2 个 → ★Playwright 的 strict mode 直接判失败★。
+      //   ⚠⚠ 而我给这条断言写的失败信息是「★没弹出「挡路清单」那个对话框★」——**它是假的**:
+      //     对话框一直在(失败截图里清清楚楚),我却按着自己写的提示去查「为什么没弹出来」,绕了三轮。
+      //     ★断言的失败信息也会撒谎:它说的是我以为的原因,不是真的原因。★
+      //     看 `strict mode violation` 那一行才看到真相 —— ★报错要读完,别只读自己写的那句。★
+      //   (同一族:之前 `.last()` 挑中最内层文本节点、`.first()` 挑中隐藏副本。**挑第几个 ≠ 挑对了那个**。)
+      const 弹窗 = page.locator('.ant-modal:visible')
+      // ★按「可见」筛,而不是按顺序挑★:那两个副本里 `.ant-modal-title` 是**隐藏的**
+      //   (antd 拿它做 aria-labelledby),`.first()` 恰好挑中它 → 永远 hidden。
+      const 见 = (re: RegExp) => 弹窗.getByText(re).filter({ visible: true }).first()
+      await expect(见(/还有 \d+ 场没开始的活动,归不了档/),
+        '★挡路清单对话框没出现(或标题变了)★').toBeVisible({ timeout: 10_000 })
+      await expect(见(new RegExp(`E2E-M2-未来会-${t}`)),
         '★清单里没列出是哪几场 —— 人不知道该去处理什么★').toBeVisible()
       // ★屏幕上只能有一个对话框★:上一版是「确认框 + 红字」同时挂着,等于同时问「确定吗」又答「不行」
       expect(await page.locator('.ant-modal:visible').count(),
@@ -268,9 +284,16 @@ test.describe('v0.5 验收', () => {
       await page.getByRole('button', { name: /取消这 \d+ 场并归档/ }).click()
       await expect(page.getByText(/已取消 \d+ 场并归档/).first(),
         '★点了一键取消,却没归档成功★').toBeVisible({ timeout: 15_000 })
-      // 用接口复核一次:界面说成了,库里也得真成了
-      const 复核 = await (await api.get(`/api/projects/${pid}`)).json()
-      expect(复核.archived_at, '★界面说归档了,后端却没有★').toBeTruthy()
+      // 用接口复核一次:界面说成了,库里也得真成了。
+      // ⚠★不能查 `GET /api/projects/{id}`★(2026-08-14 栽在这):那个 detail 接口
+      //   **根本不返回 `archived_at`**(只回 id/name/description/my_role/pending_transfer)——
+      //   于是 `复核.archived_at` 恒为 undefined,断言必红,
+      //   ★而它报的是「界面说归档了,后端却没有」—— 又一句把人引向错误方向的失败信息★。
+      //   带这个字段的是**项目列表**(`GET /api/projects`,见 projects::list 的 SELECT)。
+      const 全部 = await (await api.get('/api/projects')).json() as { id: number; archived_at: string | null }[]
+      const 它 = 全部.find((x) => x.id === pid)
+      expect(它, '★归档之后这个项目从列表里整个消失了 —— 归档不是删除★').toBeTruthy()
+      expect(它!.archived_at, '★界面说归档了,后端却没有★').toBeTruthy()
     } finally { await api.dispose() }
   })
 
