@@ -699,6 +699,44 @@ pub async fn transfer_cancel(
 /// **只有主持人能做**(与删项目同档):它影响所有成员能不能继续写,不是某个 admin 的日常操作。
 /// ⚠ 走 `require_owner` 而不是 `require_role` —— 后者对归档项目会拒绝一切写操作,
 ///   那样归档之后就再也解不开了。
+/// GET /api/projects/{id}/archive-blockers —— ★谁挡着归档★(2026-08-14)
+///
+/// liaoruili:「你这个错误有问题,你要直接弹出来要取消的项目列表,然后一键取消之类的功能;
+///  而且确认和红字同时显示 啥意思呢」。
+///
+/// ★上一版只把「不行」说出来,没解决人接下来要干什么★:红字里列 5 场,人还得自己一场场去找、
+/// 一场场取消,而且**确认框和红字同时挂在屏幕上** —— 等于同时问「确定吗」又答「不行」。
+/// 现在改成:点归档先问这个接口,有挡路的就**直接把它们摆出来 + 一键取消**,屏幕上只有一个对话框。
+///
+/// ⚠★WHERE 必须和 `archive` 里那条**一模一样**★:两处推导一旦漂移,
+///   就会出现「列表说没有挡路的、点下去照样被拒」这种最难查的错。
+/// ⚠ 不设 LIMIT:界面要**全部**列出来才好一键处理;它天然被「本项目 + 未开始 + active」夹住。
+pub async fn archive_blockers(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::perm::require_owner(&state.pool, &id, pid).await?;
+    let me = id.require_username()?;
+    let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
+        "SELECT m.id, m.title, m.starts_at,
+                -- ★能不能由我来取消★:取消是「发起人 / 记录员」的权限(见 activities::remove)。
+                --   界面要靠它把「我取消不了的那几场」单独标出来 —— ★批量操作里最坏的事
+                --   就是默不作声地跳过几条★,人以为都处理完了,回头再点归档还是被拒。
+                (m.organizer = $2 OR m.recorder = $2) AS can_cancel
+           FROM activities m
+           JOIN activity_projects mp ON mp.activity_id = m.id
+          WHERE mp.project_id = $1 AND m.status = 'active' AND m.starts_at > now()
+          ORDER BY m.starts_at")
+        .bind(pid).bind(me).fetch_all(&state.pool).await?;
+    Ok(Json(json!({
+        "total": rows.len(),
+        "items": rows.iter().map(|(i, t, at, ok)| json!({
+            "id": i, "title": t, "starts_at": at, "can_cancel": ok,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
 pub async fn archive(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,

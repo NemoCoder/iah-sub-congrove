@@ -167,6 +167,20 @@ const CASES: &[Case] = &[
     c!(deny "POST", "/api/projects/{id}/transfer", "不能转给非成员", "我是 owner,目标不是成员",
        "POST {to:'外人'}", "400/422 拒绝;★否则他接受的瞬间成了一个自己都进不去的项目的主持人★(T3)", "D0"),
     c!(deny "POST", "/api/projects/{id}/transfer", "admin 不能转移主持人", "我是 admin 非 owner", "POST {to:'x'}", "403", "D0"),
+    // ★谁挡着归档★(2026-08-14):liaoruili「你要直接弹出来要取消的项目列表,然后一键取消」——
+    // 界面靠这条接口把挡路的活动全列出来,再一键取消并归档。
+    c!("GET", "/api/projects/{id}/archive-blockers", "列出挡着归档的活动,并标出我能不能取消",
+       "项目里有 2 场未开始的活动:一场我发起、一场别人发起",
+       "GET .../archive-blockers",
+       "200,total=2,两条都在 items 里;★我发起的那条 can_cancel=true、别人那条 false★ ——\
+        界面靠它把「我取消不了的」标灰,不然批量取消会默不作声地跳过它们", "D17"),
+    c!("GET", "/api/projects/{id}/archive-blockers", "★判据必须和 archive 完全一致★",
+       "项目里只有**已开始**的活动",
+       "GET .../archive-blockers,再 POST .../archive",
+       "blockers 回 total=0,archive 回 200 —— ★两处 WHERE 一旦漂移,就会出现\
+        「清单说没有挡路的、点下去照样被拒」这种最难查的错★", "D17"),
+    c!(deny "GET", "/api/projects/{id}/archive-blockers", "不是主持人就不给看",
+       "我是这个项目的 editor,不是主持人", "GET .../archive-blockers", "403", "D17"),
     c!("POST", "/api/projects/{id}/archive", "归档后变只读", "我是 owner,项目里有材料",
        "POST {} 归档,再试上传/建活动/改名",
        "归档 200;之后写操作一律 ★409★(不是 403)——语义是「项目结束了」不是「你没权限」,\
