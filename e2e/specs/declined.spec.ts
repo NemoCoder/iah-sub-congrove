@@ -13,6 +13,7 @@
 //   这条也顺带钉住了 —— 见「接口仍然返回」那一段。
 import { expect, request as pwRequest, test, type Page } from '@playwright/test'
 import { 会议 } from './_presets'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -151,3 +152,7 @@ test.describe('拒绝掉的活动', () => {
     } finally { await Promise.all([host.dispose(), 他.dispose()]) }
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('已拒绝')

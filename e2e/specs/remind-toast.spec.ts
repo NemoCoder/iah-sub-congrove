@@ -20,11 +20,26 @@
 //   ⑤ 等那一轮轮询:since 早于 reminded_at,★不修的话它一定会被返回、一定会弹★
 // 顺序错一步,这条用例就退化成一句废话。
 import { expect, request as pwRequest, test, type APIRequestContext, type Page } from '@playwright/test'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { 会议 } from './_presets'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
+
+/// ★截图目录跟着版本走,别写死★（2026-08-14 liaoruili:「你的截图怎么没有放到 146 文件夹」）。
+/// 我第一版把 `v0.4.145` 硬编码进路径 —— 那不只是「这一次放错了」:
+/// ★以后每一轮都会往那个旧目录里写★,版本一直涨而截图永远堆在 145 下,
+/// 于是「某版的实拍」这个目录结构当场失效,而它看起来完全正常(图确实生成了)。
+/// 真相源是 `web/src/version.ts`(和 Cargo.toml 同步的那两处之一),现读它。
+function 截图目录(子: string): string {
+  const src = readFileSync(new URL('../../web/src/version.ts', import.meta.url), 'utf8')
+  const v = /VERSION\s*=\s*'([^']+)'/.exec(src)?.[1] ?? 'unknown'
+  const d = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${v}/${子}`
+  mkdirSync(d, { recursive: true })
+  return d
+}
 const 发起人 = 'e2e-host'
 const 主 = (who: string) => pwRequest.newContext({
   baseURL: BASE, extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': who },
@@ -70,9 +85,8 @@ test.describe('提醒弹窗(有头浏览器)', () => {
       await expect(page.getByText(标题).first(), '弹的得是这一场').toBeVisible()
       // 「还有 N 分钟开始」里的数字是这条通知唯一要人立刻读到的东西
       await expect(page.getByText(/还有/).first()).toBeVisible()
-      await page.screenshot({
-        path: '/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/v0.4.145/提醒弹窗/01-弹出来了.png',
-        fullPage: true }).catch(() => {})
+      await page.screenshot({ path: `${截图目录('提醒弹窗')}/01-弹出来了.png`, fullPage: true })
+        .catch(() => {})
     } finally { await host.dispose() }
   })
 
@@ -108,3 +122,7 @@ test.describe('提醒弹窗(有头浏览器)', () => {
     } finally { await Promise.all([host.dispose(), 他.dispose()]) }
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('提醒弹窗')

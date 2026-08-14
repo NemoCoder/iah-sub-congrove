@@ -20,6 +20,7 @@
 // ★全套 Playwright 一律跑在 .14 的有头浏览器上★(见 playwright.config.ts 的注释),
 // 所以直接 `npx playwright test specs/acceptance-v05.spec.ts` 就能在那台屏幕上看着它走。
 import { expect, request as pwRequest, test, type APIRequestContext, type Page } from '@playwright/test'
+import { 每条都留图 } from './_shot'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -214,20 +215,52 @@ test.describe('v0.5 验收', () => {
   })
 
   test('★M2 归档拦截：还有未开始的活动就不许归档，并且说清是哪几场★', async ({ page }) => {
+    // ⚠★这条原来是纯接口用例★(2026-08-14 因为「它没留下截图」才发现)：
+    //   它声明了 `{ page }` 却**从头到尾没用过**,只验 `HTTP 400` 和响应体里有没有那个标题。
+    //   ★那违反了这份 spec 头注写的第一条硬规矩★：「走界面,不走接口——判据说的是
+    //   『人能不能做成』」。而人是在项目行的「⋯」菜单里点「归档项目」的,
+    //   ★那一路有没有把「是哪几场」显示出来,此前没有任何人验过★。
+    //   (顺带纠正一个统计错误:我先前按「声明了 page 参数」数界面用例 ——
+    //    ★声明 ≠ 用★,真实数字比我报的少一条。)
+    test.slow()
     const t = tag(), 我 = 'e2e-m2b'
     const api = await 接口(我)
     try {
-      const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M2-归档-${t}` } })).json()).id
+      const 项目名 = `E2E-M2-归档-${t}`
+      const pid = (await (await api.post('/api/projects', { data: { name: 项目名 } })).json()).id
       const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(10, 0, 0, 0)
       await api.post('/api/activities', {
         data: { type_id: 1, title: `E2E-M2-未来会-${t}`, recorder: 我, project_ids: [pid],
                 starts_at: 明天.toISOString(), ends_at: new Date(明天.getTime() + 3600e3).toISOString() },
       })
+
+      // ① 先钉住接口这一半(判据的「必须被拒」+「说清是哪几场」)
       const 拒 = await api.post(`/api/projects/${pid}/archive`, { data: { archived: true } })
       expect(拒.status(), '★有未开始的活动,归档必须被拒★').toBe(400)
-      const 话 = await 拒.text()
-      // ★光拒绝不够,判据要求「告诉我是哪几场」★ —— 只说「不行」的话，人不知道该去处理什么
-      expect(话, `★没告诉我是哪几场：${话}★`).toContain(`E2E-M2-未来会-${t}`)
+      expect(await 拒.text(), '★接口没告诉我是哪几场★').toContain(`E2E-M2-未来会-${t}`)
+
+      // ② ★再走人真正走的那条路★:项目 →「⋯」→ 归档项目 → 确认
+      await 开页(page, 我)
+      await nav(page, '项目')
+      await page.getByText(项目名).first().click(); await page.waitForTimeout(1200)
+      // 「⋯」在项目行上,悬停才显形;直接点行内那个按钮
+      const 行 = page.locator('.ant-card').filter({ hasText: '项目' }).first()
+      await 行.getByText(项目名).first().hover(); await page.waitForTimeout(300)
+      await page.locator('button').filter({ hasText: /^⋯$|^\.\.\.$/ }).first().click().catch(async () => {
+        await page.getByRole('button', { name: '⋯' }).first().click()
+      })
+      await page.waitForTimeout(700)
+      await page.locator('.ant-dropdown-menu-item:visible').filter({ hasText: '归档项目' }).first().click()
+      await page.waitForTimeout(700)
+      await page.getByRole('button', { name: /归\s*档/ }).last().click()
+
+      // ③ ★界面必须把「是哪几场」说出来★ —— 判据的后半句在这里才算真的验到。
+      //   ⚠ `onOk` 里是 `await api(...)` 且**没有 try/catch**:后端回 400 时它抛异常,
+      //     `message.success` 不执行 —— 那句话到底有没有显示给人,全看 antd 怎么处理这个
+      //     rejection。★这正是接口用例盖住的那一半。★
+      await expect(page.getByText(new RegExp(`E2E-M2-未来会-${t}`)).first(),
+        '★界面上没把「是哪几场」显示出来 —— 人只知道归不了档,不知道该去处理什么★')
+        .toBeVisible({ timeout: 10_000 })
     } finally { await api.dispose() }
   })
 
@@ -338,3 +371,7 @@ test.describe('v0.5 验收', () => {
     } finally { await api.dispose() }
   })
 })
+
+
+// ★每条界面用例都留一张全页图★(见 _shot.ts:他要能逐张看)
+每条都留图('v05验收')
