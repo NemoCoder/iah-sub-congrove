@@ -40,7 +40,14 @@ export function 每条都留图(子目录: string) {
       if (!u || u.startsWith('about:')) return          // 纯接口用例:没开过页面
       const 名 = `${info.title}`.replace(/[\/\s]+/g, '_').replace(/[^\w一-龥.-]/g, '').slice(0, 60)
       const 记 = info.status === 'passed' ? '' : `-${info.status}`
-      await page.screenshot({ path: `${截图目录(子目录)}/${名}${记}.png`, fullPage: true })
+      // ⚠★给截图单独设短超时,而且要短★（2026-08-14 它把一条用例弄红了）:
+      //   `afterEach` **共用那条用例的时间预算**。提醒弹窗那条本来就要等两轮 60 秒轮询、
+      //   耗掉大半个 300 秒,截图再一挤就整条超时 —— 报的是
+      //   「Test timeout … while running "afterEach" hook」,★产品和判据都没问题,
+      //   是我加的**证据收集**把用例拖红了★。
+      //   下面那个 catch 只挡得住**异常**,挡不住**超时**(超时是 Playwright 掐的,不走 catch)。
+      // ★证据不该有能力弄红判据★ —— 截不出来就不截,绝不为一张图牺牲一条判据。
+      await page.screenshot({ path: `${截图目录(子目录)}/${名}${记}.png`, fullPage: true, timeout: 8000 })
     } catch { /* 截图失败绝不能把用例本身弄红 —— 它是证据,不是判据 */ }
   })
 }
