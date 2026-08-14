@@ -29,6 +29,9 @@ DIR=e2e/golden; BASE=$DIR/shape-baseline.json; EXP=$DIR/shape-expected.diff
 
 # golden.mjs 打指纹到 stdout;api-shape.mjs 归约成形状。
 # ★golden.mjs 失败必须当红,不能把空输出当成「形状是空的」★（本仓栽过五次「工具没跑→报绿」）。
+# ⚠ $1 给基线路径时,api-shape.mjs 会把「本轮没采到样本」的格子**沿用基线的值**
+#   —— 「这轮没数据」不是「形状变了」的证据(见 api-shape.mjs 里那段长注释)。
+#   冻基线(baseline / freeze)时**不传**,让哨兵原样落进基线。
 render() {
   local t rc
   t=$(mktemp)
@@ -38,7 +41,7 @@ render() {
     echo "★golden.mjs 没跑成(exit=$rc,输出 $(stat -c%s "$t" 2>/dev/null || echo 0) 字节)—— 中止★" >&2
     rm -f "$t"; return 1
   fi
-  node e2e/api-shape.mjs "$t"; rc=$?
+  node e2e/api-shape.mjs "$t" ${1:+"$1"}; rc=$?
   rm -f "$t"; return $rc
 }
 
@@ -56,7 +59,7 @@ freeze)
   echo "→ ★逐行读一遍★:每一行都该是你**打算**造成的响应体变化。" ;;
 check)
   [ -f "$BASE" ] || { echo "没有基线,先跑 $0 baseline"; exit 2; }
-  T=$(mktemp); render > "$T" || { rm -f "$T"; exit 1; }
+  T=$(mktemp); render "$BASE" > "$T" || { rm -f "$T"; exit 1; }
   A=$(mktemp); diff -u --label baseline --label current "$BASE" "$T" > "$A"; rm -f "$T"
   if [ ! -s "$A" ]; then
     # ★「你什么都没做」不能是全绿★:声明了预期变更却一处差异都没有 = 改动没部署,或声明是陈的

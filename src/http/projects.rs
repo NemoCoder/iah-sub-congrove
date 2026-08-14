@@ -73,7 +73,7 @@ pub async fn ensure_platform_user(state: &AppState, username: &str) -> AppResult
 
 /// 全部空间的已用量一把查(items ∪ item_versions 按 (s3_key,size) 去重)。
 async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i64, i64>> {
-    // items-ok: 配额 —— ★「回收站里的内容仍占用项目配额」是明写的规矩★,不数上就漏算
+    // items-ok: 配额 —— ★「回收站里的内容仍计入配额」是明写的规矩★(配额按人算,ADR-0004),不数上就漏算
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT pid, COALESCE(sum(sz),0)::bigint FROM (
            SELECT DISTINCT i.project_id pid, i.s3_key k, i.size sz FROM items i WHERE i.s3_key IS NOT NULL

@@ -1385,14 +1385,18 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
       </Typography.Paragraph>
       <AntSpace.Compact style={{ width: '100%', marginBottom: 8 }}>
         <Input value={diagName} onChange={(e) => setDiagName(e.target.value)} placeholder="用户名" />
-        {/* ★空用户名时把按钮禁掉,别留一个「点了什么都不做」的按钮★
-            (2026-08-15 逐张看巡检截图看出来的,六个项目全一样):
+        {/* ★别留一个「点了什么都不做」的按钮★(2026-08-15 逐张看巡检截图看出来的,六个项目全一样):
             原来是 `onClick` 里 `if (!diagName.trim()) return` —— 静默 return,而按钮**可点**。
-            于是点下去页面毫无反应,人分不清是「查了但没这个人」「我没权限查」还是「页面坏了」,
-            ★而这三种情况下一步该做的事完全不同★。禁用态自解释,不必再加一句提示文案。
+            点下去页面毫无反应,人分不清是「查了但没这个人」「我没权限查」还是「页面坏了」,
+            ★而这三种情况下一步该做的事完全不同★。
             ⚠ 巡检报告永远抓不到这一格:它只认「点不动 / 前端报错 / HTTP≥400」,
-              而这里点得动、不报错、连请求都没发。 */}
-        <Button disabled={!diagName.trim()} onClick={async () => {
+              而这里点得动、不报错、连请求都没发。
+            ★为什么是弹提示而不是禁用按钮★:**同一张卡片上**另外两个按钮的做法已经定了调 ——
+              「批量添加」空着点会弹「先选人」、「保存」空着点会弹「已保存」(清空词表是合法操作)。
+              三个按钮里只有这一个是哑的。做成禁用虽然也讲得通,却是**第三种**行为,
+              ★卡片内部一致比我个人偏好哪种更重要★ —— 人看的是这一片区域,不是单个控件。 */}
+        <Button onClick={async () => {
+          if (!diagName.trim()) { message.warning('先填用户名'); return }
           try {
             setDiag(await api<Diagnose>(
               `/api/projects/${space.id}/diagnose?username=${encodeURIComponent(diagName.trim())}`))
@@ -1473,7 +1477,12 @@ function TrashDrawer({ space, open, onClose, onChanged }:
   return (
     <Drawer title="🗑 回收站" open={open} onClose={onClose} width={760}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍占用项目配额</b>。
+        {/* ★「项目配额」这个东西已经不存在了★(2026-08-15 逐张看巡检截图看出来的):
+            ADR-0004 起配额**按人算**(`user_quota`),库里根本没有项目级配额;
+            个人面板那句写的是「算的是你名下所有项目之和;同一份内容放进多个项目只算一次」。
+            ⚠ 这不是措辞问题:说成「项目配额」会让人以为**把文件挪到别的项目就能腾空间** ——
+            而实际按人算、同内容还去重,挪了等于没挪,人会白折腾一圈还以为是系统没生效。 */}
+        删除的内容在这里保留 <b>30 天</b>,之后自动清除。回收站里的内容<b>仍计入你的配额</b>（按人算,不按项目）。
       </Typography.Paragraph>
       <Table size="small" rowKey="id" dataSource={rows} loading={loading}
         // ★把 total 交给 AntD 自己算页数★:它显示的「共 N 条」直接来自服务端,
@@ -1569,9 +1578,24 @@ function ProjectActivities({ projectId }: { projectId: number }) {
             options={[{ value: 'month', label: '本月' }, { value: 'quarter', label: '本季度' }, { value: 'year', label: '本年' }]} />
           <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.activities}</b> 次活动</span>
           <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.hours}</b> 小时</span>
-          <span>参会率 <b>{Math.round(stats.accept_rate * 100)}%</b>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{stats.accepted}/{stats.invited}）</Typography.Text></span>
-          {stats.avg_hours_per_person != null && <span>人均 <b>{stats.avg_hours_per_person}</b> h</span>}
+          {/* ★没人可邀请时别报「0%」★(2026-08-15 逐张看巡检截图看出来的):
+              空项目上原来渲染成「参会率 **0%**(0/0)」—— 读起来是**「叫了人但没人来」**,
+              而事实是「压根没有可度量的东西」。★0/0 不是 0,把它算成 0 就是在编一个坏消息★。
+              判据照抄旁边的「人均」:那一项**早就**有 `!= null` 守卫,
+              说明这套代码本来就知道「没意义的数字要藏起来」,只是参会率漏了。
+              下面的空态已经写着「这个项目还没有活动」,不必再补一句解释。 */}
+          {stats.invited > 0 && (
+            <span>参会率 <b>{Math.round(stats.accept_rate * 100)}%</b>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{stats.accepted}/{stats.invited}）</Typography.Text></span>
+          )}
+          {/* ★「人均」这个词把这个数说错了★(2026-08-15 逐张看巡检截图看出来的)。
+              后端算的是 `SUM(每场时长 × 该场接受人数) / SUM(接受人数)` —— ★分母是**人次**,不是人数★
+              (`activities.rs` 那段注释自己写着「分母是人次」,变量却叫 `per_person`)。
+              实拍反例:课题组·计量经济学 3 场、共 4 小时、每场只有 liaoruili 一个人 →
+              显示「人均 1.3 h」,而**那个人实际坐了 4 小时** —— ★少报了 3 倍★。
+              数没算错,是名字把它说成了另一件事;而「人均」正是最容易被当成「每人花了多久」的说法。
+              改叫「每人次」:它字面就是分母,读的人不会再往「每个人」上想。 */}
+          {stats.avg_hours_per_person != null && <span>每人次 <b>{stats.avg_hours_per_person}</b> h</span>}
           <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.activities}</span>
         </AntSpace>
         {stats.hours > 0 && (

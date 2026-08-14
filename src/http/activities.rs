@@ -2008,7 +2008,9 @@ pub async fn project_stats(
         (i64, f64, f64, f64, f64, i64, i64, i64) =
         sqlx::query_as(sql).bind(pid).bind(range).fetch_one(&state.pool).await?;
 
-    // 人均时长:总时长 × 接受人数 / 活动数……不对。★人均 = Σ(每场时长 × 该场接受人数) / 人次★
+    // 每人次平均时长:总时长 × 接受人数 / 活动数……不对。★= Σ(每场时长 × 该场接受人数) / 人次★
+    // ⚠★别叫它「人均」★(2026-08-15 界面改过来了):分母是**人次**,
+    //   3 场每场 1 人共 4h → 这个数是 1.3,而那个人实际坐了 4h。叫「人均」会少报 3 倍。
     // 简化成「总时长 / 活动数 × 参会率」会在各场人数差异大时明显失真,所以直接按人次算。
     let per_person: Option<f64> = sqlx::query_scalar(
         "SELECT SUM(h * acc) / NULLIF(SUM(acc), 0) FROM (

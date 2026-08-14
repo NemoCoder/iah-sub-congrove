@@ -63,8 +63,43 @@ const 形 = (v) => {
   return typeof v
 }
 
+/// ★「这一轮没采到样本」不等于「形状变了」★（2026-08-15，这条闸第三次栽在同一个地方才治对）：
+///   `by_project` 这类集合**时有时无**：teardown 刚清完就是空的，跑过用例就有数据。
+///   前两次我都在纠结**空数组该标成什么**（先是 `[{}]`，后是 `[]`，再后来是哨兵字符串）——
+///   ★可无论标成什么，「空」和「有元素」都是两个不同的值，冻住哪一边，另一边来的时候就红。★
+///   而且我上次还宣布「连跑两次都绿，证明防抖生效」—— **那两次数据状态是一样的**，
+///   ★同状态连跑两次，证明不了跨状态稳定。★
+///
+///   真正的判据不在「怎么标」，在**比对**：某一格这轮没有样本时，它**不构成证据**，
+///   应当直接沿用基线在该处的值，于是它既不报红、也不会把基线冲掉。
+///   代价：空的时候这一格失去守护（本来也无从守护——没有元素可看）；
+///   收益：这一格只在**真的加/删字段**时才红，而那正是这道闸存在的理由。
+const 无样本 = '<空数组:本次没数据>'
+/// 把 cur 里所有「无样本」的位置，就地换成 base 在同一路径上的值。
+/// ⚠★两个方向都要处理★（第一版只写了一半，当场又红了一次）：
+///   · **这轮没样本**（cur 是哨兵）→ 沿用 base：这轮没证据，不该报红；
+///   · **基线是哨兵**（当初冻基线那一刻恰好没数据）→ 也当没证据，跟着回哨兵。
+///     否则一旦基线在「空」的时刻被冻住，这一格就**永远**对不上了。
+///   ⚠ 后一条的代价要说清:那一格在**重新冻一次带数据的基线之前**是没有守护的。
+///     所以冻基线要挑**有数据**的时候冻 —— 这一点写进了 shape-check.sh 的用法注释。
+function 填空(cur, base) {
+  if (base === 无样本) return 无样本
+  if (cur === 无样本) return base === undefined ? cur : base
+  if (Array.isArray(cur)) return cur.map((x, i) => 填空(x, Array.isArray(base) ? base[i] : undefined))
+  if (cur && typeof cur === 'object') {
+    const o = {}
+    for (const k of Object.keys(cur)) o[k] = 填空(cur[k], base && typeof base === 'object' ? base[k] : undefined)
+    return o
+  }
+  return cur
+}
+
 const 读 = () => (process.argv[2] ? readFileSync(process.argv[2], 'utf8') : readFileSync(0, 'utf8'))
 const d = JSON.parse(读())
-const out = {}
+let out = {}
 for (const k of Object.keys(d).sort()) out[k] = 形(d[k])
+// 第二个参数给基线路径时启用「没样本就沿用基线」。冻基线时不传，于是哨兵原样写进基线。
+if (process.argv[3]) {
+  try { out = 填空(out, JSON.parse(readFileSync(process.argv[3], 'utf8'))) } catch { /* 没基线就算了 */ }
+}
 console.log(JSON.stringify(out, null, 1))
