@@ -90,7 +90,9 @@ pub async fn user_options(
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT username, name FROM app_user
           WHERE username ILIKE $1 ESCAPE '\\' OR name ILIKE $1 ESCAPE '\\'
-          ORDER BY username LIMIT 20",
+          ORDER BY username -- limit-ok: 输入即搜的候选 —— typeahead 取前 20 个,人再敲一个字就换一批;
+              --   ★它不是「用户列表」★:平台明令不做用户 list/search(会变成目录枚举)。
+              LIMIT 20",
     )
     .bind(&like)
     .fetch_all(&state.pool)

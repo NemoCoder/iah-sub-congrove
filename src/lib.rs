@@ -177,6 +177,7 @@ async fn cleanup_stale_uploads(state: AppState) {
               WHERE i.deleted_at IS NOT NULL AND i.deleted_at < now() - interval '30 days'
                 AND (i.parent_id IS NULL OR NOT EXISTS (
                       SELECT 1 FROM items p WHERE p.id = i.parent_id AND p.deleted_at IS NOT NULL))
+              -- limit-ok: 分批处理 —— 清扫任务每轮取 200 条,下一轮接着来,一条都不会丢。
               LIMIT 200",
         ).fetch_all(&state.pool).await.unwrap_or_default();
         for iid in expired {
@@ -189,7 +190,9 @@ async fn cleanup_stale_uploads(state: AppState) {
         // 到这一步才 FK CASCADE + 按引用计数删对象 —— 软删期间 S3 一个字节都没动过。
         let dead: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM projects
-              WHERE deleted_at IS NOT NULL AND deleted_at < now() - interval '30 days' LIMIT 20",
+              WHERE deleted_at IS NOT NULL AND deleted_at < now() - interval '30 days'
+              -- limit-ok: 分批处理 —— 同上,每轮 20 个项目。
+              LIMIT 20",
         ).fetch_all(&state.pool).await.unwrap_or_default();
         for pid in dead {
             match crate::http::projects::purge_project(&state, pid).await {

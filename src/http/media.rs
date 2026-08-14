@@ -397,7 +397,7 @@ pub async fn play(
     // /api/items/{id}/play 就拿到原件下载地址。所以这里钉死 kind。
     // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的录屏不再吐预签名直链。
     let row: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT kind, s3_key FROM items WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query_as("SELECT kind, s3_key FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;

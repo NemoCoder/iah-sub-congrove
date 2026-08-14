@@ -180,11 +180,11 @@ pub async fn mine(
         "SELECT l.token, i.id, i.kind, i.name, i.mime, s.name,
                 l.expires_at, l.max_visits, l.visits, l.allow_download, l.created_at,
                 l.revoked_at, l.last_visit_at, (l.code_hash IS NOT NULL),
-                (SELECT count(*) FROM share_items si JOIN items si2 ON si2.id = si.item_id
+                (SELECT count(*) FROM share_items si JOIN items_alive si2 ON si2.id = si.item_id
                   WHERE si.token = l.token AND si2.deleted_at IS NULL),
                 (i.deleted_at IS NOT NULL)
            FROM share_links l
-           JOIN items  i ON i.id = l.item_id
+           JOIN items_alive  i ON i.id = l.item_id
            JOIN projects s ON s.id = i.project_id
           WHERE l.created_by = $1
           ORDER BY l.created_at DESC LIMIT $2 OFFSET $3",
@@ -232,7 +232,7 @@ struct Live { item_id: i64, has_code: bool, salt: Option<String>, hash: Option<S
 /// ★过滤已软删除的根★(v0.3.55 审计):删进回收站的东西不该继续在墙外可达。
 async fn share_roots(pool: &sqlx::PgPool, token: &str, main: i64) -> AppResult<Vec<i64>> {
     let rows: Vec<i64> = sqlx::query_scalar(
-        "SELECT si.item_id FROM share_items si JOIN items i ON i.id = si.item_id
+        "SELECT si.item_id FROM share_items si JOIN items_alive i ON i.id = si.item_id
           WHERE si.token = $1 AND i.deleted_at IS NULL",
     ).bind(token).fetch_all(pool).await?;
     Ok(if rows.is_empty() { vec![main] } else { rows })
@@ -250,7 +250,7 @@ async fn live(pool: &sqlx::PgPool, token: &str) -> AppResult<Live> {
     // 单个子项被删由 pub_list/pub_file 各自过滤,不牵连整条链接。
     let row: Option<(i64, Option<String>, Option<String>, bool)> = sqlx::query_as(
         "SELECT l.item_id, l.code_salt, l.code_hash, l.allow_download FROM share_links l
-           JOIN items i ON i.id = l.item_id
+           JOIN items_alive i ON i.id = l.item_id
           WHERE l.token = $1 AND l.revoked_at IS NULL AND i.deleted_at IS NULL
             AND (l.expires_at IS NULL OR l.expires_at > now())
             AND (l.max_visits IS NULL OR l.visits < l.max_visits)",
@@ -350,7 +350,7 @@ pub async fn pub_list(
         Some(p) => { ensure_any_descendant(&state.pool, &roots, p).await?; p }
         None if roots.len() > 1 => {
             let rows: Vec<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> =
-                sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items
+                sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items_alive
                                  WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY kind = 'folder' DESC, name")
                     .bind(&roots).fetch_all(&state.pool).await?;
             return Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, at)| json!({
@@ -361,7 +361,7 @@ pub async fn pub_list(
     };
     // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的子项不列给访客。
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "SELECT id, kind, name, size, mime, created_at FROM items
+        "SELECT id, kind, name, size, mime, created_at FROM items_alive
           WHERE parent_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     ).bind(parent).fetch_all(&state.pool).await?;
@@ -387,7 +387,7 @@ pub async fn pub_file(
     }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的原件不再从公开面吐出去。
     let row: Option<(Option<String>, String, Option<String>)> =
-        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1 AND deleted_at IS NULL").bind(iid)
+        sqlx::query_as("SELECT s3_key, name, mime FROM items_alive WHERE id = $1 AND deleted_at IS NULL").bind(iid)
             .fetch_optional(&state.pool).await?;
     let Some((Some(key), name, mime)) = row else { return Err(AppError::NotFound) };
     let (stream, len) = state.storage.get_stream(&key).await.map_err(AppError::Other)?;
@@ -412,7 +412,7 @@ pub async fn pub_file(
 
 async fn item_brief(pool: &sqlx::PgPool, iid: i64) -> AppResult<serde_json::Value> {
     let row: Option<(i64, String, String, Option<i64>, Option<String>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid).fetch_optional(pool).await?;
     let (id, kind, name, size, mime, at) = row.ok_or(AppError::NotFound)?;
     Ok(json!({ "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at }))
@@ -433,8 +433,8 @@ async fn ensure_descendant(pool: &sqlx::PgPool, root: i64, target: i64) -> AppRe
     if root == target { return Ok(()) }
     let ok: bool = sqlx::query_scalar(
         "WITH RECURSIVE up AS (
-           SELECT id, parent_id FROM items WHERE id = $2 AND deleted_at IS NULL
-           UNION ALL SELECT i.id, i.parent_id FROM items i JOIN up ON i.id = up.parent_id
+           SELECT id, parent_id FROM items_alive WHERE id = $2 AND deleted_at IS NULL
+           UNION ALL SELECT i.id, i.parent_id FROM items_alive i JOIN up ON i.id = up.parent_id
             WHERE i.deleted_at IS NULL
          ) SELECT EXISTS (SELECT 1 FROM up WHERE id = $1)",
     ).bind(root).bind(target).fetch_one(pool).await?;

@@ -358,6 +358,24 @@ CREATE INDEX IF NOT EXISTS idx_items_s3key ON items (s3_key) WHERE s3_key IS NOT
 CREATE INDEX IF NOT EXISTS idx_items_resume ON items (project_id, created_by, upload_fp) WHERE s3_key IS NULL;
 -- 活动只读区:按活动列它的材料。
 CREATE INDEX IF NOT EXISTS idx_items_activity ON items (activity_id) WHERE activity_id IS NOT NULL;
+
+-- ★活的条目★（2026-08-14）——「凡是读内容的路径,SQL 都必须带 `deleted_at IS NULL`」这条
+-- 硬纪律的**唯一真相源**。读内容的查询一律 `FROM items_alive`,别碰裸表。
+--
+-- ══ 为什么非要一个视图 ══
+-- 软删除是后加的,加的时候只有 tree/precheck 补了过滤,download/content/play/detail
+-- 以及**整个公开分享面**全漏了 —— 「删进回收站的材料,墙外的链接照样列得出、下得到」,
+-- v0.3.55 一次补齐 11 处。2026-08-14 的软删矩阵又抓到 5 处
+-- (/versions /progress /subtitles.vtt /analysis items/{id}/shares,后两个漏的是**内容正文**)。
+-- ★两次都是「有一条规矩,但要靠每个人每次都记得」★ —— 那不是规矩,是运气。
+-- 视图把它变成:想漏都漏不掉,因为裸表根本不在你手上。
+-- 同一招本仓已经用过两次并且很成功:`super_now`(现在是不是超管)、
+-- `activities_owing_minutes`(哪些活动欠纪要)。
+--
+-- ⚠★不是所有地方都该用它★:回收站列表、undelete、purge、引用计数、配额
+--   (「回收站里的内容仍占用项目配额」是明写的规矩)**必须**读得到已删行 —— 它们照旧查 `items`。
+--   ★所以判据是「读内容 → items_alive;管回收站生命周期 → items」★,而不是「一律换掉」。
+CREATE VIEW items_alive AS SELECT * FROM items WHERE deleted_at IS NULL;
 -- ★一场活动在一个项目里只有一个文件夹★(2026-08-09):活动材料落在
 -- 「根 / YYYY-MM-DD 活动标题」这个专属文件夹里,不再散在项目根目录。
 -- 这条唯一索引不只是约束,更是**并发兜底**:同时传两个文件时两边都查不到文件夹、

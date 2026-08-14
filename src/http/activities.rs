@@ -1144,7 +1144,7 @@ pub async fn activity_items(
     }
     let rows: Vec<ActivityItem> = sqlx::query_as(
         "SELECT id, name, kind, size, mime, coalesce(is_recording,false) AS is_recording, created_by, created_at
-           FROM items WHERE activity_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
+           FROM items_alive WHERE activity_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
           ORDER BY is_recording, created_at")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(rows))
@@ -1547,13 +1547,13 @@ pub async fn my_stats(
         SELECT m.id, m.recorder,
                COALESCE(
                  (SELECT max(t.duration_sec)/3600.0
-                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                    WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                  m.actual_minutes/60.0,
                  EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
                ) AS hours,
                CASE
-                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                                WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
                                  AND t.duration_sec IS NOT NULL) THEN 'recording'
                  WHEN m.actual_minutes IS NOT NULL THEN 'manual'
@@ -1602,13 +1602,13 @@ pub async fn my_stats(
         SELECT m.id, m.type_id,
                COALESCE(
                  (SELECT max(t.duration_sec)/3600.0
-                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                    WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                  m.actual_minutes/60.0,
                  EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
                ) AS hours,
                CASE
-                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                                WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
                                  AND t.duration_sec IS NOT NULL) THEN 'recording'
                  WHEN m.actual_minutes IS NOT NULL THEN 'manual'
@@ -1751,6 +1751,8 @@ pub async fn my_unread(
             ORDER BY mm.activity_id, mm.created_at DESC
          ) x
          JOIN activities m ON m.id = x.activity_id AND m.status = 'active'
+         -- limit-ok: 刻意举例 —— 这是「最近的消息」摘要,语义本来就是「最近 N 条」;
+         --   全部消息在活动详情页里,不靠这个接口翻。
          ORDER BY x.created_at DESC LIMIT 20")
         .bind(who).fetch_all(&state.pool).await?;
 
@@ -1943,13 +1945,13 @@ pub async fn project_stats(
         SELECT m.id,
                COALESCE(
                  (SELECT max(t.duration_sec)/3600.0
-                    FROM items i JOIN transcripts t ON t.item_id = i.id
+                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                    WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                  m.actual_minutes/60.0,
                  EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
                ) AS hours,
                CASE
-                 WHEN EXISTS (SELECT 1 FROM items i JOIN transcripts t ON t.item_id = i.id
+                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                                WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
                                  AND t.duration_sec IS NOT NULL) THEN 'recording'
                  WHEN m.actual_minutes IS NOT NULL THEN 'manual'
@@ -1984,7 +1986,7 @@ pub async fn project_stats(
     let per_person: Option<f64> = sqlx::query_scalar(
         "SELECT SUM(h * acc) / NULLIF(SUM(acc), 0) FROM (
            SELECT COALESCE(
-                    (SELECT max(t.duration_sec)/3600.0 FROM items i JOIN transcripts t ON t.item_id = i.id
+                    (SELECT max(t.duration_sec)/3600.0 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
                       WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
                     m.actual_minutes/60.0,
                     EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
