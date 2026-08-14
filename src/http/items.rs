@@ -242,6 +242,7 @@ async fn find_activity_folder(pool: &sqlx::PgPool, pid: i64, mid: i64) -> AppRes
 
 /// item 所属空间(判权都要先拿它;不存在 = 404)。
 pub async fn project_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
+    // items-ok: 纯归属解析 —— 只取 project_id 判权;读内容请用 project_of_alive(已删一律 404)
     sqlx::query_scalar("SELECT project_id FROM items WHERE id = $1")
         .bind(item_id)
         .fetch_optional(pool)
@@ -629,6 +630,7 @@ pub async fn update(
     //   (和 AI 摘要那个 kind、时间粒度只写进一处,是同一族问题:说过 ≠ 做了。)
     // 为什么必须挡在**后端**:名字与位置是**从活动派生**的(日期+标题、根下独立文件夹) ——
     // 允许改名就等于允许把「某场会的材料」伪装成别的东西,而活动页那边完全看不出来。
+    // items-ok: 纯归属解析 —— 改名/移动时判它是不是活动材料(活动材料在项目树里只读)
     let from_activity: Option<i64> = sqlx::query_scalar(
         "SELECT activity_id FROM items WHERE id = $1").bind(iid).fetch_one(&state.pool).await?;
     if from_activity.is_some() {
@@ -638,6 +640,7 @@ pub async fn update(
         check_parent(&state.pool, pid, new_parent).await?;
         if let Some(np) = new_parent {
             // 递归 CTE 查 np 的祖先链里有没有 iid(含 np 自己):有 = 成环,拒。
+            // items-ok: 纯归属解析 —— 上溯父链做防环校验,链上可能有已删的祖先
             let cyclic: bool = sqlx::query_scalar(
                 "WITH RECURSIVE up AS (
                    SELECT id, parent_id FROM items WHERE id = $1
@@ -687,6 +690,7 @@ pub async fn remove(
     // ★入口不同,接口就该不同★ —— 后端看不见「用户点的是哪个页面」,
     // 只靠前端藏按钮的话,这条规则等于没有(本仓库自己的原则:前端隐藏不是安全边界)。
     // 想删就走 DELETE /api/activities/{mid}/items/{iid},那条路上删的人知道自己在删一场会的材料。
+    // items-ok: 纯归属解析 —— 删除前取 activity_id,判材料区口径
     let from_activity: Option<i64> = sqlx::query_scalar(
         "SELECT activity_id FROM items WHERE id = $1").bind(iid).fetch_one(&state.pool).await?;
     if from_activity.is_some() {
@@ -726,6 +730,7 @@ pub async fn trash(
     //   `COUNT(*) OVER()` 一次查询同时拿到本页和总数,不多跑一趟。
     let (limit, offset) = q.slice();
     let rows: Vec<(i64, String, String, Option<i64>, Option<String>, String,
+                   // items-ok: 回收站生命周期 —— 这个接口的**对象就是**已删的行
                    chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
         "SELECT i.id, i.kind, i.name, i.size, i.mime, COALESCE(i.deleted_by,''), i.deleted_at,
                 COUNT(*) OVER() AS total
@@ -769,11 +774,13 @@ pub async fn undelete(
     //   删文件 a(T1) → 删它的父目录 F(T2,a 因已有标记不动) → 还原 F ⇒ a 也回来了。
     // 用户明确删过的东西自己爬回来,是数据错误,不是便利。
     let batch: Option<chrono::DateTime<chrono::Utc>> =
+        // items-ok: 回收站生命周期 —— undelete 前确认它确实在回收站里
         sqlx::query_scalar("SELECT deleted_at FROM items WHERE id = $1")
             .bind(iid).fetch_optional(&mut *tx).await?.flatten();
     let Some(batch) = batch else {
         return Err(AppError::BadRequest("这一项不在回收站里".into()));
     };
+    // items-ok: 回收站生命周期 —— 还原整棵子树,子树上全是已删的行
     let n = sqlx::query(
         "WITH RECURSIVE sub AS (
            SELECT id FROM items WHERE id = $1
@@ -785,6 +792,7 @@ pub async fn undelete(
     // ★父目录一起还原★(2026-08-05 用户纠正:原来是挪到空间根)。
     // 还原一份材料却把它从原来的目录里拽出来,等于"还原了但路径没了" —— 用户要找回的是
     // 「东西回到它原来在的地方」。所以沿 parent 链往上,把还在回收站里的祖先一并还原。
+    // items-ok: 回收站生命周期 —— 还原时连祖先目录一起还原,祖先也在回收站里
     let n2 = sqlx::query(
         "WITH RECURSIVE up AS (
            SELECT id, parent_id FROM items WHERE id = $1
@@ -815,6 +823,7 @@ pub async fn purge(
     // ——正对着「所有的删除都是软删除」这条要求。UI 上没这个入口,但 API 是公开的,
     // 而且到期清理任务也调 purge_subtree,唯有在这道人工入口上钉死才算数。
     let trashed: Option<chrono::DateTime<chrono::Utc>> =
+        // items-ok: 回收站生命周期 —— purge 前确认它在回收站里(purge 不能用来跳过软删除)
         sqlx::query_scalar("SELECT deleted_at FROM items WHERE id = $1")
             .bind(iid).fetch_optional(&state.pool).await?.flatten();
     if trashed.is_none() {
@@ -842,6 +851,7 @@ pub(crate) async fn delete_unreferenced(state: &AppState, keys: &[String]) -> us
     let mut gone = 0usize;
     for k in keys {
         // ★含软删除行★:回收站里的东西也算引用,它还等着被还原。
+        // items-ok: 引用计数 —— ★不数上回收站里的引用,purge 会删掉别处还引用着的 blob = 数据丢失★
         let refs: i64 = match sqlx::query_scalar(
             "SELECT (SELECT count(*) FROM items WHERE s3_key = $1)
                   + (SELECT count(*) FROM item_versions WHERE s3_key = $1)",
@@ -860,6 +870,7 @@ pub(crate) async fn delete_unreferenced(state: &AppState, keys: &[String]) -> us
 }
 
 pub(crate) async fn purge_subtree(state: &AppState, iid: i64) -> AppResult<usize> {
+    // items-ok: 回收站生命周期 —— purge 下推整棵子树
     let keys: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE sub AS (
            SELECT id FROM items WHERE id = $1
@@ -1368,7 +1379,7 @@ pub async fn download(
     // ⚠ 这一条**对所有角色生效**,不像项目那条只拦 viewer —— 发起人说「这次不许下载」
     // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(活动材料多半是 editor 传的)。
     let activity_blocked: Option<bool> = sqlx::query_scalar(
-        "SELECT m.no_download FROM items i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
+        "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
         .bind(iid).fetch_optional(&state.pool).await?;
     if activity_blocked == Some(true) {
         return Err(AppError::BadRequest("这场活动的材料已设为禁止下载原件(可在线预览/播放)".into()));

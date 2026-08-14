@@ -88,6 +88,7 @@ pub async fn begin(
         // `blobs/<sha>` 建的,而这里原本硬拼 `spaces/{pid}/{iid}/blob` 去找 —— 两个 key 对不上,
         // list_parts 必然失败 → 每次都走「断点已失效」分支重新传。前端**每次上传都带 sha**
         // (秒传预检顺手算的),所以断点续传实际上对**所有**上传都没生效过,而且不报错只是重传。
+        // items-ok: 上传占位行 —— 断点续传找「我没传完的那个」,它们 s3_key IS NULL,还不是内容
         let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT id, upload_id, upload_key FROM items
               WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND s3_key IS NULL
@@ -312,6 +313,7 @@ pub async fn complete(
     // ★完整性校验★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
     // 「只传了一半就调 complete」会拼出一个**不完整却报成功**的文件 —— 静默数据损坏,最难查。
     // begin 时把前端申报的大小记进了 items.size,这里对账:差一个字节都不认。
+    // items-ok: 上传占位行 —— complete 回填正在上传的那一行
     let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
         .bind(iid).fetch_optional(&state.pool).await?.flatten();
     if let Some(d) = declared.filter(|d| *d > 0) {
@@ -425,6 +427,7 @@ pub async fn play(
 /// 变成静默的错 key** —— 分片会打到一个谁也不认识的路径上,complete 时才炸,还查不出原因。
 /// 现在缺这一列就直接报错,错在源头。
 async fn upload_key_of(state: &AppState, iid: i64) -> AppResult<String> {
+    // items-ok: 上传占位行 —— 读回原始 upload_key(内容寻址后 key 不能现拼,v0.3.55 的疤)
     sqlx::query_scalar::<_, Option<String>>("SELECT upload_key FROM items WHERE id = $1")
         .bind(iid).fetch_optional(&state.pool).await?.flatten()
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("条目 {iid} 没有 upload_key,begin 未正常完成")))
@@ -449,6 +452,7 @@ async fn verify_sha(state: AppState, iid: i64, key: String) {
         }
     }
     let real = hex::encode(hasher.finalize());
+    // items-ok: 上传占位行 —— 后台核验刚传完的 sha
     let declared: Option<String> = sqlx::query_scalar("SELECT sha256 FROM items WHERE id = $1")
         .bind(iid).fetch_optional(&state.pool).await.ok().flatten().flatten();
     // ★D3:「申报 ≠ 真值」要留痕,不能改写成「已核验」★(A2 的第二半)。
@@ -474,6 +478,7 @@ async fn verify_sha(state: AppState, iid: i64, key: String) {
             // 不存在 → 服务端复制过去。大对象走分片复制(2026-08-09 实测 Garage 支持)。
             const COPY_SINGLE_MAX: i64 = 4 * 1024 * 1024 * 1024;   // 贴着 5 GiB 上限留余量
             let (size, mime): (Option<i64>, Option<String>) =
+                // items-ok: 上传占位行 —— 同上,核验尺寸与 mime
                 sqlx::query_as("SELECT size, mime FROM items WHERE id = $1")
                     .bind(iid).fetch_optional(&state.pool).await.ok().flatten()
                     .unwrap_or((None, None));
@@ -517,6 +522,7 @@ fn rand_suffix() -> String {
 /// 音频没有单独的 kind(items.kind 的 CHECK 只有 folder/doc/file/video),按 mime 认——
 /// 加一档 kind 要改 CHECK 约束还要牵动图标/播放器/预览三处,收益不抵改动面。
 pub async fn analyzable(pool: &sqlx::PgPool, iid: i64) -> AppResult<bool> {
+    // items-ok: 上传占位行 —— 判它能不能进转写队列
     let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, mime FROM items WHERE id = $1")
         .bind(iid).fetch_optional(pool).await?;
     let (kind, mime) = row.ok_or(AppError::NotFound)?;

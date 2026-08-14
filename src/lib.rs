@@ -172,6 +172,7 @@ async fn cleanup_stale_uploads(state: AppState) {
         // ★回收站保留 30 天★(2026-08-05 软删除):到期的「删除动作根」逐个 purge——
         // 走 purge_subtree 而不是一条 DELETE,因为要按引用计数决定对象删不删
         // (共享对象之后,直接删对象会把别人还引用着的内容清掉)。
+        // items-ok: 回收站生命周期 —— 30 天清扫任务,找的**就是**已删超期的行
         let expired: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM items i
               WHERE i.deleted_at IS NOT NULL AND i.deleted_at < now() - interval '30 days'
