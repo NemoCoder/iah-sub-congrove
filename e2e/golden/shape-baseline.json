@@ -285,18 +285,14 @@
  "activity.linkhist": {
   "body": {
    "<len>": "number",
-   "<of>": [
-    {}
-   ]
+   "<of>": "<空数组:本次没数据>"
   },
   "status": "number"
  },
  "activity.messages": {
   "body": {
    "<len>": "number",
-   "<of>": [
-    {}
-   ]
+   "<of>": "<空数组:本次没数据>"
   },
   "status": "number"
  },
@@ -391,9 +387,7 @@
  "item.versions": {
   "body": {
    "<len>": "number",
-   "<of>": [
-    {}
-   ]
+   "<of>": "<空数组:本次没数据>"
   },
   "status": "number"
  },
@@ -413,9 +407,7 @@
   "body": {
    "by_project": {
     "<len>": "number",
-    "<of>": [
-     {}
-    ]
+    "<of>": "<空数组:本次没数据>"
    },
    "by_type": {
     "<len>": "number",
@@ -468,18 +460,14 @@
  "me.transfers": {
   "body": {
    "<len>": "number",
-   "<of>": [
-    {}
-   ]
+   "<of>": "<空数组:本次没数据>"
   },
   "status": "number"
  },
  "me.unread": {
   "body": {
    "<len>": "number",
-   "<of>": [
-    {}
-   ]
+   "<of>": "<空数组:本次没数据>"
   },
   "status": "number"
  },

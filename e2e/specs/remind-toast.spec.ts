@@ -92,7 +92,10 @@ test.describe('提醒弹窗(有头浏览器)', () => {
 
   test('★投递之后再拒绝,那一轮轮询就不该再弹★', async ({ page }) => {
     // ⚠ 顺序见文件头注:错一步这条用例就变成废话。
-    test.setTimeout(300_000)
+    // ⚠★预算要留出余量给收尾★(2026-08-14):这条本来就要等两轮 60 秒轮询,
+    //   300 秒几乎被判据本身吃满,`afterEach` 里那张截图一挤就整条超时 ——
+    //   ★报的是「Test timeout」,看起来像产品慢,其实是预算没留够。★
+    test.setTimeout(420_000)
     const t = `${Date.now()}`.slice(-6), 我 = 'e2e-toast2'
     const host = await 主(发起人), 他 = await 主(我)
     try {

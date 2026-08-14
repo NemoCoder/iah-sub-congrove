@@ -1579,14 +1579,29 @@ function ProjectSettings({ space, menu }: {
       <div>
         <Typography.Text strong style={{ fontSize: 13 }}>项目</Typography.Text>
         <div style={{ marginTop: 6 }}>
-          <AntSpace wrap>
-            <Button size="small" disabled={!!space.archived_at} onClick={() => act('rename')}>重命名</Button>
-            {/* 归档 ≠ 删除:归档=做完了留着查,删除=不要了。两个动作在这里也分开摆 */}
-            <Button size="small" onClick={() => act('archive')}>
-              {space.archived_at ? '恢复为进行中' : '归档项目'}
-            </Button>
-            <Button size="small" danger onClick={() => act('delete')}>删除项目</Button>
-          </AntSpace>
+          {/* ★这三件事都要**主持人**★(后端一律 `require_owner`) —— 不是主持人就别把入口摆出来。
+              ⚠ 2026-08-14 逐按钮巡检抓到的:这里此前**完全没判角色**,于是「可编辑」的成员
+                照样看得到三个按钮,点「归档项目」→ 红条 `forbidden: 权限不足`。
+                ★后端拦对了,所以这不是安全问题 —— 但摆一个点了必然被拒的入口是在骗人★,
+                而且那句报错前面还原样透出了英文错误码,人既不知道为什么、也不知道该找谁。
+              ⚠ 前端隐藏按钮**不是**安全边界(后端照旧判权),这里做的只是「别给做不到的事留入口」。 */}
+          {space.my_role === 'admin' ? (
+            <AntSpace wrap>
+              <Button size="small" disabled={!!space.archived_at} onClick={() => act('rename')}>重命名</Button>
+              {/* 归档 ≠ 删除:归档=做完了留着查,删除=不要了。两个动作在这里也分开摆 */}
+              <Button size="small" onClick={() => act('archive')}>
+                {space.archived_at ? '恢复为进行中' : '归档项目'}
+              </Button>
+              <Button size="small" danger onClick={() => act('delete')}>删除项目</Button>
+            </AntSpace>
+          ) : (
+            /// ★说清楚「为什么没有」比什么都不显示好★:空白会让人以为页面坏了或还没加载完。
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              重命名、归档、删除只有<b>主持人</b>能做。你在这个项目里是「{
+                space.my_role === 'editor' ? '可编辑' : '只读'
+              }」—— 要动这些,请找主持人（{space.created_by}）。
+            </Typography.Text>
+          )}
         </div>
         {space.archived_at && (
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
