@@ -298,7 +298,18 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                   placeholder="（双击填写腾讯会议 / Zoom 链接）" onSave={(v) => patch({ online_url: v })}
                   renderView={(v) => <a href={v} target="_blank" rel="noreferrer">{v}</a>} />,
               },
-              { key: 'o', label: '发起人', children: m.organizer },
+              // ★别把一次「有意的隐藏」渲染成「像是坏了」★(2026-08-15 逐张看巡检截图看出来的):
+              //   旁听者拿到的是**裁剪版**——后端刻意把 `organizer`/`recorder` 给空串、
+              //   `projects` 给空数组(activities.rs 的 observer 分支)。而这里原样 `children: m.organizer`,
+              //   于是页面上就是「发起人:」后面**一片空白**。
+              //   ⚠ 坏就坏在**同一张卡里**「线上: 未填」是有灰色兜底文案的 —— 两种缺失长得不一样,
+              //     读的人分不清是没填、没权限、还是加载失败。★而这类问题巡检报告永远抓不到★:
+              //     不报错、HTTP 200、点得动,只有人眼看得出来。
+              //   修法不是补一句「未填」(那是撒谎,它明明有发起人),而是**照实说是旁听看不到**。
+              ...(d.observer ? [] : [{
+                key: 'o', label: '发起人',
+                children: m.organizer || <Typography.Text type="secondary">—</Typography.Text>,
+              }]),
               // ★提醒摆在这里而不是收进某个设置弹窗★:它是「这一场」的属性,
               // 和地点/线上链接同级;藏起来的结果就是没人知道它可以改。
               // ⚠ 改这一项**不清 reminded_at**(后端 ActivityPatch 头注):
@@ -338,11 +349,16 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               ...(m.type_name ? [{ key: 'ty', label: '类型', children: <Tag>{m.type_name}</Tag> }] : []),
               // 记录员只有「要出纪要」的类型才有（ADR-0002 的 has_minutes）
               ...(m.recorder ? [{ key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> }] : []),
-              {
+              // 同上:旁听者的 `projects` 是后端刻意给的空数组,不是「这场活动没关联项目」。
+              // 摆一行空着的「关联项目:」只会让人以为数据丢了 —— 干脆不摆(顶部已有「旁听」标签,
+              // 下面那句灰字也说清了裁剪范围)。
+              ...(d.observer ? [] : [{
                 key: 'p', label: '关联项目',
                 children: (
                   <Space wrap size={4}>
                     {d.projects?.map((p) => <Tag key={p.id}>{p.name}</Tag>)}
+                    {/* 真的一个都没关联时也要说话,别留一片空白 */}
+                    {!d.projects?.length && <Typography.Text type="secondary">未关联项目</Typography.Text>}
                     {/* ★只增不减★（2026-08-09 用户）：关联一旦建立，那个项目的成员就已经
                         收到通知、看得到材料 —— 事后解除并不能把「他已经知道」收回去，
                         只会让他手里的入口突然 404。所以这里**没有删除按钮**，只有「+」。
@@ -354,7 +370,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                     )}
                   </Space>
                 ),
-              },
+              }]),
             ]} />
           </Card>
 

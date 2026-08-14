@@ -1609,8 +1609,16 @@ function ProjectSettings({ space, menu }: {
           </Typography.Text>
         )}
       </div>
+      {/* ★这句话原来写的是「成员、可见性、禁下载、转写术语表在「成员」标签页里」——
+          四样里**有两样指向不存在的地方**(2026-08-15 逐张看巡检截图 + grep 代码核实):
+            · 可见性:项目级的 `visibility` 在 M0-1 就删了(见 `api.ts` 那段头注:★没有 visibility★),
+              它原本兼着「内容给谁看」和「占不占忙闲」两件正交的事,后者已挪到活动自己的 `busy`;
+            · 禁下载:字段还在,但开关长在**活动的材料区**(`activity-detail.tsx` 的 policy 那块),
+              成员 tab 里根本没有;本文件只是**读** `no_download` 来对 viewer 隐掉下载按钮。
+          管理员项目的成员页实拍只有「成员 / 权限诊断 / 转写术语表」三块。
+          ★指错路的提示比没有提示更坏★:人会照着去翻,翻不到就以为是自己权限不够或者页面坏了。 */}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        成员、可见性、禁下载、转写术语表在「成员」标签页里。
+        成员、转写术语表在「成员」标签页里；禁止下载是每场活动材料区自己的开关。
       </Typography.Text>
     </AntSpace>
   )

@@ -87,9 +87,16 @@ export default function ActivityTypesView({ me }: { me: string }) {
           {
             title: '', align: 'right' as const,
             render: (_, t) => {
-              const s = scopeOf(t, me)
-              if (s === 'none' && t.owner === null) return <span style={{ color: '#999' }}>不可改</span>
-              if (s === 'busy') return <span style={{ color: '#999' }}>不可删</span>
+              // ★两行原来各写了一半的限制★(2026-08-15 逐张看巡检截图看出来的):
+              //   会议写「不可改」、个人日程写「不可删」—— 摆在一张表里看着像对照,
+              //   于是人会推出「会议大概能删」「个人日程大概能改名」,**两个推断都是错的**:
+              //   这两条分支都是「返回一段文字、根本不渲染改名/删除按钮」,
+              //   所以系统预置的类型**既不能改名也不能删**,区别只在个人日程还能调占忙闲 ——
+              //   而那件事已经由左边那个**能点的复选框**表达了,不该再挤进这一列。
+              //   ★半句真话比不说更坏★:它看起来是在告诉你规则,实际给的是错的规则。
+              //   合成一条:`scopeOf` 里 owner===null 只会得到 'none' 或 'busy',
+              //   所以「预置行」这个判据本来就是 `t.owner === null` 一句话,拆成两条只会让人以为它们不一样。
+              if (t.owner === null) return <span style={{ color: '#999' }}>系统预置 · 不可改名/删除</span>
               return (
                 <Space size={4}>
                   <Button type="link" size="small" onClick={() => {
