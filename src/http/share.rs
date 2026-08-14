@@ -60,7 +60,11 @@ pub async fn create(
     Path(iid): Path<i64>,
     Json(input): Json<CreateIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let pid = project_of(&state.pool, iid).await?;
+    // ★已在回收站的条目不许建分享★(2026-08-14,no-bare-items 门禁逼出来的判断):
+    //   原来用 `project_of`(解析得到已删的行)→ 给回收站里的东西照样建得出链接,
+    //   ★而公开面一律过滤已删 —— 建出来的是一条「生下来就是死的」链接★:
+    //   分享者以为发出去了,收件人打开是 404,两边都不知道发生了什么。
+    let pid = project_of_alive(&state.pool, iid).await?;
     // ★editor 而不是 viewer★:公开分享是把内容送出墙外,不是「看」的延伸。
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let actor = id.require_username()?;
@@ -104,7 +108,7 @@ pub async fn create(
     // 分享是全系统**唯一绕过项目授权**的出口(share.rs 头注),这道闸尤其不能只画在界面上。
     for &x in &all {
         let blocked: Option<bool> = sqlx::query_scalar(
-            "SELECT m.no_share FROM items i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
+            "SELECT m.no_share FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
             .bind(x).fetch_optional(&state.pool).await?;
         if blocked == Some(true) {
             return Err(AppError::BadRequest("这场活动的材料已设为禁止对外分享".into()));
@@ -173,6 +177,11 @@ pub async fn mine(
     let (limit, offset) = q.slice();
     let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM share_links WHERE created_by = $1")
         .bind(me).fetch_one(&state.pool).await?;
+    // items-ok: ★这里必须是裸表★ —— 「我的分享」要把**内容已删**的链接也列出来并标红
+    //   (`item_deleted` 干的就是这件事:主项进了回收站,链接已经 404 了,得让分享者看见)。
+    //   ⚠ 2026-08-14 我批量换视图时把这一条也换了 → 内容一删,那条分享**整个从列表里消失**,
+    //     ★而「我的分享」是唯一能撤销它的地方 —— 列不出来就撤不掉,这是安全问题★。
+    //     批量机械改动就是这么伤人的:29 条换对了,这一条换反了,而它看起来和别的一模一样。
     let rows: Vec<(String, i64, String, String, Option<String>, String,
                    Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool,
                    chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>,
@@ -184,7 +193,8 @@ pub async fn mine(
                   WHERE si.token = l.token AND si2.deleted_at IS NULL),
                 (i.deleted_at IS NOT NULL)
            FROM share_links l
-           JOIN items_alive  i ON i.id = l.item_id
+           -- ★裸表★:内容已删的链接也要列出来(下面那列 item_deleted 就是标它的)
+           JOIN items  i ON i.id = l.item_id
            JOIN projects s ON s.id = i.project_id
           WHERE l.created_by = $1
           ORDER BY l.created_at DESC LIMIT $2 OFFSET $3",

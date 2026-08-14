@@ -73,6 +73,7 @@ pub async fn ensure_platform_user(state: &AppState, username: &str) -> AppResult
 
 /// 全部空间的已用量一把查(items ∪ item_versions 按 (s3_key,size) 去重)。
 async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i64, i64>> {
+    // items-ok: 配额 —— ★「回收站里的内容仍占用项目配额」是明写的规矩★,不数上就漏算
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT pid, COALESCE(sum(sz),0)::bigint FROM (
            SELECT DISTINCT i.project_id pid, i.s3_key k, i.size sz FROM items i WHERE i.s3_key IS NOT NULL
@@ -394,6 +395,7 @@ pub async fn undelete(
 /// (此处原本的注释写着「key 带 project_id 前缀,不会误伤别的项目」—— 那是改成内容寻址**之前**
 ///  的事实,注释没跟着改,于是那个洞在代码里挂了三天。)
 pub async fn purge_project(state: &AppState, pid: i64) -> AppResult<usize> {
+    // items-ok: 回收站生命周期 —— 彻底删项目时收集要清的 S3 key,含已删的行
     let keys: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT k FROM (
            SELECT s3_key k FROM items WHERE project_id = $1 AND s3_key IS NOT NULL

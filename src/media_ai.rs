@@ -243,6 +243,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 只在**这个材料属于某场活动**时发(活动之外的音视频转写不打扰任何人),
     // 且**只通知记录员**:纪要是他的活(D14——AI 只是原材料,他才是作者),
     // 全员通知等于告诉一屋子人「有件不归你们管的事完成了」。
+    // items-ok: 纯归属解析 —— 转写任务取 activity_id;任务在跑中途条目可能已被删
     if let Some(mid) = sqlx::query_scalar::<_, Option<i64>>("SELECT activity_id FROM items WHERE id = $1")
         .bind(item_id).fetch_optional(&state.pool).await?.flatten()
     {
@@ -532,6 +533,7 @@ pub struct Asr { pub segments: Vec<Segment>, pub text: String, pub char_ts: Vec<
 /// 取这个视频该用的术语表:所在空间的词表 + `CONGROVE_ASR_HOTWORDS` 全局兜底,去重保序。
 /// 查不到空间(视频已删等)也不让转写失败——最多是没热词。
 async fn load_hotwords(pool: &PgPool, item_id: i64) -> String {
+    // items-ok: 纯归属解析 —— 取项目的热词表,与条目死活无关
     let space: Option<String> = sqlx::query_scalar(
         "SELECT s.hotwords FROM items i JOIN projects s ON s.id = i.project_id WHERE i.id = $1",
     ).bind(item_id).fetch_optional(pool).await.ok().flatten();

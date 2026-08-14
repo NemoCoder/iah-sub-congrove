@@ -37,6 +37,10 @@ gate "旧命名(改名残留)"          bash scripts/no-meeting.sh --all   # no-
 # ★不许静默截断★(2026-08-14 新增):一周撞了三次「写死 LIMIT 又不给总数」——
 #   回收站/我的分享 500、提醒 20、广场 200、待写纪要 50。★纯静态扫描,能进 CI。★
 gate "不许静默截断(LIMIT)"       bash scripts/no-silent-limit.sh
+# ★读内容不许碰裸 items★(2026-08-14):v0.4.144 建了 items_alive 视图把「软删过滤」收到一处,
+#   但视图只是**让正确的路更好走**,不构成强制 —— 这道闸补上那一半:
+#   读(SELECT)一律走视图,真要读已删行就在 SQL 里写 `-- items-ok: <理由>`。★纯静态,能进 CI。★
+gate "读内容不碰裸 items"         bash scripts/no-bare-items.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
