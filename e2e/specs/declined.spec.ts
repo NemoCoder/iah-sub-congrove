@@ -204,11 +204,21 @@ test.describe('拒绝掉的活动', () => {
       expect(待办.some((x) => x.activity_id === id),
         '★纪要从我的待办里消失了 —— 那是方案 A:这场会的纪要从此没人写、也没人知道★').toBe(true)
 
-      // ③ 发起人收到「请另指派」
-      const 信 = await (await host.get('/api/me/unread')).json()
-      const 文 = JSON.stringify(信)
-      expect(文.includes('另指派') || 文.includes(`E2E-记录员拒绝-${t}`),
-        '★发起人没收到通知 —— 那他永远不知道该改指派谁,纪要还是没人写★').toBe(true)
+      // ③ ★「发起人真的收到站内信」这条,这里验不了 —— 写清楚,不假装验过★
+      //
+      // 站内信不落 congrove 自己的库:`notify.rs` 把它投给**平台的收件箱**(registry)。
+      // 而要读某个人的收件箱,得拿**那个人自己的平台令牌** —— 虚拟测试身份(`e2e-host`)
+      // 在 Keycloak 里根本不存在,拿不到令牌。这和那条永久 skip 的权限用例(需要 IAH_E2E_PEER)
+      // 是**同一个卡点**:平台侧给两个真实测试账号之前,这一层就是验不到。
+      //
+      // ⚠ 我第一版拿 `/api/me/unread` 去验,红了 —— ★而那个接口只回**私聊未读**★
+      //   (`WHERE mm.channel = 'private'`),站内信压根不在里面。
+      //   ★那条红报的是「发起人没收到通知」,而真相是「我查错了地方」★ ——
+      //   今天第四次被自己写的失败信息带偏。
+      //
+      // 所以这里只钉「本地这一半」:接口回了 still_recorder(①)、纪要仍挂在我名下(②)。
+      // ★投递那一半是**已知的覆盖空洞**,不是「验过了」★ —— 记在 backlog,
+      //   等平台给真实测试账号后补上。
     } finally { await Promise.all([host.dispose(), 他.dispose()]) }
   })
 })
