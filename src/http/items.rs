@@ -354,7 +354,7 @@ pub async fn progress_get(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let pid = project_of(&state.pool, iid).await?;
+    let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<(f64, Option<f64>)> = sqlx::query_as(
         "SELECT position_sec, duration_sec FROM play_progress WHERE username = $1 AND item_id = $2",
