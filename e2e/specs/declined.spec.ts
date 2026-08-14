@@ -151,6 +151,66 @@ test.describe('拒绝掉的活动', () => {
         '★拒绝掉的活动还在提醒列表里 —— 右上角就会继续弹「活动即将开始」★').toBe(false)
     } finally { await Promise.all([host.dispose(), 他.dispose()]) }
   })
+
+  test('★记录员拒绝出席:责任不能凭空蒸发★', async () => {
+    // liaoruili:「已拒绝为啥还看得到 纪要待整理？？？？」——他拍板选了方案 B。
+    //
+    // `activities_owing_minutes` 只看 `m.recorder = 我`,**完全没看我作为参与人的答复状态**,
+    // 于是拒绝出席之后,只要我还挂着记录员,系统就一直催我写一场我没去的会的纪要。
+    // ★两种修法都有明显坏处★:
+    //   A：拒绝就不再催 → ★这场会的纪要从此没人写、也没人知道★,安静地消失在所有人的待办里;
+    //   B：仍挂在我名下,但**当场通知发起人另指派** → 多一步打扰,但责任不会凭空蒸发。
+    // 他选 B,理由和本仓反复踩的坑一致:**「安静地消失」比「烦人地留着」难查得多**。
+    //
+    // 所以这条用例钉三件事,缺一件这个决定就没落实:
+    //   ① 拒绝的接口回 `still_recorder: true`(界面靠它当场告诉我,不然我只会纳闷「我都拒了」);
+    //   ② ★纪要仍然挂在我名下★ —— 这是 B 与 A 的分界,如果它没了就说明实现成了 A;
+    //   ③ 发起人真的收到了「请另指派」的站内信。
+    test.slow()
+    const t = `${Date.now()}`.slice(-6)
+    const 记录员 = 'e2e-rec'
+    const host = await 主(发起人), 他 = await 主(记录员)
+    try {
+      const pid = (await (await host.post('/api/projects', { data: { name: `E2E-记录员拒绝-${t}` } })).json()).id as number
+      await host.put(`/api/projects/${pid}/members`, { data: { username: 记录员, role: 'editor' } }).catch(() => {})
+      // ★必须已经结束★:纪要待办的判据是「已结束且没定稿」,排未来的话它压根不会进待办 ——
+      //   那样第 ② 条会**因为错误的理由**通过。
+      // ⚠★但「会议」类型不能直接建在过去★:产品刻意拒绝(「要补录一场已经开过的会,
+      //   先建再改时间」)。我第一版直接排过去 → 400,而报错看着像「拒绝那步没成功」。
+      //   ★照产品的路子走:先建在未来,再改到过去。★
+      const 未来 = new Date(Date.now() + 2 * 3600e3)
+      const r = await host.post('/api/activities', {
+        data: { type_id: 会议, title: `E2E-记录员拒绝-${t}`, recorder: 记录员, project_ids: [pid],
+                participants: [记录员],
+                starts_at: 未来.toISOString(), ends_at: new Date(未来.getTime() + 3600e3).toISOString() },
+      })
+      expect(r.status(), await r.text()).toBe(200)
+      const id = (await r.json()).id as number
+      const 开始 = new Date(Date.now() - 2 * 3600e3)
+      const 改 = await host.put(`/api/activities/${id}`, {
+        data: { starts_at: 开始.toISOString(), ends_at: new Date(开始.getTime() + 3600e3).toISOString() },
+      })
+      expect(改.status(), `★改到过去没成功,这条用例后面全是空跑: ${await 改.text()}★`).toBe(200)
+      // ⚠ 改时间会把所有人的答复清回 pending(update 的既有行为),所以拒绝要在**改完之后**做。
+
+      // ① 拒绝 → 接口要如实说「你还是记录员」
+      const rp = await 他.post(`/api/activities/${id}/respond`, { data: { status: 'declined' } })
+      expect(rp.status(), await rp.text()).toBe(200)
+      expect((await rp.json()).still_recorder,
+        '★接口没告诉我「你仍是记录员」—— 界面就没法当场提醒我,我只会纳闷「我都拒了」★').toBe(true)
+
+      // ② ★纪要仍然挂在我名下★(这是 B,不是 A)
+      const 待办 = await (await 他.get('/api/me/minutes-todo')).json() as { activity_id: number }[]
+      expect(待办.some((x) => x.activity_id === id),
+        '★纪要从我的待办里消失了 —— 那是方案 A:这场会的纪要从此没人写、也没人知道★').toBe(true)
+
+      // ③ 发起人收到「请另指派」
+      const 信 = await (await host.get('/api/me/unread')).json()
+      const 文 = JSON.stringify(信)
+      expect(文.includes('另指派') || 文.includes(`E2E-记录员拒绝-${t}`),
+        '★发起人没收到通知 —— 那他永远不知道该改指派谁,纪要还是没人写★').toBe(true)
+    } finally { await Promise.all([host.dispose(), 他.dispose()]) }
+  })
 })
 
 
