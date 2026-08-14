@@ -131,7 +131,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 视频或音频都收(音频没有单独的 kind,按 mime 认;见 http::media::analyzable)。
     let key: String = sqlx::query_scalar(
         // deleted_at IS NULL:排队期间被删掉的,就别再花 GPU 转写了(v0.3.55 审计)。
-        "SELECT s3_key FROM items WHERE id=$1 AND deleted_at IS NULL AND (kind='video' OR mime LIKE 'audio/%')")
+        "SELECT s3_key FROM items_alive WHERE id=$1 AND deleted_at IS NULL AND (kind='video' OR mime LIKE 'audio/%')")
         .bind(item_id).fetch_optional(&state.pool).await?
         .flatten().ok_or_else(|| anyhow!("这不是一个已上传完成的视频/音频"))?;
     let video = workdir.join("input.bin");

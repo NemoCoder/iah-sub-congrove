@@ -57,8 +57,10 @@ pub(crate) async fn readable_blob(state: &AppState, id: &Identity, sha: &str) ->
     let rows: Vec<(i64, String, Option<i64>, Option<String>)> = sqlx::query_as(
         // ★只认 sha_verified★(迁移 0005):客户端申报的哈希不能当秒传源,
         // 否则「申报别人文件的哈希、传自己的内容」会让真正拥有那份文件的人秒传到错误字节。
-        "SELECT project_id, s3_key, size, mime FROM items
-          WHERE sha256 = $1 AND sha_verified AND s3_key IS NOT NULL AND deleted_at IS NULL LIMIT 50",
+        "SELECT project_id, s3_key, size, mime FROM items_alive
+          WHERE sha256 = $1 AND sha_verified AND s3_key IS NOT NULL AND deleted_at IS NULL -- limit-ok: 内部候选 —— 秒传时找同哈希的若干候选逐个校验可读性,
+          --   取到一个能用的就返回;不是给人看的列表。
+          LIMIT 50",
     ).bind(sha).fetch_all(&state.pool).await?;
     for (pid, key, size, mime) in rows {
         if crate::perm::effective_role(&state.pool, id, pid).await?.is_some() {
@@ -139,12 +141,12 @@ pub async fn owner_quota_used(pool: &sqlx::PgPool, owner: &str) -> AppResult<(i6
         "SELECT COALESCE((SELECT q.quota_bytes FROM user_quota q WHERE q.username = $1), $2)::bigint,
                 COALESCE((SELECT sum(u.sz) FROM (
                     SELECT t.k, max(t.sz) sz FROM (
-                        SELECT i.s3_key k, i.size sz FROM items i
+                        SELECT i.s3_key k, i.size sz FROM items_alive i
                           JOIN projects p ON p.id = i.project_id
                          WHERE p.owner = $1 AND p.deleted_at IS NULL AND i.s3_key IS NOT NULL
                         UNION ALL
                         SELECT v.s3_key, v.size FROM item_versions v
-                          JOIN items i ON i.id = v.item_id
+                          JOIN items_alive i ON i.id = v.item_id
                           JOIN projects p ON p.id = i.project_id
                          WHERE p.owner = $1 AND p.deleted_at IS NULL
                     ) t GROUP BY t.k) u), 0)::bigint",
@@ -232,7 +234,7 @@ pub fn numbered_name(name: &str, n: u32) -> String {
 
 async fn find_activity_folder(pool: &sqlx::PgPool, pid: i64, mid: i64) -> AppResult<Option<i64>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM items
+        "SELECT id FROM items_alive
           WHERE project_id = $1 AND activity_id = $2 AND kind = 'folder' AND deleted_at IS NULL
           LIMIT 1")
         .bind(pid).bind(mid).fetch_optional(pool).await?)
@@ -262,7 +264,7 @@ pub async fn project_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
 /// `project_of` 解析一下归属。于是「读的是不是已删内容」这件事,在 SQL 层面看不出来。
 /// 其中 `/subtitles.vtt` 和 `/analysis` 漏的是**内容本身**(字幕正文、AI 摘要正文)。
 pub async fn project_of_alive(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
-    sqlx::query_scalar("SELECT project_id FROM items WHERE id = $1 AND deleted_at IS NULL")
+    sqlx::query_scalar("SELECT project_id FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
         .bind(item_id)
         .fetch_optional(pool)
         .await?
@@ -314,7 +316,7 @@ pub async fn list(
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
         "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
-           FROM items WHERE project_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
+           FROM items_alive WHERE project_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     )
     .bind(pid)
@@ -334,7 +336,7 @@ pub async fn detail(
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
         "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
-           FROM items WHERE id = $1 AND deleted_at IS NULL",
+           FROM items_alive WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(iid)
     .fetch_optional(&state.pool)
@@ -413,7 +415,7 @@ pub async fn check_parent(pool: &sqlx::PgPool, pid: i64, parent_id: Option<i64>)
     //   (2026-08-06 批量改名 sid→pid 时真的踩过一次)。
     if let Some(parent) = parent_id {
         let ok: Option<(i64, String, Option<i64>)> =
-            sqlx::query_as("SELECT project_id, kind, activity_id FROM items WHERE id = $1 AND deleted_at IS NULL")
+            sqlx::query_as("SELECT project_id, kind, activity_id FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
                 .bind(parent)
                 .fetch_optional(pool)
                 .await?;
@@ -572,7 +574,7 @@ pub async fn copy(
 
     // ④ 源必须活着,且不是文件夹
     let src: (String, String, Option<String>, Option<String>, Option<i64>, Option<String>) = sqlx::query_as(
-        "SELECT kind, name, mime, s3_key, size, sha256 FROM items
+        "SELECT kind, name, mime, s3_key, size, sha256 FROM items_alive
           WHERE id = $1 AND deleted_at IS NULL")
         .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     if src.0 == "folder" {
@@ -586,7 +588,7 @@ pub async fn copy(
     // ⚠★同一 owner 内复制不该被额度挡★:用量按 blob 去重,复制完 used 根本不变。
     //   所以先问一句「这个 blob 在目标 owner 名下已经有了吗」——有就不占新空间。
     let 已有: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM items i JOIN projects pr ON pr.id = i.project_id
+        "SELECT EXISTS (SELECT 1 FROM items_alive i JOIN projects pr ON pr.id = i.project_id
                          WHERE pr.owner = $1 AND pr.deleted_at IS NULL AND i.s3_key = $2)")
         .bind(&owner).bind(&src.3).fetch_one(&state.pool).await?;
     if !已有 && used + sz > quota {
@@ -617,7 +619,7 @@ pub async fn update(
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     // 回收站里的东西不给改名/移动 —— 要动它先还原(v0.3.55 审计)。
-    let alive: Option<i64> = sqlx::query_scalar("SELECT id FROM items WHERE id = $1 AND deleted_at IS NULL")
+    let alive: Option<i64> = sqlx::query_scalar("SELECT id FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
         .bind(iid).fetch_optional(&state.pool).await?;
     if alive.is_none() { return Err(AppError::NotFound) }
     // ★活动材料在项目树里不许改名/移动★(D10;2026-08-09 liaoruili 强调「项目文件夹中的会议
@@ -693,8 +695,8 @@ pub async fn remove(
     let actor = id.require_username()?;
     let n = sqlx::query(
         "WITH RECURSIVE sub AS (
-           SELECT id FROM items WHERE id = $1
-           UNION ALL SELECT i.id FROM items i JOIN sub ON i.parent_id = sub.id
+           SELECT id FROM items_alive WHERE id = $1
+           UNION ALL SELECT i.id FROM items_alive i JOIN sub ON i.parent_id = sub.id
          )
          UPDATE items SET deleted_at = now(), deleted_by = $2
           WHERE id IN (SELECT id FROM sub) AND deleted_at IS NULL",
@@ -880,7 +882,7 @@ pub async fn content_get(
 ) -> AppResult<Response> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
-    let key: Option<String> = sqlx::query_scalar("SELECT s3_key FROM items WHERE id = $1 AND kind = 'doc' AND deleted_at IS NULL")
+    let key: Option<String> = sqlx::query_scalar("SELECT s3_key FROM items_alive WHERE id = $1 AND kind = 'doc' AND deleted_at IS NULL")
         .bind(iid)
         .fetch_optional(&state.pool)
         .await?
@@ -911,7 +913,7 @@ pub async fn content_put(
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     // 回收站里的文档不接受写入(v0.3.55 审计):否则改完还得先还原才看得见,白改一场。
     let row: Option<(String, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT kind, s3_key, sha256 FROM items WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query_as("SELECT kind, s3_key, sha256 FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;
@@ -1158,7 +1160,7 @@ pub async fn upload(
                 //   · 同名但内容不同 = 传了新版本 → 自动缀序号,两份都留着。
                 // ⚠ 判据必须放在**算完 sha 之后**:开传的那一刻还不知道内容一不一样。
                 let dup: Option<i64> = sqlx::query_scalar(
-                    "SELECT id FROM items
+                    "SELECT id FROM items_alive
                       WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
                         AND name = $3 AND sha256 = $4 AND id <> $5 AND deleted_at IS NULL LIMIT 1")
                     .bind(pid).bind(parent).bind(&fname).bind(&sha).bind(iid)
@@ -1172,7 +1174,7 @@ pub async fn upload(
                 }
                 // 同名不同内容 → 找一个没被占的序号。上限 999 是防呆:真到那一步说明有人在刷。
                 let clash: Option<i64> = sqlx::query_scalar(
-                    "SELECT id FROM items WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
+                    "SELECT id FROM items_alive WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
                         AND name = $3 AND id <> $4 AND deleted_at IS NULL LIMIT 1")
                     .bind(pid).bind(parent).bind(&fname).bind(iid).fetch_optional(&state.pool).await?;
                 let mut fname = fname.clone();
@@ -1180,7 +1182,7 @@ pub async fn upload(
                     for n in 2..1000u32 {
                         let cand = numbered_name(&fname, n);
                         let taken: Option<i64> = sqlx::query_scalar(
-                            "SELECT id FROM items WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
+                            "SELECT id FROM items_alive WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2
                                 AND name = $3 AND deleted_at IS NULL LIMIT 1")
                             .bind(pid).bind(parent).bind(&cand).fetch_optional(&state.pool).await?;
                         if taken.is_none() {
@@ -1373,7 +1375,7 @@ pub async fn download(
     }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =
-        sqlx::query_as("SELECT s3_key, name, mime FROM items WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query_as("SELECT s3_key, name, mime FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;

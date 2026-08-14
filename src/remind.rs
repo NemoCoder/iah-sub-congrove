@@ -104,6 +104,8 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
            -- 顺带这一条也让「补录不发提醒」自动成立(补录的 starts_at 必在过去)。
            AND m.starts_at > now()
          ORDER BY m.starts_at
+         -- limit-ok: 分批处理 —— 每跳(30s)最多投 200 条提醒,没投完的下一跳接着投;
+         --   配合 SKIP LOCKED,多副本也不会重复投同一条。
          LIMIT 200
          FOR UPDATE OF p SKIP LOCKED")
         .bind(DEFAULT_REMIND_MIN)

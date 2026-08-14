@@ -727,6 +727,8 @@ pub async fn archive(
             "SELECT m.title, m.starts_at, COUNT(*) OVER() AS total FROM activities m
                JOIN activity_projects mp ON mp.activity_id = m.id
               WHERE mp.project_id = $1 AND m.status = 'active' AND m.starts_at > now()
+              -- limit-ok: 刻意举例 —— 报错文案里列 5 场示意(全列出来一行报错长到没法读),
+              --   ★而总数由上面的 COUNT(*) OVER() 一并带回、文案里写「等 N 场」★。
               ORDER BY m.starts_at LIMIT 5")
             .bind(pid).fetch_all(&state.pool).await?;
         if !pending.is_empty() {
