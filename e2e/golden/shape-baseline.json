@@ -407,7 +407,16 @@
   "body": {
    "by_project": {
     "<len>": "number",
-    "<of>": "<空数组:本次没数据>"
+    "<of>": [
+     {
+      "archived": "boolean",
+      "count": "number",
+      "hours": "number",
+      "id": "string",
+      "minutes_done": "number",
+      "name": "string"
+     }
+    ]
    },
    "by_type": {
     "<len>": "number",
