@@ -187,6 +187,66 @@ test.describe('分页不吞数据', () => {
       await 走遍所有页(page, '.ant-drawer .ant-list-item', new RegExp(`E2E-删项-\\d+-${t}`), '项目回收站', 名字)
     } finally { await api.dispose() }
   })
+  // ── 后端分页的**界面**那一半 ────────────────────────────────────────
+  // liaoruili 2026-08-14:「已经所有都使用 playwright 有头浏览器 进行过验证了吗」——
+  // 上面「回收站」「我的分享」两条走的是接口(`size=2` 逼出多页,判 total/不重/不漏)。
+  // ★那验的是服务端给得对,不是人在界面上翻得动★:界面还要自己把 total 接进 antd 的
+  //   `pagination`、把 `current` 传回去、翻页时重新取数 —— 这一层接错了,
+  //   接口再对也没用(第 2 页显示第 1 页、或者总数写成本页条数,都属于这一类)。
+  //   ★「我的分享」那句自相矛盾的「共 20 条」就是在这一层出的错。★
+  test('★文件回收站:界面上翻得动,且总数是服务端给的★', async ({ page }) => {
+    test.slow()
+    const t = tag(), api = await 接口()
+    try {
+      const pid = (await (await api.post('/api/projects', { data: { name: `E2E-分页-回收站UI-${t}` } })).json()).id as number
+      const 名字 = new Set<string>()
+      for (let i = 1; i <= 22; i++) {                  // 每页 20,造 22 条才跨得过去
+        const n = `E2E-回UI-${String(i).padStart(2, '0')}-${t}.txt`
+        const r = await api.post(`/api/projects/${pid}/upload`,
+          { multipart: { file: { name: n, mimeType: 'text/plain', buffer: Buffer.from('x') } } })
+        await api.delete(`/api/items/${(await r.json()).id}`)
+        名字.add(n)
+      }
+      await 开项目(page, `E2E-分页-回收站UI-${t}`)
+      // 项目工具栏里那个回收站(★不是左上角「回收站 N」——那是删掉的**项目**★)
+      await page.getByRole('button', { name: /回收站/ }).filter({ hasNotText: /回收站 \d/ }).first().click()
+      await page.waitForTimeout(2000)
+      // ★总数必须是服务端给的 22,不是本页的 20★ —— 这正是「界面替数据撒谎」那一族
+      await expect(page.locator('.ant-drawer').getByText(/共 22 条/).first(),
+        '★回收站没显示服务端给的总数 —— 人就不知道自己看到的是不是全部★').toBeVisible({ timeout: 10_000 })
+      await 走遍所有页(page, '.ant-drawer .ant-table-row', new RegExp(`E2E-回UI-\\d+-${t}\\.txt`), '文件回收站(界面)', 名字)
+    } finally { await api.dispose() }
+  })
+
+  test('★我的分享:界面上翻得动,且只有一处在讲总数★', async ({ page }) => {
+    test.slow()
+    const t = tag(), api = await 接口()
+    try {
+      const pid = (await (await api.post('/api/projects', { data: { name: `E2E-分页-分享UI-${t}` } })).json()).id as number
+      const up = await api.post(`/api/projects/${pid}/upload`,
+        { multipart: { file: { name: `E2E-分享源UI-${t}.txt`, mimeType: 'text/plain', buffer: Buffer.from('x') } } })
+      const iid = (await up.json()).id as number
+      const 令牌 = new Set<string>()
+      for (let i = 0; i < 22; i++) 令牌.add((await (await api.post(`/api/items/${iid}/shares`, { data: {} })).json()).token as string)
+
+      await 开页(page)
+      await page.locator('button').filter({ hasText: 我 }).first().click(); await page.waitForTimeout(800)
+      await page.locator('.ant-dropdown-menu-item:visible').filter({ hasText: '我的分享' }).first().click()
+      await page.waitForTimeout(2500)
+      // ★页面上讲「共 N 条」的地方只能有一处★（2026-08-14 实拍抓到的那个 bug:
+      //   右下角分页器写「共 49 条」、左下角另一句写「共 20 条」——
+      //   ★两个数字自相矛盾比两个都错更糟,看的人会以为是自己看错了★）。
+      const 讲总数 = await page.getByText(/共 \d+ 条/).count()
+      expect(讲总数, '★页面上有不止一处在讲「共 N 条」—— 它们迟早会对不上★').toBe(1)
+      // 令牌只在页面上显示前 8 位(`/s/xxxxxxxx…`),所以按前缀认。
+      // ⚠★期望集里要带上 `/s/`★:`走遍所有页` 收的是**整个匹配**(`match(...)[0]`),
+      //   而我第一版只放了 8 位裸前缀 —— 两边永远对不上,报成「分页把数据吞了」,
+      //   ★而真相是我的判据两头用了不同的口径★(同一族第 N 次:比较双方必须是同一种东西)。
+      const 前缀 = new Set([...令牌].map((x) => `/s/${x.slice(0, 8)}`))
+      await 走遍所有页(page, '.ant-table-row', /\/s\/([0-9a-f]{8})/, '我的分享(界面)', 前缀)
+    } finally { await api.dispose() }
+  })
+
 })
 
 // ══════════════════════════════════════════════════════════════════════

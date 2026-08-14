@@ -135,4 +135,46 @@ test.describe('软删除之后,所有读它的入口都闭上', () => {
         '★删进回收站的文件,墙外还下得到 —— v0.3.55 补的就是这一处★').toBe(404)
     } finally { await api.dispose() }
   })
+
+  // ══════════════════════════════════════════════════════════════════
+  test('★界面上也够不着:独立查看窗 /viewer/{id} 打不开已删的内容★', async ({ page }) => {
+    // liaoruili 2026-08-14:「已经所有都使用 playwright 有头浏览器 进行过验证了吗」——
+    // 上面两条验的是 HTTP 404,★那是「接口闭上了」,不是「人在界面上够不着」★。
+    // 这条补的正是这一段:`/viewer/{id}` 是**独立查看窗**(video-player 里 window.open 出来的,
+    // 可以拖到第二块屏)。它是全站唯一一个★只凭 item id 就能直达内容★的页面 ——
+    // 别人把这个链接发给你、或者你自己收藏了,东西删了之后再打开,它必须什么也给不出来。
+    test.slow()
+    const t = `${Date.now()}`.slice(-6)
+    const api = await pwRequest.newContext({
+      baseURL: BASE, extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': 我 },
+    })
+    try {
+      await page.context().setExtraHTTPHeaders({
+        'X-IAH-E2E-Key': process.env.IAH_E2E_KEY!, 'X-IAH-E2E-User': 我 })
+      const pid = (await (await api.post('/api/projects', { data: { name: `E2E-查看窗-${t}` } })).json()).id as number
+      const 文件名 = `E2E-查看窗-${t}.txt`
+      const up = await api.post(`/api/projects/${pid}/upload`, {
+        multipart: { file: { name: 文件名, mimeType: 'text/plain', buffer: Buffer.from('这是内容') } },
+      })
+      expect(up.status(), await up.text()).toBe(200)
+      const iid = (await up.json()).id as number
+
+      // ★先证明活着的时候这个窗口是打得开的★ —— 否则「删了打不开」可能只是因为
+      //   这个页面本来就坏了/路径拼错了,那样这条用例会一直绿而且毫无意义。
+      await page.goto(`/viewer/${iid}`, { waitUntil: 'domcontentloaded' })
+      await expect(page.getByText(文件名).first(),
+        '★活着的时候查看窗就打不开 —— 后面「删了打不开」证明不了任何事★')
+        .toBeVisible({ timeout: 15_000 })
+
+      // 删进回收站,再用**同一个链接**打开
+      expect((await api.delete(`/api/items/${iid}`)).status()).toBe(200)
+      await page.goto(`/viewer/${iid}`, { waitUntil: 'domcontentloaded' })
+      await page.waitForTimeout(2500)
+      await expect(page.getByText(文件名),
+        '★删进回收站了,拿着 /viewer 链接还看得到它 —— 内容并没有真的够不着★').toHaveCount(0)
+      // 而且不能是一片白:白屏时人会一直刷新,以为是网断了
+      const 正文 = (await page.locator('body').textContent()) ?? ''
+      expect(正文.trim().length, '★打不开也得说句话,别给一片白屏★').toBeGreaterThan(0)
+    } finally { await api.dispose() }
+  })
 })
