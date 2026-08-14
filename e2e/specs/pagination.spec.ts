@@ -168,6 +168,7 @@ test.describe('分页不吞数据', () => {
 
   // ── 前端分页 ③:项目回收站(每页 10)──────────────────────────────────
   test('★项目回收站:界面上翻页不重不漏★', async ({ page }) => {
+    test.slow()   // 造 12 个项目再逐个删,本身就要十几秒
     // ★这是**第二个**回收站★(删掉的**项目**,不是项目里删掉的文件)。
     //   2026-08-14 之前它一直没分页,实拍时已经堆到 37 条滚不完 ——
     //   ★「回收站」这个词在界面上有两个入口,我上一轮只改了叫得出名字的那个。★
@@ -208,10 +209,19 @@ async function 走遍所有页(page: Page, 行选择器: string, 认: RegExp, �
     await 上.first().click(); await page.waitForTimeout(500)
   }
   const 页 : string[][] = []
+  const 见过 = new Set<string>()
   for (let i = 0; i < 40; i++) {
     const 文 = await page.locator(行选择器).allTextContents()
     // ★只收我这一轮造的行★:库里有别人的数据,混进来会把「不重复」判据误伤
-    页.push(文.map((x) => (x.match(认) ?? [])[0]).filter((x): x is string => !!x))
+    const 本页 = 文.map((x) => (x.match(认) ?? [])[0]).filter((x): x is string => !!x)
+    页.push(本页); 本页.forEach((x) => 见过.add(x))
+    // ★找齐自己造的那些就停★(2026-08-14 修:这条用例在项目回收站上 30 秒超时)。
+    //   原来是「一路翻到最后一页」—— 而项目回收站里的删除项目**随每轮测试累积**
+    //   (实拍时已经 65 个 / 7 页,只会更多),★于是用例的运行时间随残留数据无限增长★。
+    //   判据本身只关心「我造的那些有没有被吞、有没有重复」,翻过它们之后再翻下去
+    //   是**纯粹的额外功**。早停不削弱任何一条断言:三段判据全都只针对 `期望` 里的东西。
+    //   ⚠ 但**至少要翻过两页**,否则「跨页」这个前提就没验到(下面 `页数 > 1` 会红)。
+    if (见过.size >= 期望.size && 页.length > 1) break
     const 下 = page.locator('.ant-pagination-next:not(.ant-pagination-disabled)')
     if (!(await 下.count())) break
     await 下.first().click(); await page.waitForTimeout(800)
