@@ -300,7 +300,14 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
                   <Field label="议题" value={v.agenda_text} canEdit={canEdit} rows={4}
                     onSave={(x) => save({ agenda_text: x })}
                     pull={{ label: '从活动议程带入', text: mt?.agenda ?? '', why: '这次活动没有填议题与议程' }} />
-                  <Field label="主要内容" hint="支持 Markdown；出 PDF 时由平台的 LaTeX 服务排版"
+                  {/* ★别许一个今天兑现不了的承诺★(2026-08-15 逐张看巡检截图看出来的):
+                      原文是「支持 Markdown;**出 PDF 时**由平台的 LaTeX 服务排版」——读的人会去找导出按钮,
+                      而**前后端都没有任何 PDF 导出入口**(grep 过:只有上传文件的 PDF *预览*)。
+                      它不是写错,是**写早了**:`docs/PRD-decisions-log.md` §7.5 确实定了「纪要 PDF 走 LaTeX」,
+                      但它依赖**平台的共享 LaTeX 编译服务**,那个至今只是「已提议」(群消息 #118)。
+                      ⚠ 与「可见性」那条(指向**已删**的功能)不同,这条指向的是**还没建**的 ——
+                      所以不删掉意图,只是把时态说清楚,免得人白找一遍。 */}
+                  <Field label="主要内容" hint="支持 Markdown；PDF 导出待平台 LaTeX 服务上线后开放"
                     value={v.content_md} canEdit={canEdit} rows={12}
                     onSave={(x) => save({ content_md: x })}
                     pull={{ label: '从 AI 摘要导入', text: sum(K_BRIEF), why: aiWhy }}
