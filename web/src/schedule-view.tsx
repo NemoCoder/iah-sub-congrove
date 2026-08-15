@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { UpcomingBar } from './upcoming-bar'
 import { annotate, fmtDay, fmtHM, isTodayCell } from './tz'
 import { api, type Activity } from './api'
+import { isEnded } from './activity-state'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
 import { MINE_TEXT, mineOf, type Mine } from './activity-mine'
@@ -63,7 +64,8 @@ const WEEK_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', 
 /// ★布局与位置计算已抽到 schedule-layout.ts 并有单测覆盖★——
 /// 那里出过一个「三个以上重叠时后来者全宽盖住前面」的 bug,会让活动在界面上凭空消失。
 /// 这里只留渲染,别把算法抄回来(抄回来就是第二个真相源,也就没人再跑那 9 条测试了)。
-/// 活动在日历上的配色:待我应答优先(它是要我动作的),其次按项目可见性。
+/// 活动在日历上的配色:待我应答优先(它是要我动作的),其次按**活动自己的**可见性
+/// (`is_private`,M0 起;不再是「关联了什么项目」——2026-08-15 订正注释)。
 /// 身份图标。★AntD 图标,不用 emoji★(C2):容器里没有 emoji 字体时会显示成豆腐块 ——
 /// `e2e/shot.mjs` 已经踩过这个坑。
 /// 「旁听」那个**空心圈** AntD 没有现成的,用 CSS 画一个 —— 它同样不是 emoji,
@@ -83,7 +85,6 @@ function MineIcon({ mine }: { mine: NonNullable<Mine> }) {
 ///
 /// ⚠★判 `ends_at` 不判 `starts_at`★：正在开的那场还没结束，它恰恰是此刻最要紧的一条，
 /// 淡化掉就正好淡化错了人最需要看见的东西。
-export const isEnded = (m: Activity) => new Date(m.ends_at).getTime() < Date.now()
 
 function evStyle(m: Activity): React.CSSProperties {
   // ★已结束的一律淡化，而且**压过「待应答」的红**★。

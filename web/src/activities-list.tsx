@@ -9,8 +9,9 @@
 // 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
 import { App as AntdApp, Button, Card, Empty, Input, Pagination, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Activity, type Me, type RespondStatus } from './api'
+import { api, type Activity, type Me } from './api'
 import { annotate, fmtDay, fmtHM } from './tz'
+import { STATUS_LABEL, isEnded } from './activity-state'
 import { TodoCard } from './todo-card'
 
 // ⚠ 原来这里也抄了一份 fmtDay/fmtHM,2026-08-12 收敛进 tz.ts(见 todo-card 的注释)。
@@ -75,7 +76,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
     }
     return all
       .filter((m) => m.my_status !== 'declined')
-      .filter((m) => (tab === 'past' ? new Date(m.ends_at).getTime() < now
+      .filter((m) => (tab === 'past' ? isEnded(m, now)
         : new Date(m.ends_at).getTime() >= now && (tab !== 'mine' || m.organizer === me?.username)))
       .filter((m) => proj === 'all' || (m.projects ?? []).some((p) => p.id === proj))
       .filter((m) => !k || m.title.toLowerCase().includes(k) || m.agenda.toLowerCase().includes(k))
@@ -83,7 +84,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   }, [all, tab, kw, proj, me, now])
 
   const upcoming = rows.filter((m) => new Date(m.ends_at).getTime() >= now)
-  const past = rows.filter((m) => new Date(m.ends_at).getTime() < now).reverse()
+  const past = rows.filter((m) => isEnded(m, now)).reverse()
 
   // 待我应答与冲突计算都搬进 TodoCard(★两页共用★),这里不再各算一套。
   // ⚠ 2026-08-15 起连**数据**也归卡自己拉 —— 共用组件却各喂各的数据不算共用,
@@ -186,16 +187,11 @@ function Group({ title, items, onOpen, me }: {
   )
 }
 
-const STATUS_TAG: Record<RespondStatus, { t: string; c: string }> = {
-  pending: { t: '待应答', c: 'red' }, accepted: { t: '已接受', c: 'green' },
-  declined: { t: '已拒绝', c: 'default' }, tentative: { t: '待定', c: 'orange' },
-  counter: { t: '已提改期', c: 'purple' },
-}
 
 function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me: Me | null }) {
   const s = new Date(m.starts_at), e = new Date(m.ends_at)
   const ended = e.getTime() < Date.now()
-  const tag = m.my_status ? STATUS_TAG[m.my_status] : null
+  const tag = m.my_status ? STATUS_LABEL[m.my_status] : null
   return (
     <div onClick={() => onOpen(m.id)} style={{
       display: 'flex', gap: 14, padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -239,7 +235,7 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
             ? (m.has_minutes
               ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
               : null)
-            : tag && <Tag color={tag.c}>{tag.t}</Tag>}
+            : tag && <Tag color={tag.color}>{tag.text}</Tag>}
         </Space>
       </div>
     </div>

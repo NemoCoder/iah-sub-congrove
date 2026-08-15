@@ -1,6 +1,6 @@
 --- baseline
 +++ current
-@@ -1,11 +1,149 @@
+@@ -1,11 +1,163 @@
 +TABLE activities
 +  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activities_id_seq'::regclass)
 +  COL   2 title                  text                           NOT NULL
@@ -49,6 +49,20 @@
 +           FROM activity_projects ap2
 +             JOIN projects p2 ON p2.id = ap2.project_id AND p2.deleted_at IS NULL
 +          WHERE ap2.activity_id = m.id)));
++VIEW activity_hours AS  SELECT id AS activity_id,
++    COALESCE(( SELECT max(t.duration_sec) / 3600.0::double precision
++           FROM items_alive i
++             JOIN transcripts t ON t.item_id = i.id
++          WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL), (actual_minutes::numeric / 60.0)::double precision, (EXTRACT(epoch FROM ends_at - starts_at) / 3600.0)::double precision) AS hours,
++        CASE
++            WHEN (EXISTS ( SELECT 1
++               FROM items_alive i
++                 JOIN transcripts t ON t.item_id = i.id
++              WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL AND t.duration_sec IS NOT NULL)) THEN 'recording'::text
++            WHEN actual_minutes IS NOT NULL THEN 'manual'::text
++            ELSE 'scheduled'::text
++        END AS src
++   FROM activities m;
 +TABLE activity_link_history
 +  COL   1 id                     bigint                         NOT NULL DEFAULT nextval('activity_link_history_id_seq'::regclass)
 +  COL   2 activity_id            bigint                         NOT NULL
@@ -152,7 +166,7 @@
    CON app_user_pkey                      PRIMARY KEY (username)
  TABLE audit_log
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('audit_log_id_seq'::regclass)
-@@ -41,27 +179,52 @@
+@@ -41,27 +193,52 @@
    COL   8 mime                   text                          
    COL   9 sha256                 text                          
    COL  10 sha_verified           boolean                        NOT NULL DEFAULT false
@@ -217,7 +231,7 @@
  SEQ items_id_seq
  TABLE media_jobs
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('media_jobs_id_seq'::regclass)
-@@ -78,106 +241,6 @@
+@@ -78,106 +255,6 @@
    CON media_jobs_status_check            CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text])))
    IDX CREATE UNIQUE INDEX idx_media_jobs_active ON public.media_jobs USING btree (item_id) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))
  SEQ media_jobs_id_seq
@@ -324,7 +338,7 @@
  TABLE owner_transfers
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('owner_transfers_id_seq'::regclass)
    COL   2 project_id             bigint                         NOT NULL
-@@ -214,22 +277,22 @@
+@@ -214,22 +291,22 @@
    COL   1 id                     bigint                         NOT NULL DEFAULT nextval('projects_id_seq'::regclass)
    COL   2 name                   text                           NOT NULL
    COL   3 description            text                           NOT NULL DEFAULT ''::text
@@ -360,7 +374,7 @@
  SEQ projects_id_seq
  TABLE share_items
    COL   1 token                  text                           NOT NULL
-@@ -275,6 +338,9 @@
+@@ -275,6 +352,9 @@
    CON summaries_item_id_fkey             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON summaries_kind_check               CHECK ((kind = ANY (ARRAY['brief'::text, 'outline'::text, 'decisions'::text])))
    CON summaries_pkey                     PRIMARY KEY (item_id, kind)
@@ -370,7 +384,7 @@
  TABLE transcripts
    COL   1 item_id                bigint                         NOT NULL
    COL   2 text                   text                           NOT NULL
-@@ -286,3 +352,15 @@
+@@ -286,3 +366,15 @@
    COL   8 fine                   jsonb                         
    CON transcripts_item_id_fkey           FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
    CON transcripts_pkey                   PRIMARY KEY (item_id)

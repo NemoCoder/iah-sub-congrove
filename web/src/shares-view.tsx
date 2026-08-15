@@ -5,6 +5,7 @@ import { CopyOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useState } from 'react'
 import { ItemIcon } from './preview'
 import { api, type Item } from './api'
+import { fmtStamp } from './tz'
 
 type Row = {
   token: string; item_id: number; kind: Item['kind']; name: string; mime: string | null; space: string
@@ -13,11 +14,9 @@ type Row = {
   has_code: boolean; item_count: number; item_deleted: boolean
 }
 
-function fmt(s: string | null) {
-  if (!s) return '—'
-  const d = new Date(s); const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+// ★走 tz.ts★(2026-08-15):分享的创建/过期时刻原来按浏览器本地渲染,
+// 而「有效期到什么时候」恰恰是跨时区最容易看错的一格 —— 差 8 小时就能让人以为还没过期。
+const fmt = (s: string | null) => (s ? fmtStamp(s) : '—')
 
 /// 状态是**算出来的**,不是存的:过期/次数用尽都会随时间自然发生,存一个字段就得有人去刷新它。
 function status(r: Row) {

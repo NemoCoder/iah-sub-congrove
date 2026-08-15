@@ -60,7 +60,10 @@ pub async fn put_prefs(
     Json(input): Json<PrefsIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    // ⚠ 用 COALESCE 保留没传的字段：PUT 半个对象不该把另一半清空。
+    // ⚠★这一行注释 2026-08-15 才删掉★:它原来写着「用 COALESCE 保留没传的字段」——
+    //   而 2026-08-09 就已经改成整对象替换了(理由见上面那段长注),SQL 里一个 COALESCE 都没有。
+    //   ★两条注释在同一个函数里说反话,谁读到哪条全看运气★;而它描述的是**契约**,
+    //   照它写调用方就会「送半个对象」,把另一半静默清空。
     sqlx::query(
         "INSERT INTO user_prefs (username, timezone, default_remind_minutes) VALUES ($1,$2,$3)
          ON CONFLICT (username) DO UPDATE
