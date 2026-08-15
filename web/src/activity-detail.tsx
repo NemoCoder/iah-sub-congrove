@@ -900,7 +900,7 @@ function OnlineCard({ id, url }: { id: number; url: string }) {
         <div style={{ marginTop: 8, fontSize: 12, color: '#8c8c8c' }}>
           {hist.map((h, i) => (
             <div key={i} style={{ marginBottom: 4 }}>
-              {fmtTime(h.changed_at)} · {h.changed_by} 改成 <code>{h.new_url || '(清空)'}</code>
+              {fmtTime(h.changed_at)} · {h.changed_by} 改成 <code>{h.new_url || '（清空）'}</code>
               {h.old_url && <span>（原 <code>{h.old_url}</code>）</span>}
             </div>
           ))}

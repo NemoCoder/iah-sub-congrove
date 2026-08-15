@@ -58,7 +58,7 @@ export function SharesView() {
   const copy = async (r: Row) => {
     const url = `${window.location.origin}/s/${r.token}`
     const what = r.item_count > 1 ? `${r.name} 等 ${r.item_count} 项` : r.name
-    const text = `通过汇流分享：${what}\n链接：${url}${r.has_code ? '\n(需要提取码)' : ''}`
+    const text = `通过汇流分享：${what}\n链接：${url}${r.has_code ? '\n（需要提取码）' : ''}`
     try { await navigator.clipboard.writeText(text); message.success('已复制') }
     catch { message.info(url) }
   }

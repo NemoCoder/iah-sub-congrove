@@ -190,7 +190,7 @@ function TryIt({ api: a }: { api: Api }) {
           <pre style={{
             background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 4, padding: 10,
             fontSize: 12, maxHeight: 340, overflow: 'auto', margin: 0,
-          }}>{resp.text || '(空响应体)'}</pre>
+          }}>{resp.text || '（空响应体）'}</pre>
         </div>
       )}
     </div>

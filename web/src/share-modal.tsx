@@ -51,7 +51,7 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
         life,
       ].join('\n')
       setLastLink({ url, code: r.code, text })
-      try { await navigator.clipboard.writeText(text); message.success('分享文案已复制' + (r.code ? '(含提取码)' : '')) }
+      try { await navigator.clipboard.writeText(text); message.success('分享文案已复制' + (r.code ? '（含提取码）' : '')) }
       catch { message.info('链接已生成，见下方') }
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
@@ -59,7 +59,7 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
   return (
     <Modal open onCancel={onClose} footer={null} width={620}
       title={<span><ItemIcon it={item} />
-        {items.length > 1 ? `分享 ${items.length} 项(${item.name} 等)` : `分享「${item.name}」`}</span>}>
+        {items.length > 1 ? `分享 ${items.length} 项（${item.name} 等）` : `分享「${item.name}」`}</span>}>
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
         message="这是公开链接：拿到链接的人不需要是本项目成员"
         description="提取码、有效期、访问次数是仅有的三道闸；发出去之后唯一的后悔药是撤销。" />
@@ -95,7 +95,7 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
           管理散落在每个文件里没法用。全部分享集中在顶部「🔗 我的分享」页。 */}
       {lastLink && (
         <Alert type="success" showIcon style={{ marginTop: 14 }}
-          message="已生成(文案已复制到剪贴板)"
+          message="已生成（文案已复制到剪贴板）"
           description={
             <AntSpace direction="vertical" size={6} style={{ width: '100%' }}>
               <Input.TextArea readOnly value={lastLink.text} autoSize style={{ fontSize: 12 }}
@@ -109,7 +109,7 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
                   // 两种都给,让用户按场景选:要分开发就用上面的文案,图省事就用这个。
                   <Button size="small" onClick={() => {
                     void navigator.clipboard.writeText(`${lastLink.url}?pwd=${lastLink.code}`)
-                    message.success('已复制(链接自带提取码，打开即免输)')
+                    message.success('已复制（链接自带提取码，打开即免输）')
                   }}>复制免输码链接</Button>
                 )}
               </AntSpace>
