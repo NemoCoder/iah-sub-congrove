@@ -43,7 +43,7 @@ ADR 只承载**决策**；「改动到底影响了什么」由五道机械门禁
 
 | # | 决策 | 状态 |
 |---|---|---|
-| [0001](0001-rebuild-db-each-deploy.md) | 上线前每次部署清库重建，`migrations/` 永远只有一个 `0001_init.sql` | 已定（liaoruili 2026-08-08） |
+| [0001](0001-rebuild-db-each-deploy.md) | ~~上线前每次部署清库重建~~ → ★**已失效**★:2026-08-16 开出 prod 通道,回到**只增不改**(门禁 `migration-frozen-check.sh` 看着) | ~~已定 2026-08-08~~ → 已失效 2026-08-16 |
 | [0002](0002-meetings-to-activities.md) | 「会议」→「活动」，引入 `activity_types` 与 `busy` | 已定 |
 | [0003](0003-backfill-via-notified-at.md) | 「补录」判据存 `notified_at` 事实，不用生成列推导 | 已定（PRD L0b 已回填） |
 | [0004](0004-quota-per-user.md) | 配额从项目挪到人；`user_quota` 与 `user_prefs` 拆两张 | 已定（PRD L3/J2 已回填） |

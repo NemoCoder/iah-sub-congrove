@@ -11,37 +11,65 @@
 #
 # 判据:sqlx 在 `_sqlx_migrations` 里存的是当时那个文件的 **SHA-384**。这里把同一个比对**提前**到本地。
 #
-# ⚠ 进不了 CI(要连活的 dev 库),和 SQL PREPARE / schema 对拍 / 响应体形状同一类 ——
+# ⚠ 进不了 CI(要连活库),和 SQL PREPARE / schema 对拍 / 响应体形状同一类 ——
 #   PR 里如实标「人工验证」,别标成 CI 绿。
-# ⚠ 「量不到」不算通过:连不上库 / 读不到文件一律 exit 2。
+# ⚠ 「量不到」不算通过:连不上库 / 读不到文件一律 exit 2;prod 没配 DSN 则 **exit 3 = 未跑**
+#   (all-gates 会把 3 显示成「? 未跑」,既不算绿也不算红)。
+#
+# ★★这个脚本对库**只做 SELECT**,一个字节都不写★★(2026-08-16 liaoruili:「prod 里面禁止动任何数据」)。
+#   它读的只有 `_sqlx_migrations` 一张表的 checksum 列。要修不一致,那是**人**的动作,
+#   脚本只负责告诉你哪儿不一致 + 打印两条出路,绝不代劳。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${CONGROVE_DEV_DSN:?缺 CONGROVE_DEV_DSN（source ~/.config/iah/congrove-dev.env）}"
 
-FAIL=0
-FOUND=0
-for f in migrations/*.sql; do
-  [ -e "$f" ] || continue
-  FOUND=$((FOUND + 1))
-  ver=$(basename "$f" | sed -E 's/^0*([0-9]+).*/\1/')
-  mine=$(python3 -c "import hashlib,sys;print(hashlib.sha384(open(sys.argv[1],'rb').read()).hexdigest())" "$f") || { echo "★算不出 $f 的校验和★"; exit 2; }
-  theirs=$(psql "$CONGROVE_DEV_DSN" -Atc \
-    "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
-    || { echo "★连不上 dev 库,查不到 _sqlx_migrations —— 不能当成通过★"; exit 2; }
-  if [ -z "$theirs" ]; then
-    # 库里没这一条 = 这个库还没跑过它(全新库/刚清过库),启动时会正常跑一遍,不是问题。
-    echo "  · $f:dev 库还没跑过它(启动时会跑)—— 跳过"
-    continue
-  fi
-  if [ "$mine" = "$theirs" ]; then
-    echo "  ✓ $f 与 dev 库记录一致"
-  else
-    echo "  ✗ ★$f 改过了,而 dev 库记的还是老的★"
-    echo "      文件 = $mine"
-    echo "      库里 = $theirs"
-    FAIL=1
-  fi
-done
+FAIL=0; FOUND=0; PROD_SKIPPED=0
+
+核一个库() {   # 核一个库() <通道名> <DSN>
+  local ch=$1 dsn=$2 f ver mine theirs
+  for f in migrations/*.sql; do
+    [ -e "$f" ] || continue
+    [ "$ch" = dev ] && FOUND=$((FOUND + 1))
+    ver=$(basename "$f" | sed -E 's/^0*([0-9]+).*/\1/')
+    mine=$(python3 -c "import hashlib,sys;print(hashlib.sha384(open(sys.argv[1],'rb').read()).hexdigest())" "$f") || { echo "★算不出 $f 的校验和★"; exit 2; }
+    # ★只读★:整个脚本对库的全部操作就是下面这一条 SELECT
+    theirs=$(psql "$dsn" -Atc \
+      "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
+      || { echo "★连不上 $ch 库,查不到 _sqlx_migrations —— 不能当成通过★"; exit 2; }
+    if [ -z "$theirs" ]; then
+      # 库里没这一条 = 这个库还没跑过它(全新库),启动时会正常跑一遍,不是问题。
+      echo "  · [$ch] $f:该库还没跑过它(启动时会跑)—— 跳过"
+      continue
+    fi
+    if [ "$mine" = "$theirs" ]; then
+      echo "  ✓ [$ch] $f 与库记录一致"
+    else
+      echo "  ✗ ★[$ch] $f 改过了,而库里记的还是老的★"
+      echo "      文件 = $mine"
+      echo "      库里 = $theirs"
+      FAIL=1
+    fi
+  done
+}
+
+核一个库 dev "$CONGROVE_DEV_DSN"
+
+# ★prod 才是从今天起真正不能出错的那个★(2026-08-16 开通道):dev 上对不上只是「改个记录」,
+#   prod 上对不上是**生产 pod 起不来**。所以这道闸必须也看 prod。
+#   ⚠ prod 的 DSN 不放在 dev 那份配置里 —— 单独放 `~/.config/iah/congrove-prod.env`(仓库外,600),
+#     里面一行 `CONGROVE_PROD_DSN=postgresql://…`(★建议用只读角色★:这个脚本只 SELECT)。
+#   ⚠ 没配就 **exit 3 = 未跑**,★绝不当成通过★ —— 「我没查」和「查了没问题」是两件事。
+if [ -z "${CONGROVE_PROD_DSN:-}" ] && [ -f "$HOME/.config/iah/congrove-prod.env" ]; then
+  # shellcheck disable=SC1091
+  set -a; . "$HOME/.config/iah/congrove-prod.env"; set +a
+fi
+if [ -n "${CONGROVE_PROD_DSN:-}" ]; then
+  核一个库 prod "$CONGROVE_PROD_DSN"
+else
+  echo "  ? [prod] 未核:缺 CONGROVE_PROD_DSN(见本脚本头注)"
+  PROD_SKIPPED=1
+fi
+
 [ "$FOUND" -gt 0 ] || { echo "★migrations/ 下一个文件都没有 —— 不能当成通过★"; exit 2; }
 
 if [ "$FAIL" != 0 ]; then
@@ -49,7 +77,8 @@ if [ "$FAIL" != 0 ]; then
 
 ★门禁不通过★:这样部上去,pod 会 CrashLoop 在
     Error: migration N was previously applied but has been modified
-两条出路(按 ADR-0001,上线前 dev 可以清库):
+⚠★prod 已开,ADR-0001 失效:已应用的迁移只增不改★。真要改 schema 是**新建** 0002_xxx.sql。
+下面两条只适用于 **dev**(prod 上不要做第 ①、第 ② 也只有在你确认过结构等价时才由**人**执行):
   ① 清库重建(CLAUDE.md 里那五条 SQL)—— 干净,但清掉 dev 全部数据;
   ② 先证明「现库结构已等于新迁移建出来的样子」:
        bash scripts/schema-check.sh sim-diff migrations/0001_init.sql   # 差异必须为 0
@@ -59,4 +88,8 @@ if [ "$FAIL" != 0 ]; then
 TXT
   exit 1
 fi
-echo "★迁移校验和门禁通过★:代码里的迁移与 dev 库记录一致"
+if [ "$PROD_SKIPPED" = 1 ]; then
+  echo "★dev 一致,但 prod 未核 —— 标记为「未跑」,不算通过★"
+  exit 3
+fi
+echo "★迁移校验和门禁通过★:代码里的迁移与 dev / prod 两个库的记录都一致"
