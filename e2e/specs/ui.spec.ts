@@ -13,6 +13,7 @@
 import { expect, request as pwRequest, test } from '@playwright/test'
 import { 会议 } from './_presets'
 import { 每条都留图 } from './_shot'
+import { 本周内可见的时刻 } from './_when'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -99,7 +100,8 @@ test.describe('日程页', () => {
     //   我第一版写 `now + 3h`，凌晨一点多跑就落进折叠区，于是「造了两场却量到 0 个块」。
     //   (是上面那句护栏把它抓出来的 —— 没有护栏的话它会安静地退回「空跑也绿」。)
     const t0 = new Date(); t0.setHours(14, 0, 0, 0)
-    if (t0.getTime() < Date.now()) t0.setDate(t0.getDate() + 1)   // 今天 14 点过了就排明天
+    // ★改用唯一真相源★:原来「今天过了就排明天」在**周六**会掉进下一周(见 _when.ts)
+    t0.setTime(本周内可见的时刻(14).getTime())
     const t1 = new Date(t0.getTime() + 3600_000)
     const pr = await request.post('/api/projects', { data: { name: `E2E-重叠-${Date.now()}` } })
     expect(pr.status(), '建项目失败,后面的断言就没有意义了').toBe(200)
