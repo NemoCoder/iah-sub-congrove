@@ -23,7 +23,8 @@ use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::auth;
 use crate::state::AppState;
@@ -214,7 +215,23 @@ pub fn build_router(state: AppState) -> Router {
         )
         // ⚠ 全局层只有 Trace,**没有** TimeoutLayer——超时按路由组分层(fast 30s / slow 2h / auth 60s),
         // 放回全局会把慢路由重新掐回 30s。
-        .layer(TraceLayer::new_for_http());
+        //
+        // ★请求日志必须显式抬到 INFO★(2026-08-16):`TraceLayer::new_for_http()` 是**装了等于没装** ——
+        //   它的 on_request / on_response 默认发在 **DEBUG**,而线上过滤器是 `info,congrove=debug`
+        //   (`tower_http` 只到 info)⇒ ★每个请求的方法/路径/状态码,一条都不记★。
+        //
+        // 这件事的代价当天就付了:一条 E2E 拿到 **500 而不是 403**,重跑就绿。查根因时发现
+        //   · 应用层没记(`error.rs` 对 Db/Other 都 error!,而 Loki 里那 20 分钟**两个 pod 合起来 0 条 ERROR**
+        //     —— 所以那个 500 根本不是应用返回的);
+        //   · 网关也没记(Traefik 没开 accessLog,只有它自己的 WRN);
+        //   ⇒ ★一个非应用产生的 5xx,在全链路上不留任何痕迹★,而它偏偏是最需要痕迹的那种错。
+        // ⚠ 别指望 `on_failure`(它确实是 ERROR)兜住:它只在**应用返回 5xx** 时触发,
+        //   而这次的 500 压根没走到应用。要能分辨「谁返回的」,就得每个请求都留一行。
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        );
 
     // CORS 只在鉴权关闭的本地 dev 开(vite :5180 跨源调 API);线上同源,别开。
     if state.auth.is_none() {
