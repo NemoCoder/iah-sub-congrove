@@ -32,8 +32,9 @@ import { fileSha256 } from './sha256'
 import { effectiveScope, effectiveTab, showScopeSwitch, shownProjects } from './project-filter'
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
-import { fmtStamp } from './tz'
+import { fmtDay, fmtHM, fmtStamp } from './tz'
 import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
+import { isEnded } from './activity-state'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
 /// 「无权限」是**没有任何授权**的第四态,库里不存它——`effective = null` 即是。
@@ -1672,13 +1673,13 @@ function ProjectActivities({ projectId }: { projectId: number }) {
       columns={[
         {
           title: '时间', width: 150,
-          render: (_, m) => {
-            const d = new Date(m.starts_at)
-            const p = (n: number) => String(n).padStart(2, '0')
-            return <span style={{ fontSize: 12 }}>
-              {d.getMonth() + 1}/{d.getDate()} {p(d.getHours())}:{p(d.getMinutes())}
-            </span>
-          },
+          // ★走 tz.ts,别自己拼★(2026-08-15):这里原来是 `new Date(...).getHours()` ——
+          // **浏览器本地时区**,而全站别处早就按「我的时区」(user_prefs.timezone)渲染了。
+          // 于是设过时区的人在这张表上看到的时间和日历里对不上,而它不会报任何错。
+          // (2026-08-12 那次把 4 份复制的格式化器收敛进 tz.ts,★漏了这一处★。)
+          render: (_, m) => (
+            <span style={{ fontSize: 12 }}>{fmtDay(m.starts_at)} {fmtHM(m.starts_at)}</span>
+          ),
         },
         { title: '标题', dataIndex: 'title', ellipsis: true },
         { title: '记录员', dataIndex: 'recorder', width: 100, ellipsis: true },
@@ -1690,7 +1691,7 @@ function ProjectActivities({ projectId }: { projectId: number }) {
           //   2026-08-15 对抗检查抓到。判据与那边逐字相同,也与后端
           //   `activities_owing_minutes` 视图同源 —— 两处各写一份本身就是漂移源,
           //   哪天再改就该把它提成一个共用函数。
-          render: (_, m) => new Date(m.ends_at).getTime() < now
+          render: (_, m) => isEnded(m, now)
             ? (m.has_minutes
               ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
               : null)
@@ -1740,7 +1741,7 @@ function ProjectSettings({ space, menu }: {
         </div>
         {space.archived_at && (
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
-            已归档于 {new Date(space.archived_at).toLocaleDateString('zh-CN')}，内容只读。
+            已归档于 {fmtStamp(space.archived_at)}，内容只读。
           </Typography.Text>
         )}
       </div>

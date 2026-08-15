@@ -552,6 +552,40 @@ CREATE TABLE transcripts (
   fine         jsonb
 );
 
+-- ★D5「一场活动算几小时」的唯一推导★(2026-08-15 收敛)。
+-- 三级回退:①录制时长(多份取 **max 不是 sum** —— 两个人各录一份是同一场会,累加会翻倍)
+--          ②手工填的 `actual_minutes` ③按排程 `ends_at - starts_at` 估算。
+-- `src` 说的是「这个数字是哪一级给的」——D5 原话:「这个数字会被用来做汇报,
+-- 来源不透明就会有争议;标出来源,争议时可追溯」,所以统计界面必须显示它。
+--
+-- ⚠★为什么做成视图,而不是 Rust 里的一个字符串常量★:
+--   在此之前这段表达式(连同下面那个 CASE)在 `activities.rs` 里**逐字抄了四遍** ——
+--   个人统计两个 CTE、项目统计、每人次平均。其中一处上面还写着
+--   「时长口径与个人统计**完全一致** —— 两处若各写一套,同一场会在个人页和项目页
+--   会显示不同的时长,而没人说得清该信哪个」,★注释说得对,做法是抄第三遍★。
+--   我先试过在 Rust 侧收成 `macro_rules! 时长小时`,结果打断了
+--   `scripts/sql-prepare-check.py`(它只认「宏在最前面」的 `concat!`,宏夹在中间就抽成半截,
+--   PREPARE 报的错还指到了隔壁一个无辜文件)——★为了去重而把最值钱的那道闸弄瞎,是亏的★。
+--   放进数据库则两全:SQL 侧只有一份,而每条查询在 Rust 里仍是完整的编译期字面量。
+CREATE VIEW activity_hours AS
+  SELECT m.id AS activity_id,
+         COALESCE(
+           (SELECT max(t.duration_sec)/3600.0
+              FROM items_alive i JOIN transcripts t ON t.item_id = i.id
+             WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
+           m.actual_minutes/60.0,
+           EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
+         ) AS hours,
+         CASE
+           WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
+                         WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
+                           AND t.duration_sec IS NOT NULL) THEN 'recording'
+           WHEN m.actual_minutes IS NOT NULL THEN 'manual'
+           ELSE 'scheduled'
+         END AS src
+  FROM activities m;
+
+
 -- AI 参考稿:一个录制多种产出(摘要/大纲/决议待办),各存一行,重跑覆盖。
 -- ⚠★这不是正式纪要★(D14):它是**给记录员核对整理用的原材料**。
 --   正式纪要在 activity_minutes,由记录员按模板写、有明确责任人。

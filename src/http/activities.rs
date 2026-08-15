@@ -6,7 +6,10 @@
 //! 把两者混起来 = 「参会即获得资料权限」= 权限退回历史累积,而 R1 要的是当前状态的函数。
 //!
 //! 三个容易写错的地方,都在下面各自的注释里标了 ★:
-//!   · 忙闲按**项目可见性**分流(D1),不是按活动;
+//!   · 忙闲按**活动自己的 `busy`** 分流(PRD A4)—— ⚠★这条 2026-08-15 才订正★:
+//!     原文写的是「按**项目可见性**分流,不是按活动」,那是 M0 之前的规则,
+//!     `projects.visibility` 那一列在 M0-1 就删了,代码早已改判 `m.busy`,只有注释停在原地。
+//!     ★注释里这种「按 X 判」的断言会过期,而且过期时是静默的★ —— 读它的人会照旧规则推理;
 //!   · 「建议改期」是私事冲突**唯一的结构化出口**(D2),不是可选的便利功能;
 //!   · 改线上链接要留痕(开会前十分钟改链接是真实场景)。
 
@@ -91,9 +94,11 @@ pub struct ActivityRow {
     pub minutes_status: Option<String>,
     /// 这场会**只**关联私密项目吗?日历按它上色(私密=紫色虚框,公开=青色实框)。
     ///
-    /// ★判据与忙闲分流保持一致★(D1):只要关联了**任一**公开项目就算「公开的会」——
-    /// 它已经是公开协作的一部分,会产生忙闲、别人看得到你在忙。
-    /// 两处若各写各的,就会出现「日历显示私密、别人却看到你忙」这种自相矛盾的展示。
+    /// ★判据是**活动自己的** `visibility <> 'public'`★(M0 起;SQL 见下面 list 那条)。
+    /// ⚠ 这段注释原来写的是「只要关联了任一公开项目就算公开的会」—— 那是 M0 之前的规则,
+    ///   `projects.visibility` 已删,而注释停在原地整整一个里程碑(2026-08-15 订正)。
+    /// 与忙闲分流仍然「保持一致」,只是两边都改成看活动自己的字段了
+    /// (可见性看 `m.visibility`,忙闲看 `m.busy`)——★它们是两个正交的开关,别再绑在一起★。
     #[sqlx(default)]
     pub is_private: bool,
     /// ★关联的项目**全部**已归档吗★(PRD B1)。日历据此淡化 + 打「已归档」标。
@@ -893,9 +898,11 @@ pub struct FreeBusyQ {
 
 /// GET /api/freebusy —— 忙闲查询(D1)。★只回时间段,不回任何内容★。
 ///
-/// ★分流按**项目可见性**,不是按活动★:
-///   · 关联了任一**公开**项目的会 → 产生忙闲(别人看到「忙」,但看不到标题);
-///   · 只关联**私密**项目的会 → ★完全隐形★,别人看到的是「空闲」。
+/// ★分流按**活动自己的 `busy`**★(PRD A4;2026-08-15 订正注释,代码早就是这样了):
+///   · `busy = true` 的活动 → 产生忙闲(别人看到「忙」,但看不到标题);
+///   · `busy = false` → ★完全隐形★,别人看到的是「空闲」。
+/// ⚠ 旧规则是「按关联项目的可见性」,已随 `projects.visibility` 一起废除 ——
+///   它把「内容给谁看」和「时间占不占别人」绑成一件事,而这两件事正交(见下面 SQL 里的长注)。
 /// 这是刻意的:私事连「我忙」这件事都不该暴露。代价是发起人可能排到你头上,
 /// 所以前端必须在**当事人自己**收到邀请时标红提醒 + 把「建议改期」放在旁边(D1 的三条硬要求之一)。
 ///
@@ -1611,21 +1618,8 @@ pub async fn my_stats(
     // ⚠ 多份录制取 **max 不是 sum**:两个人各录一份是同一场会,累加会翻倍。
     macro_rules! mine_cte { () => { "WITH mine AS (
         SELECT m.id, m.recorder,
-               COALESCE(
-                 (SELECT max(t.duration_sec)/3600.0
-                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
-                 m.actual_minutes/60.0,
-                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
-               ) AS hours,
-               CASE
-                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
-                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
-                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
-                 ELSE 'scheduled'
-               END AS src
-        FROM activities m
+               ah.hours, ah.src
+        FROM activities m JOIN activity_hours ah ON ah.activity_id = m.id
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
           -- ★关联项目全被删的会不计入★(2026-08-07,从个人面板的图上看出来的):
@@ -1666,21 +1660,8 @@ pub async fn my_stats(
     //   所以前端在**每张表下面标明各自的口径**，而不是让人自己去猜为什么不等。
     macro_rules! mine_all_cte { () => { "WITH mine AS (
         SELECT m.id, m.type_id,
-               COALESCE(
-                 (SELECT max(t.duration_sec)/3600.0
-                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
-                 m.actual_minutes/60.0,
-                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
-               ) AS hours,
-               CASE
-                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
-                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
-                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
-                 ELSE 'scheduled'
-               END AS src
-        FROM activities m
+               ah.hours, ah.src
+        FROM activities m JOIN activity_hours ah ON ah.activity_id = m.id
         WHERE m.status = 'active' AND m.ends_at <= now()
           AND m.starts_at >= date_trunc($2, now())
           AND (m.organizer = $1
@@ -2014,27 +1995,14 @@ pub async fn project_stats(
     // 同一场会在个人页和项目页会显示不同的时长,而没人说得清该信哪个。
     let sql = "WITH mtg AS (
         SELECT m.id,
-               COALESCE(
-                 (SELECT max(t.duration_sec)/3600.0
-                    FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                   WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
-                 m.actual_minutes/60.0,
-                 EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0
-               ) AS hours,
-               CASE
-                 WHEN EXISTS (SELECT 1 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                               WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL
-                                 AND t.duration_sec IS NOT NULL) THEN 'recording'
-                 WHEN m.actual_minutes IS NOT NULL THEN 'manual'
-                 ELSE 'scheduled'
-               END AS src,
+               ah.hours, ah.src,
                (SELECT count(*) FROM activity_participants p
                  WHERE p.activity_id = m.id AND p.kind = 'attendee') AS invited,
                (SELECT count(*) FROM activity_participants p
                  WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted') AS accepted,
                EXISTS (SELECT 1 FROM activity_minutes mm
                         WHERE mm.activity_id = m.id AND mm.status = 'done') AS minutes_done
-        FROM activities m
+        FROM activities m JOIN activity_hours ah ON ah.activity_id = m.id
         JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
         -- ★取消的场次不计入★(PRD 6.5.2 验收标准):它没发生过
         WHERE m.status = 'active' AND m.ends_at <= now()
@@ -2058,14 +2026,10 @@ pub async fn project_stats(
     // 简化成「总时长 / 活动数 × 参会率」会在各场人数差异大时明显失真,所以直接按人次算。
     let per_person: Option<f64> = sqlx::query_scalar(
         "SELECT SUM(h * acc) / NULLIF(SUM(acc), 0) FROM (
-           SELECT COALESCE(
-                    (SELECT max(t.duration_sec)/3600.0 FROM items_alive i JOIN transcripts t ON t.item_id = i.id
-                      WHERE i.activity_id = m.id AND i.is_recording AND i.deleted_at IS NULL),
-                    m.actual_minutes/60.0,
-                    EXTRACT(EPOCH FROM (m.ends_at - m.starts_at))/3600.0) AS h,
+           SELECT ah.hours AS h,
                   (SELECT count(*) FROM activity_participants p
                     WHERE p.activity_id = m.id AND p.kind = 'attendee' AND p.status = 'accepted')::float8 AS acc
-             FROM activities m
+             FROM activities m JOIN activity_hours ah ON ah.activity_id = m.id
            JOIN activity_types at ON at.id = m.type_id JOIN activity_projects mp ON mp.activity_id = m.id AND mp.project_id = $1
             WHERE m.status = 'active' AND m.ends_at <= now() AND m.starts_at >= date_trunc($2, now())
          ) x")

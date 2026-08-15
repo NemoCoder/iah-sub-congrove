@@ -55,7 +55,7 @@ pub const APIS: &[Api] = &[
     // ── 项目 ──
     api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", ""),
     api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
-    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert；没传的字段保留）", "timezone, default_remind_minutes"),
+    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert;★整对象替换:传什么就是什么,没传的字段会被清空★——这样 null 才可表达)", "timezone, default_remind_minutes"),
     api!("POST", "/api/me/admin-mode", "我的", "★有超管**资格**的人★（不是「此刻有特权」）",
          "进 / 出超管模式。★超管平时就是普通用户★——关着的时候他看不到别人的项目与活动,
           要用特权得刻意开一下,2 小时自动关、退出登录也关(照 GitLab Admin Mode)。
@@ -229,7 +229,7 @@ pub const APIS: &[Api] = &[
          "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
           后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),
     api!("GET", "/api/freebusy", "活动", "登录",
-         "忙闲(D1)。★只回时间段不回内容★;★按项目可见性分流★——只关联私密项目的会完全隐形(别人看到「空闲」)",
+         "忙闲(D1)。★只回时间段不回内容★;★按活动自己的 busy 分流★(PRD A4)——busy=false 的活动完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),
 
     // ── 内容 ──

@@ -11,7 +11,7 @@ import { App as AntdApp, Alert, Button, Card, Descriptions, Empty, Input, Modal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
-import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, utcToPicked } from './tz'
+import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, sameDayIn, utcToPicked } from './tz'
 import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
@@ -19,26 +19,20 @@ import { useActivityUpload } from './activity-upload'
 import { useRenameActivityItem } from './activity-item-rename'
 import { ShareModal } from './share-modal'
 import { TimeRangePicker } from './time-range'
+import { STATUS_LABEL, isEnded } from './activity-state'
 
-const pad = (n: number) => String(n).padStart(2, '0')
 // ⚠ `fmtTime` 原来在 **3 个文件**里各抄了一份(本文件 / projects-view / activity-minutes),
 //   `fmtHM` 另有 2 份 —— 2026-08-12 全部收敛进 tz.ts(见 todo-card 头上那段注释)。
 const fmtTime = fmtStamp
-const fmtRange = (a: string, b: string) => {
-  const s = new Date(a), e = new Date(b)
-  const sameDay = s.toDateString() === e.toDateString()
-  return sameDay
-    ? `${fmtTime(a)} – ${pad(e.getHours())}:${pad(e.getMinutes())}`
+// ⚠★「同不同一天」和「几点几分」都要按**我的时区**判★(2026-08-15):
+//   这里原来是 `s.toDateString() === e.toDateString()` + `e.getHours()` —— 全是浏览器本地。
+//   跨时区时两者会同时错:一场按纽约时间跨了夜的会,在北京看是同一天(或反过来),
+//   于是它要么少显示一个日期、要么多显示一个,而**两种都不会报错**。
+const fmtRange = (a: string, b: string) =>
+  sameDayIn(a, b)
+    ? `${fmtTime(a)} – ${fmtHM(b)}`
     : `${fmtTime(a)} – ${fmtTime(b)}`
-}
 
-const STATUS_META: Record<RespondStatus, { label: string; color: string }> = {
-  pending: { label: '待应答', color: 'red' },
-  accepted: { label: '接受', color: 'green' },
-  declined: { label: '拒绝', color: 'default' },
-  tentative: { label: '待定', color: 'orange' },
-  counter: { label: '建议改期', color: 'purple' },
-}
 
 export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = '返回' }: {
   id: number
@@ -127,7 +121,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
   ///   连带纪要/材料的语义一起变味 —— 这不是「撤销」,是改写历史。
   ///   ⚠ 同一页的「实际时长」用的是相反的判据(**开完之后**才出现,D5 第 2 级),
   ///     两处合起来才是完整的时间线:开完之前能取消、开完之后才谈实际时长。
-  const 已结束 = new Date(m.ends_at).getTime() < Date.now()
+  const 已结束 = isEnded(m)
 
   // ★取消了就只说「活动已取消」,别再摊开细节★（2026-08-13 liaoruili:
   //   「如果已经取消，具体信息就别显示了，直接做个取消页面，就像 404 页面那样」
@@ -331,7 +325,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               }] : []),
               // ★只在会开完之后才出现★(D5 第 2 级):会还没开就问「实际开了多久」是荒谬的,
               // 而且那一栏摆在那里只会让人以为要预填。
-              ...(new Date(m.ends_at).getTime() < Date.now() ? [{
+              ...(isEnded(m) ? [{
                 key: 'am', label: '实际时长',
                 // ⚠★双击后那句说明会掉到下一行★(2026-08-09 用户:「怎么点击后这段话在下面?」)。
                 //   原因:只读态是个 inline-block 的 <span>,说明跟在它右边;
@@ -446,7 +440,7 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
 }) {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
-  const meta = STATUS_META[p.status]
+  const meta = STATUS_LABEL[p.status]
   const act = async (path: string, ok: string) => {
     setBusy(true)
     try {
@@ -470,7 +464,7 @@ function ParticipantRow({ p, mid, organizer, canHost, onDone }: {
             反而看不出哪个是特殊的。这里要的是「谁可来可不来」一眼可见。 */}
         {p.kind !== 'observer' && p.required === false && <Tag>选参</Tag>}
         {/* 旁听者不需要答复,显示答复状态只会让人以为他欠一个回复 */}
-        {p.kind !== 'observer' && <Tag color={meta.color}>{meta.label}</Tag>}
+        {p.kind !== 'observer' && <Tag color={meta.color}>{meta.text}</Tag>}
         {/* ★催办只对还没答复的人出现★:已接受/已拒绝的人不该再被打扰 */}
         {canHost && p.status === 'pending' && (
           <Button size="small" loading={busy} onClick={() => act('remind', '已催办')}>催办</Button>
@@ -556,10 +550,10 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
 
-  const meta = STATUS_META[mine]
+  const meta = STATUS_LABEL[mine]
   return (
     <Card size="small" title="我的答复" style={{ marginBottom: 12 }}
-      extra={<Tag color={meta.color}>{meta.label}</Tag>}>
+      extra={<Tag color={meta.color}>{meta.text}</Tag>}>
       {/* ★当前状态的那个按钮禁用★:已经接受了还能再点「接受」是无意义的重复请求
           (2026-08-07 用户:「可以一直点接受」)。busy 时全部禁用,防连点打出多个请求。
           ⚠ 其余按钮保持可点 —— 改主意是正当操作,不能因为答过一次就锁死。 */}
