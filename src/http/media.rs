@@ -424,12 +424,12 @@ pub async fn play(
     // ⚠★「对 video 是刻意的」这半句 2026-08-15 已经收窄★:禁下载时连 video 也不再发预签名,
     //   改走下面那条同源 Range 代理。理由见那一段。
     // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的录屏不再吐预签名直链。
-    let row: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT kind, s3_key FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
+    let row: Option<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT kind, s3_key, mime FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
             .bind(iid)
             .fetch_optional(&state.pool)
             .await?;
-    let Some((kind, key)) = row else { return Err(AppError::NotFound) };
+    let Some((kind, key, mime)) = row else { return Err(AppError::NotFound) };
     if kind != "video" {
         return Err(AppError::BadRequest("只有录屏/视频能用播放地址(其他类型走 /download,受空间下载策略约束)".into()));
     }
@@ -443,29 +443,32 @@ pub async fn play(
     //   于是「这次活动的材料禁止下载原件」这条开关,对**视频**从来没有真正生效过。
     //   ⚠ 但也不能干脆不让播 —— 开关的原话就是「能看但不能下」。所以禁下载时改走
     //   **同源、认 cookie、支持 Range** 的代理:进度条照样能拖,而 URL 离开这个会话就没用。
-    let 禁下载 = {
-        let 项目级: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
-            .bind(pid).fetch_one(&state.pool).await?;
-        let 活动级: Option<bool> = sqlx::query_scalar(
-            "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
-            .bind(iid).fetch_optional(&state.pool).await?;
-        // 判据与 `items::download` 逐字一致:项目级只拦 viewer,活动级对所有角色生效,两者叠加。
-        (项目级 && role == Role::Viewer) || 活动级 == Some(true)
-    };
-    if 禁下载 {
+    // ★判据只有一处★:`items::禁下载理由`(2026-08-16 收敛)。此前这里抄了一份,
+    //   注释还自称「与 items::download 逐字一致」——★那是一句要人去维持的承诺,不是事实★。
+    if crate::http::items::禁下载理由(&state.pool, iid, pid, role).await?.is_some() {
         let rg = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let (stream, seg, cr, total) = state.storage.get_range(&key, rg.as_deref()).await
-            .map_err(AppError::Other)?;
+        let (stream, seg, cr, _total) = match state.storage.get_range(&key, rg.as_deref()).await {
+            Ok(v) => v,
+            // ★越界 Range 要回 416,不是 500★(2026-08-16 审计实测 `bytes=99999-999999` 拿到 500):
+            //   500 的意思是「服务端坏了」,而这里是**客户端要了一段不存在的字节** —— 语义完全不同,
+            //   而且它会往日志里灌一堆假的服务端错误(今晚刚为了一个查不出来的 500 折腾很久)。
+            Err(e) if format!("{e:?}").contains("InvalidRange") || format!("{e:?}").contains("416") =>
+                return Err(AppError::RangeNotSatisfiable),
+            Err(e) => return Err(AppError::Other(e)),
+        };
         let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(stream.into_async_read()));
         let mut b = Response::builder()
             .status(if cr.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
             .header(header::ACCEPT_RANGES, "bytes")
+            // ★Content-Type 不能省★(2026-08-16 审计实测缺失):浏览器 <video> 拿不到 MIME 多半直接拒播 ——
+            //   于是「能看但不能下」变成「既不能下也不能看」。旁边 `items::download` 一直是设的,
+            //   我照着它写却漏了这一行。★抄行为的时候只抄了主干,没抄它周围的约束。★
+            .header(header::CONTENT_TYPE, mime.clone().unwrap_or_else(|| "application/octet-stream".into()))
             // inline:这是拿来播的,不是拿来存的(浏览器不弹保存框)。
             .header(header::CONTENT_DISPOSITION, "inline")
             .header(header::CACHE_CONTROL, "no-store");
         if let Some(n) = seg { b = b.header(header::CONTENT_LENGTH, n) }
         if let Some(r) = cr { b = b.header(header::CONTENT_RANGE, r) }
-        let _ = total; // 总长已经编在 Content-Range 里,单独回没有额外信息
         return b.body(body).map_err(|e| AppError::Other(e.into()));
     }
 

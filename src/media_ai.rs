@@ -67,7 +67,28 @@ pub async fn run(state: AppState) {
         match claim_job(&state.pool).await {
             Ok(Some((job_id, item_id))) => {
                 tracing::info!(job_id, item_id, "media_ai: 开始分析");
-                let r = process(&state, job_id, item_id).await;
+                // ★把单个任务放进独立 task,panic 只死那一个★(2026-08-16 审计)。
+                //
+                // 在此之前是 `process(&state, …).await` **直接在这条循环里**:一旦某个任务 panic,
+                // 它会掀掉整条 worker 的 task。后果不是「这次分析失败」,而是:
+                //   · 进程还活着、healthz 照样 200、门户显示「运行中」;
+                //   · ★从此再没有任何转写和纪要被生成★,而没有任何东西会发现;
+                //   · 更糟的是 `reclaim_stale` **只在进程启动时跑一次** —— 卡在 running 的那条
+                //     任务连回收都等不到,除非有人重启 pod。
+                // ⚠ 说清楚:审计时我逐个查过现有的 `unwrap()`,**都有守卫、当前不可达**
+                //   (`tokens.last_mut()` 由 is_some_and 保证、`out.last_mut()` 由 match out.last() 保证、
+                //    serde_json 的 `v["choices"][0]` 越界返回 Null 而不是 panic)。
+                //   ★所以这不是在修一个已知 bug,是在给一个「代价与概率极不相称」的失败模式装护栏★:
+                //   这是 879 行还在长的代码,而它 panic 一次的代价是整个功能无声消失。
+                let st = state.clone();
+                let r = match tokio::spawn(async move { process(&st, job_id, item_id).await }).await {
+                    Ok(r) => r,
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(job_id, "media_ai: ★任务 panic★,已隔离,worker 继续");
+                        Err(anyhow::anyhow!("任务内部 panic(已隔离,不影响后续任务):{e}"))
+                    }
+                    Err(e) => Err(anyhow::anyhow!("任务被取消:{e}")),
+                };
                 match r {
                     Ok(()) => {
                         let _ = sqlx::query("UPDATE media_jobs SET status='done', stage='完成', progress=100, updated_at=now() WHERE id=$1")

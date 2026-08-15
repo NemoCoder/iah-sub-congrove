@@ -1410,6 +1410,37 @@ where
     })
 }
 
+/// ★「这一项现在允许下载原件吗」—— 唯一推导★(2026-08-16 收敛)。
+/// 返回 `Some(拒绝理由)` 表示禁止;`None` 表示放行。
+///
+/// ⚠ 判据是**两级叠加**,而两级的适用面**不一样**,这正是最容易写歪的地方:
+///   · 项目级 `projects.no_download` —— ★只拦 viewer★(editor/admin/超管不受限);
+///   · 活动级 `activities.no_download` —— ★对所有角色生效★(发起人说「这次不许下载」是对全体说的)。
+/// 反过来做(活动放开能盖过项目)就成了「在活动上开个口子绕过项目策略」。
+///
+/// ⚠★为什么非收成一处不可★:2026-08-15 我给 `/play` 补禁下载判定时,把这段逻辑
+/// **在 media.rs 里又抄了一遍**,还在注释里写「与 items::download 逐字一致」——
+/// ★「逐字一致」是一句需要人去维持的承诺,而收成一个函数之后它是编译期事实。★
+/// (同一天我正在把另外四处这样的重复收掉,然后自己新增了一处。)
+pub async fn 禁下载理由(
+    pool: &sqlx::PgPool, iid: i64, pid: i64, role: Role,
+) -> AppResult<Option<String>> {
+    if role == Role::Viewer {
+        let 项目级: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
+            .bind(pid).fetch_one(pool).await?;
+        if 项目级 {
+            return Ok(Some("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
+        }
+    }
+    let 活动级: Option<bool> = sqlx::query_scalar(
+        "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
+        .bind(iid).fetch_optional(pool).await?;
+    if 活动级 == Some(true) {
+        return Ok(Some("这场活动的材料已设为禁止下载原件(可在线预览/播放)".into()));
+    }
+    Ok(None)
+}
+
 pub async fn download(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -1418,38 +1449,14 @@ pub async fn download(
 ) -> AppResult<Response> {
     let pid = project_of(&state.pool, iid).await?;
     let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
-    // D4 开关(迁移 0003):viewer 禁下载原件;editor/admin/超管不受限。阅读/播放不走这,不拦。
-    if role == Role::Viewer {
-        // ⚠★2026-08-08:这里原本查的是 `viewer_no_download`,而 projects 的列叫 `no_download`
-        //   —— 列根本不存在,`fetch_one` 直接 Err → 500。也就是说 **D4「viewer 禁下载」从
-        //   2026-08-03 落地那天(b47978a)起就没工作过,整整五天**,而它是一条「权」路径:
-        //   本该「禁下载」的人拿到的是 500 不是 403,本该能下载的 viewer 则一律下不了。
-        //   ★为什么 13 条安全网 + 70 条 E2E 全绿也没发现★:两个原因叠加 ——
-        //   ① 这个分支只在 `role == Viewer` 时才走,而测试用的都是 owner/admin 身份;
-        //   ② 现有的「禁下载」测试覆盖的全是**活动级** `activities.no_download`(0007 加的),
-        //      项目级这条一条都没有。
-        //   抓到它的是 `scripts/sql-prepare-check.py`(全量 SQL 对真库 PREPARE)第一次跑 ——
-        //   这正是它存在的理由:**冷门路径的 SQL 错,靠测试覆盖是等不到的**。
-        let blocked: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
-            .bind(pid)
-            .fetch_one(&state.pool)
-            .await?;
-        if blocked {
-            return Err(AppError::BadRequest("本空间已设置 viewer 禁止下载原件(找空间 admin 提权或关闭该限制)".into()));
-        }
-    }
-    // ★活动粒度的禁下载★(PRD 6.3.2,迁移 0007):「这次会涉及敏感内容,想让大家能看但不能下载」——
-    // 说的是**这一次会**,不是把整个项目锁上(项目级那个太钝,会连带影响无关材料)。
-    //
-    // ⚠ 与项目级是**叠加不是覆盖**:两处任一禁了就禁。反过来做(活动放开能盖过项目)
-    // 就成了「在活动上开个口子绕过项目策略」,那是权限模型里最容易被利用的缝。
-    // ⚠ 这一条**对所有角色生效**,不像项目那条只拦 viewer —— 发起人说「这次不许下载」
-    // 是对全体说的,把 editor 排除在外等于这个开关基本不起作用(活动材料多半是 editor 传的)。
-    let activity_blocked: Option<bool> = sqlx::query_scalar(
-        "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
-        .bind(iid).fetch_optional(&state.pool).await?;
-    if activity_blocked == Some(true) {
-        return Err(AppError::BadRequest("这场活动的材料已设为禁止下载原件(可在线预览/播放)".into()));
+    // D4 开关(迁移 0003)+ 活动粒度(PRD 6.3.2,迁移 0007):判据收在 `禁下载理由` 里,见那儿的头注。
+    // ⚠★2026-08-08 的疤留在这儿当教训★:这里原本查的是 `viewer_no_download`,而 projects 的列叫
+    //   `no_download` —— 列根本不存在,`fetch_one` 直接 Err → 500。也就是说 D4「viewer 禁下载」
+    //   从 2026-08-03 落地那天起就没工作过整整五天,而**本该被禁的人拿到的是 500 不是 403**。
+    //   ★13 条安全网 + 70 条 E2E 全绿也没发现★:① 这个分支只在 role==Viewer 时才走,而测试用的都是
+    //   owner/admin;② 当时的「禁下载」测试覆盖的全是活动级。抓到它的是 sql-prepare-check 第一次跑。
+    if let Some(理由) = 禁下载理由(&state.pool, iid, pid, role).await? {
+        return Err(AppError::BadRequest(理由));
     }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的东西,直链也不该再下得到。
     let row: Option<(Option<String>, String, Option<String>)> =

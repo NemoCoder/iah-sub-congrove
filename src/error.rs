@@ -31,6 +31,12 @@ pub enum AppError {
     #[error("{0}")]
     Archived(String),
 
+    /// ★客户端要了一段不存在的字节★(2026-08-16):这不是服务端坏了,别混进 500。
+    /// 混进去的代价今晚刚付过:为一个查不出来的 500 折腾很久,而 500 这个桶里
+    /// 本来就不该装「客户端参数越界」这种东西。
+    #[error("range not satisfiable")]
+    RangeNotSatisfiable,
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -43,6 +49,8 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden: 权限不足".to_string()),
+            AppError::RangeNotSatisfiable =>
+                (StatusCode::RANGE_NOT_SATISFIABLE, "请求的字节范围超出文件大小".to_string()),
             AppError::Db(e) => {
                 tracing::error!(error = %e, "database error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())

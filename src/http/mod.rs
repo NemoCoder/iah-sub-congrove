@@ -161,11 +161,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/shares/{token}", axum::routing::delete(share::revoke))
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
-        // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod);play 判权后 302 预签名 GET。
+        // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod)。
+        // ⚠★`/play` 已挪进下面的 slow 组★(2026-08-16 审计):它 2026-08-15 起多了一条分支 ——
+        //   禁下载时**把整个视频的字节流经 pod 推出去**,而这一组是 30 秒超时,视频播到 30 秒就断。
+        //   ★这行注释当时写的还是「play 判权后 302 预签名 GET」,而行为已经不是了★ ——
+        //   路由分组编码的是「这个端点合法情况下能跑多久」,行为一变,分组就得跟着变。
         .route("/projects/{id}/media/begin", post(media::begin))
         .route("/items/{id}/media/complete", post(media::complete))
         .route("/items/{id}/media/abort", post(media::abort))
-        .route("/items/{id}/play", get(media::play))
         // 录屏分析:排任务 + 查结果(实际跑在后台 worker,见 media_ai.rs)
         .route("/items/{id}/analyze", post(media::analyze))
         .route("/items/{id}/analysis", get(media::analysis))
@@ -182,6 +185,16 @@ pub fn build_router(state: AppState) -> Router {
             put(media::part).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/items/{id}/download", get(items::download))
+        // ★/play 在这里,不在 fast 组★(2026-08-16):它有两种行为 —— 不禁下载时 302 到预签名(瞬间返回),
+        // 禁下载时走同源 Range 代理(**推整个视频**)。一条路由表达不了两个时长档,
+        // 而放错的那一档是**功能直接不可用**(30 秒掐断)。
+        // ⚠ 挪过来对 302 那条路径**零代价**:`presign_get` 是**纯本地签名计算、不打网络**,
+        //   其余只有几条 SQL(被 DB_STATEMENT_TIMEOUT_MS 兜着)——★那条路上没有任何无界操作★。
+        // ⚠ 也考虑过拆成两条路由让时长档更纯粹,否掉了:那要**新增一个取原件字节的入口**,
+        //   而本仓每一个字节出口都出过洞(share 访客面 / play / copy),新入口得把
+        //   require_role + 禁下载 + deleted_at 三道判据重写一遍,漏一条就是新洞。
+        // ⚠ 安全前提已核:鉴权是在 `fast.merge(slow)` **之后**挂的,挪动路由不会丢掉认证。
+        .route("/items/{id}/play", get(media::play))
         .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(2 * 3600)));
 
     // 每个 /api 端点都要认证(route_layer:404 不要 token);探针 + /auth/* 开放。
