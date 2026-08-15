@@ -3,8 +3,9 @@
 // 判据尽量是**可判定的事实**(数字、几行、有没有这个元素),而不是「看起来怎样」。
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 
-const WS = process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove'
+const WS = pwWs()
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 if (!KEY) { console.error('缺 IAH_E2E_KEY'); process.exit(2) }

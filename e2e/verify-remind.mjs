@@ -22,6 +22,7 @@
 //   IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) node e2e/verify-remind.mjs
 import { chromium } from 'playwright'
 import { execFileSync } from 'node:child_process'
+import { pwWs } from './pw-endpoint.mjs'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
@@ -59,7 +60,7 @@ const check = (name, ok, detail = '') => {
 // 验收是给人看的，headless 跑完只剩一行「✓」，出了怪事没人知道当时界面长什么样。
 // ⚠★连不上就直接失败,不静默退回本机 headless★:退回之后脚本照常绿,
 //   而用户盯着一块没有任何动静的屏幕 —— 那比红一次糟得多。
-const WS = process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove'
+const WS = pwWs()
 const b = await chromium.connect(WS, { timeout: 15000 }).catch((e) => {
   console.error(`✗ 连不上有头浏览器 ${WS} —— ${e.message.split('\n')[0].slice(0, 80)}`)
   console.error('  （验收要跑在 .14 上让人看得见；要本机 headless 请显式 PW_WS= 覆盖）')

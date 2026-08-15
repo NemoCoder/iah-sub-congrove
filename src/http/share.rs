@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn ip_prefix_取粗粒度网段() {
         // v4 → /24,末位归零;v6 → /48,只留前三段。
-        assert_eq!(ip_prefix(&peer("10.1.2.3:1"), &HeaderMap::new()).as_deref(), Some("10.1.2.0/24"));
+        assert_eq!(ip_prefix(&peer("10.1.2.3:1"), &HeaderMap::new()).as_deref(), Some("10.1.2.0/24"));   // addr-ok: ip_prefix 单测的夹具,不是真实地址
         assert_eq!(ip_prefix(&peer("[2001:db8:abcd:1234::1]:1"), &HeaderMap::new()).as_deref(),
                    Some("2001:db8:abcd::/48"));
     }
@@ -581,9 +581,9 @@ mod tests {
     #[test]
     fn ip_prefix_优先认网关的xff第一跳() {
         // 网关后 peer 恒是网关自己,不看 XFF 就把所有访客记成同一个网段。
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("203.0.113.9, 10.0.0.1")).as_deref(),
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("203.0.113.9, 10.0.0.1")).as_deref(),   // addr-ok: ip_prefix 单测的夹具,不是真实地址
                    Some("203.0.113.0/24"));
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(" 203.0.113.9 ")).as_deref(),
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(" 203.0.113.9 ")).as_deref(),   // addr-ok: ip_prefix 单测的夹具,不是真实地址
                    Some("203.0.113.0/24"));   // 两侧空格要 trim
     }
 
@@ -593,12 +593,12 @@ mod tests {
         //   (提取码限速按 token 算,换 IP 绕不过)。畸形输入只要不炸就行。
         // 两条路径不一样,分开钉住:
         // ① 头**可读但不是 IP** → 认下来再 parse 失败 → None(不回退,因为它确实声称了个东西)
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("garbage")), None);
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("")), None);
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(",,,")), None);
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("garbage")), None);   // addr-ok: ip_prefix 单测的夹具,不是真实地址
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff("")), None);   // addr-ok: ip_prefix 单测的夹具,不是真实地址
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &xff(",,,")), None);   // addr-ok: ip_prefix 单测的夹具,不是真实地址
         // ② 头**不可读**(非 ASCII,to_str 失败)→ 当作没有这个头 → 回退真实 peer
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", axum::http::HeaderValue::from_bytes("不是IP".as_bytes()).unwrap());
-        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &h).as_deref(), Some("10.0.0.0/24"));
+        assert_eq!(ip_prefix(&peer("10.0.0.1:1"), &h).as_deref(), Some("10.0.0.0/24"));   // addr-ok: ip_prefix 单测的夹具,不是真实地址
     }
 }

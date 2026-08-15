@@ -58,6 +58,9 @@ gate "DDL 纪律(ADR-0001)"        bash scripts/ddl-check.sh
 gate "内容寻址(A2/D1)"           bash scripts/blobkey-check.sh
 # 版本号两处一致:CI 里原来是内联的 shell,抽成脚本才能两边共用(逻辑一字不改,含那条
 # 「只认 export const VERSION 那一行」的坑注)。
+# ★内网地址不许进仓库★(2026-08-15 新增):本仓外推 Gitee/GitHub,进仓库=出内网。
+#   一台测试机的地址曾在 11 个已跟踪文件里写死 14 遍(连 ssh 用户名一起)。★纯静态,能进 CI。★
+gate "内网地址不入库"             bash scripts/no-internal-addr.sh
 gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'

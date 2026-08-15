@@ -3,8 +3,9 @@
 // 前端**没上路由库**(app.tsx 只在 /viewer /s 两条上读 pathname),所以只能一路点进去。
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 
-const WS = process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove'
+const WS = pwWs()
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 if (!KEY) { console.error('缺 IAH_E2E_KEY'); process.exit(2) }

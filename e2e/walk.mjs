@@ -9,8 +9,9 @@
 // 用法:IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) node e2e/walk.mjs
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 
-const WS = process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove'
+const WS = pwWs()
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 if (!KEY) { console.error('缺 IAH_E2E_KEY'); process.exit(2) }

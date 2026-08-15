@@ -23,6 +23,7 @@
 //    只有这两条流水里看得出来。
 import { chromium } from 'playwright'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { pwSsh, pwWs } from './pw-endpoint.mjs'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
@@ -134,7 +135,7 @@ const shot = async (名) => {
     if (++连续失败 >= 10) {
       console.error(`\n★★环境不可信,主动中止★★ 连续 ${连续失败} 次截图失败 —— `
         + `多半是 .14 的浏览器服务挂了:\n`
-        + `  ssh liaoruili@172.19.0.14 'systemctl --user restart pw-ui.service'\n`
+        + (pwSsh() ? `  ssh ${pwSsh()} 'systemctl --user restart pw-ui.service'\n` : '')
         + `★本轮作废、不出报告★:没有证据的「异常 0 处」比报红更危险。`)
       process.exit(3)
     }
@@ -143,7 +144,7 @@ const shot = async (名) => {
   return f
 }
 
-const b = await chromium.connect('ws://172.19.0.14:9333/congrove', { timeout: 20000 })
+const b = await chromium.connect(pwWs(), { timeout: 20000 })
 const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, ignoreHTTPSErrors: true,
   extraHTTPHeaders: { 'X-IAH-E2E-Key': KEY, 'X-IAH-E2E-User': WHO } })
 const p = await ctx.newPage()
