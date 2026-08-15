@@ -567,6 +567,30 @@ pub async fn copy(
     require_role(&state.pool, &id, p.project_id, Role::Editor).await?;
 
     // ⚠ 材料区不能当目标(kind='materials')
+    // ★源侧的「不许带出去」必须跟着内容走★（2026-08-15 对抗检查抓到,两路独立指到同一处）:
+    //   copy 原来只判「源 viewer + 目标 editor」,**一次都没读**这四个开关 ——
+    //   `projects.no_download` / `projects.no_share` / `activities.no_download` / `activities.no_share`。
+    //   而副本刻意不带 `activity_id`(见下面那句注释),于是活动级两道闸**结构性失效**;
+    //   副本落在攻击者自己的项目里,他在那儿是 admin,项目级 `no_download` 又**只拦 viewer**。
+    //   ★完整攻击链★:某项目的 viewer(明令禁下载)→ 建一个自己的项目(建项目白名单默认为空,人人可建)
+    //   → copy 过去 → 下载原件,甚至再发一条公开链接(share.rs 自称「唯一绕过项目授权的出口」,
+    //   而这条路是从它**旁边**走过去的)。
+    // ⚠ 判据放在这里而不是「让副本继承 activity_id」:继承会把副本拖回那场活动的材料列表,
+    //   与 D10「活动材料在项目树里只读」打架。★限制随内容走,但归属不跟着走。★
+    let 源禁带出: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT (pr.no_download OR COALESCE(m.no_download, false)),
+                (pr.no_share    OR COALESCE(m.no_share,    false))
+           FROM items_alive i
+           JOIN projects pr ON pr.id = i.project_id
+           LEFT JOIN activities m ON m.id = i.activity_id
+          WHERE i.id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?;
+    if let Some((no_dl, no_sh)) = 源禁带出 {
+        if no_dl || no_sh {
+            return Err(AppError::BadRequest(
+                "这份内容被设为禁止下载或禁止对外分享,不能复制到别的项目（复制等于把限制丢掉）".into()))
+        }
+    }
     let dst_kind: String = sqlx::query_scalar("SELECT kind FROM projects WHERE id=$1 AND deleted_at IS NULL")
         .bind(p.project_id).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     if dst_kind == "materials" {
@@ -574,8 +598,8 @@ pub async fn copy(
     }
 
     // ④ 源必须活着,且不是文件夹
-    let src: (String, String, Option<String>, Option<String>, Option<i64>, Option<String>) = sqlx::query_as(
-        "SELECT kind, name, mime, s3_key, size, sha256 FROM items_alive
+    let src: (String, String, Option<String>, Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(
+        "SELECT kind, name, mime, s3_key, size, sha256, sha_verified FROM items_alive
           WHERE id = $1 AND deleted_at IS NULL")
         .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
     if src.0 == "folder" {
@@ -599,11 +623,17 @@ pub async fn copy(
     let name = p.name.as_deref().map(str::trim).filter(|x| !x.is_empty()).unwrap_or(&src.1);
     // ★副本是独立的一行★:改名/删除互不影响,共享的只有 blob(引用计数保证不被误删)。
     // ⚠ 不带 activity_id —— 副本与源活动脱钩,否则它会跟着出现在那场活动的材料里。
+    // ★`sha_verified` 必须**照抄源行**,不能写死 `true`★(2026-08-15 对抗检查抓到):
+    //   它是全系统**唯一的一位信任标记** —— `readable_blob` 只认它为真的行当秒传源。
+    //   而浏览器直传那条路(media::begin/complete)落的 sha 是**客户端自己报的**,
+    //   那些行 `sha_verified=false`,要等后台 `verify_sha` 核过才翻真。
+    //   写死 true 等于:复制一份未核验的行 → 副本凭空「被核验」→ 别人拿这个 sha 就能秒传认领,
+    //   把「服务端自算哈希」这道防投毒的闸从侧门绕开了。抄源行则该假仍假,后台照常核。
     let new_id: i64 = sqlx::query_scalar(
         "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256, sha_verified)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true) RETURNING id")
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id")
         .bind(p.project_id).bind(p.parent_id).bind(&src.0).bind(name).bind(&src.2)
-        .bind(id.require_username()?).bind(&src.3).bind(sz).bind(&src.5)
+        .bind(id.require_username()?).bind(&src.3).bind(sz).bind(&src.5).bind(src.6)
         .fetch_one(&state.pool).await?;
 
     crate::audit::record(&state.pool, id.require_username()?, "item.copy",

@@ -391,10 +391,6 @@ pub async fn pub_file(
     let roots = share_roots(&state.pool, &token, l.item_id).await?;
     ensure_any_descendant(&state.pool, &roots, iid).await?;
     let inline = q.inline.unwrap_or(0) == 1;
-    // 分享方关掉「允许下载」时只放行在线预览(inline),不给原件。
-    if !l.allow_download && !inline {
-        return Err(AppError::BadRequest("该分享未开放下载".into()));
-    }
     // ★deleted_at IS NULL★(v0.3.55 审计):删进回收站的原件不再从公开面吐出去。
     let row: Option<(Option<String>, String, Option<String>)> =
         sqlx::query_as("SELECT s3_key, name, mime FROM items_alive WHERE id = $1 AND deleted_at IS NULL").bind(iid)
@@ -407,7 +403,18 @@ pub async fn pub_file(
     let inline_ok = mime_s == "application/pdf"
         || (mime_s.starts_with("image/") && mime_s != "image/svg+xml")
         || mime_s.starts_with("video/") || mime_s.starts_with("audio/") || mime_s == "text/plain";
+    // ★「禁止下载」这道闸原来判的是**客户端自己传的** `inline` 标志★(2026-08-15 对抗检查抓到):
+    //   `if !allow_download && !inline { 拒 }` 排在 `inline_ok` **之前** —— 而 `inline_ok` 才是
+    //   「这个类型到底能不能在浏览器里预览」。两者不一致时,下面的 `disp` 落到 `attachment`,
+    //   ★于是 zip / docx / xlsx / pptx / 任意 application/octet-stream 一律 200 + 原件整份发出★。
+    //   分享者在界面上看到的是「下载:禁止」,而任何拿到链接的人只要加 `?inline=1` 就下走了。
+    // ⚠★这是全树唯一把安全判断挂在客户端标志上的地方★ —— 判据必须是**服务端算出来的**
+    //   「这次真的会以 inline 呈现吗」,而不是「调用方说他想 inline」。
+    //   对照 `items::download`:那边 `no_download` 的拒绝与 `inline` 完全解耦,`inline` 只影响 disposition。
     let disp = if inline && inline_ok { "inline" } else { "attachment" };
+    if !l.allow_download && disp != "inline" {
+        return Err(AppError::BadRequest("该分享未开放下载".into()));
+    }
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.unwrap_or_else(|| "application/octet-stream".into()))

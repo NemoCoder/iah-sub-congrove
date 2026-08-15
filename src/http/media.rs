@@ -390,13 +390,16 @@ pub async fn play(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
+    headers: axum::http::HeaderMap,
 ) -> AppResult<Response> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     // ★只对可播类型放行★(2026-08-04 审计):/play 会吐一条 6 小时的预签名直链,
     // 谁拿到谁能取原件。对 video 这是刻意的(能播就能录屏,D4 也明说不拦播放);
     // 但对 pdf/zip/doc 就等于**把 viewer_no_download 整条开关废掉**——viewer 打一下
     // /api/items/{id}/play 就拿到原件下载地址。所以这里钉死 kind。
+    // ⚠★「对 video 是刻意的」这半句 2026-08-15 已经收窄★:禁下载时连 video 也不再发预签名,
+    //   改走下面那条同源 Range 代理。理由见那一段。
     // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的录屏不再吐预签名直链。
     let row: Option<(String, Option<String>)> =
         sqlx::query_as("SELECT kind, s3_key FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
@@ -408,6 +411,41 @@ pub async fn play(
         return Err(AppError::BadRequest("只有录屏/视频能用播放地址(其他类型走 /download,受空间下载策略约束)".into()));
     }
     let Some(key) = key else { return Err(AppError::NotFound) };
+
+    // ★禁下载的场景不发预签名直链★(2026-08-15 对抗检查抓到,liaoruili 拍板「要堵住」):
+    //   上面那段注释里「能播就能录屏,所以不拦播放」的推理**只对播放本身成立**,
+    //   对**预签名直链**不成立 —— 它是一条 6 小时有效、**不记名**的取原件能力:
+    //   复制出去谁都能下(不用登录、不是成员也行),`wget` 一下拿到的就是原始文件,
+    //   跟录屏(有损、要实时、拿不到原始码流)完全不是一回事。
+    //   于是「这次活动的材料禁止下载原件」这条开关,对**视频**从来没有真正生效过。
+    //   ⚠ 但也不能干脆不让播 —— 开关的原话就是「能看但不能下」。所以禁下载时改走
+    //   **同源、认 cookie、支持 Range** 的代理:进度条照样能拖,而 URL 离开这个会话就没用。
+    let 禁下载 = {
+        let 项目级: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
+            .bind(pid).fetch_one(&state.pool).await?;
+        let 活动级: Option<bool> = sqlx::query_scalar(
+            "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
+            .bind(iid).fetch_optional(&state.pool).await?;
+        // 判据与 `items::download` 逐字一致:项目级只拦 viewer,活动级对所有角色生效,两者叠加。
+        (项目级 && role == Role::Viewer) || 活动级 == Some(true)
+    };
+    if 禁下载 {
+        let rg = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let (stream, seg, cr, total) = state.storage.get_range(&key, rg.as_deref()).await
+            .map_err(AppError::Other)?;
+        let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(stream.into_async_read()));
+        let mut b = Response::builder()
+            .status(if cr.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
+            .header(header::ACCEPT_RANGES, "bytes")
+            // inline:这是拿来播的,不是拿来存的(浏览器不弹保存框)。
+            .header(header::CONTENT_DISPOSITION, "inline")
+            .header(header::CACHE_CONTROL, "no-store");
+        if let Some(n) = seg { b = b.header(header::CONTENT_LENGTH, n) }
+        if let Some(r) = cr { b = b.header(header::CONTENT_RANGE, r) }
+        let _ = total; // 总长已经编在 Content-Range 里,单独回没有额外信息
+        return b.body(body).map_err(|e| AppError::Other(e.into()));
+    }
+
     let target = match state.storage.presign_get(&key, GET_URL_TTL).await {
         Ok(u) => u,
         Err(_) => format!("/api/items/{iid}/download"),

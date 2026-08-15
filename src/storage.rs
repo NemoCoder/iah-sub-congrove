@@ -85,6 +85,23 @@ impl Storage {
         Ok((obj.body, obj.content_length))
     }
 
+    /// 带 `Range` 的流式读 —— ★「禁下载」的活动/项目里播视频走这条★(2026-08-15)。
+    /// 预签名直链是**不记名的能力**(6 小时内谁拿到谁能取原件),在禁下载的场景里不能发;
+    /// 但视频又必须能拖动进度条,所以要一条**认 cookie 的、支持 Range 的**同源代理。
+    /// 返回:(字节流, 这一段的长度, `Content-Range` 原样回传, 对象总长)。
+    pub async fn get_range(&self, key: &str, range: Option<&str>)
+        -> anyhow::Result<(aws_sdk_s3::primitives::ByteStream, Option<i64>, Option<String>, Option<i64>)> {
+        let mut req = self.s3.get_object().bucket(&self.bucket).key(key);
+        if let Some(r) = range { req = req.range(r) }
+        let obj = req.send().await?;
+        let cr = obj.content_range.clone();
+        // 总长:带 Range 时从 `bytes a-b/TOTAL` 尾巴取,不带时就是 content_length 本身。
+        let total = match cr.as_deref().and_then(|s| s.rsplit('/').next()).and_then(|s| s.parse::<i64>().ok()) {
+            Some(t) => Some(t), None => obj.content_length,
+        };
+        Ok((obj.body, obj.content_length, cr, total))
+    }
+
     /// 对象是否存在(秒传/去重要先问一句)。
     pub async fn exists(&self, key: &str) -> bool {
         self.s3.head_object().bucket(&self.bucket).key(key).send().await.is_ok()
