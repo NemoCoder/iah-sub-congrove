@@ -12,9 +12,21 @@
 # ★2026-08-15 晚上这件事已经在 dev 上真实发生过一次(pod CrashLoop),那次代价是改个校验和;
 #   同样的操作从今天起发生在 prod 上就是生产事故。★
 #
-# 判据:`migrations/*.sql` 的 sha384 必须逐个等于 `migrations/checksums.txt` 里登记的。
-#   · 改老文件 → 红(这正是要拦的);
-#   · 加新文件 → 红,提示你去登记 —— ★登记是一个**有意识**的动作★,不该顺手发生。
+# ══ ★判据是「prod 跑过它没有」,不是「文件存不存在」★(2026-08-16 订正) ══
+# 第一版我把判据写成「**所有**迁移文件都必须登记且内容不变」—— 而那会挡住正确的做法:
+# prod 冻在 v0.5.0、到 0.6 才 promote,★在那之前 `0002` 是一个**工作文件**★:
+# 可以反复改、dev 清库重建,等它真上了 prod 才该冻住。
+# ⇒ 我加这道闸时脑子里的模型就是错的,和前一天刚拆掉的 `ddl-check`「只能有一个迁移文件」
+#   **是同一个毛病**:★一道编码着过期规则的门禁,拦的不是错误,是正确的做法。★
+#
+# 现在:
+#   · `checksums.txt` 里登记的 = **prod 已应用**的 → 内容必须一字不变(改了 → 红);
+#   · 没登记的 = **工作中、还没上 prod** → 随便改,不管;
+#   · ★但工作中的最多只能有一个★ —— liaoruili 2026-08-16:「到 0.6 的时候应该只有一个 0002」。
+#     攒成 0002/0003/0004 会让「这一轮到底改了什么」散在几个文件里,而它们本可以是一份。
+#   · 登记过的文件被删 → 红(prod 跑过的迁移不能凭空消失)。
+# promote 到 prod 之后:把那个工作文件的哈希追加进 checksums.txt(★一个有意识的动作★),
+# 它就冻住了,下一轮开新的。
 # ★纯静态,不连任何库,能进 CI★(所以它也永远不会碰到 prod 的数据)。
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -38,17 +50,28 @@ while read -r want name; do
 done < "$LIST"
 [ "$SEEN" -gt 0 ] || { echo "★$LIST 里一条登记都没有 —— 不能当成通过★"; exit 2; }
 
-# 反向:有文件却没登记
+# 没登记的 = 工作中的迁移(还没上 prod):允许存在、允许改,但只能有一个。
+WORKING=""
 for f in migrations/*.sql; do
   n=$(basename "$f")
-  grep -q "  $n\$" "$LIST" || { echo "  ✗ ★新迁移 $n 没有登记★"; FAIL=1; }
+  grep -q "  $n\$" "$LIST" && continue
+  echo "  ~ $n(工作中:还没上 prod,可以随便改)"
+  WORKING="$WORKING $n"
 done
+CNT=$(printf '%s' "$WORKING" | wc -w)
+if [ "$CNT" -gt 1 ]; then
+  echo "  ✗ ★同时有 $CNT 个还没上 prod 的迁移:$WORKING★"
+  echo "      liaoruili 2026-08-16:「到 0.6 的时候应该只有一个 0002」——"
+  echo "      没上过 prod 的改动本可以合成一份,散成几份会让「这一轮改了什么」查起来要拼。"
+  FAIL=1
+fi
 
 if [ "$FAIL" != 0 ]; then
   cat <<'TXT'
 
-★门禁不通过★:prod 已存在,迁移是**只增不改**的。
-  · 要改 schema:新建 `migrations/0002_xxx.sql`(别动老文件),然后把它登记进 checksums.txt:
+★门禁不通过★:**已经上过 prod 的迁移**不许改(没上过的那个随便改)。
+  · 要改 schema:改**工作中**那个迁移(现在是 0002);没有就新建一个,★别动已登记的★。
+  · 等它 promote 到 prod 之后,再把哈希登记进 checksums.txt 冻住它:
         python3 - <<'PY'
         import hashlib,pathlib
         p=pathlib.Path('migrations/0002_xxx.sql')
