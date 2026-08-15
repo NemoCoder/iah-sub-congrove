@@ -69,9 +69,13 @@ if [ "$CI_ONLY" != "--ci" ]; then
   if [ -n "${CONGROVE_DEV_DSN:-}" ]; then
     gate "SQL 对真库 PREPARE" python3 scripts/sql-prepare-check.py
     gate "schema 对拍"        bash scripts/schema-check.sh check
+    # ★迁移校验和★(2026-08-15 事故当晚补的):前十六道全在问「代码自己对不对」,
+    #   ★没有一道在问「代码和**运行环境的状态**还对得上吗」★ —— 改了 0001_init.sql
+    #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
+    gate "迁移校验和对得上 dev 库" bash scripts/migration-checksum-check.sh
   else
-    # ★没跑 ≠ 通过★:缺 DSN 时明确标出来,免得看报告的人以为这两道也绿了
-    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）")
+    # ★没跑 ≠ 通过★:缺 DSN 时明确标出来,免得看报告的人以为这几道也绿了
+    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍 / 迁移校验和（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）")
   fi
   gate "接口面 api-check" bash scripts/api-check.sh check
   # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——

@@ -109,10 +109,19 @@ pub async fn user_options(
           WHERE
             -- ① 完整账号精确命中:问得出「有没有这个人」,问不出「有哪些人」
             u.username = $1
-            -- ② 与我共过项目的人:名字对我本来就不是秘密,允许前缀搜
+            -- ② 与我**现在**共着项目的人:名字对我本来就不是秘密,允许前缀搜
+            -- ⚠★必须排掉已删的项目★(2026-08-16 全量 E2E 抓到,是**真 bug** 不是用例抖):
+            --   项目是软删除,删掉之后 `project_members` 那两行**照旧存在** ——
+            --   于是「我们曾经共过一个项目」永久成立,他的名字对我永远可搜。
+            --   这跟本系统自己的「离开即失去」正相反(member_delete 连他建的公开链接都撤,
+            --   就是为了不留后门),而删项目比移出成员**更彻底**,却反而什么都没收回。
+            --   ★判据要的是「现在」,而软删除让「曾经」看起来像「现在」★——
+            --   这与 v0.3.55 那次「删进回收站的东西公开链接照样下得到」是同一类:
+            --   软删除是后加的,凡是拿 `WHERE …` 判权/判可见的地方都要重问一遍这句加了没有。
             OR ((u.username ILIKE $2 ESCAPE '\\' OR u.name ILIKE $2 ESCAPE '\\')
                 AND EXISTS (SELECT 1 FROM project_members 我 JOIN project_members 他
                                      ON 他.project_id = 我.project_id
+                                   JOIN projects pr ON pr.id = 我.project_id AND pr.deleted_at IS NULL
                                   WHERE 我.username = $3 AND 他.username = u.username))
           ORDER BY u.username -- limit-ok: 输入即搜的候选 —— typeahead 取前 20 个,人再敲一个字就换一批;
               --   ★它不是「用户列表」★:平台明令不做用户 list/search(会变成目录枚举)。

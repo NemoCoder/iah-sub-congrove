@@ -101,6 +101,12 @@ bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— �
 | schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ❌ 要活库 |
 | 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
 | 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
+| 迁移校验和 | `scripts/migration-checksum-check.sh` | `migrations/*.sql` 的 sha384 == dev 库 `_sqlx_migrations` 里记的 | ❌ 要活库 |
+
+⚠★改了 `0001_init.sql` 就必须处理 dev 库★(ADR-0001 的配套纪律,2026-08-15 漏过一次):
+sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
+`Error: migration 1 was previously applied but has been modified` —— ★十六道门禁一道都没看见★。
+「迁移校验和」那道就是为此加的;红了之后照它打印的两条出路走(清库重建 / 先证明结构等价再改记录)。
 
 配套(不是门禁,是工具):`scripts/bump-version.sh` 升版本(读→加一→写回→**回读核对**);
 `scripts/deployed-version-check.sh` 比对线上与代码版本 —— ★`e2e/run.sh` 跑测试前会先调它★,

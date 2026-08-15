@@ -14,6 +14,13 @@ set -u
 CA="${IAH_CA:-$HOME/.config/iah/IAH-Internal-CA.crt}"
 KEY="$(cat "${IAH_E2E_KEY_FILE:-$HOME/.config/iah/congrove-e2e-key}" 2>/dev/null)"
 B="${CONGROVE_BASE:-https://congrove-dev.sub.ruciah.com}"
+# ★脚本必须自己 cd 到仓库根★(2026-08-15 当天就踩了):它原来直接 `grep … Cargo.toml`,
+# 也就是**默认调用方的工作目录正好是仓库根**。而 `e2e/run.sh` 先 `cd e2e/` 再调它 ——
+# 于是 `grep: Cargo.toml: No such file or directory`、`want` 为空、比对**永远不相等**。
+# ⚠★它「红」了,但红的理由是假的★:我接线那次只核了退出码是 1,没核那行「期望 vX 线上 vY」
+#   里的 X 是不是真读出来了(输出被我 `tail -4` 截掉了)。一道永远红的闸,
+#   结果是所有人都学会加 SKIP_VERSION_CHECK=1 绕过去 —— 比没有这道闸更坏。
+cd "$(dirname "$0")/.."
 want="${1:-v$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')}"
 
 js=$(curl -sS --max-time 20 --cacert "$CA" -H "X-IAH-E2E-Key: $KEY" "$B/" \

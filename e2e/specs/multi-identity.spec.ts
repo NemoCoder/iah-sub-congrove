@@ -411,7 +411,7 @@ test.describe('选人接口不是名册', () => {
       expect((await 搜('e2e-')).map((x) => x.username),
         '★更不该拿一个宽前缀把人一批批捞出来★').not.toContain('e2e-stranger-xyz')
 
-      // ── 能:共过项目之后,前缀就行了 ──(他的名字在成员页上本来就列着)
+      // ── 能:共着项目之后,前缀就行了 ──(他的名字在成员页上本来就列着)
       const pid = (await (await 我.post('/api/projects', {
         data: { name: `E2E-选人-${tag()}`, visibility: 'public' } })).json()).id as number
       expect((await 我.put(`/api/projects/${pid}/members`,
@@ -419,7 +419,19 @@ test.describe('选人接口不是名册', () => {
       expect((await 搜('e2e-stranger-xy')).map((x) => x.username),
         '★同项目的人可以按前缀搜★——否则这个下拉就没法用了').toContain('e2e-stranger-xyz')
 
-      await 我.delete(`/api/projects/${pid}`)
+      // ── 不能:项目删掉之后,又回到互不可见 ──
+      // ★这一段是 2026-08-16 全量 E2E 逼出来的★:项目是**软删除**,`project_members`
+      //   那两行照旧留着,于是「曾经共过项目」永久成立、他的名字对我永远可搜 ——
+      //   与本系统自己的「离开即失去」正相反(移出一个成员连他的公开链接都撤,
+      //   而删掉整个项目反而什么都没收回)。
+      // ⚠ 它同时也是这条用例**不幂等**的原因:第一次跑绿只是因为库是干净的,
+      //   第二次就被上一次留下的软删项目喂成假绿→假红。★用例自己的不幂等,暴露的是产品的 bug。★
+      expect((await 我.delete(`/api/projects/${pid}`)).status()).toBe(200)
+      expect((await 搜('e2e-stranger-xy')).map((x) => x.username),
+        '★项目删了就该恢复互不可见★——判据要的是「现在共着」,不是「曾经共过」').not.toContain('e2e-stranger-xyz')
+      // 完整账号仍然查得到(那条路不该被这次修复顺手堵上)
+      expect((await 搜('e2e-stranger-xyz')).map((x) => x.username),
+        '完整账号照旧是 oracle,不受影响').toContain('e2e-stranger-xyz')
     } finally { await 我.dispose(); await 陌生人.dispose() }
   })
 })
