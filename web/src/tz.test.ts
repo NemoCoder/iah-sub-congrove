@@ -51,7 +51,7 @@ test('★⑤ 夏令时切换后的第一个小时★ —— 单次迭代会算�
   assert.equal(wallToUtc(2026, 10, 4, 3, 30, 'Australia/Sydney').toISOString(), '2026-10-03T16:30:00.000Z')
 })
 
-test('⑥ wallToUtc 与 partsIn 互为逆运算(往返不丢)', () => {
+test('⑥ wallToUtc 与 partsIn 互为逆运算（往返不丢）', () => {
   for (const tz of [SH, NY, 'Europe/London', 'Australia/Sydney']) {
     for (const [y, m, d, h, mi] of [[2026, 3, 8, 2, 30], [2026, 11, 1, 1, 30], [2026, 8, 12, 15, 0]]) {
       const inst = wallToUtc(y, m, d, h, mi, tz)

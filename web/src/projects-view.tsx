@@ -238,7 +238,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
               method: 'POST',
               body: JSON.stringify({ sha256: sha, size: f.size, name: f.name, mime: f.type || null, parent_id: dir }),
             })
-            if (pre.instant) { message.success(`${f.name} 秒传完成(库里已有同样内容)`); return }
+            if (pre.instant) { message.success(`${f.name} 秒传完成（库里已有同样内容）`); return }
           } catch { /* 预检失败不影响正常上传 */ }
         }
         // 选路:大文件/视频走分片(片发给谁由开局探测定),小文件整文件 POST。
@@ -263,7 +263,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
         // 取消是用户自己按的,不当错误刷红(directUpload 的 catch 已顺手 abort 掉半截 multipart)。
         if (t.ctl.canceled || (e as Error).message === CANCELED) message.info(`${f.name} 已取消`)
         // 失败时半截上传**保留**着(只有主动取消才清):告诉用户重拖即可续,别让他以为要从头来。
-        else message.error(`${f.name}:${(e as Error).message}——把同一个文件再拖进来可从断点继续(24 小时内有效)`)
+        else message.error(`${f.name}:${(e as Error).message}——把同一个文件再拖进来可从断点继续（24 小时内有效）`)
       } finally {
         setUploads((u) => u.filter((x) => x.key !== t.key))
       }
@@ -990,7 +990,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
               style={{ width: '100%' }} value={moveDest} onChange={setMoveDest} placeholder="选择目标文件夹"
               treeDefaultExpandAll
               treeData={[{
-                value: null as unknown as number, title: `📚 ${cur.name}(根目录)`,
+                value: null as unknown as number, title: `📚 ${cur.name}（根目录）`,
                 children: folderTree(items, null, moving?.map((m) => m.id) ?? []),
               }]}
             />
@@ -1197,7 +1197,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           size="small" dataSource={versions}
           renderItem={(v) => (
             <List.Item actions={canEdit ? [
-              <Popconfirm key="r" title="恢复到此版本？(当前版会自动存为快照)" onConfirm={async () => {
+              <Popconfirm key="r" title="恢复到此版本？（当前版会自动存为快照）" onConfirm={async () => {
                 await api(`/api/items/${item.id}/restore/${v.id}`, { method: 'POST' })
                 setVersionsOpen(false)
                 setText(await api<string>(`/api/items/${item.id}/content`)); setDirty(false); onChanged()
@@ -1546,7 +1546,7 @@ function TrashDrawer({ space, open, onClose, onChanged }:
               {space.my_role === 'admin' && (
                 <a style={{ color: '#ff4d4f' }} onClick={() => modal.confirm({
                   title: '彻底删除？', okButtonProps: { danger: true },
-                  content: '这一步不可撤销：内容会从对象存储里真正抹掉(若没有别处引用同一份内容)。',
+                  content: '这一步不可撤销：内容会从对象存储里真正抹掉（若没有别处引用同一份内容）。',
                   onOk: async () => {
                     try { await api(`/api/items/${r.id}/purge`, { method: 'DELETE' }); message.success('已彻底删除'); await load(); onChanged() }
                     catch (e) { message.error((e as Error).message) }

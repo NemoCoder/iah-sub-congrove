@@ -93,7 +93,7 @@ export async function directUpload(
           break
         } catch (pe) {
           if (ctl.canceled || (pe as Error).message === CANCELED) throw new Error(CANCELED)
-          if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败(已重试 3 次):${(pe as Error).message}`)
+          if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败（已重试 3 次）:${(pe as Error).message}`)
           await new Promise((r) => setTimeout(r, attempt * 1000))
           report(0)
         }
@@ -130,9 +130,9 @@ function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, vi
       // 代理模式 ETag 在 JSON 体里;直传模式在响应头(跨源可读靠桶 CORS ExposeHeaders:[ETag])。
       const etag = viaProxy ? (JSON.parse(xhr.responseText).etag as string) : xhr.getResponseHeader('ETag')
       if (etag) resolve(etag.replaceAll('"', ''))
-      else reject(new Error(viaProxy ? '分片响应缺 etag' : 'part 直传缺 ETag(桶 CORS?)'))
+      else reject(new Error(viaProxy ? '分片响应缺 etag' : 'part 直传缺 ETag（桶 CORS？）'))
     }
-    xhr.onerror = () => reject(new Error(viaProxy ? '分片上传网络错误' : 'part 直传网络错误(证书/CORS?)'))
+    xhr.onerror = () => reject(new Error(viaProxy ? '分片上传网络错误' : 'part 直传网络错误（证书/CORS？）'))
     xhr.send(blob)
   })
 }
