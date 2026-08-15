@@ -27,13 +27,18 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
 const WHO = process.env.AUDIT_USER ?? 'liaoruili'
-const VER = process.env.AUDIT_VER ?? 'v0.4.113'
+/// ★版本号别手写★（2026-08-15）：这里原来硬编码 `'v0.4.113'`，而线上早就是 v0.4.154 ——
+///   于是截图落进**老版本的目录**，报告表头还自称「全面巡检 v0.4.113」。
+///   ★一个说着数据并不支持的标签★，和我这两天在界面上抓的是同一类问题，
+///   只是它更危险：证据被归错档、报告自称的版本是错的，将来回看会得出错误结论。
+///   （这轮侥幸没覆盖上一轮，只因为 RUN 默认值恰好不同 —— ★没被覆盖是运气，不是设计★。）
+///   现在从**页面上读**（页眉那个 `vX.Y.Z`），读不到才回落到 env / 'unknown'。
+let VER = process.env.AUDIT_VER ?? null
 /// ★每一轮一个独立目录★（2026-08-13 踩的第二个坑）：重跑一小段时编号又从 0001 开始，
 /// **把上一轮的报告和前 11 张截图直接覆盖掉了** —— 全量那份 178 次点击的报告就此没了
 /// （幸好终端日志还在）。截图是证据，证据不能被下一次运行擦掉。
 const RUN = process.env.AUDIT_RUN ?? '全量'
-const DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${VER}/巡检-${RUN}`
-mkdirSync(DIR, { recursive: true })
+let DIR = null   // 版本要等页面打开才知道,目录推迟到那时再建
 
 /// ★判据从黑名单换成白名单★（2026-08-13，栽了两次之后）。
 ///
@@ -95,10 +100,46 @@ const 错误 = [], 网络 = [], 记录 = []
 /// 修法:逐条记认领,收尾时把没人认领的单列一节,并计进摘要。
 const 已认领 = new Set()
 let n = 0
+/// ★截图失败过去是被静默吞掉的★（2026-08-15，本仓「工具没跑→报绿」的第六次）：
+///   原来是 `.catch(() => {})` —— 于是报告照常列出一行「ok」，指着一个**根本不存在的截图文件**。
+///   实测有多糟：这一轮 **101 次点击只落了 19 张图**（线上数据涨了、页面变高，`fullPage` 超时），
+///   而日志里每一条都是 `✓`。★证据悄悄没了，报告看上去却是完整的 —— 比报红坏得多。★
+/// 修法三层：① 先试 fullPage；② 超时就降级拍可视区（**截到一部分也远好过没有**）；
+///   ③ 两次都失败就**如实记一笔**，收尾时单列一节 —— 绝不再假装拍到了。
+const 缺图 = []
+/// ⚠★第一版修法把巡检跑死了★（2026-08-15，同一天内的第二次教训）：
+///   原来的 `.catch(() => {})` 虽然骗人，但**失败得快**；我改成「超时 15s 再降级」之后,
+///   每张拍不成的图都要烧 15 秒 —— 90 分钟只跑完 12 个项目里的 3 个,**报告压根没写出来**。
+///   ★诚实的方向是对的,代价我没算★。
+///   现在:超时压到 5 秒,而且**一页里只要失败过一次,这页剩下的直接拍可视区** ——
+///   同一个页面的高度不会因为点了个按钮就变矮,再逐张去试就是纯烧时间。
+let 本页可fullPage = true
+let 连续失败 = 0
 const shot = async (名) => {
   const f = `${String(++n).padStart(4, '0')}-${名.replace(/[\/\s]+/g, '_').replace(/[^\w一-龥.-]/g, '').slice(0, 48)}.png`
-  // ★fullPage★：长页面不许被视口切掉（要求①）
-  await p.screenshot({ path: `${DIR}/${f}`, fullPage: true }).catch(() => {})
+  const o = { path: `${DIR}/${f}`, animations: 'disabled', timeout: 5000 }
+  if (本页可fullPage) {
+    try { await p.screenshot({ ...o, fullPage: true }); 连续失败 = 0; return f }
+    catch { 本页可fullPage = false; 缺图.push(`${f} 起（本页 fullPage 超时,之后改拍可视区）`) }
+  }
+  try { await p.screenshot(o); 连续失败 = 0 }
+  catch (e) {
+    缺图.push(`${f}（★两次都失败,这一格没有证据★:${(e.message || '').slice(0, 60)}）`)
+    console.log(`  ✗✗ 截图失败 @${f}: ${(e.message || '').split('\n')[0].slice(0, 80)}`)
+    // ★环境垮了就大声停,别继续产出漂亮的假报告★（2026-08-15 实测踩到）:
+    //   .14 的浏览器服务在一轮 90 分钟的长跑中死了(`ECONNREFUSED`),于是
+    //   **截图 759 张里 740 张没有证据**,而摘要照样写着「共点 793 处,★异常 0 处★」——
+    //   ★这是最坏的一种输出:看起来像一次彻底的全绿。★
+    //   浏览器都拍不出图了,「点得动」这个判据本身也不再可信,继续跑只是在攒垃圾。
+    if (++连续失败 >= 10) {
+      console.error(`\n★★环境不可信,主动中止★★ 连续 ${连续失败} 次截图失败 —— `
+        + `多半是 .14 的浏览器服务挂了:\n`
+        + `  ssh liaoruili@172.19.0.14 'systemctl --user restart pw-ui.service'\n`
+        + `★本轮作废、不出报告★:没有证据的「异常 0 处」比报红更危险。`)
+      process.exit(3)
+    }
+    return f + '｜★没拍到★'
+  }
   return f
 }
 
@@ -111,6 +152,16 @@ p.on('pageerror', (e) => 错误.push('★未捕获异常★ ' + String(e).slice(
 p.on('response', (r) => { if (r.status() >= 400) 网络.push(`${r.status()} ${r.request().method()} ${r.url().replace(BASE, '')}`) })
 
 const 到首页 = async () => { await p.goto(BASE + '/', { waitUntil: 'domcontentloaded' }); await p.waitForTimeout(2200) }
+
+/// ★版本从页面上读,再建目录★ —— 见上面 VER 那段注释:手写的版本号会悄悄过期。
+await 到首页()
+if (!VER) {
+  const t = await p.locator('body').innerText().catch(() => '')
+  VER = (t.match(/v\d+\.\d+\.\d+/) || ['unknown'])[0]
+}
+DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${VER}/巡检-${RUN}`
+mkdirSync(DIR, { recursive: true })
+console.log(`★实际在巡检的版本:${VER}★（从页眉读的,不是手写的）`)
 const nav = async (名) => { await p.getByText(名, { exact: true }).first().click(); await p.waitForTimeout(1300) }
 const 收弹窗 = async () => {
   for (let i = 0; i < 3; i++) {
@@ -128,6 +179,7 @@ const ONLY = process.env.AUDIT_ONLY
 /// 想退回只读要**显式**写 `AUDIT_MODE=readonly` —— ★默认值必须站在「真的测了」那一边★。
 const MODE = process.env.AUDIT_MODE ?? 'full'
 async function 巡一屏(页面, 复位) {
+  本页可fullPage = true   // 换一页就再给 fullPage 一次机会(页面高度不同)
   if (ONLY && !页面.includes(ONLY)) return
   await 复位()
   const 全部 = []
@@ -290,7 +342,14 @@ const 无主 = [
 writeFileSync(`${DIR}/报告.md`, [
   `# 全面巡检报告 ${VER}`, '',
   `站点 ${BASE}　身份 ${WHO}　共点 ${记录.length} 处，异常 **${坏.length}** 处，`
-  + `★没人认领的失败 ${无主.length} 条★，★未测 ${未测.length} 处★，截图 ${n} 张（全部 fullPage）`, '',
+  + `★没人认领的失败 ${无主.length} 条★，★未测 ${未测.length} 处★，`
+  + `截图 ${n} 张（其中 ★${缺图.length} 张没能按 fullPage 拍到★）`, '',
+  // ★证据缺了就得说★（2026-08-15）：这一节在，是因为它曾经**不在** ——
+  //   截图失败被 `.catch(() => {})` 静默吞掉，报告照常写「ok」并指着一个不存在的文件。
+  ...(缺图.length ? ['## ★证据不全的格子★（截图没拍到或只拍到可视区）', '',
+    '看报告时注意：这些行的「ok」只代表**点得动、没报错**，', 
+    '★但没有全页截图能证明它显示对了★ —— 而「安静地显示错东西」正是只有截图能发现的那一类。', '',
+    ...缺图.map((x) => `- ${x}`), ''] : []),
   ...(未测.length ? ['## ★未测清单★（不是通过,是没点到——必须补）', '',
     ...未测.map((r) => `- ${r.页面} #${r.序} ${r.元素}：${r.结果}`), ''] : []),
   ...(坏.length ? ['## ★异常清单★', '', '| 页面 | # | 元素 | 结果 | 截图 |', '|---|---|---|---|---|',
@@ -307,6 +366,6 @@ writeFileSync(`${DIR}/报告.md`, [
   '## HTTP >= 400', ...(网络.length ? [...new Set(网络)].map((e) => '- ' + e) : ['（无）']),
 ].join('\n'))
 console.log(`\n══ 共点 ${记录.length} 处，异常 ${坏.length} 处，没人认领的失败 ${无主.length} 条，未测 ${未测.length} 处；`
-  + `截图 ${n} 张；console 错误 ${new Set(错误).size} 种，HTTP>=400 ${new Set(网络).size} 种 ══`)
+  + `截图 ${n} 张（缺证据 ${缺图.length}）；console 错误 ${new Set(错误).size} 种，HTTP>=400 ${new Set(网络).size} 种 ══`)
 console.log(`报告：${DIR}/报告.md`)
 await b.close()
