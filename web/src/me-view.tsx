@@ -183,6 +183,19 @@ export function MeView({ me, onOpenShares }: { me: Me | null; onOpenShares: () =
                 <Stat n={data.totals.projects} label="涉及项目" />
                 <Stat n={data.totals.minutes_todo} label="待写纪要" warn />
               </div>
+              {/* ★顶部这四个数的口径必须写出来★（2026-08-15 liaoruili 问「这是啥意思」，
+                  两个独立的截图复核都指到了这里）:
+                  顶部「小时」走的是 `mine`(**要求活动有关联项目**),回答「我为团队花了多少时间」;
+                  下面「按类型」表走 `mine_all_cte`(**不要求关联项目**),回答「我在做什么」——
+                  读文献 / 写作这类个人日程本来就不挂项目。两套口径是**有意的**(见 activities.rs 那两段注释),
+                  ⚠ 但「代价必须在界面上说出来」这句要求原来只兑现了一半:
+                  唯一那句解释挂在**按类型表下面**、讲的是「按类型 vs 按项目」,
+                  ★从没解释过「顶部 12.5 小时」为什么不等于「按类型合计 20 小时」★ ——
+                  于是同一屏两个「小时」差 7.5,谁也答不上来自己这个月到底投入了多少。 */}
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+                这四个数只算<b>关联了项目</b>的活动（协作）；读文献、写作这类不挂项目的个人日程，
+                见下方「按类型」表——所以那张表的合计通常更大。
+              </Typography.Text>
               {/* ★按类型是**主**视角，排在按项目之前★（PRD §K：「按项目分组回答『我为哪个团队
                   花了时间』，按类型分组回答『我在做什么』，★后者才是个人视角的主问题★」）。 */}
               <Table

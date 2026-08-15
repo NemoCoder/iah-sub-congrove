@@ -181,7 +181,7 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
             </Typography.Text>
           )}
           {recs.length === 0
-            ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="传一段录制,这里会出现它的 AI 摘要与逐字稿" />
+            ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="传一段录制，这里会出现它的 AI 摘要与逐字稿" />
             : <Tabs size="small" items={[
             {
               key: 's', label: 'AI 摘要',

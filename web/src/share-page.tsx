@@ -66,7 +66,7 @@ export function SharePage({ token }: { token: string }) {
       // ★被限速时要原样透出服务端那句★(v0.3.55):限速消息里也带「提取码」三个字,
       // 早先一律改写成「提取码不对」,结果用户看不到「已被限速」,只会继续一遍遍试。
       if (m.includes('次数过多')) setErr(m)
-      else if (m.includes('提取码')) setErr('提取码不对,再试一次')
+      else if (m.includes('提取码')) setErr('提取码不对，再试一次')
       else setPhase('gone')
     } finally { setBusy(false) }
   }, [token])
@@ -105,7 +105,7 @@ export function SharePage({ token }: { token: string }) {
   if (phase === 'gone')
     return shell(
       <Result status="404" title="链接已失效"
-        subTitle="它可能已过期、超出访问次数,或者被分享者撤销了。找分享给你的人要一条新的。" />)
+        subTitle="它可能已过期、超出访问次数，或者被分享者撤销了。找分享给你的人要一条新的。" />)
 
   if (phase === 'code')
     return shell(

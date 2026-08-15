@@ -58,7 +58,7 @@ export function SharesView() {
   const copy = async (r: Row) => {
     const url = `${window.location.origin}/s/${r.token}`
     const what = r.item_count > 1 ? `${r.name} 等 ${r.item_count} 项` : r.name
-    const text = `通过汇流分享:${what}\n链接:${url}${r.has_code ? '\n(需要提取码)' : ''}`
+    const text = `通过汇流分享：${what}\n链接：${url}${r.has_code ? '\n(需要提取码)' : ''}`
     try { await navigator.clipboard.writeText(text); message.success('已复制') }
     catch { message.info(url) }
   }
@@ -91,7 +91,7 @@ export function SharesView() {
           { title: '到期', width: 132, render: (_, r) => (r.expires_at ? fmt(r.expires_at) : '永久') },
           { title: '状态', width: 92, render: (_, r) => status(r) },
           { title: '', width: 52, render: (_, r) => (r.revoked_at ? null : (
-            <Popconfirm title="撤销这条链接?" description="撤销后立刻失效,已发出去的链接也打不开。"
+            <Popconfirm title="撤销这条链接？" description="撤销后立刻失效，已发出去的链接也打不开。"
               onConfirm={async () => {
                 try { await api(`/api/shares/${r.token}`, { method: 'DELETE' }); message.success('已撤销'); await load() }
                 catch (e) { message.error((e as Error).message) }

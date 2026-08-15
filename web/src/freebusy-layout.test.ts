@@ -10,7 +10,7 @@ const at = (h: number, durH = 1) => {
   return { start: s.toISOString(), end: e.toISOString() }
 }
 
-test('窗口正中的一小时:8–20 共 12 小时，14:00 应在正中', () => {
+test('窗口正中的一小时：8–20 共 12 小时，14:00 应在正中', () => {
   const b = toBar(at(14), DAY)!
   assert.equal(b.left, '50%')
   assert.equal(b.width, `${(1 / 12) * 100}%`)
@@ -21,7 +21,7 @@ test('窗口起点对齐 0%', () => {
 })
 
 /// ★早于 8:00 的部分裁掉,但不能因此丢掉整段★
-test('跨窗口起点:只画窗口内的那半截', () => {
+test('跨窗口起点：只画窗口内的那半截', () => {
   const b = toBar(at(7, 2), DAY)!      // 07:00–09:00
   assert.equal(b.left, '0%', '被裁的部分应当从 0 开始画')
   assert.equal(b.width, `${(1 / 12) * 100}%`, '只画 08:00–09:00 这一小时')

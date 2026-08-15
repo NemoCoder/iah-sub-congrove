@@ -111,7 +111,7 @@ export function App() {
   if (status === 'loading')
     return <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 120 }}><Spin size="large" /></div>
   if (status === 'error')
-    return <Result status="500" title="服务暂不可用" subTitle="后端未就绪,稍后刷新重试。" />
+    return <Result status="500" title="服务暂不可用" subTitle="后端未就绪，稍后刷新重试。" />
 
   const display = me?.name || me?.username || '未知用户'
   return (

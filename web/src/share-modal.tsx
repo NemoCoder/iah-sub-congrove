@@ -45,14 +45,14 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
       const what = items.length > 1 ? `${item.name} 等 ${items.length} 项` : item.name
       const life = days ? `${days} 天内有效` : '长期有效'
       const text = [
-        `通过汇流分享:${what}`,
-        `链接:${url}`,
-        ...(r.code ? [`提取码:${r.code}`] : []),
+        `通过汇流分享：${what}`,
+        `链接：${url}`,
+        ...(r.code ? [`提取码：${r.code}`] : []),
         life,
       ].join('\n')
       setLastLink({ url, code: r.code, text })
       try { await navigator.clipboard.writeText(text); message.success('分享文案已复制' + (r.code ? '(含提取码)' : '')) }
-      catch { message.info('链接已生成,见下方') }
+      catch { message.info('链接已生成，见下方') }
     } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
   }
 
@@ -61,8 +61,8 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
       title={<span><ItemIcon it={item} />
         {items.length > 1 ? `分享 ${items.length} 项(${item.name} 等)` : `分享「${item.name}」`}</span>}>
       <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-        message="这是公开链接:拿到链接的人不需要是本项目成员"
-        description="提取码、有效期、访问次数是仅有的三道闸;发出去之后唯一的后悔药是撤销。" />
+        message="这是公开链接：拿到链接的人不需要是本项目成员"
+        description="提取码、有效期、访问次数是仅有的三道闸；发出去之后唯一的后悔药是撤销。" />
       <AntSpace direction="vertical" style={{ width: '100%' }} size={10}>
         <AntSpace wrap>
           <Switch size="small" checked={useCode} onChange={setUseCode} />
@@ -109,7 +109,7 @@ export function ShareModal({ items, onClose }: { items: ShareTarget[]; onClose: 
                   // 两种都给,让用户按场景选:要分开发就用上面的文案,图省事就用这个。
                   <Button size="small" onClick={() => {
                     void navigator.clipboard.writeText(`${lastLink.url}?pwd=${lastLink.code}`)
-                    message.success('已复制(链接自带提取码,打开即免输)')
+                    message.success('已复制(链接自带提取码，打开即免输)')
                   }}>复制免输码链接</Button>
                 )}
               </AntSpace>

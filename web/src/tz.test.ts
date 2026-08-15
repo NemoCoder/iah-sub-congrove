@@ -21,13 +21,13 @@ test('② ★跨日★:UTC 深夜在东八区已经是次日', () => {
   assert.equal(fmtDay(t, NY), '8/12 周三')      // 同一瞬时,纽约还在前一天
 })
 
-test('③ ★夏令时★:同一时区在夏天和冬天的偏移不一样', () => {
+test('③ ★夏令时★：同一时区在夏天和冬天的偏移不一样', () => {
   // 7 月:纽约 UTC-4;1 月:UTC-5。★这条钉死「没有把偏移写死」★
   assert.equal(fmtHM('2026-07-15T16:00:00Z', NY), '12:00')
   assert.equal(fmtHM('2026-01-15T16:00:00Z', NY), '11:00')
 })
 
-test('④ 墙上时间 → UTC:按**指定时区**解释,不是按运行环境', () => {
+test('④ 墙上时间 → UTC：按**指定时区**解释，不是按运行环境', () => {
   // 「北京时间 2026-08-12 15:00」= 07:00Z
   assert.equal(wallToUtc(2026, 8, 12, 15, 0, SH).toISOString(), '2026-08-12T07:00:00.000Z')
   // 「纽约时间 2026-08-12 15:00」= 19:00Z(夏令时 UTC-4)
@@ -66,7 +66,7 @@ test('⑥ wallToUtc 与 partsIn 互为逆运算(往返不丢)', () => {
   }
 })
 
-test('⑦ myTz:设置优先,没设过跟随浏览器', () => {
+test('⑦ myTz：设置优先，没设过跟随浏览器', () => {
   setMyTz(null)
   assert.equal(myTz(), Intl.DateTimeFormat().resolvedOptions().timeZone)
   setMyTz(NY)
@@ -74,7 +74,7 @@ test('⑦ myTz:设置优先,没设过跟随浏览器', () => {
   setMyTz(null)                                 // ★复位,别污染后面的用例★
 })
 
-test('⑧ E2 判据:一致不标、不一致才标', () => {
+test('⑧ E2 判据：一致不标、不一致才标', () => {
   setMyTz(SH)
   const t = '2026-08-12T07:00:00Z'
   assert.equal(annotate(t, SH), '')              // 我和活动都在北京 → 一个字都不加
@@ -87,14 +87,14 @@ test('⑧ E2 判据:一致不标、不一致才标', () => {
   setMyTz(null)
 })
 
-test('⑨ 时区中文名:收录的给中文,没收录的原样露出 IANA 名', () => {
+test('⑨ 时区中文名：收录的给中文，没收录的原样露出 IANA 名', () => {
   assert.equal(tzLabel(SH), '北京')
   assert.equal(tzLabel(NY), '纽约')
   // ★宁可露出英文,不可猜错地名★
   assert.equal(tzLabel('Africa/Nairobi'), 'Africa/Nairobi')
 })
 
-test('⑩ shiftToTz:给布局用的平移 Date,本地取值器读出来是目标时区的墙上时间', () => {
+test('⑩ shiftToTz：给布局用的平移 Date，本地取值器读出来是目标时区的墙上时间', () => {
   const t = '2026-08-12T23:00:00Z'              // 北京时间 8/13 07:00
   const s = shiftToTz(t, SH)
   assert.equal(s.getDate(), 13)                  // ★布局要据此把它摆进 13 号那一列★
@@ -102,7 +102,7 @@ test('⑩ shiftToTz:给布局用的平移 Date,本地取值器读出来是目标
   assert.equal(s.getMinutes(), 0)
 })
 
-test('★⑪ 日历格「今天」不能拿 sameDayIn 判★ —— 实测撞到过,整体错一天', () => {
+test('★⑪ 日历格「今天」不能拿 sameDayIn 判★ —— 实测撞到过，整体错一天', () => {
   // 现场:此刻 2026-08-12T08:53Z(北京 16:53、纽约 04:53)—— ★两边都是 8/12★。
   const now = new Date('2026-08-12T08:53:00Z')
   // 日历里 8/12 那一格,是用「浏览器本地那天零点」的 Date 表示的(浏览器=北京时 → 08-11T16:00Z)。
@@ -121,7 +121,7 @@ test('★⑪ 日历格「今天」不能拿 sameDayIn 判★ —— 实测撞到
   assert.equal(sameDayIn(格8月13, now, 'America/New_York'), true)    // 也错在这
 })
 
-test('★⑫ E1:选择器里那串数字按**活动时区**解释,不是按浏览器★', () => {
+test('★⑫ E1：选择器里那串数字按**活动时区**解释，不是按浏览器★', () => {
   // 场景:人在浏览器本地时区(测试机是北京),给「北京」的会排 8/12 15:00
   const 选中 = new Date(2026, 7, 12, 15, 0)          // 选择器给出的就是这组数字
   assert.equal(pickedToUtc(选中, 'Asia/Shanghai').toISOString(), '2026-08-12T07:00:00.000Z')
@@ -131,7 +131,7 @@ test('★⑫ E1:选择器里那串数字按**活动时区**解释,不是按浏�
   assert.equal(pickedToUtc(选中, 'Europe/London').toISOString(), '2026-08-12T14:00:00.000Z')
 })
 
-test('⑬ E1 往返:存下去再打开「改时间」,数字必须一模一样', () => {
+test('⑬ E1 往返：存下去再打开「改时间」，数字必须一模一样', () => {
   // ★不做逆变换的话,一打开编辑框就把时间挪走了,而人只是想改个标题★
   for (const tz of ['Asia/Shanghai', 'America/New_York', 'Europe/London', 'Australia/Sydney']) {
     const 选中 = new Date(2026, 7, 12, 15, 30)

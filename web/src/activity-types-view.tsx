@@ -16,6 +16,9 @@ function scopeOf(t: ActivityType, me: string): 'full' | 'busy' | 'none' {
   return t.has_minutes || t.needs_project ? 'none' : 'busy'
 }
 
+/// ⚠★内部决策编号(L1/L2)别印在界面上★(2026-08-15 巡检截图看出来的):
+///   页脚那两句原来带着「（L1，软删除）」「（L2）」—— 那是 PRD 里的条目号,
+///   对用户什么都不是,只会让人以为自己漏读了某份文档。理由该留在代码注释里(就是这儿)。
 export default function ActivityTypesView({ me }: { me: string }) {
   const { message } = AntdApp.useApp()
   const [rows, setRows] = useState<ActivityType[]>([])
@@ -130,9 +133,9 @@ export default function ActivityTypesView({ me }: { me: string }) {
       </Space>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12 }}>
         ★删除一个类型★：用过它的历史活动<b>照常显示这个类型名</b>（统计不断档），
-        只是新建时不再出现在下拉里（L1，软删除）。<br />
+        只是新建时不再出现在下拉里（软删除）。<br />
         ★没有「改类型」这个功能★ —— 改类型相当于删除重建，与其提供一个会悄悄吃掉
-        参与人和纪要的按钮，不如诚实地不给（L2）。
+        参与人和纪要的按钮，不如诚实地不给。
       </Typography.Paragraph>
     </Card>
   )

@@ -112,13 +112,22 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
     return (
       <Card>
         {/* 看不见的活动后端回 404(与「不存在」同一回应,防按 id 探测),这里不区分原因 */}
-        <Empty description={err === '404' ? '这个活动不存在,或你没有权限查看' : err} />
+        <Empty description={err === '404' ? '这个活动不存在，或你没有权限查看' : err} />
         <div style={{ textAlign: 'center', marginTop: 12 }}><Button onClick={onBack}>{backLabel}</Button></div>
       </Card>
     )
 
   const m = d.activity
   const canceled = m.status === 'canceled'
+  /// ★开完了就不能再取消★（2026-08-15 liaoruili 拍板，巡检截图看出来的）:
+  ///   原来的判据只有 `can_edit && !canceled` —— 于是一场 8/12 开完的会,
+  ///   到了 8/15 标题栏上还摆着红色的「取消活动」。
+  ///   ★「取消」讲的是「这场别开了」,对一件已经发生过的事没有意义★;
+  ///   而它真按下去会把一段**已经发生的协作事实**标成 canceled,
+  ///   连带纪要/材料的语义一起变味 —— 这不是「撤销」,是改写历史。
+  ///   ⚠ 同一页的「实际时长」用的是相反的判据(**开完之后**才出现,D5 第 2 级),
+  ///     两处合起来才是完整的时间线:开完之前能取消、开完之后才谈实际时长。
+  const 已结束 = new Date(m.ends_at).getTime() < Date.now()
 
   // ★取消了就只说「活动已取消」,别再摊开细节★（2026-08-13 liaoruili:
   //   「如果已经取消，具体信息就别显示了，直接做个取消页面，就像 404 页面那样」
@@ -228,7 +237,7 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
             前者一句话,后者属于文档;而这句解释在**每次**取消时都读一遍,读第二遍就是噪声。
             ⚠ 注释放在这里(children 位置),★别塞进 `{cond && (` 后面★ —— 那是表达式位置,
               JSX 花括号注释在那儿是语法错(我今天第二次踩,第一次在公开活动的空状态)。 */}
-        {d.can_edit && !canceled && (
+        {d.can_edit && !canceled && !已结束 && (
           <Popconfirm title="取消这场活动？"
             onConfirm={async () => {
               try { await api(`/api/activities/${id}`, { method: 'DELETE' }); await load(true) } catch (e) { /* 失败由下方错误区呈现 */ }
@@ -539,7 +548,7 @@ function RespondCard({ id, mine, onDone }: { id: number; mine: RespondStatus; on
       //   但如果只通知他、不告诉我,我就会一直纳闷「我都拒了为什么还催我写纪要」——
       //   ★而那正是他问出来的那句话。★
       if (回?.still_recorder) {
-        message.warning('已拒绝。⚠ 你仍是这场的记录员,纪要还挂在你名下 —— 已通知发起人另指派', 6)
+        message.warning('已拒绝。⚠ 你仍是这场的记录员，纪要还挂在你名下 —— 已通知发起人另指派', 6)
       } else {
         message.success('已答复')
       }

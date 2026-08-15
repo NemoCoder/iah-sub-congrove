@@ -137,7 +137,7 @@ export function VideoPlayer({ item, standalone = false }: { item: Item; standalo
                   try {
                     if (document.pictureInPictureElement) await document.exitPictureInPicture()
                     else await ref.current?.requestPictureInPicture()
-                  } catch (e) { message.error(`画中画不可用:${(e as Error).message}`) }
+                  } catch (e) { message.error(`画中画不可用：${(e as Error).message}`) }
                 }}>⧉</Button>
               </Tooltip>
             )}

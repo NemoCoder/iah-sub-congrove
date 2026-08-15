@@ -79,7 +79,16 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
       seen.add(u)
       out.push({ value: u, label: n && n !== u ? `${n}（${u}）` : u })
     }
-    if (me?.username) push(me.username, me.name ? `${me.name}· 我` : '我')
+    // ★显示名等于用户名时会拼重★(2026-08-15 巡检截图看出来的):原来是
+    //   `push(me.username, me.name ? `${me.name}· 我` : '我')` —— 于是 name === username 的人
+    //   (liaoruili 就是)得到 n = 「liaoruili· 我」,而 `n !== u` 成立,
+    //   最终拼成 ★「liaoruili· 我（liaoruili）」★,用户名出现两遍。
+    //   本意是「张三· 我（zhangsan）」;所以判据该看 **name 和 username 一不一样**,而不是 name 有没有。
+    if (me?.username) {
+      const 别名 = me.name && me.name !== me.username ? me.name : null
+      out.push({ value: me.username, label: 别名 ? `${别名}· 我（${me.username}）` : `${me.username}· 我` })
+      seen.add(me.username)
+    }
     for (const u of found) push(u.username, u.name)
     // 搜不到就把输入本身给出来:平台没有用户搜索接口,候选只有登录过的人,
     // 但后端 ensure_platform_user 能校验并拉任何平台用户(真伪由它判)。
@@ -233,6 +242,14 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
               <Tag color={cap.busy_default ? 'orange' : undefined}>
                 {cap.busy_default ? '占忙闲' : '不占忙闲'}
               </Tag>
+              {/* ★第四条能力位原来漏在这儿★(2026-08-15 巡检截图看出来的):
+                  「我的活动类型」页给会议标着 `只能排未来`,而这排徽标只有三个。
+                  这排徽标存在的理由就是让人**一眼看见这个类型的规矩**(见上面那段注释),
+                  漏掉它的后果是:下面的日期选择器把过去**禁灰了**(`noPast={!allowPast}`),
+                  ★而屏幕上没有任何一处说明为什么★ —— 又一个「禁用但不给理由」。
+                  ⚠ 这条不是「点了会报错」:后端确有闸,但界面早就挡住了;
+                    坏的是**人不知道自己撞到了什么规矩**。 */}
+              {!cap.allow_past && <Tag color="orange">只能排未来</Tag>}
             </Space>
           )}
         </Form.Item>
