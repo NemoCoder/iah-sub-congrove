@@ -4,9 +4,10 @@
 #   平台在 GFW 后,actions/checkout 等 JS action 会去 github.com 拉、直接挂;所以手动 git fetch 内网 gitea HTTP svc。
 #   runner 镜像 act-runner:v2 自带 rust+clippy / gcc-make(编 ring 的 C 部分要)/ node22+pnpm11,见 iah_k8s/git/act-runner。
 #
-# 门禁 = ① cargo clippy 零 warning(type_complexity 已在 Cargo.toml 项目级豁免,理由见那里)
-#        ② cargo test —— ★hermetic★:tests/api_cases.rs 只做 apidoc::APIS ↔ CASES 自校验,不连 PG/S3/OIDC,CI 里直接能跑
-#        ③ 前端 tsc(pnpm typecheck,strict)④ 前端 test(pnpm test)
+# ★门禁清单不在这个文件里★:见 `scripts/all-gates.sh`(2026-08-15 起唯一的一份)。
+#   本 workflow 只负责「取代码 + 装前端依赖 + 调那个脚本」,别再往这里内联加检查 ——
+#   两份清单各缺对方几道正是它上一次的样子。`--ci` 跑不依赖活环境的那些;
+#   要活 dev 库 / oasdiff / 内网 CA 的四道进不来(O2/O4),在 PR 里标注人工验证。
 #   任一红 → job 红 → PR 不能合并(前提:在 Gitea 仓库设置里把本检查设为分支保护的「必需状态检查」,那一步才让它真正「硬」)。
 #   e2e(Playwright)要活环境,归相位 6 验收、不进合并门禁(见 DEV-PROCESS)。
 name: ci
@@ -19,7 +20,7 @@ jobs:
   gate:
     runs-on: iah-host
     steps:
-      - name: 门禁(clippy + cargo test + 前端 tsc/test)
+      - name: 门禁(scripts/all-gates.sh --ci)
         env:
           TOK: ${{ secrets.GITEA_TOKEN }}    # Gitea 自动注入的作业令牌,足够 clone 本仓库(只读)
           BASE: http://gitea.git.svc:3000     # 内网 gitea HTTP svc —— runner 没装内网 CA,不走 git.ruciah.com
@@ -33,35 +34,18 @@ jobs:
           echo "被测提交:$(git rev-parse --short HEAD)"
           # ── target 缓存放持久路径:runner 的 /data(emptyDir)在 pod 生命内跨 job 存活 → 增量编译,不用每次从头编全依赖树 ──
           export CARGO_TARGET_DIR=/data/_cache/congrove-target
-          # ── 四道检查都跑完再汇总(不 fail-fast:一次让开发看全所有红,而不是修一个冒一个)──
-          fail=0
-          echo "::group::① cargo clippy -D warnings"; cargo clippy --all-targets --locked -- -D warnings || fail=1; echo "::endgroup::"
-          echo "::group::② cargo test";             cargo test --locked                        || fail=1; echo "::endgroup::"
-          echo "::group::③④ 前端 pnpm typecheck + test"; ( cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test ) || fail=1; echo "::endgroup::"
-          # ⑤ 旧命名零残留(M0-7 加)。★纯 bash + grep,零依赖,所以进得了 CI★。
-          #   另外四道机械门禁(SQL 全量 PREPARE / schema 基线对拍 / golden / 接口面)
-          #   要活的 dev 库或 oasdiff 二进制,暂时进不来 —— 见 docs/M0-PLAN.md 的开放问题 O2/O4。
-          echo "::group::⑤ 旧命名零残留"; bash scripts/no-meeting.sh --all || fail=1; echo "::endgroup::"
-          # ⑥ DDL 纪律(ADR-0001):裸 CREATE TABLE + migrations/ 只有一个文件。
-          # ★这条是 2026-08-09 全量审计发现后**当场变成的门禁**★——ADR 白纸黑字写了一年,
-          #   而 24 个建表里 19 个违反它,没有任何东西会发现。人工审计发现一次,以后免费重跑。
-          echo "::group::⑥ DDL 纪律(ADR-0001)"; bash scripts/ddl-check.sh || fail=1; echo "::endgroup::"
-          # ⑦ 内容寻址不变量:规范 key 只能由 items.rs::blob_key 产出。
-          # 审计 A2 的根治靠「谁能往 blobs/* 写」收敛成一条路径 —— 这条闸让它保持收敛。
-          echo "::group::⑦ 内容寻址(A2/D1)"; bash scripts/blobkey-check.sh || fail=1; echo "::endgroup::"
-          # ⑥ 版本号必须比 dev 上的高。★这条是 2026-08-08 踩出来的★:
-          #   我用 `sed -i 's/version = "0.4.56"/…/'` 升版本,而分支基于更早的点(0.4.55),
-          #   **无匹配、sed 不报错**、版本就没升 —— 代码合进去了,线上版本号还是旧的。
-          #   `sed -i` 静默不匹配这件事,只能靠事后核对兜住。
-          echo "::group::⑥ 版本号是否真的升了"
-          cur=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          # ⚠ 只认 `export const VERSION` 那一行:文件头的注释里有 `v0.3.42.dev` 这种举例,
-          #   笼统 grep 会先命中它 —— 第一版就是这么写的,当场把好版本判成不一致。
-          web=$(sed -n "s/^export const VERSION = 'v\\(.*\\)'.*/\\1/p" web/src/version.ts)
-          echo "Cargo.toml=$cur  web/version.ts=$web"
-          [ "$cur" = "$web" ] || { echo "❌ 两处版本号不一致(必须同步)"; fail=1; }
-          echo "::endgroup::"
-          if [ "$fail" != 0 ]; then echo "❌ CI 门禁未过 —— 上面哪一段红看哪段"; exit 1; fi
+          # ── ★门禁清单只有一份:scripts/all-gates.sh★(2026-08-15)──
+          # 这里原来内联写着一串检查,而本地那份 all-gates.sh 又写着另一串,
+          # ★两串各缺对方几道★:CI 有 ddl-check / blobkey-check / 版本号一致而本地没有,
+          # 本地有 no-silent-limit / no-bare-items / no-naked-time 而 CI 没有。
+          # 于是「本地十一道全绿」和「CI 全绿」谁也不覆盖谁,而没有任何东西会指出这件事。
+          # ⇒ 改成直接调那个脚本:加一道门禁只要改一处,两边同时生效,再也漂不了。
+          # ⚠ `--ci` 只跑不依赖活环境的那些;要活 dev 库 / 内网 CA 的四道
+          #   (SQL PREPARE / schema 对拍 / 接口面 oasdiff / 响应体形状)仍进不来,
+          #   见 docs/M0-PLAN.md 的开放问题 O2/O4 —— 它们在 PR 里标注**人工验证**。
+          # 脚本内部各闸独立判定、不 fail-fast(一次让开发看全所有红),末尾按总数返回。
+          ( cd web && pnpm install --frozen-lockfile ) || { echo "❌ 前端依赖装不上"; exit 1; }
+          bash scripts/all-gates.sh --ci || { echo "❌ CI 门禁未过 —— 上面汇总里带 ✗ 的那几道"; exit 1; }
           echo "✅ CI 门禁全过"
 
   # ★部署必须被门禁挡住★(2026-08-07,平台 msg 157/158,liaoruili 拍板的方案 B)。

@@ -74,15 +74,37 @@ M0 改了什么(全部已上线):
 - 忙闲判据 = **活动自己的 `busy`**(不再是「有没有关联到公开项目」)。
   `projects.visibility` 这一列**已删** —— 它原本兼着「内容给谁看」与「占不占忙闲」两件正交的事。
 
-## ★五道机械门禁(改代码前先知道它们存在)★
+## ★机械门禁:一条命令跑完,清单只有一份★(改代码前先知道它们存在)
 
-| 闸 | 命令 | 判据 |
-|---|---|---|
-| SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) |
-| schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` |
-| 旧命名 | `scripts/no-meeting.sh --all` | 非注释、未豁免的 `meeting` 残留归零(★已进 CI★) |
-| 响应体 | `node e2e/golden-diff.mjs <before> <after>` | 差异逐字节等于 `e2e/golden/expected.diff` |
-| 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` |
+```bash
+bash scripts/all-gates.sh          # 全部(缺环境的那几道标「未跑」,★不算绿★)
+bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— ★CI 调的就是这一条★
+```
+
+★别再在别处另开一份清单★(2026-08-15):此前 `.gitea/workflows/ci.yml` 内联写着一串、
+`all-gates.sh` 又写着另一串,**两串各缺对方几道** —— 于是「本地全绿」与「CI 全绿」谁也不覆盖谁,
+而没有任何东西会指出这件事。现在 CI 直接调这个脚本,加一道门禁只改一处。
+
+| 闸 | 命令 | 判据 | CI |
+|---|---|---|---|
+| clippy 零 warning | `cargo clippy --all-targets -- -D warnings` | 一条 warning 都不许 | ✅ |
+| 单测 | `cargo test` | perm/时区/类型能力位等纯函数 | ✅ |
+| 旧命名 | `scripts/no-meeting.sh --all` | 非注释、未豁免的 `meeting` 残留归零 | ✅ |
+| 不许静默截断 | `scripts/no-silent-limit.sh` | 写死 `LIMIT` 必须声明理由 | ✅ |
+| 读内容不碰裸 items | `scripts/no-bare-items.sh` | SELECT 走 `items_alive`,否则写 `-- items-ok:` | ✅ |
+| 时间不裸格式化 | `scripts/no-naked-time.sh` | `.format("` 前必须 `.with_timezone(` —— 否则印出来是 UTC | ✅ |
+| DDL 纪律 | `scripts/ddl-check.sh` | 裸 `CREATE TABLE` + `migrations/` 只有一个文件(ADR-0001) | ✅ |
+| 内容寻址 | `scripts/blobkey-check.sh` | 规范 key 只由 `items.rs::blob_key` 产出 | ✅ |
+| 版本号两处一致 | `scripts/version-sync-check.sh` | `Cargo.toml` == `web/src/version.ts` | ✅ |
+| 前端 tsc / test | `cd web && pnpm typecheck` / `pnpm test` | strict 类型 + 单测 | ✅ |
+| SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) | ❌ 要活库 |
+| schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ❌ 要活库 |
+| 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
+| 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
+
+配套(不是门禁,是工具):`scripts/bump-version.sh` 升版本(读→加一→写回→**回读核对**);
+`scripts/deployed-version-check.sh` 比对线上与代码版本 —— ★`e2e/run.sh` 跑测试前会先调它★,
+免得对着旧镜像跑 E2E 拿一堆「关于别人代码的绿」(要故意对旧版本跑就 `SKIP_VERSION_CHECK=1`)。
 
 连库:`source ~/.config/iah/congrove-dev.env`(DSN + 口令,**仓库外**)。
 ★`--pre` 是 PREPARE 闸最值钱的用法★:先施加 schema 变更、跑全量检查、最后 ROLLBACK,

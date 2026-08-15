@@ -15,4 +15,19 @@ export CONGROVE_BASE="${CONGROVE_BASE:-https://congrove-dev.sub.ruciah.com}"
 # ★凭证绝不进 stdout★:分支判断写全,别用参数展开图省事。
 if [ -n "${IAH_E2E_KEY:-}" ]; then KEY_STATE="已加载"; else KEY_STATE="未配置(只能跑 gate 组)"; fi
 echo "目标: $CONGROVE_BASE | E2E key: $KEY_STATE"
+
+# ★跑之前先证明线上跑的就是这份代码★(2026-08-15 接线)。
+# `scripts/deployed-version-check.sh` 写好了却**一个调用方都没有** —— 而它要防的事
+# 恰恰只在这一刻发生:对着**旧镜像**跑 E2E,拿到的绿是关于别人代码的绿。
+# 本仓栽过一次「部署记录里的 ref 不是 dev,每次合并都在构建过期分支,全程零报红」。
+# ⚠ 拿不到线上版本时脚本 exit 2(「量不到」不算通过),这里同样当红处理。
+# 真要对着旧版本跑(比如复现一个已修的 bug),显式 SKIP_VERSION_CHECK=1。
+if [ "${SKIP_VERSION_CHECK:-}" != 1 ]; then
+  bash ../scripts/deployed-version-check.sh || {
+    echo "★线上版本与代码对不上 —— 先部署,或 SKIP_VERSION_CHECK=1 明确表示你就是要对着旧版本跑★"
+    exit 1
+  }
+fi
+
 npx playwright test "$@"
+
