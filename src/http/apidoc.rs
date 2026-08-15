@@ -270,7 +270,7 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",
          "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts"),
     api!("POST", "/api/items/{id}/media/abort", "直传", "≥editor", "主动取消(★只有主动取消才 abort,失败不动断点★)", ""),
-    api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET。★只对 video 放行★", ""),
+    api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET;★禁下载(项目级对 viewer / 活动级对所有人)时改回 200/206 同源 Range 代理,不发直链★。★只对 video 放行★", ""),
 
     // ── 转写与纪要 ──
     api!("POST", "/api/items/{id}/analyze", "转写", "≥editor", "排一个转写+纪要任务(幂等)", ""),

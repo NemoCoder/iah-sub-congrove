@@ -1095,6 +1095,7 @@ pub struct MinutesIn {
     pub resolutions: Option<String>,
     pub todos: Option<String>,
     /// 置 done = 定稿。★定稿后仍可改★(会后补录到场情况是常事),只是记一个 completed_at。
+    /// ★不传 = 保持原样★,与本结构体其余每一个字段同一个约定(见 minutes_put 里的长注释)。
     pub status: Option<String>,
 }
 
@@ -1106,20 +1107,27 @@ pub async fn minutes_put(
     Json(p): Json<MinutesIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_activity_host(&state.pool, &id, mid).await?;
+    // ★`status` 不传 = **保持原样**,不是「回到 draft」★(2026-08-15 对抗检查抓到)。
+    //   这一整个结构体的约定就是「不传的字段保留」——下面每个字段都是 `COALESCE($n, 老值)`,
+    //   只有 status 原来是 `None => "draft"`。而前端**逐字段保存**(改一下参会人就 PUT 一次,
+    //   身上不带 status),于是:纪要一旦定稿,记录员再补一句到场情况,
+    //   ★状态被静默打回草稿、`completed_at` 一起清空★ —— 界面上没有任何提示,
+    //   直到有人发现「明明定过稿的会又变草稿了」。定稿/撤稿只能由那个按钮显式发起。
     let status = match p.status.as_deref() {
-        Some("done") => "done",
-        Some("draft") | None => "draft",
+        Some("done") => Some("done"),
+        Some("draft") => Some("draft"),
+        None => None,
         _ => return Err(AppError::BadRequest("状态须为 draft/done".into())),
     };
-    sqlx::query(
+    let 结果状态: String = sqlx::query_scalar(
         "INSERT INTO activity_minutes
            (activity_id, status, attendees, observers, absentees, agenda_text, content_md, resolutions, todos,
             completed_at, updated_at)
-         VALUES ($1,$2,COALESCE($3,''),COALESCE($4,''),COALESCE($5,''),COALESCE($6,''),
+         VALUES ($1,COALESCE($2,'draft'),COALESCE($3,''),COALESCE($4,''),COALESCE($5,''),COALESCE($6,''),
                  COALESCE($7,''),COALESCE($8,''),COALESCE($9,''),
-                 CASE WHEN $2='done' THEN now() END, now())
+                 CASE WHEN COALESCE($2,'draft')='done' THEN now() END, now())
          ON CONFLICT (activity_id) DO UPDATE SET
-           status=EXCLUDED.status,
+           status=COALESCE($2, activity_minutes.status),
            attendees=COALESCE($3, activity_minutes.attendees),
            observers=COALESCE($4, activity_minutes.observers),
            absentees=COALESCE($5, activity_minutes.absentees),
@@ -1127,16 +1135,19 @@ pub async fn minutes_put(
            content_md=COALESCE($7, activity_minutes.content_md),
            resolutions=COALESCE($8, activity_minutes.resolutions),
            todos=COALESCE($9, activity_minutes.todos),
-           -- ★定稿时间只记第一次★:之后补录到场情况不该把「什么时候定的稿」冲掉
-           completed_at=CASE WHEN $2='done' THEN COALESCE(activity_minutes.completed_at, now()) ELSE NULL END,
-           updated_at=now()")
+           -- ★定稿时间只记第一次★:之后补录到场情况不该把「什么时候定的稿」冲掉。
+           -- 判据要用**这次写完之后**的状态(可能来自老行),不能只看这次传了什么。
+           completed_at=CASE WHEN COALESCE($2, activity_minutes.status)='done'
+                             THEN COALESCE(activity_minutes.completed_at, now()) ELSE NULL END,
+           updated_at=now()
+         RETURNING status")
         .bind(mid).bind(status)
         .bind(p.attendees.as_deref()).bind(p.observers.as_deref()).bind(p.absentees.as_deref())
         .bind(p.agenda_text.as_deref()).bind(p.content_md.as_deref())
         .bind(p.resolutions.as_deref()).bind(p.todos.as_deref())
-        .execute(&state.pool).await?;
-    audit::record(&state.pool, id.require_username()?, "minutes.save", &mid.to_string(), status).await;
-    Ok(Json(json!({ "ok": true, "status": status })))
+        .fetch_one(&state.pool).await?;
+    audit::record(&state.pool, id.require_username()?, "minutes.save", &mid.to_string(), &结果状态).await;
+    Ok(Json(json!({ "ok": true, "status": 结果状态 })))
 }
 
 // ── 活动材料 / 改动历史 / 催办 / 采纳改期 ──────────────────────────────────

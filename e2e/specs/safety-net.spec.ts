@@ -41,9 +41,9 @@ async function newProject(req: APIRequestContext, name: string, extra: Record<st
 
 /// 传一个小文件。★用 multipart★——这条路径（`POST /api/projects/{id}/upload`）是
 /// 流式 multipart，与预签名直传是两条不同的路，改名时两条都要验。
-async function upload(req: APIRequestContext, pid: number, name: string, body: string, qs = '') {
+async function upload(req: APIRequestContext, pid: number, name: string, body: string, qs = '', mime = 'text/plain') {
   const r = await req.post(`/api/projects/${pid}/upload${qs}`, {
-    multipart: { file: { name, mimeType: 'text/plain', buffer: Buffer.from(body) } },
+    multipart: { file: { name, mimeType: mime, buffer: Buffer.from(body) } },
   })
   return r
 }
@@ -400,5 +400,129 @@ test.describe('安全网·is_private 语义', () => {
         `项目=${c.proj} 活动=${c.act} 时 is_private 应当是 ${c.want}`,
       ).toBe(c.want)
     }
+  })
+})
+
+// ════════ ⑤ 出口闸：内容离开受限范围的四条路（2026-08-15 对抗检查）════════
+//
+// 这一组的四条用例对应同一类缺陷：★「禁止下载」这个开关有四个侧门★，
+// 每一个都不报错、不留痕，界面上照样写着「禁止下载」。
+// ⚠ 共同的判据：**闸要判服务端算出来的事实，不能判调用方自己报的意图**。
+
+/// 建一条分享链接并**解锁**,返回访客面要用的 (token, 票)。
+///
+/// ⚠★访客面每个接口的 `k`(解锁票)是**必填**★ —— 少了它拿到的是
+///   `400 Failed to deserialize query string: missing field \`k\``,
+///   **和「这条闸拒绝了你」长得一模一样**(都是 400)。
+///   2026-08-15 我写下面那条 zip 用例时就漏了 `k`:于是它在**没修产品代码的线上**照样绿,
+///   ★它绿的原因是参数没填对,跟被测的那道闸一点关系都没有★。
+///   暴露它的是紧随其后那条「txt 仍然看得到」——同一条路、同样没填 `k`,却断言 200,当场红。
+///   ⇒ ★一组只会「拒绝」的用例证明不了闸在工作:必须配一条「正常情况要成功」的对照★,
+///     否则「整条路根本没打通」与「闸判对了」在断言层面无法区分。
+/// ⚠ 票在 `open` 的响应里叫 `ticket`,在查询串里叫 `k`,两个名字不一样。
+async function 分享并解锁(req: APIRequestContext, iid: number, allow_download: boolean) {
+  const s = await req.post(`/api/items/${iid}/shares`, { data: { allow_download } })
+  expect(s.status(), await s.text()).toBe(200)
+  const token = (await s.json()).token as string
+  const o = await req.post(`/pub/share/${token}/open`, { data: {} })
+  expect(o.status(), await o.text()).toBe(200)
+  const k = (await o.json()).ticket as string
+  expect(k, '拿不到解锁票的话,下面测的就不是那道闸了').toBeTruthy()
+  return { token, k }
+}
+
+test.describe('安全网·出口闸', () => {
+  test('★禁下载的分享:`?inline=1` 不能把非预览类型偷下来★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-闸-分享inline-${tag()}`)
+    // ★类型要选**不可 inline 预览**的★:zip / octet-stream。text/plain 在白名单里,
+    //   拿它测这条会绿得毫无意义(它本来就该 inline 放行)。
+    const body = `zip-${tag()}`
+    const iid = (await (await upload(request, pid, 'a.zip', body, '', 'application/zip')).json()).id as number
+    // ★先证明前提成立★:整条用例立在「这份内容的 mime 不在 inline 白名单里」之上。
+    //   服务端若没采信我声明的 mime(比如按扩展名另判),下面那条断言就成了空话。
+    expect((await (await request.get(`/api/items/${iid}`)).json()).mime,
+      '前提:mime 必须真的是 application/zip').toBe('application/zip')
+    const { token, k } = await 分享并解锁(request, iid, false)
+
+    const r = await request.get(`/pub/share/${token}/file/${iid}?k=${k}&inline=1`)
+    expect(r.status(), '★带 inline=1 也必须拒★——闸判的是服务端算出的 disposition').toBe(400)
+    // 验它不是「拒了但把内容一起发了」:响应体里不能出现原文
+    expect(await r.text()).not.toContain(body)
+    // 反向:不带 inline 本来就该拒(防止上面那条因为别的原因红而看不出来)
+    expect((await request.get(`/pub/share/${token}/file/${iid}?k=${k}`)).status()).toBe(400)
+  })
+
+  test('禁下载的分享:白名单类型仍然看得见(★这条是上一条的对照组★)', async ({ request }) => {
+    const pid = await newProject(request, `E2E-闸-分享可读-${tag()}`)
+    const body = `txt-${tag()}`
+    const iid = (await (await upload(request, pid, 'a.txt', body)).json()).id as number
+    const { token, k } = await 分享并解锁(request, iid, false)
+    const r = await request.get(`/pub/share/${token}/file/${iid}?k=${k}&inline=1`)
+    // ★这条一红,上一条的绿就作废★:说明整条访客路没打通,而不是闸判对了。
+    expect(r.status(), 'text/plain 在 inline 白名单里,禁下载也该看得到').toBe(200)
+    expect(r.headers()['content-disposition'] ?? '', 'disposition 必须是 inline').toContain('inline')
+    expect(await r.text(), '看得到 = 内容真的发出来了').toContain(body)
+  })
+
+  test('★禁下载的材料:不能靠「复制到别的项目」洗掉限制★', async ({ request }) => {
+    const 源 = await newProject(request, `E2E-闸-复制源-${tag()}`)
+    const 目标 = await newProject(request, `E2E-闸-复制靶-${tag()}`)
+    const mid = await newActivity(request, 源)
+    const iid = (await (await upload(request, 源, 'm.txt', `c-${tag()}`, `?activity_id=${mid}`)).json()).id as number
+    // 设限之前复制得动 —— 证明这条用例测的是「限制生效」,不是「复制这个功能本来就不通」
+    const 先 = await request.post(`/api/items/${iid}/copy`, { data: { project_id: 目标 } })
+    expect(先.status(), await 先.text()).toBe(200)
+
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_download: true } })).status()).toBe(200)
+    const r = await request.post(`/api/items/${iid}/copy`, { data: { project_id: 目标 } })
+    expect(r.status(), '★设限之后必须拒★:副本落在别人自己的项目里,他在那儿是 admin,限制就没了').toBe(400)
+  })
+
+  test('★禁**分享**的材料,同样不能靠复制洗掉★', async ({ request }) => {
+    // no_download 与 no_share 是两个开关,闸是一句 `OR` —— 只测其中一个,
+    // 另一个漏掉时不会有任何用例红(2026-08-15 第一版就只测了 no_download)。
+    const 源 = await newProject(request, `E2E-闸-复制禁分享源-${tag()}`)
+    const 目标 = await newProject(request, `E2E-闸-复制禁分享靶-${tag()}`)
+    const mid = await newActivity(request, 源)
+    const iid = (await (await upload(request, 源, 'm.txt', `c-${tag()}`, `?activity_id=${mid}`)).json()).id as number
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_share: true } })).status()).toBe(200)
+    const r = await request.post(`/api/items/${iid}/copy`, { data: { project_id: 目标 } })
+    expect(r.status(), '复制到自己的项目再发公开链接,是绕过 no_share 的第二条路').toBe(400)
+  })
+
+  test('★禁下载的活动:/play 不能发不记名的预签名直链★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-闸-play-${tag()}`)
+    const mid = await newActivity(request, pid)
+    // kind=video 由 mime 判定;/play 只对 video 放行
+    const iid = (await (await upload(request, pid, 'v.mp4', `mp4-${tag()}`, `?activity_id=${mid}`, 'video/mp4')).json()).id as number
+    const 前 = await request.get(`/api/items/${iid}/play`, { maxRedirects: 0 })
+    expect(前.status(), '设之前是 302 到预签名直链').toBe(302)
+
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_download: true } })).status()).toBe(200)
+    const r = await request.get(`/api/items/${iid}/play`, { maxRedirects: 0 })
+    // ★不是「不许播」而是「不许发直链」★:开关的原话是「能看但不能下」
+    expect([200, 206], `★设之后不能再 302★(拿到的是 ${r.status()})`).toContain(r.status())
+    expect(r.headers()['location'], '★一条 location 都不能有★——直链一旦发出去就不记名了').toBeUndefined()
+    expect(r.headers()['accept-ranges'], '同源代理必须支持 Range,否则进度条拖不动').toBe('bytes')
+  })
+
+  test('★纪要定稿后,改一个字段不能把它打回草稿★', async ({ request }) => {
+    const pid = await newProject(request, `E2E-闸-纪要-${tag()}`)
+    const mid = await newActivity(request, pid)
+    expect((await request.put(`/api/activities/${mid}/minutes`, { data: { status: 'done', content_md: '甲' } })).status()).toBe(200)
+
+    // 前端是**逐字段保存**的:改一下参会人就 PUT 一次,身上不带 status
+    const r = await request.put(`/api/activities/${mid}/minutes`, { data: { attendees: '张三' } })
+    expect(r.status(), await r.text()).toBe(200)
+    expect((await r.json()).status, '★不传 status = 保持原样★').toBe('done')
+
+    const m = await (await request.get(`/api/activities/${mid}/minutes`)).json()
+    expect(m.minutes.status, '库里也得还是 done').toBe('done')
+    expect(m.minutes.completed_at, '★定稿时间不能被清掉★').toBeTruthy()
+    expect(m.minutes.content_md, '没传的字段照旧保留').toBe('甲')
+
+    // 反向:显式传 draft 才撤稿(否则上面那条可能只是「status 根本改不动」)
+    const back = await request.put(`/api/activities/${mid}/minutes`, { data: { status: 'draft' } })
+    expect((await back.json()).status).toBe('draft')
   })
 })
