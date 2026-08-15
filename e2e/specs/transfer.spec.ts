@@ -116,7 +116,11 @@ test.describe('转移主持人:拒绝路径', () => {
     await request.post(`/api/projects/${pid}/transfer`, { data: { to: PEER } })
     // 我是发起人，不是被转让人 —— 接受主持人是本人才能做的决定，否则「需对方接受」形同虚设
     const r = await request.post(`/api/projects/${pid}/transfer/respond`, { data: { accept: true } })
-    expect(r.status()).toBe(403)
+    // ⚠★断言里带上响应体★(2026-08-16):这条曾经红过一次,拿到的是 **500 不是 403**,
+    //   而重跑就绿了。★当时报告里只有「Expected 403 / Received 500」,没有任何线索说 500 是什么★ ——
+    //   服务端日志里也查不到对应的 ERROR。于是那次故障除了「它发生过」之外什么都没留下。
+    //   ★一个只记录「不等于预期」的断言,在偶发故障面前等于没记录。★ 现在把 body 一起打出来。
+    expect(r.status(), await r.text()).toBe(403)
     expect(await ownerOf(request, pid)).toBe('e2e')
   })
 })
