@@ -497,6 +497,22 @@ pub async fn member_put(
     if input.role == "admin" {
         crate::perm::require_owner(&state.pool, &id, pid).await?;
     }
+    // ★上面那句注释写的是「给/**收**」,但代码只管了「给」★(2026-08-15 对抗检查抓到):
+    //   把一个现任 admin 降成 viewer/editor,走的是同一个接口、`input.role != "admin"`,
+    //   于是只要 `require_role(Admin)` 就过了 —— **副手可以单方面废掉另一个副手**。
+    //   配上 `member_delete`(那边只护着主持人)就是一条完整的清场链:
+    //   两个副手互不信任时,先动手的那个赢,而主持人在审计日志里才看得到。
+    //   ⇒ 「谁是副手」这件事**只能由主持人决定**,不管是往上给还是往下收。
+    // ⚠ 判据是目标**当前**的角色,不是这次要设成什么 —— 「降级」是由前后两个状态定义的。
+    if input.role != "admin" {
+        let 现任副手: Vec<String> = sqlx::query_scalar(
+            "SELECT username FROM project_members
+              WHERE project_id = $1 AND role = 'admin' AND username = ANY($2)")
+            .bind(pid).bind(&input.usernames).fetch_all(&state.pool).await?;
+        if !现任副手.is_empty() {
+            crate::perm::require_owner(&state.pool, &id, pid).await?;
+        }
+    }
     let mut added = 0usize;
     for u in input.usernames.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
         // 走平台 users/exists 校验:可以拉还没登录过本系统的人(Keycloak 是真相源)。
@@ -535,6 +551,15 @@ pub async fn member_delete(
         .bind(pid).fetch_optional(&state.pool).await?;
     if owner.as_deref() == Some(who) {
         return Err(AppError::BadRequest("主持人不能被移出,请先转移主持人".into()));
+    }
+    // ★移出一个现任 admin 也只能由主持人来★(2026-08-15 对抗检查抓到,与 member_put 同一处缺口):
+    //   这里原来只护着主持人,于是副手之间可以互相移出 —— 而「任命副手」是主持人的专权,
+    //   ★能单方面撤销的权力,等于把任命权也拿走了一半★(先移出、再让主持人重新加,中间的空窗全归他)。
+    let 目标是副手: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM project_members WHERE project_id = $1 AND username = $2 AND role = 'admin')")
+        .bind(pid).bind(who).fetch_one(&state.pool).await?;
+    if 目标是副手 {
+        crate::perm::require_owner(&state.pool, &id, pid).await?;
     }
     let mut tx = state.pool.begin().await?;
     let n = sqlx::query("DELETE FROM project_members WHERE project_id = $1 AND username = $2")

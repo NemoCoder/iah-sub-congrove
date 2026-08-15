@@ -84,9 +84,21 @@ function 折叠段<T>({ items, keyOf, render, open, head = 每段展开条数 }:
     </>
   )
 }
-export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
-  /// 我能看到的活动（两页各自已经加载好的那份），卡自己筛出 pending 与冲突
-  all: Activity[]
+/// 这张卡自己拉活动时看多远。★前后各半年★——与活动页原来的取值一致。
+///
+/// ⚠★为什么卡必须自己拉,不能吃宿主页那份★(2026-08-15 对抗检查抓到):
+///   原来签名上有个 `all: Activity[]`,注释写着「两页各自已经加载好的那份」——
+///   而两页加载的**根本不是同一份**:
+///     · 活动页给的是前后各半年的**全部**活动;
+///     · 日程页给的是**当前那一屏**(周视图 7 天 / 月视图一个月),而且**滤掉了 declined**。
+///   于是同一张「待我处理」在日程页上是**残缺**的:下个月的邀请、两个月前欠的那份纪要
+///   都不在那一屏里,卡上就一条都不显示 —— ★而它显示的是「没有待办」,不是「这里看不全」★。
+///   更隐蔽的是它随着你切周/切月**变来变去**,人只会以为待办被处理掉了。
+/// ⇒ 「待我处理」是**按人**的视图,不该由宿主页碰巧加载了什么来定义。
+///   另外三段(未读/转移/待写纪要)本来就是卡自己拉的 —— 只有邀请这段吃宿主的,补齐。
+const 卡片天数 = 183
+
+export function TodoCard({ onOpen, onOpenMinutes, onDone, style }: {
   onOpen: (id: number) => void
   /// ★纪要那一路直接进整理页★（2026-08-09 liaoruili 对已删的「我负责的纪要」卡定的）：
   /// 点它的人下一步一定是去写，先落到活动详情再点一次「纪要」是白饶的一跳。
@@ -97,6 +109,7 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   style?: React.CSSProperties
 }) {
   const { message } = AntdApp.useApp()
+  const [all, setAll] = useState<Activity[]>([])
   const [unread, setUnread] = useState<Unread[]>([])
   const [transfers, setTransfers] = useState<Transfer[]>([])
   const [minutes, setMinutes] = useState<MinutesTodo[]>([])
@@ -104,6 +117,12 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
   const [open, setOpen] = useState(false)
 
   const loadUnread = useCallback(() => {
+    const from = new Date(Date.now() - 卡片天数 * 864e5).toISOString()
+    const to = new Date(Date.now() + 卡片天数 * 864e5).toISOString()
+    // ⚠ 这里**不滤 declined**:拒过的活动本来就不会是 pending,滤不滤对邀请段没区别,
+    //   但冲突判定要看「我已接受的那些」,滤掉反而可能把一条真冲突算没。
+    api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+      .then(setAll).catch(() => setAll([]))
     api<Unread[]>('/api/me/unread').then(setUnread).catch(() => setUnread([]))
     api<Transfer[]>('/api/me/transfers').then(setTransfers).catch(() => setTransfers([]))
     api<MinutesTodo[]>('/api/me/minutes-todo').then(setMinutes).catch(() => setMinutes([]))
@@ -149,7 +168,7 @@ export function TodoCard({ all, onOpen, onOpenMinutes, onDone, style }: {
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <折叠段 items={pending} keyOf={(m) => m.id} open={open}
             render={(m) => (
-              <InviteRow m={m} onOpen={onOpen} onDone={onDone}
+              <InviteRow m={m} onOpen={onOpen} onDone={() => { loadUnread(); onDone() }}
                 clash={accepted.find((x) => x.id !== m.id && overlaps(x, m))} />
             )} />
           <折叠段 items={transfers} keyOf={(t) => t.id} open={open}

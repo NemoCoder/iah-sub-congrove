@@ -902,7 +902,11 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                       {/* ★行内分享★:文件与文件夹都能分享(公开链接,可设提取码/有效期/次数)。
                           ⚠ 这一行 v0.3.48 加过,后来清理旧的 copyShare 时被连带删掉了(2026-08-05 用户三次提醒)。 */}
                       {canEdit && <Tooltip title="分享"><a onClick={() => setShareFor([it])}><ShareAltOutlined /></a></Tooltip>}
-                      {it.kind !== 'folder' && !(cur.my_role === 'viewer' && cur.no_download) && (
+                      {/* ★判据用后端算好的 `it.no_download`,别在这儿自己拼★(2026-08-15):
+                          原来写的是 `cur.my_role === 'viewer' && cur.no_download` —— 只有**项目级**那一半。
+                          活动级的「这次会禁止下载原件」对所有角色生效,后端拒得好好的,
+                          而这一行照画按钮,点下去才 400。判据只有一个真相源,见 api.ts 的 Item.no_download。 */}
+                      {it.kind !== 'folder' && !it.no_download && (
                         <Tooltip title="下载"><a href={`/api/items/${it.id}/download`}><DownloadOutlined /></a></Tooltip>
                       )}
                       {/* ★活动材料在项目树里是只读的★（D10;2026-08-09 liaoruili:「项目文件夹中的
@@ -974,7 +978,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
             {preview && (
               <ItemPanel
                 key={preview.id} item={preview} canEdit={canEdit}
-                noDownload={cur.my_role === 'viewer' && cur.no_download}
+                noDownload={!!preview.no_download}
                 onChanged={refresh}
               />
             )}
@@ -1146,8 +1150,11 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
             版本历史
           </Button>
         )}
+        {/* ★文案不能再说「本项目」★:判据现在含**活动级**那一道(「这次会禁止下载原件」),
+            说成项目的限制会让人跑去项目设置里找一个根本不在那儿的开关。
+            ⚠ JSX 注释只能当**兄弟节点**放,塞进 `cond ? A : B` 中间是语法错 —— 这个坑我踩第三次了。 */}
         {item.kind !== 'doc' && (noDownload
-          ? <Tag>本项目「只读」不能下载</Tag>
+          ? <Tag>已设为禁止下载原件（可在线预览）</Tag>
           : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
@@ -1677,8 +1684,16 @@ function ProjectActivities({ projectId }: { projectId: number }) {
         { title: '记录员', dataIndex: 'recorder', width: 100, ellipsis: true },
         {
           title: '', width: 96,
+          // ⚠★徽章要先问「这个类型有没有纪要这回事」★ —— 这条判据 2026-08-11 在
+          //   `activities-list.tsx` 修过一次(个人日程 `has_minutes=false` 被催交一份
+          //   根本不存在的纪要),★但这一处漏了,同一个 bug 在项目页原样活着★。
+          //   2026-08-15 对抗检查抓到。判据与那边逐字相同,也与后端
+          //   `activities_owing_minutes` 视图同源 —— 两处各写一份本身就是漂移源,
+          //   哪天再改就该把它提成一个共用函数。
           render: (_, m) => new Date(m.ends_at).getTime() < now
-            ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
+            ? (m.has_minutes
+              ? (m.minutes_status === 'done' ? <Tag color="green">纪要已完成</Tag> : <Tag color="orange">纪要待整理</Tag>)
+              : null)
             : <Tag color="blue">未开始</Tag>,
         },
       ]} />

@@ -478,6 +478,22 @@ test.describe('安全网·出口闸', () => {
     expect(r.status(), '★设限之后必须拒★:副本落在别人自己的项目里,他在那儿是 admin,限制就没了').toBe(400)
   })
 
+  test('★禁下载的材料:接口要直接告诉前端「这一项下不了」★', async ({ request }) => {
+    // 前端原来自己拼这个判断,而且只拼了**项目级**那一半 —— 活动级禁下载的材料
+    // 照样画着下载按钮,点下去才 400。判据收回后端(items.rs::ItemRow.no_download),
+    // ★这一条钉的是「接口真的把它算出来了」★,不然前端改完也没数据可用。
+    const pid = await newProject(request, `E2E-闸-字段-${tag()}`)
+    const mid = await newActivity(request, pid)
+    const iid = (await (await upload(request, pid, 'm.txt', `f-${tag()}`, `?activity_id=${mid}`)).json()).id as number
+    const 前 = await (await request.get(`/api/items/${iid}`)).json()
+    expect(前.no_download, '没设开关时是 false —— 没有这条对照,下面那句可能只是「恒为 true」').toBe(false)
+
+    expect((await request.put(`/api/activities/${mid}`, { data: { no_download: true } })).status()).toBe(200)
+    expect((await (await request.get(`/api/items/${iid}`)).json()).no_download, '★详情接口要变 true★').toBe(true)
+    const 列表 = await (await request.get(`/api/projects/${pid}/items`)).json() as { id: number; no_download?: boolean }[]
+    expect(列表.find((x) => x.id === iid)?.no_download, '★列表接口也要有★——按钮画在列表里').toBe(true)
+  })
+
   test('★禁**分享**的材料,同样不能靠复制洗掉★', async ({ request }) => {
     // no_download 与 no_share 是两个开关,闸是一句 `OR` —— 只测其中一个,
     // 另一个漏掉时不会有任何用例红(2026-08-15 第一版就只测了 no_download)。

@@ -85,6 +85,12 @@ export type Item = {
   /// ★客户端申报的哈希与服务端算出的真值不符★(A2/D3):很可能传输中损坏了。
   /// 不阻止使用,但要在界面上说出来 —— 此前这个信号被后端直接改写成了「已核验」。
   sha_declared_mismatch?: boolean
+  /// ★你,现在,下不下得了这一项★——后端算好的**唯一判据**(items.rs::ItemRow)。
+  /// 项目级 `no_download` 只拦 viewer,活动级对所有角色生效,两者是 OR。
+  /// ⚠ 别在前端自己拼这个判断:2026-08-15 之前这里拼的是
+  /// `cur.my_role === 'viewer' && cur.no_download`,**只有项目级那一半** ——
+  /// 于是禁下载活动的材料照样画着下载按钮,点下去才 400。
+  no_download?: boolean
   created_at: string
   updated_at: string
 }

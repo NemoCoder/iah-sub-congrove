@@ -41,6 +41,9 @@ gate "不许静默截断(LIMIT)"       bash scripts/no-silent-limit.sh
 #   但视图只是**让正确的路更好走**,不构成强制 —— 这道闸补上那一半:
 #   读(SELECT)一律走视图,真要读已删行就在 SQL 里写 `-- items-ok: <理由>`。★纯静态,能进 CI。★
 gate "读内容不碰裸 items"         bash scripts/no-bare-items.sh
+# ★时间不许裸格式化★(2026-08-15 新增):库里存的全是 UTC,`.format()` 直接印出来就差 8 小时,
+#   而且不报任何错(催办站内信这么错了不知道多久)。★纯静态,能进 CI。★
+gate "时间不裸格式化(时区)"       bash scripts/no-naked-time.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
