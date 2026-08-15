@@ -8,12 +8,14 @@ import { api, type ActivityType } from './api'
 
 /// 这一行能改到什么程度。★与后端 `activity_types.rs::scope_of` 必须一致★ ——
 /// 前端只管显隐，真判权在后端（前端隐藏按钮不是安全边界）。
-function scopeOf(t: ActivityType, me: string): 'full' | 'busy' | 'none' {
-  if (t.owner === me) return 'full'
-  if (t.owner !== null) return 'none'
-  // ★预置行：沾了任一能力位就完全锁死★（O4 的理由：占忙闲 = 影响别人，
-  //   而要出纪要 / 要挂项目的活动按定义就是多人的事）。简单型才能调忙闲。
-  return t.has_minutes || t.needs_project ? 'none' : 'busy'
+///
+/// ⚠★2026-08-15:第三档 `'busy'`(预置的简单型可以勾占忙闲)已删★。
+///   原型上「个人日程」那一行画的是可勾的复选框,我照着做了 —— 而 `owner === null` 的那一行
+///   是**全系统共用的一行**:甲勾一下,乙丙丁的个人日程一起跟着变,谁的界面上都不会提示。
+///   ★界面上长得像个人设置、数据上是共享状态★,这是这类 bug 的通用形状。
+///   想要「不占忙闲的个人分类」就自建一个(自建行 owner = 我,天然只归我)。
+function scopeOf(t: ActivityType, me: string): 'full' | 'none' {
+  return t.owner === me ? 'full' : 'none'
 }
 
 /// ⚠★内部决策编号(L1/L2)别印在界面上★(2026-08-15 巡检截图看出来的):
@@ -45,7 +47,9 @@ export default function ActivityTypesView({ me }: { me: string }) {
       <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
         自建类型 = <b>一个名字 + 一个开关</b>。★「占忙闲」是唯一的开关★ ——
         它是<b>唯一真正影响别人</b>的属性：决定别人约你时看不看得到你这段时间是忙的。
-        参与人与材料对所有类型统一开放，不由类型决定。
+        参与人与材料对所有类型统一开放，不由类型决定。<br />
+        带「系统」标的是<b>全系统共用</b>的预置类型，<b>任何人都改不了</b>（改一下就是替所有人做决定）；
+        想要一个不一样的，<b>自己建一个</b> —— 自建的只归你，别人看不到。
       </Typography.Paragraph>
       <Table<ActivityType>
         rowKey="id" size="small" pagination={false} dataSource={rows}
@@ -62,13 +66,16 @@ export default function ActivityTypesView({ me }: { me: string }) {
           {
             title: '占忙闲', width: 110,
             render: (_, t) => {
-              const s = scopeOf(t, me)
-              // 全能力的预置类型:显示「固定」而不是一个点不动的复选框 —— 灰着的控件
-              // 会让人一直想去点它,还以为是自己没权限。
-              if (s === 'none' && t.owner === null) return <span>✅ 固定</span>
+              // 预置行显示**它当前的取值 + 固定**,而不是一个点不动的复选框 ——
+              // 灰着的控件会让人一直想去点它,还以为是自己没权限。
+              // ⚠ 别写死「✅ 固定」:预置的「个人日程」本来就是**不占**,
+              //   写死一个 ✅ 等于告诉人「它占忙闲」—— 安静地显示错东西。
+              if (scopeOf(t, me) !== 'full') {
+                return <span>{t.busy_default ? '✅ 占' : '— 不占'} · 固定</span>
+              }
               return (
                 <Checkbox
-                  checked={t.busy_default} disabled={s === 'none'}
+                  checked={t.busy_default}
                   onChange={(e) => patch(t, { busy_default: e.target.checked })}
                 >{t.busy_default ? '占' : '不占'}</Checkbox>
               )

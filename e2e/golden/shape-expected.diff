@@ -1,0 +1,18 @@
+--- baseline
++++ current
+@@ -376,6 +376,7 @@
+    "kind": "string",
+    "mime": "string",
+    "name": "string",
++   "no_download": "boolean",
+    "parent_id": "string",
+    "project_id": "string",
+    "sha_declared_mismatch": "boolean",
+@@ -504,6 +505,7 @@
+      "kind": "string",
+      "mime": "string",
+      "name": "string",
++     "no_download": "boolean",
+      "parent_id": "null",
+      "sha_declared_mismatch": "boolean",
+      "size": "number",
