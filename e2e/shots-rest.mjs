@@ -6,10 +6,11 @@
 // ★「点不到」和「不存在」必须分开报★ —— 静默跳过会让漏截看起来像没问题。
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 const BASE = 'https://congrove-dev.sub.ruciah.com'
 const DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${process.env.SHOT_VER ?? 'latest'}`
 mkdirSync(DIR, { recursive: true })
-const b = await chromium.connect(process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove', { timeout: 12000 })
+const b = await chromium.connect(pwWs(), { timeout: 12000 })
   .catch(() => chromium.launch({ headless: true }))
 const ctx = await b.newContext({ viewport: { width: 1520, height: 1000 }, ignoreHTTPSErrors: true,
   extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY, 'X-IAH-E2E-User': 'liaoruili' } })

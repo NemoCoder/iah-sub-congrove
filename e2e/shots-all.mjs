@@ -5,12 +5,13 @@
 // 连不上时自动退回本机 headless —— ★截图这件事本来就不依赖有头★，
 // 有头只是为了让人看见。别把「工具坏了」和「这件事做不了」混为一谈。
 //
-// ⚠ 换网后 .14 的地址变过一次（172.20.0.14 → 172.19.0.14）。端点路径已钉死为
+// ⚠ 换网后那台测试机的地址变过一次 —— ★所以端点不写在仓库里★(见 pw-endpoint.mjs)。端点路径已钉死为
 //   /congrove（不钉的话 Playwright 每次启动随机生成 token，服务一重启客户端就失效）。
 //
 // 用法：IAH_E2E_KEY=$(cat ~/.config/iah/congrove-e2e-key) node e2e/shots-all.mjs
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY
@@ -19,7 +20,7 @@ const VER = process.env.SHOT_VER ?? 'latest'
 const DIR = `/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/${VER}`
 mkdirSync(DIR, { recursive: true })
 
-const WS = process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove'
+const WS = pwWs()
 const b = await chromium.connect(WS, { timeout: 12000 }).catch(async (e) => {
   console.log(`（连不上有头浏览器：${e.message.split('\n')[0].slice(0, 60)} → 退回本机 headless）`)
   return chromium.launch({ headless: true })

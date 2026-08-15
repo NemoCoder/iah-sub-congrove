@@ -6,6 +6,7 @@
 // 跑在 .14 的有头浏览器上；连不上直接退出，不静默回退 headless。
 import { chromium } from 'playwright'
 import { execFileSync } from 'node:child_process'
+import { pwWs } from './pw-endpoint.mjs'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY, DSN = process.env.CONGROVE_DEV_DSN
@@ -21,7 +22,7 @@ const check = (n, ok, d = '') => { console.log(`  ${ok ? '✓' : '✗ ★失败�
 const 本地 = /localhost|127\.0\.0\.1/.test(BASE)
 const b = 本地
   ? await chromium.launch({ headless: true })
-  : await chromium.connect(process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove', { timeout: 15000 })
+  : await chromium.connect(pwWs(), { timeout: 15000 })
       .catch((e) => { console.error('✗ 连不上 .14 有头浏览器:', e.message.split('\n')[0].slice(0, 70)); process.exit(2) })
 if (本地) console.log('（BASE 是本地，用本机 headless —— .14 够不着 localhost）')
 const ctx = await b.newContext({ viewport: { width: 1520, height: 1000 }, ignoreHTTPSErrors: true,

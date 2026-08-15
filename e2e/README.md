@@ -38,7 +38,7 @@ certutil -d sql:$HOME/.pki/nssdb -L    # 应当列出 IAH-Internal-CA
 
 ### ★装在**跑浏览器的那台机器**上,而不是跑 npx 的这台★(2026-08-13 踩到)
 
-全套测试跑在 **172.19.0.14** 的有头浏览器上(见 playwright.config.ts),
+全套测试跑在**那台专用测试机**的有头浏览器上(端点见下面「配置」一节;★地址不入库★),
 所以 CA 要装进**那台**的 NSS 库 —— 在 iah101 上装一百遍也没用,浏览器根本不在这儿。
 那台机器(`lrlmac`, Ubuntu 24.04)上原本连 `certutil` 都没有,需要先 `apt install libnss3-tools`。
 
@@ -47,7 +47,7 @@ certutil -d sql:$HOME/.pki/nssdb -L    # 应当列出 IAH-Internal-CA
 ★我差点以为是装错了★。
 
 ```bash
-ssh liaoruili@172.19.0.14 'systemctl --user restart pw-ui.service'
+ssh "$PW_SSH" 'systemctl --user restart pw-ui.service'   # PW_SSH 见下面「配置」一节
 ```
 
 服务名 `pw-ui.service`(「Playwright headed browser server (congrove UI 巡查)」),
@@ -56,6 +56,25 @@ ssh liaoruili@172.19.0.14 'systemctl --user restart pw-ui.service'
 截图脚本 `shot.mjs` 里另有 emoji 字体的说明(headless 容器默认没有,🔔 会变豆腐块)。
 
 ★凭证只从 `~/.config/iah/` 读,绝不入库★。
+
+### 配置(★地址与凭证一律在仓库外★)
+
+本仓三推 Gitea(内网)+ Gitee + GitHub,**后两个是外部仓** —— 内网地址写进仓库就等于发出内网。
+2026-08-15 之前那台测试机的 `ws://…:9333/congrove` 在 11 个已跟踪文件里写死了 14 遍,
+连 `ssh <用户名>@<地址>` 都在里面:地址 + 用户名 + 用途,一次给全。现在收进仓库外一个文件:
+
+```bash
+# ~/.config/iah/congrove-e2e.env   (chmod 600)
+PW_WS=ws://<测试机地址>:9333/congrove
+PW_SSH=<用户名>@<测试机地址>          # 只用于「浏览器挂了怎么重启」那句提示,可不配
+```
+
+读取只有一处实现:`e2e/pw-endpoint.mjs`(`playwright.config.ts` 与各 `.mjs` 脚本共用)。
+★读不到就报错,不给默认值★ —— 默认值意味着「我以为连的是 A,其实连的是 B」,
+而这类错的表现是测试**在错误的地方绿**。
+
+同目录下还有:`IAH-Internal-CA-new.crt`(内网 CA)、`congrove-e2e-key`(E2E key)、
+`congrove-dev.env`(dev 库 DSN)。
 
 ## 有什么
 

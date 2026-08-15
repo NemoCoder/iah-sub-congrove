@@ -1,9 +1,10 @@
 // 屏幕关掉之后,有头浏览器还渲染吗? —— 判据不是「连得上」,而是**截图里真的有像素内容**。
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { pwWs } from './pw-endpoint.mjs'
 const OUT = '/iah101/iah_k8s_platform/unit_tests/congrove/screenshots/screen-off'
 mkdirSync(OUT, { recursive: true })
-const b = await chromium.connect(process.env.PW_WS ?? 'ws://172.19.0.14:9333/congrove', { timeout: 15000 })
+const b = await chromium.connect(pwWs(), { timeout: 15000 })
 console.log('✓ 连上浏览器服务, version =', b.version())
 const ctx = await b.newContext({ viewport: { width: 1520, height: 950 }, ignoreHTTPSErrors: true,
   extraHTTPHeaders: { 'X-IAH-E2E-Key': process.env.IAH_E2E_KEY, 'X-IAH-E2E-User': 'liaoruili' } })

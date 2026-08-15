@@ -7,6 +7,8 @@
 //   2. ★E2E key★:env IAH_E2E_KEY。带上它,dev 网关跳过 SSO 三道(平台 registry v1.3.80)。
 //      没有它,所有请求会 302 到 Keycloak —— 下面的 gate.spec 专门验这件事,所以它**不该**依赖 key。
 import { defineConfig } from '@playwright/test'
+// ★端点不写在仓库里★(本仓外推 Gitee/GitHub)——见 pw-endpoint.mjs 的头注。
+import { pwWs } from './pw-endpoint.mjs'
 
 const BASE = process.env.CONGROVE_BASE ?? 'https://congrove-dev.sub.ruciah.com'
 const KEY = process.env.IAH_E2E_KEY ?? ''
@@ -40,7 +42,8 @@ export default defineConfig({
   }]],
   use: {
     baseURL: BASE,
-    // ★★所有 Playwright 一律跑在 .14 那台的有头浏览器上★★
+    // ★★所有 Playwright 一律跑在那台专用测试机的**有头**浏览器上★★
+    //   (地址在 `~/.config/iah/congrove-e2e.env` 的 PW_WS,★不入库★)
     // （2026-08-13 liaoruili：「playwright 永远要在 .14 上有头跑！！这台机器就是所有子系统
     //   测试用的！！你随便用，不是用来办公的，我不用」）。
     //
@@ -49,7 +52,7 @@ export default defineConfig({
     //   专用测试机、没人办公。一个「默认不给人看」的开关，实际效果就是**大多数时候他看不见**。
     // ⚠ .14 连不上时**整轮直接失败**,不静默回落本机 —— 回落等于测试跑了他却不知道跑过,
     //   而「他能看见」正是这条规矩的全部目的。要临时本机跑就改这一行,别加环境变量绕过去。
-    connectOptions: { wsEndpoint: 'ws://172.19.0.14:9333/congrove' },
+    connectOptions: { wsEndpoint: pwWs() },
     // ⚠★这里**不开** ignoreHTTPSErrors★:那会把「证书真的错了」和「证书是内网 CA 签的」
     //   一起吞掉(ui.spec 头注)。.14 上的浏览器已经装了内网 CA ——
     //   `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n IAH-Internal-CA -i <ca.crt>`
