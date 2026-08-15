@@ -77,6 +77,19 @@ impl Config {
     pub fn is_dev_channel(&self) -> bool {
         is_dev_url(self.public_url.as_deref())
     }
+
+    /// 本进程是**跑在平台上**(dev 或 prod 通道),还是有人在自己机器上 `cargo run`?
+    /// 判据同上:`PUBLIC_URL` 是平台注入的,本地 `.env.example` 里没有这一项。
+    pub fn is_deployed(&self) -> bool {
+        deployed(self.public_url.as_deref())
+    }
+}
+
+/// 「跑在平台上吗」的判据本体。★fail-closed 的方向和 `is_dev_url` **相反**★:
+/// 这一条拿不准时要判**是**部署环境 —— 它把关的是「没配 OIDC 就别启动」,
+/// 猜错成「本地」的代价是**线上全员超管**,猜错成「线上」的代价只是本地要多设一个 env。
+fn deployed(public_url: Option<&str>) -> bool {
+    public_url.is_some_and(|u| !u.trim().is_empty())
 }
 
 /// 判据本体拆成纯函数,好单测(同 perm.rs 的做法:判权逻辑纯函数化 + 单测覆盖)。
@@ -194,6 +207,21 @@ mod tests {
     fn prod通道绝不能误判成dev() {
         // ★promote 复用同一个 dev 镜像★——这条断言就是防「E2E 旁路跟着镜像上 prod」的那道闸。
         assert!(!is_dev_url(Some("https://congrove.sub.ruciah.com")));
+    }
+
+    /// ★没配 OIDC = 全员超管★,所以「这是不是线上」这个判据本身就是一道安全闸。
+    #[test]
+    fn 部署环境认得出() {
+        assert!(deployed(Some("https://congrove-dev.sub.ruciah.com")));
+        assert!(deployed(Some("https://congrove.sub.ruciah.com")));
+    }
+
+    #[test]
+    fn 本地没有public_url() {
+        // 本地 `cargo run` 不注入 PUBLIC_URL —— 只有这种情况才允许鉴权关闭。
+        assert!(!deployed(None));
+        assert!(!deployed(Some("")));
+        assert!(!deployed(Some("   ")));
     }
 
     #[test]

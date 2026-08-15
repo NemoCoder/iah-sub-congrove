@@ -184,6 +184,9 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
 
   // 「待我处理」的筛选与排序搬进 TodoCard —— ★两页共用同一张卡★,
   // 免得日程页和活动页各筛一套(此前就是各写各的,连能不能就地答复都不一样)。
+  // ⚠★卡的数据也归卡自己拉,不再从这一页传★(2026-08-15):共用了组件却各喂各的数据,
+  //   等于只共用了长相 —— 这一页的 `items` 只有当前那一屏、还滤掉了 declined,
+  //   于是同一张卡在日程页上少列一堆待办,详见 todo-card.tsx 的 `卡片天数`。
 
   const title = mode === 'month'
     ? `${monthStart.getFullYear()} 年 ${monthStart.getMonth() + 1} 月`
@@ -582,7 +585,7 @@ export function ScheduleView({ me, onOpenActivity, onOpenMinutes, onNewActivity 
 
       {/* 右栏:待我处理 + 公开活动广场 */}
       <div style={{ width: 320, flexShrink: 0 }}>
-      <TodoCard all={items} onOpen={onOpenActivity} onOpenMinutes={onOpenMinutes} onDone={() => void load(true)} style={{ width: 320 }} />
+      <TodoCard onOpen={onOpenActivity} onOpenMinutes={onOpenMinutes} onDone={() => void load(true)} style={{ width: 320 }} />
 
       <PublicBoard onOpen={onOpenActivity} onJoined={() => void load()} />
       </div>

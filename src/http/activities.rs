@@ -1360,13 +1360,19 @@ pub async fn remind(
     if targets.is_empty() {
         return Err(AppError::BadRequest("没有需要催的人(都已答复)".into()));
     }
-    let (title, starts): (String, Ts) = sqlx::query_as("SELECT title, starts_at FROM activities WHERE id=$1")
-        .bind(mid).fetch_one(&state.pool).await?;
+    // ★时间必须取活动自己的时区,并且走 `fmt_when`★(2026-08-15 对抗检查抓到):
+    //   这一行原来是 `starts.format("%m-%d %H:%M")` —— **裸 UTC**,既差 8 小时也不带时区标注。
+    //   全仓十来处站内信都走 `fmt_when(t, tz)`,只有催办这一处是自己拼的,
+    //   于是「将于 02:00 开始」发到收信人手里,他去自己日历上找 02:00 —— 那场会其实是 10:00。
+    //   ★这类错不会报任何东西,只会让人错过会★;`tzutil` 已经把规则收成唯一推导了,别再手拼。
+    let (title, starts, mtz): (String, Ts, String) =
+        sqlx::query_as("SELECT title, starts_at, timezone FROM activities WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await?;
     // 站内信走平台 registry;不可达时降级为「只记审计不发信」——催办失败不该让接口报错。
     let mut sent = 0;
     if let Some(reg) = &state.registry {
         for u in &targets {
-            let body = format!("「{title}」将于 {} 开始,你还没有答复。", starts.format("%m-%d %H:%M"));
+            let body = format!("「{title}」将于 {} 开始,你还没有答复。", fmt_when(starts, crate::tzutil::parse(&mtz)));
             // notify 是 best-effort(不返回 Result):站内信发不出去不该让催办接口失败
             reg.notify(u, "活动待你答复", &body, None, Some(&format!("activity:{mid}"))).await;
             sent += 1;

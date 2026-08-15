@@ -72,6 +72,23 @@ pub async fn run() -> anyhow::Result<()> {
             tracing::info!(issuer = %oidc.issuer, "OIDC enabled");
             Some(a)
         }
+        None if cfg.is_deployed() => {
+            // ★没配 OIDC 不是「降级」,是**全员超管**★(2026-08-15 对抗检查抓到)。
+            //   `require_auth` 在 `state.auth == None` 时给每一个请求插一个
+            //   `username="dev", is_super=true` 的假身份 —— 任何人、不用登录、
+            //   连**别人的**项目/材料/纪要全看得见改得动,而且审计日志里全记成 `dev`。
+            //   旁边那句注释写着「线上绝不能跑没配 OIDC 的构建」,★但没有任何东西在管这件事★:
+            //   平台哪次少注入一个 env(改 iah.yaml、换 Keycloak client、provisioner 出错),
+            //   pod 会**正常起来、健康检查全绿**,然后把整个库敞开着,日志里只有一行 WARN。
+            // ⇒ 跑在平台上就必须有 OIDC:缺了直接起不来。CrashLoopBackOff 是**看得见**的故障,
+            //   「静默全开放」不是。本地 `cargo run`(没有 PUBLIC_URL)照旧放行,不影响开发。
+            anyhow::bail!(
+                "★拒绝启动★:检测到部署环境(PUBLIC_URL={:?})但没有 OIDC_ISSUER。\
+                 鉴权关闭时每个请求都会拿到超管假身份 —— 这在平台上一律视为事故。\
+                 请检查平台注入的 OIDC_* env(见 DESIGN.md §2.2)。",
+                cfg.public_url
+            )
+        }
         None => {
             tracing::warn!(
                 "OIDC DISABLED (no OIDC_ISSUER) — all endpoints are UNAUTHENTICATED. \

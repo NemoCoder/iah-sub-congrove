@@ -302,6 +302,17 @@ pub struct ItemRow {
     /// 不阻止使用(内容自洽),但界面要说出来:此前这个信号被直接改写成了「已核验」。
     #[sqlx(default)]
     pub sha_declared_mismatch: bool,
+    /// ★你,现在,下不下得了这一项★ —— 判据与 `items::download` **同一句**:
+    /// 项目级 `no_download` 只拦 viewer,活动级对所有角色生效,两者叠加(OR)。
+    ///
+    /// ⚠ 2026-08-15 对抗检查抓到:前端原来自己拼这个判断,而且只拼了**项目级**那一半
+    /// (`cur.my_role === 'viewer' && cur.no_download`)—— 于是「这场活动禁止下载原件」
+    /// 的材料,列表里照样画着下载按钮,点下去才收到 400。
+    /// ★后端已经拒了 ≠ 界面可以照画★:摆一个必然失败的按钮就是引导人去犯错,
+    /// 而报错永远比按钮不出现更晚、更难懂(这句话本文件上面已经写过一遍,那次是材料区)。
+    /// ⇒ 判据由后端算好一次发给前端,别在两处各拼一半。
+    #[sqlx(default)]
+    pub no_download: bool,
 }
 
 /// GET /api/projects/{pid}/items —— 整空间平铺一次拉全(≥viewer),前端组树。
@@ -311,16 +322,22 @@ pub async fn list(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
 ) -> AppResult<Json<Vec<ItemRow>>> {
-    require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     // ★过滤未完成的上传占位行★(s3_key IS NULL 的 file/video):media/begin 会先建行拿 item_id
     // 用于拼 S3 key,传完才回填 s3_key。不过滤的话「还没传完就出现在列表里」(2026-08-03 反馈),
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
-        "SELECT id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
-           FROM items_alive WHERE project_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
-          ORDER BY kind = 'folder' DESC, name",
+        "SELECT i.id, i.parent_id, i.kind, i.name, i.size, i.mime, i.created_by, i.created_at, i.updated_at,
+                i.activity_id, i.sha_declared_mismatch,
+                (COALESCE(m.no_download, false) OR ($2 AND pr.no_download)) AS no_download
+           FROM items_alive i
+           JOIN projects pr ON pr.id = i.project_id
+           LEFT JOIN activities m ON m.id = i.activity_id
+          WHERE i.project_id = $1 AND i.deleted_at IS NULL AND (i.kind IN ('folder','doc') OR i.s3_key IS NOT NULL)
+          ORDER BY i.kind = 'folder' DESC, i.name",
     )
     .bind(pid)
+    .bind(role == Role::Viewer)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
@@ -334,12 +351,18 @@ pub async fn detail(
     Path(iid): Path<i64>,
 ) -> AppResult<Json<ItemRow>> {
     let pid = project_of_alive(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
-        "SELECT id, project_id, parent_id, kind, name, size, mime, created_by, created_at, updated_at, activity_id, sha_declared_mismatch
-           FROM items_alive WHERE id = $1 AND deleted_at IS NULL",
+        "SELECT i.id, i.project_id, i.parent_id, i.kind, i.name, i.size, i.mime, i.created_by,
+                i.created_at, i.updated_at, i.activity_id, i.sha_declared_mismatch,
+                (COALESCE(m.no_download, false) OR ($2 AND pr.no_download)) AS no_download
+           FROM items_alive i
+           JOIN projects pr ON pr.id = i.project_id
+           LEFT JOIN activities m ON m.id = i.activity_id
+          WHERE i.id = $1 AND i.deleted_at IS NULL",
     )
     .bind(iid)
+    .bind(role == Role::Viewer)
     .fetch_optional(&state.pool)
     .await?;
     row.map(Json).ok_or(AppError::NotFound)

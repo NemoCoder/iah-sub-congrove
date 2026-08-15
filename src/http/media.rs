@@ -300,6 +300,25 @@ pub async fn complete(
     if listed.len() != input.parts.len() {
         tracing::info!(item = iid, listed = listed.len(), client = input.parts.len(), "complete:分片数与前端不一致(续传属正常)");
     }
+    // ★大小对账要排在 `multipart_complete` **之前**★(2026-08-15 对抗检查抓到)。
+    //   下面那道「差一个字节都不认」的闸原来排在 complete 之后,于是「分片没传全」这条路
+    //   会先把对象**拼出来**再报错 —— 两个后果:
+    //   ① 对象留在桶里没人删(行还是占位行、`s3_key` 仍为 NULL,清扫任务按行找不到它);
+    //   ② ★它自己给的补救办法当场失效★ —— 错误文案写着「再拖进来可从断点继续」,
+    //      而 complete 一旦成功,这个 multipart 就结束了,ListParts 什么都不剩,断点没了。
+    //   ⇒ 判据换成 ListParts 报的**分片字节之和**(权威且免费,反正已经拉过一次)。
+    //     对不上就直接返回:对象没拼、断点原封不动,那句「可从断点继续」这才是真的。
+    let 分片总字节: i64 = listed.iter().map(|(_, _, sz)| *sz).sum();
+    // items-ok: 上传占位行 —— complete 回填正在上传的那一行
+    let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    if let Some(d) = declared.filter(|d| *d > 0) {
+        if d != 分片总字节 {
+            tracing::warn!(item = iid, declared = d, parts_sum = 分片总字节, "complete:分片字节之和对不上,不拼对象");
+            return Err(AppError::BadRequest(format!(
+                "上传不完整(应为 {d} 字节,已传 {分片总字节} 字节)——分片没传全,把同一个文件再拖进来可从断点继续")));
+        }
+    }
     let parts: Vec<_> = listed
         .iter()
         .map(|(n, etag, _)| {
@@ -310,17 +329,21 @@ pub async fn complete(
     let head = state.storage.s3.head_object().bucket(&state.storage.bucket).key(&key).send().await
         .map_err(|e| AppError::Other(e.into()))?;
     let size = head.content_length().unwrap_or(0);
-    // ★完整性校验★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
+    // ★兜底再对一次账★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
     // 「只传了一半就调 complete」会拼出一个**不完整却报成功**的文件 —— 静默数据损坏,最难查。
-    // begin 时把前端申报的大小记进了 items.size,这里对账:差一个字节都不认。
-    // items-ok: 上传占位行 —— complete 回填正在上传的那一行
-    let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
-        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    // 前面已经按分片字节之和拦过一道,这一道防的是「拼出来的对象和分片之和还不一样」
+    // (S3 自己出岔子);走到这里对象已经存在,所以必须**回滚**,不能只报错就走。
     if let Some(d) = declared.filter(|d| *d > 0) {
         if d != size {
-            tracing::warn!(item = iid, declared = d, actual = size, "complete:大小对不上,判定为不完整上传");
+            tracing::warn!(item = iid, declared = d, actual = size, "complete:拼完的对象大小仍对不上,回滚");
+            // 回滚口径与下面「配额超了」那一段**逐字相同**:先删行再数引用
+            // (`delete_unreferenced` 按 items ∪ item_versions 数,本行还在会把自己算进去)。
+            // ★绝不裸删 S3 对象★ —— 内容寻址下这个 key 可能已经被别人的行引用上了,
+            //   同一个洞在本仓库出现过三次,详见下面那段注释。
+            let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
+            crate::http::items::delete_unreferenced(&state, std::slice::from_ref(&key)).await;
             return Err(AppError::BadRequest(format!(
-                "上传不完整(应为 {d} 字节,实到 {size} 字节)——分片没传全,把同一个文件再拖进来可从断点继续")));
+                "上传不完整(应为 {d} 字节,实到 {size} 字节),已回滚本次上传,请重新上传")));
         }
     }
     // ★按实际大小复核配额★(2026-08-04 审计):begin 只按前端**申报**的 size 预判,

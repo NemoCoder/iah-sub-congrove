@@ -85,7 +85,9 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
   const upcoming = rows.filter((m) => new Date(m.ends_at).getTime() >= now)
   const past = rows.filter((m) => new Date(m.ends_at).getTime() < now).reverse()
 
-  // 待我应答与冲突计算都搬进 TodoCard(★两页共用★),这里不再各算一套
+  // 待我应答与冲突计算都搬进 TodoCard(★两页共用★),这里不再各算一套。
+  // ⚠ 2026-08-15 起连**数据**也归卡自己拉 —— 共用组件却各喂各的数据不算共用,
+  //   详见 todo-card.tsx 的 `卡片天数`。
 
   // ⚠★「我负责的纪要」这张专卡已删★（2026-08-11 liaoruili：「这上下不是一样的吗」）。
   //   它 2026-08-08 就在这儿，而我 08-10 往「待我处理」里也加了一路纪要待办 ——
@@ -164,7 +166,7 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
         {/* ★待我应答 + 冲突提示 + 私聊未读★:与日程页**同一张卡**(todo-card.tsx)。
             此前两页各写各的 —— 日程页只能点进详情才答复、这页能就地答复,
             同一个动作两套交互,比丑更糟。 */}
-        <TodoCard all={all} onOpen={onOpen} onOpenMinutes={onOpenMinutes} onDone={() => load(true)} style={{ marginBottom: 12 }} />
+        <TodoCard onOpen={onOpen} onOpenMinutes={onOpenMinutes} onDone={() => load(true)} style={{ marginBottom: 12 }} />
 
       </div>
     </div>

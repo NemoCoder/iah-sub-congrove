@@ -336,3 +336,48 @@ test.describe('删掉项目之后的孤儿活动', () => {
     } finally { await me.dispose() }
   })
 })
+
+// ════════ 副手之间:能不能互相废掉 ════════
+//
+// D0 的原话是「★只有主持人能给/**收** admin★:管理员是副手,副手不能自己再任命副手」。
+// 2026-08-15 对抗检查发现代码**只管了「给」**:降级和移出走的是不含 `role='admin'` 的分支,
+// 只要 `require_role(Admin)` 就过 —— 于是两个副手里先动手的那个可以单方面清掉另一个。
+// ⚠ 这一组必须**同时**有「不许」和「许」两侧:只测「403」的话,
+//   把整个接口改坏成「谁都不许改成员」也一样全绿。
+test.describe('副手不能废副手', () => {
+  test('★admin 不能降级 / 移出另一个 admin,但主持人可以★', async () => {
+    const 主持人 = await asUser('e2e-owner')
+    const 甲 = await asUser('e2e-admin-a')
+    try {
+      const pid = (await (await 主持人.post('/api/projects', {
+        data: { name: `E2E-副手-${tag()}`, visibility: 'public' } })).json()).id as number
+
+      // 主持人任命两个副手 + 一个普通成员(后者是「许」那一侧的靶子)
+      for (const [who, role] of [['e2e-admin-a', 'admin'], ['e2e-admin-b', 'admin'], ['e2e-plain', 'editor']] as const) {
+        const r = await 主持人.put(`/api/projects/${pid}/members`, { data: { usernames: [who], role } })
+        expect(r.status(), await r.text()).toBe(200)
+      }
+
+      // ── 不许:甲动乙 ──
+      const 降 = await 甲.put(`/api/projects/${pid}/members`, { data: { usernames: ['e2e-admin-b'], role: 'viewer' } })
+      expect(降.status(), '★副手不能把另一个副手降级★').toBe(403)
+      const 移 = await 甲.delete(`/api/projects/${pid}/members?username=e2e-admin-b`)
+      expect(移.status(), '★也不能把他移出★——能单方面撤销,等于把任命权拿走了一半').toBe(403)
+      // 真的没动:乙还在,还是 admin
+      const 成员 = await (await 主持人.get(`/api/projects/${pid}/members`)).json() as { username: string; role: string }[]
+      expect(成员.find((x) => x.username === 'e2e-admin-b')?.role, '乙必须原封不动').toBe('admin')
+
+      // ── 许:甲对**普通成员**的权力一点没少(否则就是把接口改坏了,不是修好了) ──
+      expect((await 甲.put(`/api/projects/${pid}/members`, { data: { usernames: ['e2e-plain'], role: 'viewer' } })).status(),
+        '副手照旧能管普通成员').toBe(200)
+      expect((await 甲.delete(`/api/projects/${pid}/members?username=e2e-plain`)).status(),
+        '副手照旧能移出普通成员').toBe(200)
+
+      // ── 许:主持人才是唯一能动副手的人 ──
+      expect((await 主持人.put(`/api/projects/${pid}/members`, { data: { usernames: ['e2e-admin-b'], role: 'viewer' } })).status(),
+        '★主持人降级副手必须仍然可以★——否则副手位就再也收不回来了').toBe(200)
+
+      await 主持人.delete(`/api/projects/${pid}`)
+    } finally { await 主持人.dispose(); await 甲.dispose() }
+  })
+})
