@@ -11,9 +11,16 @@
 #   ① ★门禁的通过/失败不能靠管道里最后一个命令的退出码猜★,每道闸各自明确判定;
 #   ② ★一道闸「没跑成」必须算红,不能算绿★ —— 本仓库栽过五次「工具没跑 → 输出为空 → 报绿」。
 #
+# ══ ★这份清单是唯一的一份★(2026-08-15) ══
+# 在此之前有两份:本仓 CI(.gitea/workflows/ci.yml)内联写了一串,本脚本又写了一串,
+# 两串**各缺对方几道** —— CI 有 ddl-check / blobkey-check / 版本号一致而本地没有,
+# 本地有 no-silent-limit / no-bare-items / no-naked-time 而 CI 没有。
+# 于是「十一道全绿」「CI 全绿」这两句话谁也不覆盖谁,而没有任何东西会指出这件事。
+# ⇒ CI 现在直接 `bash scripts/all-gates.sh --ci`,清单只剩这一份,加一道两边同时生效。
+#
 # 用法:
-#   bash scripts/all-gates.sh          # 全部(要 CONGROVE_DEV_DSN 的那两道自动跳过并**标记为未跑**)
-#   bash scripts/all-gates.sh --ci     # 只跑 CI 里那几道(不连库)
+#   bash scripts/all-gates.sh          # 全部(要活库/内网 CA 的那几道缺环境时**标记为未跑**,不算绿)
+#   bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些(CI 用这个)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 CI_ONLY=${1:-}
@@ -44,6 +51,14 @@ gate "读内容不碰裸 items"         bash scripts/no-bare-items.sh
 # ★时间不许裸格式化★(2026-08-15 新增):库里存的全是 UTC,`.format()` 直接印出来就差 8 小时,
 #   而且不报任何错(催办站内信这么错了不知道多久)。★纯静态,能进 CI。★
 gate "时间不裸格式化(时区)"       bash scripts/no-naked-time.sh
+# ★DDL 纪律(ADR-0001)★与★内容寻址不变量★:这两道**一直只在 CI 里跑**,本地这份漏了 ——
+#   于是「本地十一道全绿」这句话从来都不是全部,而两边各有各的清单这件事本身
+#   就是漂移源(2026-08-15 对抗检查数出来的)。★现在 CI 直接调本脚本 --ci,清单只有这一份。★
+gate "DDL 纪律(ADR-0001)"        bash scripts/ddl-check.sh
+gate "内容寻址(A2/D1)"           bash scripts/blobkey-check.sh
+# 版本号两处一致:CI 里原来是内联的 shell,抽成脚本才能两边共用(逻辑一字不改,含那条
+# 「只认 export const VERSION 那一行」的坑注)。
+gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
