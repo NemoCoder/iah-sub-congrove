@@ -85,6 +85,23 @@ impl Storage {
         Ok((obj.body, obj.content_length))
     }
 
+    /// 带 `Range` 的流式读 —— ★「禁下载」的活动/项目里播视频走这条★(2026-08-15)。
+    /// 预签名直链是**不记名的能力**(6 小时内谁拿到谁能取原件),在禁下载的场景里不能发;
+    /// 但视频又必须能拖动进度条,所以要一条**认 cookie 的、支持 Range 的**同源代理。
+    /// 返回:(字节流, 这一段的长度, `Content-Range` 原样回传, 对象总长)。
+    pub async fn get_range(&self, key: &str, range: Option<&str>)
+        -> anyhow::Result<(aws_sdk_s3::primitives::ByteStream, Option<i64>, Option<String>, Option<i64>)> {
+        let mut req = self.s3.get_object().bucket(&self.bucket).key(key);
+        if let Some(r) = range { req = req.range(r) }
+        let obj = req.send().await?;
+        let cr = obj.content_range.clone();
+        // 总长:带 Range 时从 `bytes a-b/TOTAL` 尾巴取,不带时就是 content_length 本身。
+        let total = match cr.as_deref().and_then(|s| s.rsplit('/').next()).and_then(|s| s.parse::<i64>().ok()) {
+            Some(t) => Some(t), None => obj.content_length,
+        };
+        Ok((obj.body, obj.content_length, cr, total))
+    }
+
     /// 对象是否存在(秒传/去重要先问一句)。
     pub async fn exists(&self, key: &str) -> bool {
         self.s3.head_object().bucket(&self.bucket).key(key).send().await.is_ok()
@@ -106,6 +123,50 @@ impl Storage {
 
     /// 删对象。⚠ 调用方必须先做引用计数(items.s3_key + item_versions.s3_key 都不再引用
     /// 才能删——citeroot delete_fulltext 的教训),这里只管执行。
+    /// ★服务端分片复制★(UploadPartCopy)——把 `from` 整个复制成 `to`,字节不经 pod。
+    ///
+    /// ⚠★为什么需要它★:S3 语义下单次 `CopyObject` 有 **5 GiB** 上限,而本系统的主用例
+    /// 正是 GB 级会议录屏。审计 A2 的归位(promote)会让大对象第一次走到这条复制上。
+    ///
+    /// ★2026-08-09 实测确认 Garage 支持 UploadPartCopy★:12 MiB 源 → 3 片(5+5+2) →
+    /// complete → 取回逐字节一致。**验的是这条码路,不是 Garage 的天花板在哪** ——
+    /// S3 的最小分片正好是 5 MiB,小对象跑的逻辑与 50 GB 完全相同,通了就是通了
+    /// (liaoruili 纠正过我一次:别去撞依赖方的极限值,验自己那段代码的分支)。
+    ///
+    /// 分片取 256 MiB:10000 片上限 → 支持到约 2.4 TiB,足够有余。
+    pub async fn copy_multipart(&self, from_key: &str, to_key: &str, size: i64, mime: &str) -> anyhow::Result<()> {
+        const PART: i64 = 256 * 1024 * 1024;
+        let upload_id = self.multipart_begin(to_key, mime).await?;
+        let mut parts = Vec::new();
+        let mut off = 0i64;
+        let mut n = 0i32;
+        while off < size {
+            let end = (off + PART).min(size) - 1;
+            n += 1;
+            let r = self.s3.upload_part_copy()
+                .bucket(&self.bucket).key(to_key).upload_id(&upload_id).part_number(n)
+                .copy_source(format!("{}/{}", self.bucket, from_key))
+                .copy_source_range(format!("bytes={off}-{end}"))
+                .send().await;
+            match r {
+                Ok(r) => {
+                    parts.push(aws_sdk_s3::types::CompletedPart::builder()
+                        .part_number(n)
+                        .e_tag(r.copy_part_result().and_then(|c| c.e_tag()).unwrap_or_default())
+                        .build());
+                    off = end + 1;
+                }
+                Err(e) => {
+                    // 失败要 abort,否则半截 multipart 留在桶里等 24h 清扫
+                    self.multipart_abort(to_key, &upload_id).await;
+                    return Err(anyhow::anyhow!("UploadPartCopy 第 {n} 片失败: {e}"));
+                }
+            }
+        }
+        self.multipart_complete(to_key, &upload_id, parts).await?;
+        Ok(())
+    }
+
     pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
         self.s3.delete_object().bucket(&self.bucket).key(key).send().await?;
         Ok(())

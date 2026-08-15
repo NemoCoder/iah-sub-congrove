@@ -99,13 +99,13 @@ export function Analysis({ item, onSeek, onTranscript }: {
           「摘要/分段大纲/…」的 Segmented 视觉上连成一片,用户会把它当成又一个 tab
           (2026-08-05 反馈)。现在左标题右按钮、按钮带图标,和 tab 明确分开。 */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-        <Typography.Text strong>AI 会议纪要</Typography.Text>
+        <Typography.Text strong>AI 活动纪要</Typography.Text>
         {job?.status === 'failed' && <Tag color="red" style={{ marginLeft: 8 }}>上次失败</Tag>}
         <div style={{ marginLeft: 'auto' }}>
           {!d.transcript && !running && (
             <Button size="small" type="primary" icon={<ThunderboltOutlined />} disabled={!d.asr_ready}
               onClick={async () => {
-                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已排队,几分钟后回来看'); void load() }
+                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已排队，几分钟后回来看'); void load() }
                 catch (e) { message.error((e as Error).message) }
               }}>
               生成纪要
@@ -115,10 +115,10 @@ export function Analysis({ item, onSeek, onTranscript }: {
               误点的代价不小(2026-08-05 反馈)。 */}
           {d.transcript && !running && (
             <Popconfirm
-              title="重新生成纪要?" okText="重新生成" cancelText="取消"
+              title="重新生成纪要？" okText="重新生成" cancelText="取消"
               description={<div style={{ maxWidth: 260, fontSize: 12 }}>会重跑语音转写与摘要(几分钟),完成后<b>覆盖</b>现有的摘要、大纲、决议与逐字稿。</div>}
               onConfirm={async () => {
-                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已重新排队,几分钟后回来看'); void load() }
+                try { await api(`/api/items/${item.id}/analyze`, { method: 'POST' }); message.success('已重新排队，几分钟后回来看'); void load() }
                 catch (e) { message.error((e as Error).message) }
               }}
             >
@@ -135,13 +135,13 @@ export function Analysis({ item, onSeek, onTranscript }: {
       {drift != null && dur != null && drift > Math.max(15, dur * 0.02) && (
         <Alert type="warning" showIcon style={{ marginBottom: 10 }}
           message={`字幕时间轴可能偏快(末尾约 ${Math.round(drift)} 秒没有文字覆盖)`}
-          description="转写文字本身是准的,但语音识别服务返回的「文字↔时间」对应会随时长累积偏移,越到后面字幕越提前。已请平台改用字级时间戳,修好后本提示会自动消失。逐字稿与纪要不受影响。" />
+          description="转写文字本身是准的，但语音识别服务返回的「文字↔时间」对应会随时长累积偏移，越到后面字幕越提前。已请平台改用字级时间戳，修好后本提示会自动消失。逐字稿与纪要不受影响。" />
       )}
 
       {!d.asr_ready && !d.transcript && (
         <Alert type="info" showIcon style={{ marginBottom: 10 }}
           message="语音转写服务尚未开通"
-          description="平台已确认接入(FunASR:转写+标点+说话人+热词),正在部署中。上线后本功能自动可用,无需更新。" />
+          description="平台已确认接入（FunASR：转写+标点+说话人+热词），正在部署中。上线后本功能自动可用，无需更新。" />
       )}
       {running && (
         <div style={{ marginBottom: 10 }}>

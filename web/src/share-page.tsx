@@ -63,7 +63,10 @@ export function SharePage({ token }: { token: string }) {
     } catch (e) {
       const m = (e as Error).message
       // 提取码错是可重试的;其它(404)一律当「链接已失效」——服务端刻意不区分原因。
-      if (m.includes('提取码')) setErr('提取码不对,再试一次')
+      // ★被限速时要原样透出服务端那句★(v0.3.55):限速消息里也带「提取码」三个字,
+      // 早先一律改写成「提取码不对」,结果用户看不到「已被限速」,只会继续一遍遍试。
+      if (m.includes('次数过多')) setErr(m)
+      else if (m.includes('提取码')) setErr('提取码不对，再试一次')
       else setPhase('gone')
     } finally { setBusy(false) }
   }, [token])
@@ -102,7 +105,7 @@ export function SharePage({ token }: { token: string }) {
   if (phase === 'gone')
     return shell(
       <Result status="404" title="链接已失效"
-        subTitle="它可能已过期、超出访问次数,或者被分享者撤销了。找分享给你的人要一条新的。" />)
+        subTitle="它可能已过期、超出访问次数，或者被分享者撤销了。找分享给你的人要一条新的。" />)
 
   if (phase === 'code')
     return shell(
@@ -150,7 +153,13 @@ export function SharePage({ token }: { token: string }) {
           <Button size="small" onClick={() => setCwd(multi ? null : item.id)}>回到分享根目录</Button>
         )}
       </Space>
-      <Table size="small" rowKey="id" dataSource={rows} pagination={false}
+      {/* ★访客页也分页★(2026-08-13):`/pub/share/{token}/list` **没有上限**,分享一个
+          几千文件的文件夹会一次全吐给访客 —— 数据没丢(所以不必改后端),但页面滚不完。
+          交给 Table 自己分页是安全的:这里的 dataSource 就是完整的当前层,没有伪行,
+          不存在项目文件列表那个「已经切过一刀又被切一次」的问题。
+          `simple` 是刻意的:访客页要尽量安静,一个「1/3」比一排页码合适。 */}
+      <Table size="small" rowKey="id" dataSource={rows}
+        pagination={{ pageSize: 20, simple: true, align: 'center', hideOnSinglePage: true }}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这个文件夹是空的" /> }}
         columns={[
           { title: '名称', dataIndex: 'name',

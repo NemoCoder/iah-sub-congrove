@@ -1,0 +1,101 @@
+# CI 硬门禁 —— congrove 是平台 CI 试点(2026-08-07)。见平台 CODE-QUALITY.md / DEV-PROCESS.md。
+#
+# ★跑在自建 Gitea act-runner(host 执行器,label iah-host),纯 run: shell、不用 JS action★:
+#   平台在 GFW 后,actions/checkout 等 JS action 会去 github.com 拉、直接挂;所以手动 git fetch 内网 gitea HTTP svc。
+#   runner 镜像 act-runner:v2 自带 rust+clippy / gcc-make(编 ring 的 C 部分要)/ node22+pnpm11,见 iah_k8s/git/act-runner。
+#
+# ★门禁清单不在这个文件里★:见 `scripts/all-gates.sh`(2026-08-15 起唯一的一份)。
+#   本 workflow 只负责「取代码 + 装前端依赖 + 调那个脚本」,别再往这里内联加检查 ——
+#   两份清单各缺对方几道正是它上一次的样子。`--ci` 跑不依赖活环境的那些;
+#   要活 dev 库 / oasdiff / 内网 CA 的四道进不来(O2/O4),在 PR 里标注人工验证。
+#   任一红 → job 红 → PR 不能合并(前提:在 Gitea 仓库设置里把本检查设为分支保护的「必需状态检查」,那一步才让它真正「硬」)。
+#   e2e(Playwright)要活环境,归相位 6 验收、不进合并门禁(见 DEV-PROCESS)。
+name: ci
+on:
+  pull_request:            # 合并门禁:对任何目标分支的 PR 都跑
+  push:
+    branches: [dev]        # dev 上持续体检
+  workflow_dispatch:       # 允许手动触发(Gitea Actions 页点一下)
+jobs:
+  gate:
+    runs-on: iah-host
+    steps:
+      - name: 门禁(scripts/all-gates.sh --ci)
+        env:
+          TOK: ${{ secrets.GITEA_TOKEN }}    # Gitea 自动注入的作业令牌,足够 clone 本仓库(只读)
+          BASE: http://gitea.git.svc:3000     # 内网 gitea HTTP svc —— runner 没装内网 CA,不走 git.ruciah.com
+        run: |
+          set -u
+          # ── 取被测代码:init + fetch 触发本次的那个 ref(PR 取 merge 结果 / push 取该提交),depth=1 够跑门禁 ──
+          # ★不用 actions/checkout★(见文件头):它是 JS action、要 github.com。手动 fetch 内网即可。
+          rm -rf _ci && mkdir _ci && cd _ci && git init -q
+          git -c http.extraheader="Authorization: Bearer $TOK" fetch --depth=1 "$BASE/liaoruili/iah-sub-congrove.git" "$GITHUB_REF"
+          git checkout -q FETCH_HEAD
+          echo "被测提交:$(git rev-parse --short HEAD)"
+          # ── target 缓存放持久路径:runner 的 /data(emptyDir)在 pod 生命内跨 job 存活 → 增量编译,不用每次从头编全依赖树 ──
+          export CARGO_TARGET_DIR=/data/_cache/congrove-target
+          # ── ★门禁清单只有一份:scripts/all-gates.sh★(2026-08-15)──
+          # 这里原来内联写着一串检查,而本地那份 all-gates.sh 又写着另一串,
+          # ★两串各缺对方几道★:CI 有 ddl-check / blobkey-check / 版本号一致而本地没有,
+          # 本地有 no-silent-limit / no-bare-items / no-naked-time 而 CI 没有。
+          # 于是「本地十一道全绿」和「CI 全绿」谁也不覆盖谁,而没有任何东西会指出这件事。
+          # ⇒ 改成直接调那个脚本:加一道门禁只要改一处,两边同时生效,再也漂不了。
+          # ⚠ `--ci` 只跑不依赖活环境的那些;要活 dev 库 / 内网 CA 的四道
+          #   (SQL PREPARE / schema 对拍 / 接口面 oasdiff / 响应体形状)仍进不来,
+          #   见 docs/M0-PLAN.md 的开放问题 O2/O4 —— 它们在 PR 里标注**人工验证**。
+          # 脚本内部各闸独立判定、不 fail-fast(一次让开发看全所有红),末尾按总数返回。
+          ( cd web && pnpm install --frozen-lockfile ) || { echo "❌ 前端依赖装不上"; exit 1; }
+          bash scripts/all-gates.sh --ci || { echo "❌ CI 门禁未过 —— 上面汇总里带 ✗ 的那几道"; exit 1; }
+          echo "✅ CI 门禁全过"
+
+  # ★部署必须被门禁挡住★(2026-08-07,平台 msg 157/158,liaoruili 拍板的方案 B)。
+  #
+  # 原来的路子是 Gitea push webhook → 平台 autobuild,它**和 CI 并行、根本不看 CI 绿不绿** ——
+  # 于是出现过「CI 还在跑,部署已经在构建」:门禁形同虚设。把部署挪进 CI 管道之后,
+  # `needs: gate` 让这件事变成结构上的不可能:gate 红则本 job 压根不执行。
+  #
+  # ⚠ cutover 前会**短暂双构建**(push-autobuild 一次 + 这里一次):冗余不出错,
+  #   等这条跑通、群里说一声,平台再关掉 push-autobuild webhook。
+  deploy:
+    needs: gate
+    # 只在**合并进 dev 之后**部署;PR 事件不部署(PR 还没进 dev,部了就是拿未合并的码上 dev 环境),
+    # 手动 workflow_dispatch 也不部署(event_name 不是 push)。
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+    runs-on: iah-host
+    steps:
+      - name: 触发平台构建部署(dev 通道)
+        env:
+          KEY: ${{ secrets.IAH_DEPLOY_KEY }}   # 仓库 Actions secret,由 liaoruili 设;不落命令行(走 env)
+        run: |
+          set -eu
+          # ★缺 key 直接红,不静默跳过★:静默跳过的表现是「CI 全绿但线上还是旧版本」,
+          # 那比红一次难查得多(我们已经因为「仓库领先线上没部署」踩过)。
+          test -n "$KEY" || { echo "缺 secret IAH_DEPLOY_KEY"; exit 1; }
+          echo "== 门禁已过,触发 dev 构建部署 =="
+          # ★走公网网关,不走内网 svc★(2026-08-07 平台安全修复,群 msg 163):
+          # 原来的 http://subsystem-registry.platform.svc:8000 直连是个 CRITICAL 提权洞 ——
+          # act-runner 跑**任意仓库**的 CI,内网直连**跳过了网关的身份头剥离**,
+          # 于是任何 CI job 都能 curl 带伪造的 X-Forwarded-Preferred-Username 冒充管理员
+          # 打 registry 的任意端点(比如把别人的子系统 undeploy 掉)。平台已撤掉那个口,
+          # 改成只放行 ci-deploy 这一条路径的网关旁路。
+          #
+          # ⚠ -k 是**权衡不是偷懒**:runner 镜像没装内网 CA,而 *.ruciah.com 全是内网 CA 签的。
+          #   代价是这条 curl 不校验证书 —— 内网到网关的一跳,风险可接受(key 还在 header 里)。
+          #   ★更干净的做法是给 runner 镜像装内网 CA★,已在群里提,装好后就把 -k 去掉。
+          #
+          # 409 = 「正在构建中 / 冷却期」,平台按我的建议改成了可重试语义(retryable:true) ——
+          # ★这种红不是代码有问题,而是撞上了另一次构建★,让人去查代码是纯粹的浪费。
+          code=""
+          for i in 1 2 3; do
+            code=$(curl -sS -k -o /tmp/cd.json -w "%{http_code}" -X POST -H "X-Deploy-Key: $KEY" \
+              "https://registry.ruciah.com/api/subsystems/congrove/ci-deploy?channel=dev")
+            cat /tmp/cd.json; echo
+            if [ "$code" = 200 ]; then break; fi
+            # ⚠ 用 if 而不是 `[ ... ] && ...`:set -e 下,最后一次迭代里为假的 && 会让整个 job 静默退出
+            if [ "$code" != 409 ]; then echo "❌ 部署触发失败 HTTP $code"; exit 1; fi
+            echo "⏳ HTTP 409(构建中/冷却期),20s 后重试(第 $i/3 次)"
+            sleep 20
+          done
+          if [ "$code" != 200 ]; then echo "❌ 重试 3 次仍未触发(HTTP $code)"; exit 1; fi
+          # ★触发是异步的:这一步绿只代表「构建已排队」,不代表已经上线★。构建日志见门户「日志」页。
+          echo "✅ 已触发构建部署(异步,构建日志见门户「日志」页)"

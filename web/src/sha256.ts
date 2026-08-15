@@ -82,9 +82,12 @@ export async function fileSha256(file: File, onProgress?: (pct: number) => void)
   const CHUNK = 8 * 1024 * 1024
   const h = new Sha256()
   for (let off = 0; off < file.size; off += CHUNK) {
-    const buf = await file.slice(off, Math.min(file.size, off + CHUNK)).arrayBuffer()
+    const end = Math.min(file.size, off + CHUNK)
+    const buf = await file.slice(off, end).arrayBuffer()
     h.update(new Uint8Array(buf))
-    onProgress?.(Math.round(((off + CHUNK) / file.size) * 100))
+    // ★分子要夹到 file.size★(v0.3.55 审计):原先直接用 off + CHUNK,最后一块必然超出文件大小
+    // ——10MiB 的文件(CHUNK 8MiB)进度会走出 80 → **160**,校验中的百分比直接飙过 100。
+    onProgress?.(Math.round((end / file.size) * 100))
   }
   return h.digestHex()
 }

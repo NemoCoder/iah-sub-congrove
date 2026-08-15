@@ -1,0 +1,35 @@
+in api put /api/admin/projects/{id}/quota api path removed without deprecation
+in api get /api/meetings api path removed without deprecation
+in api post /api/meetings api path removed without deprecation
+in api get /api/meetings/public api path removed without deprecation
+in api delete /api/meetings/{id} api path removed without deprecation
+in api get /api/meetings/{id} api path removed without deprecation
+in api put /api/meetings/{id} api path removed without deprecation
+in api post /api/meetings/{id}/accept-counter api path removed without deprecation
+in api get /api/meetings/{id}/items api path removed without deprecation
+in api get /api/meetings/{id}/link-history api path removed without deprecation
+in api get /api/meetings/{id}/messages api path removed without deprecation
+in api post /api/meetings/{id}/messages api path removed without deprecation
+in api get /api/meetings/{id}/minutes api path removed without deprecation
+in api put /api/meetings/{id}/minutes api path removed without deprecation
+in api post /api/meetings/{id}/observe api path removed without deprecation
+in api delete /api/meetings/{id}/participants api path removed without deprecation
+in api put /api/meetings/{id}/participants api path removed without deprecation
+in api post /api/meetings/{id}/reject-counter api path removed without deprecation
+in api post /api/meetings/{id}/remind api path removed without deprecation
+in api post /api/meetings/{id}/respond api path removed without deprecation
+in api post /api/projects deleted the `query` request parameter `visibility`
+in api put /api/projects/{id} deleted the `query` request parameter `visibility`
+in api post /api/projects/{id}/upload deleted the `query` request parameter `meeting_id`
+# ── 2026-08-13 v0.4.136:两处响应体从数组改成 {total, items} ──
+# ★这两条 oasdiff **抓不到**★:生成的契约里响应只写了 {"description":"成功"},没有 schema ——
+# 所以接口面这道闸对「数组变对象」这类改动是**结构性失明**的,它只守路径/参数/鉴权档位。
+# ★门禁绿不等于没有破坏性变更★。
+# ⚠ 但也别指望在这里手写一行就算登记上了:这个文件**只收 oasdiff 真实检出的行**,
+#   两个方向都验 —— 我手写了两行「response body changed…」,闸子当场报
+#   「声明了却没发生 —— 这条改动是不是漏做了?」。★登记本不接受编造,这是对的★,
+#   所以真正的记录只能是下面这段散文 + apidoc 里那句 summary(「★分页★,回 {total, items}」)。
+# 要让这类改动进得了机械门禁,得先给契约补 response schema —— 那是独立的一件事(记进 backlog)。
+# 起因:两个接口原本写死 `LIMIT 500` 且不返回总数,第 501 条起在界面上凭空消失
+# (回收站里还占着配额、分享还能被外人访问却撤不掉)。加分页就必须回 total,否则界面
+# 仍然不知道自己看到的是不是全部 —— 于是响应体从 `[...]` 变成 `{total, items}`。

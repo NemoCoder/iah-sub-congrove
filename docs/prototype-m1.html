@@ -1,0 +1,1282 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>汇流 Congrove · M1 低保真原型 v2</title>
+<!-- 汇流 Congrove · M1 界面原型 -->
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#262626;background:#f0f2f5}
+  a{color:#0d9488;text-decoration:none}
+  /* 顶栏 */
+  .top{background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;gap:8px;
+       position:sticky;top:0;z-index:20;padding:0 calc(50vw - 660px)}
+  @media(max-width:1400px){.top{padding:0 22px}}
+  .brand{font-weight:700;color:#0d9488;padding:13px 18px 13px 0;font-size:15px}
+  .nav{display:flex}
+  .nav button{border:0;background:none;padding:17px 18px;cursor:pointer;font-size:14px;color:#595959;
+              border-bottom:2px solid transparent}
+  .nav button.on{color:#0d9488;border-bottom-color:#0d9488;font-weight:600}
+  .right{margin-left:auto;display:flex;align-items:center;gap:16px}
+  .bell{position:relative;cursor:pointer;font-size:17px}
+  .bell b{position:absolute;top:-4px;right:-8px;background:#ff4d4f;color:#fff;font-size:10px;
+          border-radius:8px;padding:0 5px;font-weight:600}
+  .demo{font-size:11px;color:#bfbfbf;border:1px dashed #d9d9d9;border-radius:3px;padding:2px 8px;cursor:pointer}
+  .demo:hover{color:#0d9488;border-color:#0d9488}
+  body.empty .demo{color:#0d9488;border-color:#0d9488;background:#f6ffed}
+  body.empty .full{display:none}
+  .none-yet{display:none;text-align:center;padding:44px 20px;color:#8c8c8c}
+  body.empty .none-yet{display:block}
+  .none-yet .big{font-size:34px;opacity:.35;line-height:1.6}
+  .none-yet h4{margin:4px 0 6px;font-size:15px;color:#262626}
+  .none-yet p{margin:0 0 14px;font-size:13px;line-height:1.9}
+  body.empty .bell b{display:none}
+  .mewrap{position:relative}
+  .me{cursor:pointer;color:#595959;font-size:13px;display:flex;align-items:center;gap:7px;
+      padding:5px 8px;border-radius:4px}
+  .me:hover{color:#0d9488;background:#f6ffed}
+  .avatar{width:24px;height:24px;border-radius:50%;background:#0d9488;color:#fff;font-size:12px;
+          line-height:24px;text-align:center;font-weight:600}
+  .menu{position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #e8e8e8;
+        border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.10);min-width:210px;padding:6px 0;
+        display:none;z-index:40}
+  .menu.on{display:block}
+  .menu a{display:flex;align-items:center;gap:8px;padding:8px 14px;font-size:13px;color:#262626;cursor:pointer}
+  .menu a:hover{background:#f6ffed;color:#0d9488}
+  .menu hr{border:0;border-top:1px solid #f0f0f0;margin:5px 0}
+  .menu .head{padding:6px 14px 8px}
+  /* 布局 */
+  .wrap{max-width:1320px;margin:18px auto;padding:0 22px;display:none}
+  .wrap.on{display:block}
+  .card{background:#fff;border:1px solid #e8e8e8;border-radius:6px;padding:16px 18px;margin-bottom:14px}
+  .card h3{margin:0 0 12px;font-size:15px}
+  .row{display:flex;gap:14px;align-items:flex-start}
+  .col{flex:1;min-width:0}
+  .muted{color:#8c8c8c;font-size:12px}
+  .crumb{font-size:13px;color:#8c8c8c;margin-bottom:10px}
+  /* 控件 */
+  label.f{display:block;margin-bottom:13px}
+  label.f>span{display:block;font-size:13px;margin-bottom:5px;color:#595959}
+  input[type=text],input[type=datetime-local],select,textarea{width:100%;padding:6px 10px;
+       border:1px solid #d9d9d9;border-radius:4px;font:inherit}
+  textarea{min-height:150px;resize:vertical;line-height:1.8}
+  .req::after{content:" *";color:#ff4d4f}
+  .btn{padding:5px 15px;border:1px solid #d9d9d9;background:#fff;border-radius:4px;cursor:pointer;font:inherit}
+  .btn:hover{border-color:#0d9488;color:#0d9488}
+  .btn.primary{background:#0d9488;border-color:#0d9488;color:#fff}
+  .btn.primary:hover{opacity:.88;color:#fff}
+  .btn.sm{padding:2px 10px;font-size:12px}
+  .btn.danger{color:#ff4d4f}
+  .btn.danger:hover{border-color:#ff4d4f}
+  /* 标签 */
+  .tag{display:inline-block;padding:0 7px;border-radius:3px;font-size:12px;line-height:20px;
+       border:1px solid #d9d9d9;background:#fafafa}
+  .tag.owner{border-color:#0d9488;color:#0d9488;background:#e6fffb}
+  .tag.admin{border-color:#1677ff;color:#1677ff;background:#e6f4ff}
+  .tag.ro{border-color:#faad14;color:#d48806;background:#fffbe6}
+  .tag.team{border-color:#0d9488;color:#0d9488}
+  .tag.self{border-color:#722ed1;color:#722ed1;background:#f9f0ff}
+  .tag.warn{border-color:#ff4d4f;color:#ff4d4f;background:#fff1f0}
+  .tag.ok{border-color:#52c41a;color:#389e0d;background:#f6ffed}
+  /* 决策标记 */
+  .d{color:#eb2f96;font-weight:700;cursor:help;border-bottom:1px dashed #eb2f96}
+  .note{background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;padding:8px 12px;
+        font-size:12px;color:#614700;margin:10px 0}
+  .note b{color:#ad6800}
+  /* 通知框 */
+  .inbox{background:#fff;border:1px solid #ffccc7;border-left:3px solid #ff4d4f;border-radius:6px;
+         padding:14px 18px;margin-bottom:14px}
+  .inbox h3{margin:0 0 10px;font-size:15px;color:#a8071a;display:flex;align-items:center;gap:8px}
+  .nrow{padding:11px 0;border-bottom:1px solid #f5f5f5;font-size:13px}
+  .nrow:last-child{border:0}
+  .nrow .ic{display:inline-block;width:18px}
+  .nrow .tx{display:inline}
+  .nrow .when{color:#8c8c8c;font-size:12px;margin-left:6px}
+  .nrow .meta{color:#8c8c8c;font-size:12px;margin-top:2px}
+  .nrow .quote{color:#595959;font-size:12px;margin-top:3px;padding-left:9px;border-left:2px solid #e8e8e8}
+  .nrow .clash2{color:#a8071a;background:#fff1f0;border:1px solid #ffccc7;border-radius:3px;
+                display:inline-block;padding:1px 8px;font-size:12px;margin-top:5px}
+  .nrow .act{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+  .nrow .act .btn{flex:1;text-align:center;padding:3px 4px}
+  .nrow .act:has(.btn:only-child) .btn{flex:0 0 auto;padding:3px 18px}
+  /* 忙闲 */
+  .fb{display:grid;grid-template-columns:96px 1fr;gap:6px 10px;align-items:center;margin-top:8px}
+  .fbname{font-size:13px;text-align:right;color:#595959}
+  .fbbar{position:relative;height:22px;background:#fafafa;border:1px solid #f0f0f0;border-radius:3px}
+  .busy{position:absolute;top:2px;bottom:2px;background:#bfbfbf;border-radius:2px}
+  .pick{position:absolute;top:-3px;bottom:-3px;background:rgba(13,148,136,.18);border:1.5px solid #0d9488;
+        border-radius:3px;z-index:2}
+  .clash{position:absolute;top:2px;bottom:2px;background:#ffa39e;border-radius:2px}
+  .hours{display:grid;grid-template-columns:96px 1fr;gap:10px;font-size:11px;color:#bfbfbf}
+  .hours div:last-child{display:flex;justify-content:space-between}
+  /* 树 */
+  .tree{font-size:13px;line-height:2}
+  .ro-zone{background:#fafafa;border-left:3px solid #d9d9d9;padding:4px 10px;margin:4px 0}
+  .lock{color:#8c8c8c;font-size:11px}
+  /* 表 */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
+  th{color:#8c8c8c;font-weight:500;font-size:12px}
+  tr.clickable{cursor:pointer}
+  tr.clickable:hover{background:#f6ffed}
+  tr.clickable:hover td:nth-child(2) b{color:#0d9488}
+  tr.clickable td:last-child{position:relative}
+  tr.clickable td:last-child::after{content:"›";position:absolute;right:2px;top:50%;
+    transform:translateY(-50%);color:#0d9488;font-size:18px;opacity:0;transition:opacity .15s}
+  tr.clickable:hover td:last-child::after{opacity:1}
+  /* 日历 */
+  .calwrap{display:grid;grid-template-columns:48px repeat(7,1fr);border:1px solid #e8e8e8;border-radius:4px}
+  .calhd{text-align:center;padding:6px 0;border-bottom:1px solid #e8e8e8;color:#595959;font-size:12px;
+         background:#fff}
+  .calhd.today{color:#0d9488;font-weight:600;background:#f6ffed}
+  .calhd.we{color:#bfbfbf}
+  .calcol.we{background:#fcfcfc}
+  .axis{border-right:1px solid #f0f0f0}
+  .axis div{height:30px;font-size:11px;color:#bfbfbf;text-align:right;padding-right:6px;
+            transform:translateY(-7px)}
+  .calcol{position:relative;border-right:1px solid #f0f0f0}
+  .calcol .ln{height:30px;border-bottom:1px dashed #f5f5f5}
+  .calcol .ln.dim{background:#fbfbfb}
+  .calcol .ln.h6{border-bottom:1px solid #f0f0f0}
+  .ev{position:absolute;border-radius:3px;padding:2px 5px;font-size:11px;overflow:hidden;
+      cursor:pointer;line-height:26px;left:2px;right:2px;z-index:2;
+      white-space:nowrap;text-overflow:ellipsis}
+  .ev.half-l{right:50%}
+  .ev.half-r{left:50%}
+  .ev.meet{background:#e6fffb;border:1px solid #0d9488;color:#00615a}
+  .ev.mine{background:#f9f0ff;border:1px dashed #722ed1;color:#531dab}
+  .ev.pend{background:#fff1f0;border:1px solid #ff4d4f;color:#a8071a;font-weight:600}
+  .legend{display:flex;align-items:center;gap:14px;font-size:12px;color:#8c8c8c}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+  /* 讨论 */
+  .msg{padding:8px 0;border-bottom:1px solid #f5f5f5}
+  .msg.pm{background:#fff7e6;border-left:3px solid #fa8c16;padding-left:10px;margin:4px 0;
+          border-bottom:0;border-radius:0 4px 4px 0}
+  .pmtag{background:#fff1e6;border:1px solid #ffd591;color:#d46b08;border-radius:3px;
+         padding:0 6px;font-size:11px;margin-left:6px}
+  .msgbox{max-height:300px;overflow-y:auto}
+  .sendbox{margin-top:10px;border:1px solid #e8e8e8;border-radius:6px;padding:10px 12px;background:#fafafa}
+  .sendbox.pm{background:#fff7e6;border-color:#ffd591}
+  .sendto{font-size:12px;color:#595959}
+  .sendto select{width:100%;padding:3px 8px;font-size:12px;margin-top:3px}
+  .sendbox.pm .sendto{color:#d46b08;font-weight:600}
+  .sendbox.pm input{border-color:#ffd591;background:#fff}
+  .tohint{font-size:12px}
+  .sendbox.pm .tohint::before{content:"🔒 只有对方看得到，其他参会人不可见"}
+  .msg .from{font-size:12px;color:#8c8c8c}
+  .later{border:1px dashed #d9d9d9;border-radius:6px;padding:13px;text-align:center;color:#bfbfbf;
+         font-size:13px;background:repeating-linear-gradient(45deg,#fafafa,#fafafa 8px,#f5f5f5 8px,#f5f5f5 16px)}
+  .cnt{display:inline-block;min-width:17px;padding:0 5px;border-radius:9px;background:#f0f0f0;
+       color:#8c8c8c;font-size:11px;line-height:17px;text-align:center;font-weight:400;margin-left:3px}
+  .sub button.on .cnt{background:#e6fffb;color:#0d9488}
+  .fld{margin-bottom:16px}
+  .fld-h{display:flex;align-items:center;gap:10px;font-size:13px;color:#595959;margin-bottom:5px}
+  .fld-h .btn{margin-left:auto}
+  .fld-v{border:1px solid transparent;border-radius:4px;padding:7px 10px;font-size:13px;
+         line-height:1.85;min-height:38px;cursor:text;background:#fafafa}
+  .fld-v:hover{background:#f6ffed;border-color:#d9f7be}
+  .fld-v:empty::before{content:attr(data-empty);color:#bfbfbf}
+  .fld-v h4{margin:10px 0 4px;font-size:13px}
+  .fld-v h4:first-child{margin-top:0}
+  .fld-v textarea{width:100%;min-height:150px;border:1px solid #0d9488;border-radius:4px;
+                  padding:7px 10px;font:inherit;line-height:1.85}
+  .fld-v .done{margin-top:6px}
+  .player{margin:0}
+  tr.playing{background:#f6ffed}
+  tr.playing b::after{content:" ▶ 播放中";color:#0d9488;font-size:11px;font-weight:400}
+  .screen{height:190px;background:#1f1f1f;border-radius:5px 5px 0 0;display:flex;
+          align-items:center;justify-content:center;color:#8c8c8c;font-size:12px}
+  .bar{display:flex;align-items:center;gap:9px;background:#262626;border-radius:0 0 5px 5px;
+       padding:7px 10px}
+  .pbtn{background:none;border:0;color:#fff;font-size:14px;cursor:pointer;width:20px}
+  .track{flex:1;height:4px;background:#595959;border-radius:2px;cursor:pointer;position:relative}
+  .fill{height:100%;width:0;background:#0d9488;border-radius:2px}
+  .ptime{color:#bfbfbf;font-size:11px;white-space:nowrap}
+  .ptime b{color:#fff;font-weight:400}
+  .aihint{background:#f6ffed;border:1px solid #d9f7be;border-radius:4px;padding:6px 10px;
+          font-size:12px;color:#389e0d;margin-bottom:10px}
+  .ts{color:#0d9488;font-size:11px;cursor:pointer;margin-right:4px}
+  .ts:hover{text-decoration:underline}
+  .pane{display:none}
+  .pane.on{display:block}
+  /* 子 tab */
+  .sub{display:flex;gap:2px;border-bottom:1px solid #e8e8e8;margin-bottom:14px}
+  .sub button{border:0;background:none;padding:8px 15px;cursor:pointer;font-size:13px;color:#595959;
+              border-bottom:2px solid transparent}
+  .sub button.on{color:#0d9488;border-bottom-color:#0d9488;font-weight:600}
+  /* chips-combobox（多选标签输入,W3C APG combobox 模式）*/
+  .chips{border:1px solid #d9d9d9;border-radius:4px;padding:3px 6px;display:flex;flex-wrap:wrap;
+         gap:4px;align-items:center;min-height:34px;position:relative;background:#fff;cursor:text}
+  .chips.focus{border-color:#0d9488;box-shadow:0 0 0 2px rgba(13,148,136,.12)}
+  .chip{border-radius:3px;padding:0 3px 0 8px;font-size:12px;line-height:22px;
+        display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .chip.proj{background:#e6fffb;border:1px solid #87e8de;color:#006d75}
+  .chip.user{background:#f0f5ff;border:1px solid #adc6ff;color:#1d39c4}
+  .chip b{cursor:pointer;color:#8c8c8c;font-weight:400;font-size:14px;line-height:1;padding:0 2px}
+  .chip b:hover{color:#ff4d4f}
+  .chips input{border:0;outline:0;flex:1;min-width:110px;padding:4px 2px;font:inherit;background:none}
+  .dd{position:absolute;top:calc(100% + 3px);left:0;right:0;background:#fff;border:1px solid #e8e8e8;
+      border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,.10);max-height:190px;overflow:auto;
+      z-index:30;display:none}
+  .dd.on{display:block}
+  .dd div{padding:6px 11px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px}
+  .dd div:hover,.dd div.hi{background:#e6fffb}
+  .dd .none{color:#bfbfbf;cursor:default}
+  .dd .none:hover{background:none}
+  .dd small{color:#bfbfbf;margin-left:auto}
+  .seg{display:inline-flex;border:1px solid #d9d9d9;border-radius:4px;overflow:hidden}
+  .seg button{border:0;background:#fff;padding:5px 22px;cursor:pointer;font:inherit;color:#595959}
+  .seg button+button{border-left:1px solid #d9d9d9}
+  .seg button.on{background:#0d9488;color:#fff}
+  .info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;
+        border:1px solid #bfbfbf;color:#8c8c8c;font-size:11px;cursor:help;vertical-align:1px}
+  .info:hover{border-color:#0d9488;color:#0d9488}
+  /* 统计小卡 */
+  .stat{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .stat div{background:#fafafa;border-radius:6px;padding:12px;text-align:center}
+  .stat b{display:block;font-size:22px;color:#0d9488;font-weight:600;line-height:1.4}
+</style>
+
+<div class="top">
+  <div class="brand">◆ 汇流 Congrove</div>
+  <div class="nav">
+    <button class="on" onclick="go('cal',this)">日程</button>
+    <button onclick="go('proj',this)">项目</button>
+    <button onclick="go('meets',this)">会议</button>
+  </div>
+  <div class="right">
+    <span class="demo" onclick="document.body.classList.toggle('empty')" title="原型专用：切换新用户的空状态">
+      空状态</span>
+    <span class="bell" title="待我处理 3 条" onclick="go('cal',document.querySelector('.nav button'))">🔔<b>3</b></span>
+    <div class="mewrap">
+      <span class="me" onclick="toggleMenu(event)">
+        <span class="avatar">L</span>liaoruili <span style="font-size:10px">▾</span>
+      </span>
+      <div class="menu" id="userMenu">
+        <div class="head">
+          <b style="font-size:13px">liaoruili</b>
+          <div class="muted">lrl@ruc.edu.cn</div>
+        </div>
+        <hr>
+        <a onclick="go('me',null);closeMenu()">个人主页</a>
+        <a onclick="go('me',null);closeMenu()">我的分享 <span class="cnt" style="margin-left:auto">3</span></a>
+        <a onclick="go('me',null);closeMenu()">设置</a>
+        <hr>
+        <a onclick="closeMenu()">返回 IAH 门户</a>
+        <a onclick="closeMenu()" style="color:#ff4d4f">退出登录</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 日程（首页） ══════════ -->
+<div class="wrap on" id="cal">
+  <div class="row">
+    <div class="col">
+  <div class="card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <h3 style="margin:0">2026 年 8 月 10 – 16 日</h3>
+          <button class="btn sm">‹</button><button class="btn sm">今天</button><button class="btn sm">›</button>
+          <span style="width:10px"></span>
+          <button class="btn sm">日</button><button class="btn sm primary">周</button>
+          <button class="btn sm">月</button><button class="btn sm">列表</button>
+          <span style="flex:1"></span>
+          <button class="btn sm">+ 个人日程</button>
+          <button class="btn sm primary" onclick="go('new',null)">+ 发起会议</button>
+        </div>
+
+        <div class="calwrap full">
+          <div class="calhd"></div>
+          <div class="calhd we">周日 10</div>
+          <div class="calhd">周一 11</div><div class="calhd">周二 12</div>
+          <div class="calhd today">周三 13 · 今天</div><div class="calhd">周四 14</div>
+          <div class="calhd">周五 15</div><div class="calhd we">周六 16</div>
+
+          <div class="axis" id="axis"></div>
+
+          <div class="calcol we">
+            <div class="ev mine" style="top:332px;height:28px" title="读书会 11:00–12:00 · 私密">读书会</div>
+          </div>
+          <div class="calcol"></div>
+          <div class="calcol">
+            <div class="ev meet" style="top:302px;height:28px" onclick="goMeet()" title="组会 10:00–11:00">组会</div>
+          </div>
+          <div class="calcol">
+            <div class="ev pend half-l" style="top:302px;height:28px" onclick="goMeet()" title="模型评审会 10:00–11:00 · 待应答">模型评审会</div>
+            <div class="ev mine half-r" style="top:317px;height:28px" title="健身 10:30–11:30 · 私密">健身</div>
+          </div>
+          <div class="calcol">
+            <div class="ev meet" style="top:452px;height:28px" onclick="goMeet()" title="数据治理周会 15:00–16:00">数据治理周会</div>
+          </div>
+          <div class="calcol"></div>
+          <div class="calcol we"></div>
+        </div>
+
+        <div style="display:flex;align-items:center;margin-top:12px;flex-wrap:wrap;gap:14px">
+          <div class="legend">
+            <span><i style="background:#e6fffb;border:1px solid #0d9488"></i>公开项目</span>
+            <span><i style="background:#f9f0ff;border:1px dashed #722ed1"></i>私密项目</span>
+            <span><i style="background:#fff1f0;border:1px solid #ff4d4f"></i>待你应答</span>
+          </div>
+          <span style="flex:1"></span>
+        </div>
+
+      </div>
+
+      <!-- ★通知在下:日历是主体,这里是「接下来要我做的事」★ -->
+    </div>
+    <div class="col" style="max-width:320px">
+  <div class="inbox">
+        <h3>🔔 待我处理（3）
+          <span style="margin-left:auto;font-size:12px;font-weight:400"><a href="#">全部标记已读</a></span>
+        </h3>
+
+        <h3 style="display:none;color:#8c8c8c" class="none-yet-h">🔔 待我处理</h3>
+        <div class="none-yet" style="padding:26px 10px">
+          <div class="big">✓</div>
+          <h4 style="font-size:14px">没有待办</h4>
+          <p style="margin:0">有人约你开会时会出现在这里。</p>
+        </div>
+        <div class="nrow full">
+          <div class="tx"><span class="ic">📩</span>
+            <div><b>模型评审会</b> <span class="when">8/13 周三 10:00–11:00</span></div>
+            <div class="meta">AI 模型 · 数据治理 &nbsp;|&nbsp; liaoruili 发起 &nbsp;|&nbsp; 8 人参会 &nbsp;|&nbsp; 记录员 lisi</div>
+            <div class="clash2">⚠ 此时段你有个人安排「健身」10:30–11:30</div>
+          </div>
+          <div class="act">
+            <button class="btn primary sm">接受</button>
+            <button class="btn sm">待定</button>
+            <button class="btn sm">拒绝</button>
+            <button class="btn sm" style="border-color:#0d9488;color:#0d9488" onclick="goMeet()">建议改期</button>
+          </div>
+        </div>
+
+        <div class="nrow full">
+          <div class="tx"><span class="ic">📩</span>
+            <div><b>数据治理周会</b> <span class="when">8/14 周四 15:00–16:00</span></div>
+            <div class="meta">数据治理 &nbsp;|&nbsp; zhangsan 发起 &nbsp;|&nbsp; 每周四 &nbsp;|&nbsp; 6 人参会</div>
+          </div>
+          <div class="act">
+            <button class="btn primary sm">接受</button>
+            <button class="btn sm">待定</button>
+            <button class="btn sm">拒绝</button>
+            <button class="btn sm" style="border-color:#0d9488;color:#0d9488" onclick="goMeet()">建议改期</button>
+          </div>
+        </div>
+
+        <div class="nrow full">
+          <div class="tx"><span class="ic">💬</span>
+            <div><b>liaoruili</b> 在「模型评审会」私聊了你 <span class="when">今天 09:02</span></div>
+            <div class="quote">你那天是不是有别的安排？时间不合适的话我可以挪。</div>
+          </div>
+          <div class="act">
+            <button class="btn sm" onclick="goMeet()">回复</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 项目 ══════════ -->
+<div class="wrap" id="proj">
+  <div class="row">
+    <div class="col" style="max-width:260px">
+      <div class="card">
+        <h3>我的项目</h3>
+        <div style="line-height:2.2" class="full">
+          <div><span class="tag team">公开</span> <b style="color:#0d9488">AI 模型</b></div>
+          <div><span class="tag team">公开</span> 数据治理</div>
+          <div><span class="tag team">公开</span> 全体</div>
+          <hr style="border:0;border-top:1px solid #f0f0f0;margin:8px 0">
+          <div><span class="tag self">私密</span> 我的日程
+          </div>
+        </div>
+        <div class="none-yet" style="padding:18px 6px">
+          <div class="big">📁</div>
+          <p style="margin:0">还没有项目</p>
+        </div>
+        <button class="btn sm" style="margin-top:10px">+ 新建项目</button>
+        
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card none-yet" style="padding:52px 20px">
+        <div class="big">📁</div>
+        <h4>你还没有加入任何项目</h4>
+        <p>项目是资料和会议的归属地：<b>进了项目就能看到它的全部资料</b>（包括你加入之前的）。<br>
+           自己建一个，或者等项目主持人把你加进来。</p>
+        <button class="btn primary">+ 新建项目</button>
+      </div>
+
+      <div class="full">
+      <div class="card">
+        <h3>AI 模型 <span class="tag team">公开项目</span></h3>
+
+        <div class="sub" style="margin-top:14px" id="projTabs">
+          <button class="on" data-pane="pMem">成员 <span class="cnt">12</span></button>
+          <button data-pane="pCont">内容</button>
+          <button data-pane="pMeet">会议 <span class="cnt">23</span></button>
+          <button data-pane="pSet">设置</button>
+        </div>
+
+        <div class="pane on" id="pMem">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+          <b style="font-size:14px">成员（12）</b>
+          <button class="btn sm">+ 批量添加</button>
+          
+        </div>
+        <table>
+          <tr><th>成员</th><th style="width:110px">角色</th><th style="width:110px">加入</th><th style="width:80px"></th></tr>
+          <tr><td>liaoruili</td><td><span class="tag owner">主持人</span></td><td class="muted">03-01</td><td><button class="btn sm">转移</button></td></tr>
+          <tr><td>zhangsan</td><td><span class="tag admin">管理员</span></td><td class="muted">03-01</td><td><button class="btn sm danger" onclick="rmMember('zhangsan')">移出</button></td></tr>
+          <tr><td>lisi</td><td><span class="tag">成员</span></td><td class="muted">06-15</td><td><button class="btn sm danger">移出</button></td></tr>
+          <tr><td>wangwu</td><td><span class="tag ro">只读成员</span></td><td class="muted">08-02</td><td><button class="btn sm danger">移出</button></td></tr>
+          <tr><td>zhaoliu</td><td><span class="tag">成员</span></td><td class="muted">06-15</td><td><button class="btn sm danger">移出</button></td></tr>
+          <tr><td>sunqi</td><td><span class="tag">成员</span></td><td class="muted">2025-09-01</td><td><button class="btn sm danger">移出</button></td></tr>
+          <tr><td colspan="4" style="text-align:center;padding:10px"><a href="#">展开其余 6 位 ▾</a></td></tr>
+        </table>
+        </div><!-- /pMem -->
+
+        <!-- 内容 -->
+        <div class="pane" id="pCont">
+          <div class="tree">
+            <div class="ro-zone">
+              📁 <b>会议</b> <span class="lock">🔒 只读区</span>
+              <div style="padding-left:22px">
+                📁 2026-08-06 模型评审会 
+                <a href="#" style="font-size:12px" onclick="goMeet();return false">在会议详情页中管理 →</a><br>
+                📁 2026-07-30 组会
+              </div>
+            </div>
+            📁 论文<br>
+            <span style="padding-left:22px">📁 第三版</span><br>
+            📁 日常资料<br>
+            📄 参考文献.pdf
+          </div>
+        </div>
+
+        <!-- 会议 -->
+        <div class="pane" id="pMeet">
+          <table>
+            <tr class="clickable" onclick="goMeet()">
+              <td style="width:120px"><b>8/13 周三</b><br><span class="muted">10:00–11:00</span></td>
+              <td><b>模型评审会</b><span class="muted"> · 记录员 lisi</span></td>
+              <td style="width:130px"><span class="tag warn">待你应答</span></td></tr>
+            <tr class="clickable" onclick="goMeet()">
+              <td><b>8/12 周二</b><br><span class="muted">10:00–11:00</span></td>
+              <td><b>组会</b><span class="muted"> · 每周二</span></td>
+              <td><span class="tag ok">已接受</span></td></tr>
+            <tr class="clickable" onclick="goMeet()">
+              <td><b>8/06 周三</b><br><span class="muted">14:00–15:30</span></td>
+              <td><b>模型评审会（第二版）</b><span class="muted"> · 记录员 lisi</span></td>
+              <td><span class="tag" style="border-color:#faad14;color:#d48806">纪要待整理</span></td></tr>
+          </table>
+          
+        </div>
+
+        <!-- 设置 -->
+        <div class="pane" id="pSet">
+          <label class="f" style="max-width:420px"><span>项目名称</span><input type="text" value="AI 模型"></label>
+          <div style="margin-bottom:13px">
+            <span style="display:block;font-size:13px;margin-bottom:6px;color:#595959">
+              项目可见性
+            </span>
+            <div class="seg">
+              <button class="on">公开</button><button>私密</button>
+            </div>
+          </div>
+          <label style="display:block;margin-bottom:8px"><input type="checkbox"> 只读成员禁止下载原件</label>
+          <label style="display:block;margin-bottom:10px"><input type="checkbox" onclick="if(this.checked)
+            confirm('禁止对外分享后，本项目当前 3 条有效的公开链接将立即全部失效。\n\n确定吗？')">
+            禁止对外分享（生成公开链接）</label>
+          <button class="btn sm">转移主持人</button>
+          <button class="btn sm danger">删除项目</button>
+        </div>
+      </div>
+
+    </div>
+      </div>
+  </div>
+</div>
+
+<!-- ══════════ 会议（列表） ══════════ -->
+<div class="wrap" id="meets">
+  <div class="row">
+    <div class="col">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+          <h3 style="margin:0">会议</h3>
+          <button class="btn primary sm" onclick="go('new',null)">+ 发起会议</button>
+          <span style="margin-left:auto"><button class="btn sm">公开会议广场</button></span>
+        </div>
+        <div class="sub full">
+          <button class="on">我参与的</button><button>我发起的</button><button>已结束</button>
+        </div>
+        <div class="full" style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+          <input type="text" placeholder="搜索会议标题、议程、纪要…" style="max-width:300px">
+          <select style="max-width:150px"><option>全部项目</option><option>AI 模型</option><option>数据治理</option></select>
+          <select style="max-width:120px"><option>全部时间</option><option>本周</option><option>本月</option><option>本季度</option></select>
+          <span class="muted" style="margin-left:auto">共 23 场</span>
+        </div>
+
+        <div class="none-yet" style="padding:52px 20px">
+          <div class="big">🗓</div>
+          <h4>还没有会议</h4>
+          <p><b>发起会议前，你得先属于一个项目</b>——会议必须挂在项目下，<br>
+             它的材料和纪要才有地方归档、才知道谁能看。</p>
+          <button class="btn primary" onclick="go('proj',document.querySelectorAll('.nav button')[1])">
+            先去建一个项目</button>
+        </div>
+
+        <div class="muted full" style="margin:12px 0 4px">即将进行</div>
+        <table class="full">
+          <tr class="clickable" onclick="goMeet()">
+            <td style="width:118px"><b>8/13 周三</b><br><span class="muted">10:00–11:00</span></td>
+            <td><b>模型评审会</b><br>
+              <span class="tag team">AI 模型</span> <span class="tag team">数据治理</span>
+              <span class="muted"> · liaoruili 发起 · 记录员 lisi · 8 人</span><br>
+              <span class="muted">💻 腾讯会议 · 议题：第三版指标复盘 / 训练数据来源 / 时间安排</span></td>
+            <td style="width:160px"><span class="tag warn">待你应答</span>
+              <span class="tag" style="border-color:#ffa39e;color:#a8071a;background:#fff1f0">撞个人安排</span></td>
+          </tr>
+          <tr class="clickable" onclick="goMeet()">
+            <td><b>8/14 周四</b><br><span class="muted">15:00–16:00</span></td>
+            <td><b>数据治理周会</b><br>
+              <span class="tag team">数据治理</span>
+              <span class="muted"> · zhangsan 发起 · 记录员 wangwu · 6 人 · 每周四</span><br>
+              <span class="muted">💻 腾讯会议 · 议题：本周进度同步</span></td>
+            <td><span class="tag warn">待你应答</span></td>
+          </tr>
+          <tr class="clickable" onclick="goMeet()">
+            <td><b>8/12 周二</b><br><span class="muted">10:00–11:00</span></td>
+            <td><b>组会</b><br>
+              <span class="tag team">AI 模型</span>
+              <span class="muted"> · liaoruili 发起 · 记录员 lisi · 12 人 · 每周二</span><br>
+              <span class="muted">📍 3 号楼 401</span></td>
+            <td><span class="tag ok">已接受</span></td>
+          </tr>
+        </table>
+
+        <div class="muted full" style="margin:18px 0 4px">已结束</div>
+        <table class="full">
+          <tr class="clickable" onclick="goMeet()">
+            <td style="width:118px"><b>8/06 周三</b><br><span class="muted">14:00–15:30</span></td>
+            <td><b>模型评审会（第二版）</b><br>
+              <span class="tag team">AI 模型</span>
+              <span class="muted"> · 记录员 lisi · 8 人 · 材料 5 份</span></td>
+            <td style="width:160px"><span class="tag" style="border-color:#faad14;color:#d48806">纪要待整理</span></td>
+          </tr>
+          <tr class="clickable" onclick="goMeet()">
+            <td><b>7/30 周三</b><br><span class="muted">10:00–11:00</span></td>
+            <td><b>组会</b><br><span class="tag team">AI 模型</span>
+              <span class="muted"> · 记录员 lisi · 12 人 · 材料 3 份</span></td>
+            <td><span class="tag ok">纪要已完成</span></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="col" style="max-width:320px">
+      <div class="inbox full">
+        <h3>待我应答（2）</h3>
+        <div class="nrow">
+          <div class="tx"><span class="ic">📩</span>
+            <div><b>模型评审会</b> <span class="when">8/13 周三 10:00</span></div>
+            <div class="clash2">⚠ 撞「健身」10:30–11:30</div>
+          </div>
+          <div class="act">
+            <button class="btn primary sm">接受</button><button class="btn sm">待定</button>
+            <button class="btn sm">拒绝</button>
+            <button class="btn sm" style="border-color:#0d9488;color:#0d9488" onclick="goMeet()">改期</button>
+          </div>
+        </div>
+        <div class="nrow full">
+          <div class="tx"><span class="ic">📩</span>
+            <div><b>数据治理周会</b> <span class="when">8/14 周四 15:00</span></div>
+          </div>
+          <div class="act">
+            <button class="btn primary sm">接受</button><button class="btn sm">待定</button>
+            <button class="btn sm">拒绝</button>
+            <button class="btn sm" style="border-color:#0d9488;color:#0d9488" onclick="goMeet()">改期</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card full">
+        <h3>我负责的纪要</h3>
+        <table>
+          <tr class="clickable" onclick="go('min',null)">
+            <td><b>模型评审会（第二版）</b><br>
+              <span class="muted">8/06 · 已过 7 天</span></td>
+            <td style="width:78px;text-align:right">
+              <span class="tag" style="border-color:#faad14;color:#d48806">待整理</span></td>
+          </tr>
+        </table>
+        <div class="muted" style="margin-top:8px">共 1 份待整理</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 发起会议 ══════════ -->
+<div class="wrap" id="new">
+  <div class="crumb"><a href="#" onclick="go('meets',document.querySelectorAll('.nav button')[2]);return false">会议</a> › 发起会议</div>
+  <div class="row">
+    <div class="col">
+      <div class="card">
+        <h3>发起会议</h3>
+        <label class="f"><span class="req">会议主题</span><input type="text" value="模型评审会"></label>
+        <div class="row">
+          <label class="f col"><span class="req">开始</span><input type="datetime-local" value="2026-08-13T10:00"></label>
+          <label class="f col"><span class="req">结束</span><input type="datetime-local" value="2026-08-13T11:00"></label>
+        </div>
+        <label class="f">
+          <span class="req">关联项目（可多选）
+          </span>
+          <div class="chips" id="cProj"></div>
+        </label>
+        <label class="f">
+          <span class="req">纪要负责人（记录员）
+          </span>
+          <select><option>lisi</option><option>liaoruili（我自己）</option></select>
+        </label>
+        <label class="f">
+          <span>议题与议程 <span class="muted" style="font-weight:400">一行一条，会后纪要按这些议题分段</span></span>
+          <textarea placeholder="1. …&#10;2. …">1. 第三版模型指标复盘（张三，20 分钟）
+2. 下一轮训练数据来源（李四，20 分钟）
+3. 下阶段时间安排与分工
+4. 其它</textarea>
+        </label>
+        <div class="row">
+          <label class="f col"><span>线下地点</span><input type="text" placeholder="如：3 号楼 401"></label>
+          <label class="f col"><span>线上会议链接</span><input type="text" value="https://meeting.tencent.com/xxx"></label>
+        </div>
+        <div class="row" style="margin-bottom:14px">
+          <label style="flex:1"><input type="checkbox"> 周期性会议
+            </label>
+          <label style="flex:1"><input type="checkbox"> 公开，允许旁听
+            </label>
+        </div>
+        <button class="btn primary">发起会议</button>
+        <button class="btn" onclick="go('meets',document.querySelectorAll('.nav button')[2])">取消</button>
+      </div>
+    </div>
+
+    <div class="col" style="max-width:420px">
+      <div class="card">
+        <h3>参会人 <span id="pCount" class="muted" style="font-weight:400">（8）</span></h3>
+        <div class="chips" id="cUser"></div>
+        <div style="margin-top:8px">
+          <button class="btn sm">从其它项目导入成员</button>
+        </div>
+        
+      </div>
+      <div class="card">
+        <h3>忙闲
+        </h3>
+        <div class="hours"><div></div><div><span>8:00</span><span>12:00</span><span>16:00</span><span>20:00</span></div></div>
+        <div class="fb">
+          <div class="fbname">zhangsan</div>
+          <div class="fbbar"><div class="busy" style="left:8%;width:22%"></div>
+            <div class="clash" style="left:33%;width:16%"></div><div class="pick" style="left:33%;width:16%"></div></div>
+          <div class="fbname">lisi</div>
+          <div class="fbbar"><div class="busy" style="left:55%;width:20%"></div><div class="pick" style="left:33%;width:16%"></div></div>
+          <div class="fbname">wangwu</div>
+          <div class="fbbar"><div class="pick" style="left:33%;width:16%"></div></div>
+          <div class="fbname">zhaoliu</div>
+          <div class="fbbar"><div class="busy" style="left:30%;width:25%"></div>
+            <div class="clash" style="left:33%;width:16%"></div><div class="pick" style="left:33%;width:16%"></div></div>
+        </div>
+        <div class="muted" style="margin-top:10px">
+          <span style="display:inline-block;width:12px;height:8px;background:#bfbfbf"></span> 忙
+          <span style="display:inline-block;width:12px;height:8px;background:#ffa39e"></span> 冲突
+          <span style="display:inline-block;width:12px;height:8px;background:rgba(13,148,136,.3);border:1px solid #0d9488"></span> 本次
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 会议详情 ══════════ -->
+<div class="wrap" id="meet">
+  <div class="crumb"><a href="#" onclick="go('meets',document.querySelectorAll('.nav button')[2]);return false">会议</a> › 模型评审会</div>
+  <div class="row">
+    <div class="col">
+      <div class="card">
+        <div style="display:flex;align-items:flex-start">
+          <div style="flex:1">
+            <h3 style="margin:0">模型评审会</h3>
+            <div class="muted" style="margin-top:4px">
+              2026-08-13 周三 10:00–11:00 · 发起人 liaoruili ·
+              记录员 <b>lisi</b>
+            </div>
+            <div style="margin-top:8px">
+              <span class="tag team">AI 模型</span> <span class="tag team">数据治理</span>
+              
+            </div>
+          </div>
+          <div><button class="btn sm">编辑</button> <button class="btn sm danger">取消会议</button></div>
+        </div>
+        
+      </div>
+
+      <div class="card" style="border-color:#ffccc7;background:#fff8f8">
+        <b style="color:#a8071a">⚠ 此时段你有个人安排</b>「健身」10:30–11:30
+        <div style="margin-top:8px">
+          <button class="btn primary sm">接受</button><button class="btn sm">待定</button>
+          <button class="btn sm">拒绝</button>
+          <button class="btn sm" style="border-color:#0d9488;color:#0d9488"
+                  onclick="document.getElementById('cbox').style.display='block'">建议改期</button>
+        </div>
+        <div id="cbox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #ffe0e0">
+          <div class="row">
+            <label class="f col" style="margin-bottom:8px"><span>建议开始</span>
+              <input type="datetime-local" value="2026-08-13T14:00"></label>
+            <label class="f col" style="margin-bottom:8px"><span>建议结束</span>
+              <input type="datetime-local" value="2026-08-13T15:00"></label>
+          </div>
+          <label class="f" style="margin-bottom:8px"><span>理由（选填，只有发起人看得到）</span>
+            <input type="text" placeholder="如：那个时段我另有安排"></label>
+          <button class="btn primary sm">发送给发起人</button>
+          <button class="btn sm" onclick="document.getElementById('cbox').style.display='none'">取消</button>
+        </div>
+      </div>
+
+      <div class="card"><h3>议题与议程</h3>
+        <div style="white-space:pre-line;font-size:13px">1. 第三版模型指标复盘
+2. 下一轮训练数据来源
+3. 时间安排</div>
+      </div>
+
+      <div class="card"><h3>线上会议</h3>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <a href="#">https://meeting.tencent.com/xxx</a>
+          <button class="btn sm">复制</button><button class="btn sm">修改</button>
+          <a href="#" style="font-size:12px" onclick="document.getElementById('lhist').style.display=
+             document.getElementById('lhist').style.display==='none'?'block':'none';return false">改动历史 2</a>
+          
+        </div>
+        <div id="lhist" style="display:none;margin-top:10px;border-top:1px solid #f0f0f0;padding-top:8px">
+          <table>
+            <tr><td class="muted" style="width:130px">今天 09:20</td>
+                <td>liaoruili 改为 <span style="font-size:12px">meeting.tencent.com/xxx</span></td></tr>
+            <tr><td class="muted">昨天 18:05</td>
+                <td>liaoruili 改为 <span style="font-size:12px">meeting.tencent.com/old</span></td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sub" style="margin-top:0">
+          <button class="on" data-pane="mMat">材料 <span class="cnt">2</span></button>
+          <button data-pane="mRec">录制 <span class="cnt">0</span></button>
+          <button data-pane="mMin">纪要</button>
+        </div>
+
+        <div class="pane on" id="mMat">
+          <table>
+            <tr>
+              <td style="width:26px">📄</td>
+              <td><b>第三版模型指标.xlsx</b><br>
+                <span class="muted">zhangsan 上传 · 昨天 16:40 · 248 KB</span></td>
+              <td style="width:150px;text-align:right">
+                <button class="btn sm">下载</button><button class="btn sm">分享</button></td>
+            </tr>
+            <tr>
+              <td>📕</td>
+              <td><b>参考论文.pdf</b><br>
+                <span class="muted">liaoruili 上传 · 昨天 17:02 · 3.1 MB</span></td>
+              <td style="text-align:right">
+                <button class="btn sm">下载</button><button class="btn sm">分享</button></td>
+            </tr>
+          </table>
+          <div style="margin-top:12px">
+            <button class="btn">上传材料</button>
+
+          </div>
+
+        </div>
+
+        <div class="pane" id="mMin">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <span class="tag" style="border-color:#faad14;color:#d48806">草稿</span>
+            <span class="muted">记录员 <b>lisi</b></span>
+            <button class="btn primary sm" style="margin-left:auto" onclick="go('min',null)">整理纪要</button>
+          </div>
+          <div style="text-align:center;padding:22px 0;color:#bfbfbf;font-size:13px">
+            会议尚未开始
+          </div>
+        </div>
+
+        <div class="pane" id="mRec">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <button class="btn primary">上传录屏 / 录音</button>
+
+          </div>
+          <div style="text-align:center;padding:22px 0;color:#bfbfbf;font-size:13px">
+            会议尚未开始
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+    <div class="col" style="max-width:320px">
+      <div class="card"><h3>参会人（8）</h3>
+        <table>
+          <tr><td>liaoruili</td><td><span class="muted">发起人</span></td></tr>
+          <tr><td>zhangsan</td><td><span class="tag ok">已接受</span></td></tr>
+          <tr><td>lisi</td><td><span class="tag ok">已接受</span></td></tr>
+          <tr><td>wangwu</td><td><span class="tag">待定</span></td></tr>
+          <tr><td>zhaoliu</td><td><span class="tag warn">建议改期</span></td></tr>
+          <tr><td>sunqi</td><td><span class="muted">未应答</span> <button class="btn sm">催办</button></td></tr>
+          <tr><td>zhouba</td><td><span class="muted">未应答</span> <button class="btn sm">催办</button></td></tr>
+          <tr><td>wujiu</td><td><span class="tag" style="border-color:#ff4d4f;color:#ff4d4f">已拒绝</span></td></tr>
+        </table>
+        
+      </div>
+      <div class="card" style="border-color:#ffa39e">
+        <h3 style="color:#a8071a">zhaoliu 建议改期</h3>
+        <div style="font-size:13px">建议时间：<b>8/13 14:00–15:00</b><br>
+          <span class="muted">理由：上午与另一个评审撞了</span></div>
+        <div style="margin-top:10px">
+          <button class="btn primary sm">采纳并改期</button><button class="btn sm">驳回</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>讨论 <span class="cnt">4</span></h3>
+        <div class="msgbox">
+          <div class="msg">
+            <div class="from">zhangsan · 昨天 16:20</div>
+            这次要不要把上一版的对比数据也带上？
+          </div>
+          <div class="msg">
+            <div class="from">liaoruili · 昨天 16:35</div>
+            带上，我会前传到材料区。
+          </div>
+          <div class="msg pm">
+            <div class="from"><b style="color:#d46b08">🔒 liaoruili → 你</b> · 今天 09:02
+              <span class="pmtag">私聊</span></div>
+            你那天是不是有别的安排？时间不合适的话我可以挪。
+          </div>
+          <div class="msg">
+            <div class="from">lisi · 今天 09:10</div>
+            收到，我负责纪要。
+          </div>
+        </div>
+        <div class="sendbox" id="sendBox">
+          <div class="sendto">发送至
+            <select id="toSel" onchange="onTo()">
+              <option value="all">所有参会人（8）</option>
+              <option value="pm:liaoruili">🔒 私聊 liaoruili</option>
+              <option value="pm:host">🔒 私聊 项目主持人</option>
+            </select>
+          </div>
+          <span id="toHint" class="tohint"></span>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <input type="text" id="msgInput" placeholder="说点什么…">
+            <button class="btn primary sm" onclick="trySend()">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 纪要整理 ══════════ -->
+<div class="wrap" id="min">
+  <div class="crumb"><a href="#" onclick="go('meets',document.querySelectorAll('.nav button')[2]);return false">会议</a>
+    › <a href="#" onclick="goMeet();return false">模型评审会（第二版）</a> › 纪要</div>
+
+  <div class="card" style="padding:12px 18px">
+    <div style="display:flex;align-items:center;gap:12px">
+      <b style="font-size:15px">会议纪要</b>
+      <span class="tag" style="border-color:#faad14;color:#d48806">草稿</span>
+      <span class="muted">记录员 lisi · 最后保存 10 分钟前</span>
+      <span style="margin-left:auto">
+        <button class="btn sm">保存草稿</button>
+        <button class="btn primary sm" onclick="alert('标记完成后：\n\n· 生成 PDF 存档到会议材料\n· 通知全体参会人\n· 之后修改可重新生成新版本')">标记完成</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="row">
+    <!-- 左：AI 参考稿（只读原材料） -->
+    <div class="col" style="max-width:430px">
+      <div class="card">
+        <div class="sub" style="margin-top:0">
+          <button class="on" data-pane="aiSum">AI 摘要</button>
+          <button data-pane="aiTxt">逐字稿</button>
+          <button data-pane="aiRec">录制 <span class="cnt">2</span></button>
+        </div>
+
+        <div class="pane on" id="aiSum">
+
+          <div style="font-size:13px;line-height:1.9">
+            <b>一、第三版模型指标复盘</b><br>
+            张三汇报第三版在测试集上的表现，准确率较第二版提升 3.2 个百分点，
+            但长文本场景仍有退化。李四提出退化可能与截断策略有关。<br><br>
+            <b>二、下一轮训练数据来源</b><br>
+            讨论了三个候选来源，倾向于先用内部标注数据补充长文本样本。<br><br>
+            <b>三、时间安排</b><br>
+            下一版预计两周后评审。
+          </div>
+        </div>
+
+        <div class="pane" id="aiTxt">
+
+          <div style="font-size:13px;line-height:1.9;max-height:420px;overflow:auto">
+            <span class="ts" onclick="jump('00:12',12)">00:12</span> <b>张三</b>：我们先看第三版的指标……<br>
+            <span class="ts" onclick="jump('03:47',227)">03:47</span> <b>张三</b>：准确率是 87.4%，比上一版高 3.2 个点。<br>
+            <span class="ts" onclick="jump('08:20',500)">08:20</span> <b>李四</b>：长文本这块我看还是有退化，是不是截断策略的问题？<br>
+            <span class="ts" onclick="jump('12:05',725)">12:05</span> <b>张三</b>：有可能，我回去验证一下。<br>
+            <span class="ts" onclick="jump('15:30',930)">15:30</span> <b>liaoruili</b>：那下一轮数据从哪来？<br>
+            <span class="ts" onclick="jump('18:44',1124)">18:44</span> <b>李四</b>：我建议先用内部标注的补长文本样本。<br>
+            <span class="ts" onclick="jump('24:10',1450)">24:10</span> <b>liaoruili</b>：行，那下次评审定在两周后。
+          </div>
+        </div>
+
+        <div class="pane" id="aiRec">
+          <div class="player" id="player">
+            <div class="screen"><span id="pTitle">录屏.mp4</span></div>
+            <div class="bar">
+              <button class="pbtn" id="pPlay" onclick="togglePlay()">▶</button>
+              <div class="track" onclick="seekAt(event)"><div class="fill" id="pFill"></div></div>
+              <span class="ptime"><b id="pNow">00:00</b> / 1:32:14</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin:12px 0 8px">
+            <button class="btn sm primary">上传录屏 / 录音</button>
+
+          </div>
+          <table>
+            <tr class="clickable playing" id="rec1" onclick="load('录屏.mp4',this)"><td style="width:26px">🎬</td>
+                <td><b>录屏.mp4</b><br><span class="muted">zhangsan · 1 小时 32 分 · 1.8 GB</span></td>
+                <td style="width:110px;text-align:right"><span class="tag ok">已转写</span></td></tr>
+            <tr class="clickable" onclick="load('录音.m4a',this)"><td>🎙</td>
+                <td><b>录音.m4a</b><br><span class="muted">lisi · 1 小时 28 分 · 62 MB</span></td>
+                <td style="text-align:right"><button class="btn sm" onclick="event.stopPropagation()">转写</button></td></tr>
+          </table>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：正式纪要表单 -->
+    <div class="col">
+      <div class="card">
+        <div class="sub" style="margin-top:0">
+          <button class="on" data-pane="minA">信息与人员</button>
+          <button data-pane="minB">纪要正文</button>
+        </div>
+
+        <div class="pane on" id="minA">
+          <table style="margin-bottom:16px">
+            <tr><td style="width:80px" class="muted">会议主题</td><td><b>模型评审会（第二版）</b></td></tr>
+            <tr><td class="muted">时间</td><td>2026-08-06 周三 14:00–15:30</td></tr>
+            <tr><td class="muted">地点</td><td>腾讯会议</td></tr>
+            <tr><td class="muted">所属项目</td><td><span class="tag team">AI 模型</span></td></tr>
+            <tr><td class="muted">主持人</td><td>liaoruili</td></tr>
+            <tr><td class="muted">记录人</td><td>lisi</td></tr>
+          </table>
+
+          <label class="f"><span>参会人</span><div class="chips" id="cAtt"></div></label>
+          <label class="f"><span>旁听人</span><div class="chips" id="cObs"></div></label>
+          <label class="f"><span>缺席人</span><div class="chips" id="cAbs"></div></label>
+
+          <div style="margin-top:14px">
+            <button class="btn primary sm" onclick="document.querySelector('[data-pane=minB]').click()">
+              核对完了，去写正文 →</button>
+          </div>
+        </div>
+
+        <div class="pane" id="minB">
+          <div class="fld">
+            <div class="fld-h">议题
+              <button class="btn sm" onclick="pull(this,'agenda')">从会议议程带入</button></div>
+            <div class="fld-v" ondblclick="edit(this)" data-empty="双击填写"></div>
+          </div>
+
+          <div class="fld">
+            <div class="fld-h">主要内容
+              <button class="btn sm" onclick="pull(this,'summary')">从 AI 摘要导入</button></div>
+            <div class="fld-v" ondblclick="edit(this)" data-empty="双击填写，支持 Markdown"></div>
+          </div>
+
+          <div class="fld">
+            <div class="fld-h">决议事项</div>
+            <div class="fld-v" ondblclick="edit(this)" data-empty="双击填写"></div>
+          </div>
+
+          <div class="fld">
+            <div class="fld-h">待办事项</div>
+            <div class="fld-v" ondblclick="edit(this)" data-empty="双击填写，一行一条"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 个人主页 ══════════ -->
+<div class="wrap" id="me">
+  <div class="row">
+    <div class="col" style="max-width:280px">
+      <div class="card" style="text-align:center">
+        <div style="width:64px;height:64px;border-radius:50%;background:#0d9488;color:#fff;font-size:26px;
+                    line-height:64px;margin:4px auto 10px">L</div>
+        <b style="font-size:16px">liaoruili</b>
+        <div class="muted">lrl@ruc.edu.cn</div>
+        <div style="margin-top:10px">
+          <span class="tag owner">主持 2 个项目</span> <span class="tag">参与 4 个</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>设置</h3>
+        <div style="line-height:2.2;font-size:13px">
+          <div><a href="#">会前提醒时间</a> <span class="muted">提前 15 分钟</span></div>
+          <div><a href="#">通知偏好</a></div>
+          <div><a href="#">我的分享</a> <span class="muted">3 条有效</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <h3 style="margin:0">我的投入</h3>
+          <button class="btn sm">本月</button><button class="btn sm primary">本季度</button><button class="btn sm">本年</button>
+          
+        </div>
+        <div class="stat">
+          <div><b>23</b><span class="muted">参会次数</span></div>
+          <div><b>31.5</b><span class="muted">小时</span></div>
+          <div><b>4</b><span class="muted">涉及项目</span></div>
+          <div><b>2</b><span class="muted">待写纪要</span></div>
+        </div>
+        <table style="margin-top:12px">
+          <tr><th>项目</th><th style="width:90px">次数</th><th style="width:90px">时长</th><th style="width:110px">纪要完成</th></tr>
+          <tr><td>AI 模型</td><td>12</td><td>17.0 h</td><td>10 / 12</td></tr>
+          <tr><td>数据治理</td><td>7</td><td>9.5 h</td><td>7 / 7</td></tr>
+          <tr><td>全体</td><td>3</td><td>4.0 h</td><td>3 / 3</td></tr>
+          <tr><td><span class="tag self">我的日程</span></td><td>1</td><td>1.0 h</td><td class="muted">—</td></tr>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>我主持的项目</h3>
+        <table>
+          <tr><td><b>AI 模型</b> <span class="tag team">公开</span></td><td class="muted">12 名成员</td>
+              <td style="width:110px"><span class="tag warn">2 份纪要待整理</span></td></tr>
+          <tr><td><b>全体</b> <span class="tag team">公开</span></td><td class="muted">86 名成员</td><td></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function go(id, el){
+    document.querySelectorAll('.wrap').forEach(w=>w.classList.toggle('on', w.id===id));
+    document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('on'));
+    if(el) el.classList.add('on');
+    // 子视图归属高亮:发起会议 / 会议详情都属于「会议」
+    if(id==='new'||id==='meet'||id==='min') document.querySelectorAll('.nav button')[2].classList.add('on');
+    if(id==='me') document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('on'));
+    window.scrollTo(0,0);
+  }
+  /* 日历:全天 0–24 点全部展开,不滚动。行高 30px,24 小时共 720px */
+  (function(){
+    const ax=document.getElementById('axis'); if(!ax) return;
+    for(let h=0;h<24;h++){
+      const d=document.createElement('div');
+      d.textContent = h===0 ? '' : h+':00';
+      ax.appendChild(d);
+    }
+    document.querySelectorAll('.calcol').forEach(col=>{
+      const frag=document.createDocumentFragment();
+      for(let h=0;h<24;h++){
+        const l=document.createElement('div');
+        l.className='ln'+((h<7||h>21)?' dim':'')+((h%6===0)?' h6':'');
+        frag.appendChild(l);
+      }
+      col.insertBefore(frag, col.firstChild);
+    });
+  })();
+
+  /* 纪要字段:平时是展示态(渲染后),双击才进入编辑——纪要多数时候是拿来读的 */
+  const MD_SRC = {
+    agenda: '1. 第三版模型指标复盘\n2. 下一轮训练数据来源\n3. 时间安排',
+    summary: '## 一、第三版模型指标复盘\n\n张三汇报第三版指标，准确率 **87.4%**，较第二版提升 3.2 个百分点。\n长文本场景仍存在退化，初步判断与截断策略有关，张三会后验证。\n\n## 二、下一轮训练数据来源\n\n讨论三个候选来源，决定先用内部标注数据补充长文本样本。'
+  };
+  function md(t){
+    return t.split('\n').map(l=>{
+      l = l.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      l = l.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+      if(/^##\s/.test(l)) return '<h4>'+l.replace(/^##\s/,'')+'</h4>';
+      return l.trim()==='' ? '' : '<div>'+l+'</div>';
+    }).join('');
+  }
+  function edit(v){
+    if(v.querySelector('textarea')) return;
+    const raw = v.dataset.raw || '';
+    v.innerHTML = '';
+    const ta = document.createElement('textarea'); ta.value = raw;
+    const ok = document.createElement('button'); ok.className='btn primary sm done'; ok.textContent='完成';
+    ok.onclick = ()=>{ v.dataset.raw = ta.value; v.innerHTML = md(ta.value); };
+    v.appendChild(ta); v.appendChild(ok); ta.focus();
+  }
+  /* 导入不是「AI 替你写完」——导入的是起点,之后由记录员改,责任仍在人 */
+  function pull(btn, key){
+    const v = btn.closest('.fld').querySelector('.fld-v');
+    if(v.dataset.raw && !confirm('已有内容，导入会覆盖。继续？')) return;
+    v.dataset.raw = MD_SRC[key];
+    v.innerHTML = md(MD_SRC[key]);
+  }
+
+  /* 录制播放器:记录员整理纪要时要「边播边对」,所以常驻左栏顶部,不藏在 tab 里 */
+  const DUR = 5534;   // 1:32:14
+  let playing = false;
+  function togglePlay(){
+    playing = !playing;
+    document.getElementById('pPlay').textContent = playing ? '❚❚' : '▶';
+  }
+  function fmt(sec){
+    const m = Math.floor(sec/60), ss = String(Math.floor(sec%60)).padStart(2,'0');
+    return m >= 60 ? Math.floor(m/60)+':'+String(m%60).padStart(2,'0')+':'+ss : m+':'+ss;
+  }
+  function setAt(sec){
+    document.getElementById('pFill').style.width = (sec/DUR*100)+'%';
+    document.getElementById('pNow').textContent = fmt(sec);
+  }
+  function seekAt(e){
+    const r = e.currentTarget.getBoundingClientRect();
+    setAt(DUR * (e.clientX - r.left) / r.width);
+  }
+  function load(name, row){
+    document.getElementById('pTitle').textContent = name;
+    setAt(0); playing=false; document.getElementById('pPlay').textContent='▶';
+    if(row){ row.closest('table').querySelectorAll('tr').forEach(t=>t.classList.remove('playing'));
+             row.classList.add('playing'); }
+  }
+  /* 逐字稿时间戳 → 播放器跳转,这是核对的主要动作 */
+  function jump(label, sec){
+    document.querySelector('[data-pane=aiRec]').click();   // 先切到「录制」
+    setAt(sec);
+    playing = true; document.getElementById('pPlay').textContent='❚❚';
+  }
+
+  function goMeet(){ go('meet', null); }
+
+  /* 移出成员:后果不可逆(会连带撤销他的公开链接),必须确认 */
+  function rmMember(name){
+    confirm('把 '+name+' 移出「AI 模型」？\n\n'
+      + '· 他将立刻看不到本项目的全部资料，包括他自己参与过的会议\n'
+      + '· 他上传的材料全部留在项目里，署名保留\n'
+      + '· 他创建的、指向本项目的公开分享链接会被一并撤销\n'
+      + '· 本项目的会议从他的时间线消失');
+  }
+
+  /* 个人中心下拉:有 ▾ 就该有下拉,顺便安置「退出登录」与「返回 IAH 门户」 */
+  function toggleMenu(e){ e.stopPropagation(); document.getElementById('userMenu').classList.toggle('on'); }
+  function closeMenu(){ const m=document.getElementById('userMenu'); if(m) m.classList.remove('on'); }
+  document.addEventListener('click', closeMenu);
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeMenu(); });
+
+  /* 讨论区:发送对象放在发送框上,选私聊时整块变色——防误发(Zoom 社区有大量误发投诉) */
+  function onTo(){
+    const v=document.getElementById('toSel').value;
+    document.getElementById('sendBox').classList.toggle('pm', v!=='all');
+  }
+  /* 抄腾讯会议:最近一条收到的是私聊,却要发给所有人时二次确认 */
+  let lastIncomingWasPM = true;
+  function trySend(){
+    const sel=document.getElementById('toSel'), inp=document.getElementById('msgInput');
+    if(!inp.value.trim()) return;
+    if(sel.value==='all' && lastIncomingWasPM){
+      if(!confirm('上一条收到的是私聊消息。\n\n你现在要发送给「所有参会人（8）」，确定吗？')) return;
+    }
+    inp.value=''; 
+  }
+  /* ── chips-combobox ──
+     按 W3C APG combobox 模式:选中项在框内成为可移除标签、输入即过滤、
+     选中后清空输入以便继续输入下一个、★输入为空时 Backspace 删最后一个标签★ */
+  function initChips(box, all, chosen, cls, onChange){
+    const inp = document.createElement('input');
+    inp.placeholder = cls==='proj' ? '输入项目名搜索…' : '输入姓名搜索…';
+    const dd = document.createElement('div'); dd.className='dd';
+    box.appendChild(inp); box.appendChild(dd);
+
+    function render(){
+      box.querySelectorAll('.chip').forEach(c=>c.remove());
+      chosen.forEach((v,i)=>{
+        const c=document.createElement('span'); c.className='chip '+cls;
+        c.innerHTML = v + ' <b title="移除">×</b>';
+        c.querySelector('b').onclick = e=>{ e.stopPropagation(); chosen.splice(i,1); render(); fill(); };
+        box.insertBefore(c, inp);
+      });
+      onChange && onChange(chosen);
+    }
+    function fill(){
+      const q = inp.value.trim().toLowerCase();
+      const list = all.filter(v=>!chosen.includes(v) && v.toLowerCase().includes(q));
+      dd.innerHTML='';
+      if(!list.length){
+        const d=document.createElement('div'); d.className='none';
+        d.textContent = q ? '没有匹配的'+(cls==='proj'?'项目':'人员') : '没有更多了';
+        dd.appendChild(d);
+      } else list.forEach((v,i)=>{
+        const d=document.createElement('div'); if(i===0) d.className='hi';
+        d.innerHTML = '<span>'+v+'</span>' + (cls==='proj'?'<small>项目</small>':'<small>平台用户</small>');
+        d.onmousedown = e=>{ e.preventDefault(); chosen.push(v); inp.value=''; render(); fill(); inp.focus(); };
+        dd.appendChild(d);
+      });
+    }
+    box.onclick = ()=> inp.focus();
+    inp.onfocus = ()=>{ box.classList.add('focus'); dd.classList.add('on'); fill(); };
+    inp.onblur  = ()=>{ box.classList.remove('focus'); dd.classList.remove('on'); };
+    inp.oninput = fill;
+    inp.onkeydown = e=>{
+      // ★输入框为空时 Backspace 删掉最后一个标签——这条决定了控件的手感★
+      if(e.key==='Backspace' && !inp.value && chosen.length){ chosen.pop(); render(); fill(); }
+      if(e.key==='Enter'){ const hi=dd.querySelector('.hi:not(.none)'); if(hi){ e.preventDefault(); hi.onmousedown(e); } }
+      if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+        e.preventDefault();
+        const items=[...dd.querySelectorAll('div:not(.none)')]; if(!items.length) return;
+        let k=items.findIndex(x=>x.classList.contains('hi'));
+        items.forEach(x=>x.classList.remove('hi'));
+        k = e.key==='ArrowDown' ? Math.min(k+1,items.length-1) : Math.max(k-1,0);
+        items[k].classList.add('hi'); items[k].scrollIntoView({block:'nearest'});
+      }
+    };
+    render(); 
+  }
+  const PROJECTS=['AI 模型','数据治理','全体','算法组','论文小组','模型评测'];
+  const USERS=['liaoruili','zhangsan','lisi','wangwu','zhaoliu','sunqi','zhouba','wujiu',
+               'chenshi','yangyi','hanmeimei','lilei'];
+  const projBox=document.getElementById('cProj'), userBox=document.getElementById('cUser');
+  if(projBox) initChips(projBox, PROJECTS, ['AI 模型','数据治理'], 'proj');
+  const attBox=document.getElementById('cAtt'), obsBox=document.getElementById('cObs'),
+        absBox=document.getElementById('cAbs');
+  if(attBox) initChips(attBox, USERS, ['liaoruili','zhangsan','lisi','wangwu','zhaoliu','sunqi'], 'user');
+  if(obsBox) initChips(obsBox, USERS, ['chenshi'], 'user');
+  if(absBox) initChips(absBox, USERS, ['zhouba','wujiu'], 'user');
+  if(userBox) initChips(userBox, USERS,
+      ['liaoruili','zhangsan','lisi','wangwu','zhaoliu','sunqi','zhouba','wujiu'], 'user',
+      ch=>{ const c=document.getElementById('pCount'); if(c) c.textContent='（'+ch.length+'）'; });
+
+  document.querySelectorAll('.sub button').forEach(b=>b.onclick=()=>{
+    b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    // ★项目页的 tab 真正切换面板★(原型 v2 里它是死的)
+    const t=b.dataset.pane;
+    if(t){
+      const scope = b.closest('.card') || document;   // 作用域限定:项目页与会议页各自独立
+      scope.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on', p.id===t));
+    }
+  });
+</script>

@@ -1,6 +1,6 @@
 [package]
 name = "congrove"
-version = "0.3.54"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.86"
 description = "congrove — 汇流:团队知识库(空间+小组+会议录屏+论文库),IAH 平台子系统"
@@ -55,3 +55,16 @@ sha2 = "0.10"
 hex = "0.4"
 # 时间
 chrono = { version = "0.4", features = ["serde"] }
+# ★IANA 时区库★(2026-08-12,PRD E0/E1/E2)。chrono 自己**只会固定偏移**,
+# 算不了 "Asia/Shanghai" 这种带夏令时和历史变更的真时区 —— 而我们存的就是 IANA 名。
+# ⚠ 前端不引第三方时区库(浏览器有 Intl),后端没有等价物,所以这个依赖是必须的,不是图省事。
+chrono-tz = "0.10"
+
+# ---- CI 门禁:cargo clippy -- -D warnings(见平台 CODE-QUALITY.md,congrove 是硬门禁试点)----
+# 规范是「clippy 零 warning、别用 #[allow] 压 bug 类 lint」。这里**只**豁免 type_complexity 一条,
+# 且是项目级 documented 决策、不是散在代码里的 #[allow]:本仓库 sqlx 全用 runtime `query_as` 收
+# **一次性 SQL 行元组**(`Vec<(i64, String, Option<DateTime<Utc>>, ...)>`),每个只用一次。抽 `type` 别名
+# 反而把「列清单紧挨 SQL、加字段就地核对」这个 congrove 明确约定(见 CLAUDE.md)藏起来、更难读。
+# type_complexity 挡的是风格不是 bug —— 豁免它不违反「别用 allow 压 bug」的立规本意。其余所有 clippy 一律零 warning。
+[lints.clippy]
+type_complexity = "allow"

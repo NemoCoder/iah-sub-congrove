@@ -1,0 +1,629 @@
+{
+ "activities.list": {
+  "body": {
+   "<len>": "number",
+   "<of>": [
+    {
+     "actual_minutes": "null",
+     "agenda": "string",
+     "archived": "boolean",
+     "created_at": "string",
+     "ends_at": "string",
+     "has_minutes": "boolean",
+     "id": "string",
+     "is_private": "boolean",
+     "location": "string",
+     "minutes_status": "null",
+     "my_kind": "string",
+     "my_status": "string",
+     "no_download": "boolean",
+     "no_share": "boolean",
+     "online_url": "string",
+     "organizer": "string",
+     "participant_count": "number",
+     "projects": {
+      "<len>": "number",
+      "<of>": [
+       {
+        "id": "string",
+        "name": "string"
+       }
+      ]
+     },
+     "recorder": "string",
+     "remind_minutes": "null",
+     "starts_at": "string",
+     "status": "string",
+     "timezone": "string",
+     "title": "string",
+     "type_name": "string",
+     "visibility": "string"
+    }
+   ]
+  },
+  "status": "number"
+ },
+ "activities.public": {
+  "body": {
+   "<len>": "number",
+   "<of>": [
+    {
+     "actual_minutes": "null",
+     "agenda": "string",
+     "archived": "boolean",
+     "created_at": "string",
+     "ends_at": "string",
+     "has_minutes": "boolean",
+     "id": "string",
+     "is_private": "boolean",
+     "location": "string",
+     "minutes_status": "null",
+     "my_kind": "null",
+     "my_status": "null",
+     "no_download": "boolean",
+     "no_share": "boolean",
+     "online_url": "string",
+     "organizer": "string",
+     "participant_count": "number",
+     "projects": {
+      "<len>": "number",
+      "<of>": [
+       {
+        "id": "string",
+        "name": "string"
+       }
+      ]
+     },
+     "recorder": "string",
+     "remind_minutes": "null",
+     "starts_at": "string",
+     "status": "string",
+     "timezone": "string",
+     "title": "string",
+     "type_name": "string",
+     "visibility": "string"
+    }
+   ]
+  },
+  "status": "number"
+ },
+ "activity.detail": {
+  "body": {
+   "activity": {
+    "actual_minutes": "null",
+    "agenda": "string",
+    "archived": "boolean",
+    "created_at": "string",
+    "ends_at": "string",
+    "has_minutes": "boolean",
+    "id": "string",
+    "is_private": "boolean",
+    "location": "string",
+    "minutes_status": "null",
+    "my_kind": "null",
+    "my_status": "string",
+    "no_download": "boolean",
+    "no_share": "boolean",
+    "online_url": "string",
+    "organizer": "string",
+    "participant_count": "number",
+    "projects": "null",
+    "recorder": "string",
+    "remind_minutes": "null",
+    "starts_at": "string",
+    "status": "string",
+    "timezone": "string",
+    "title": "string",
+    "type_name": "string",
+    "visibility": "string"
+   },
+   "can_edit": "boolean",
+   "participants": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "counter_ends_at": "null",
+      "counter_reason": "null",
+      "counter_starts_at": "null",
+      "kind": "string",
+      "name": "string",
+      "required": "boolean",
+      "responded_at": "string",
+      "status": "string",
+      "username": "string"
+     }
+    ]
+   },
+   "projects": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "id": "string",
+      "name": "string"
+     }
+    ]
+   }
+  },
+  "status": "number"
+ },
+ "activity.detail.b": {
+  "body": {
+   "activity": {
+    "actual_minutes": "null",
+    "agenda": "string",
+    "archived": "boolean",
+    "created_at": "string",
+    "ends_at": "string",
+    "has_minutes": "boolean",
+    "id": "string",
+    "is_private": "boolean",
+    "location": "string",
+    "minutes_status": "null",
+    "my_kind": "null",
+    "my_status": "string",
+    "no_download": "boolean",
+    "no_share": "boolean",
+    "online_url": "string",
+    "organizer": "string",
+    "participant_count": "number",
+    "projects": "null",
+    "recorder": "string",
+    "remind_minutes": "null",
+    "starts_at": "string",
+    "status": "string",
+    "timezone": "string",
+    "title": "string",
+    "type_name": "string",
+    "visibility": "string"
+   },
+   "can_edit": "boolean",
+   "participants": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "counter_ends_at": "null",
+      "counter_reason": "null",
+      "counter_starts_at": "null",
+      "kind": "string",
+      "name": "string",
+      "required": "boolean",
+      "responded_at": "string",
+      "status": "string",
+      "username": "string"
+     }
+    ]
+   },
+   "projects": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "id": "string",
+      "name": "string"
+     }
+    ]
+   }
+  },
+  "status": "number"
+ },
+ "activity.detail.c": {
+  "body": {
+   "activity": {
+    "actual_minutes": "null",
+    "agenda": "string",
+    "archived": "boolean",
+    "created_at": "string",
+    "ends_at": "string",
+    "has_minutes": "boolean",
+    "id": "string",
+    "is_private": "boolean",
+    "location": "string",
+    "minutes_status": "null",
+    "my_kind": "null",
+    "my_status": "string",
+    "no_download": "boolean",
+    "no_share": "boolean",
+    "online_url": "string",
+    "organizer": "string",
+    "participant_count": "number",
+    "projects": "null",
+    "recorder": "string",
+    "remind_minutes": "null",
+    "starts_at": "string",
+    "status": "string",
+    "timezone": "string",
+    "title": "string",
+    "type_name": "string",
+    "visibility": "string"
+   },
+   "can_edit": "boolean",
+   "participants": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "counter_ends_at": "null",
+      "counter_reason": "null",
+      "counter_starts_at": "null",
+      "kind": "string",
+      "name": "string",
+      "required": "boolean",
+      "responded_at": "string",
+      "status": "string",
+      "username": "string"
+     }
+    ]
+   },
+   "projects": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "id": "string",
+      "name": "string"
+     }
+    ]
+   }
+  },
+  "status": "number"
+ },
+ "activity.items": {
+  "body": {
+   "<len>": "number",
+   "<of>": [
+    {
+     "created_at": "string",
+     "created_by": "string",
+     "id": "string",
+     "is_recording": "boolean",
+     "kind": "string",
+     "mime": "string",
+     "name": "string",
+     "size": "number"
+    }
+   ]
+  },
+  "status": "number"
+ },
+ "activity.linkhist": {
+  "body": {
+   "<len>": "number",
+   "<of>": "<空数组:本次没数据>"
+  },
+  "status": "number"
+ },
+ "activity.messages": {
+  "body": {
+   "<len>": "number",
+   "<of>": "<空数组:本次没数据>"
+  },
+  "status": "number"
+ },
+ "activity.minutes": {
+  "body": {
+   "can_edit": "boolean",
+   "minutes": "null"
+  },
+  "status": "number"
+ },
+ "apis": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.activity.noproject": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.activity.past": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.download.nodownload": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.item.404": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.stats.range": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "deny.trashed.download": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "freebusy": {
+  "body": {
+   "busy": {
+    "e2e": {
+     "<len>": "number",
+     "<of>": [
+      {
+       "end": "string",
+       "start": "string"
+      }
+     ]
+    }
+   }
+  },
+  "status": "number"
+ },
+ "item.deleted": {
+  "body": {
+   "error": "string"
+  },
+  "status": "number"
+ },
+ "item.detail": {
+  "body": {
+   "activity_id": "string",
+   "created_at": "string",
+   "created_by": "string",
+   "id": "string",
+   "kind": "string",
+   "mime": "string",
+   "name": "string",
+   "parent_id": "string",
+   "project_id": "string",
+   "sha_declared_mismatch": "boolean",
+   "size": "number",
+   "updated_at": "string"
+  },
+  "status": "number"
+ },
+ "item.versions": {
+  "body": {
+   "<len>": "number",
+   "<of>": "<空数组:本次没数据>"
+  },
+  "status": "number"
+ },
+ "me": {
+  "body": {
+   "admin_mode_until": "null",
+   "can_super": "boolean",
+   "direct_upload_endpoint": "string",
+   "email": "null",
+   "is_super": "boolean",
+   "name": "string",
+   "username": "string"
+  },
+  "status": "number"
+ },
+ "me.stats": {
+  "body": {
+   "by_project": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "archived": "boolean",
+      "count": "number",
+      "hours": "number",
+      "id": "string",
+      "minutes_done": "number",
+      "name": "string"
+     }
+    ]
+   },
+   "by_type": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "count": "number",
+      "hours": "number",
+      "hours_by_source": {
+       "manual": "number",
+       "recording": "number",
+       "scheduled": "number"
+      },
+      "name": "string",
+      "type_id": "string"
+     }
+    ]
+   },
+   "hosting": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "archived": "boolean",
+      "id": "string",
+      "members": "number",
+      "minutes_pending": "number",
+      "name": "string"
+     }
+    ]
+   },
+   "member_of": "number",
+   "range": "string",
+   "totals": {
+    "activities": "number",
+    "hours": "number",
+    "hours_by_source": {
+     "manual": "number",
+     "recording": "number",
+     "scheduled": "number"
+    },
+    "minutes_todo": "number",
+    "projects": "number"
+   },
+   "totals_by_type": {
+    "activities": "number",
+    "hours": "number"
+   }
+  },
+  "status": "number"
+ },
+ "me.transfers": {
+  "body": {
+   "<len>": "number",
+   "<of>": "<空数组:本次没数据>"
+  },
+  "status": "number"
+ },
+ "me.unread": {
+  "body": {
+   "<len>": "number",
+   "<of>": "<空数组:本次没数据>"
+  },
+  "status": "number"
+ },
+ "project.detail": {
+  "body": {
+   "created_at": "string",
+   "created_by": "string",
+   "description": "string",
+   "id": "string",
+   "my_role": "string",
+   "name": "string",
+   "pending_transfer": "null"
+  },
+  "status": "number"
+ },
+ "project.items": {
+  "body": {
+   "<len>": "number",
+   "<of>": [
+    {
+     "activity_id": "string",
+     "created_at": "string",
+     "created_by": "string",
+     "id": "string",
+     "kind": "string",
+     "mime": "string",
+     "name": "string",
+     "parent_id": "null",
+     "sha_declared_mismatch": "boolean",
+     "size": "number",
+     "updated_at": "string"
+    }
+   ]
+  },
+  "status": "number"
+ },
+ "project.members": {
+  "body": {
+   "members": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "added_at": "string",
+      "added_by": "string",
+      "name": "string",
+      "role": "string",
+      "username": "string"
+     }
+    ]
+   },
+   "owner": "string"
+  },
+  "status": "number"
+ },
+ "project.stats": {
+  "body": {
+   "accept_rate": "number",
+   "accepted": "number",
+   "activities": "number",
+   "avg_hours_per_person": "null",
+   "dedup_note": "string",
+   "hours": "number",
+   "hours_by_source": {
+    "manual": "number",
+    "recording": "number",
+    "scheduled": "number"
+   },
+   "invited": "number",
+   "minutes_done": "number",
+   "range": "string"
+  },
+  "status": "number"
+ },
+ "project.trash": {
+  "body": {
+   "items": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "deleted_at": "string",
+      "deleted_by": "string",
+      "id": "string",
+      "kind": "string",
+      "mime": "string",
+      "name": "string",
+      "size": "number"
+     }
+    ]
+   },
+   "total": "number"
+  },
+  "status": "number"
+ },
+ "projects": {
+  "body": {
+   "<len>": "number",
+   "<of>": [
+    {
+     "archived_at": "null",
+     "created_at": "string",
+     "created_by": "string",
+     "description": "string",
+     "hotwords": "string",
+     "id": "string",
+     "kind": "string",
+     "my_role": "string",
+     "name": "string",
+     "no_download": "boolean",
+     "used_bytes": "number"
+    }
+   ]
+  },
+  "status": "number"
+ },
+ "share.visitor": {
+  "body": {
+   "needs_code": "boolean"
+  },
+  "status": "number"
+ },
+ "shares.mine": {
+  "body": {
+   "items": {
+    "<len>": "number",
+    "<of>": [
+     {
+      "allow_download": "boolean",
+      "created_at": "string",
+      "expires_at": "null",
+      "has_code": "boolean",
+      "item_count": "number",
+      "item_deleted": "boolean",
+      "item_id": "string",
+      "kind": "string",
+      "last_visit_at": "null",
+      "max_visits": "null",
+      "mime": "string",
+      "name": "string",
+      "revoked_at": "string",
+      "space": "string",
+      "token": "string",
+      "visits": "number"
+     }
+    ]
+   },
+   "total": "number"
+  },
+  "status": "number"
+ }
+}

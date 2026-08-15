@@ -9,7 +9,7 @@ import { VERSION } from './version'
 /// 平台域名约定:dev = `<slug>-dev.sub.ruciah.com`,prod = `<slug>.sub.ruciah.com`。
 const IS_DEV = typeof window !== 'undefined' && /(^|\.)[a-z0-9-]+-dev\.sub\./.test(window.location.hostname)
 
-export function IahHeader({ extra }: { extra?: React.ReactNode }) {
+export function IahHeader({ nav, extra }: { nav?: React.ReactNode; extra?: React.ReactNode }) {
   return (
     <div
       style={{
@@ -42,6 +42,10 @@ export function IahHeader({ extra }: { extra?: React.ReactNode }) {
           </span>
         </span>
       </a>
+      {/* ★三个根 tab 放在页眉里★（2026-08-09 用户）：它们原来是内容区顶上的一个
+          `Segmented`，和「今天 / 周 / 月」那排按钮长得一样大 —— 于是**根导航看起来
+          和视图内的次级控件同级**，读不出层次。挪进页眉、紧挨品牌，位置本身就说明了它是根。 */}
+      {nav && <div style={{ marginLeft: 28, display: 'flex', alignItems: 'center' }}>{nav}</div>}
       <div style={{ marginLeft: 'auto' }}>{extra}</div>
     </div>
   )

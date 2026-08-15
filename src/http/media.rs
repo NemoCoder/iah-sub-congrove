@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
-use crate::http::items::space_quota_used;
+use crate::http::items::{owner_quota_used, project_owner};
 use crate::perm::{require_role, Role};
 use crate::state::AppState;
 
@@ -54,22 +54,23 @@ pub struct BeginIn {
     pub fp: Option<String>,
 }
 
-/// POST /api/spaces/{sid}/media/begin(≥editor)。预签名不可用回 501,前端回退后端流式上传。
+/// POST /api/projects/{pid}/media/begin(≥editor)。预签名不可用回 501,前端回退后端流式上传。
 pub async fn begin(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-    Path(sid): Path<i64>,
+    Path(pid): Path<i64>,
     Json(input): Json<BeginIn>,
 ) -> AppResult<Response> {
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
     if state.storage.presign.is_none() {
         return Ok((StatusCode::NOT_IMPLEMENTED, Json(json!({ "error": "预签名未启用" }))).into_response());
     }
-    crate::http::items::check_parent(&state.pool, sid, input.parent_id).await?;
+    crate::http::items::check_parent(&state.pool, pid, input.parent_id).await?;
     if input.size <= 0 {
         return Err(AppError::BadRequest("size 必须为正(前端 File.size)".into()));
     }
-    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    // ★配额算项目 owner 的★（ADR-0004）：不是操作者的 —— 材料归项目，额度归主持人。
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + input.size > quota {
         return Err(AppError::BadRequest("超出空间配额,删些内容或找超管调配额".into()));
     }
@@ -81,19 +82,35 @@ pub async fn begin(
     // ★断点续传★(迁移 0009):带指纹来的先看看「上次没传完的那个文件」还在不在。
     // 条件卡死到本人 + 本空间 + 本目录 + 未完成 + 24h 内——别把别人的半截上传认成我的。
     // 24h 与 lib.rs 的清扫窗口对齐:过期的那半截已被 abort,续也续不上。
-    let mut resume: Option<(i64, String, Vec<(i32, String, i64)>)> = None;
+    let mut resume: Option<(i64, String, String, Vec<(i32, String, i64)>)> = None;
     if let Some(fp) = input.fp.as_deref().filter(|f| !f.trim().is_empty()) {
-        let row: Option<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT id, upload_id FROM items
-              WHERE space_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND s3_key IS NULL
+        // ★把 upload_key 一起读回来★(v0.3.55 审计发现的静默失效):内容寻址之后,分片是按
+        // `blobs/<sha>` 建的,而这里原本硬拼 `spaces/{pid}/{iid}/blob` 去找 —— 两个 key 对不上,
+        // list_parts 必然失败 → 每次都走「断点已失效」分支重新传。前端**每次上传都带 sha**
+        // (秒传预检顺手算的),所以断点续传实际上对**所有**上传都没生效过,而且不报错只是重传。
+        // items-ok: 上传占位行 —— 断点续传找「我没传完的那个」,它们 s3_key IS NULL,还不是内容
+        let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, upload_id, upload_key FROM items
+              WHERE project_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND s3_key IS NULL
                 AND created_by = $3 AND upload_fp = $4 AND upload_id IS NOT NULL
                 AND created_at > now() - interval '24 hours'
               ORDER BY id DESC LIMIT 1",
         )
-        .bind(sid).bind(input.parent_id).bind(actor).bind(fp)
+        .bind(pid).bind(input.parent_id).bind(actor).bind(fp)
         .fetch_optional(&state.pool).await?;
-        if let Some((old_iid, Some(old_uid))) = row {
-            let old_key = format!("spaces/{sid}/{old_iid}/blob");
+        if let Some((old_iid, Some(old_uid), old_key_col)) = row {
+            // 清库后不存在没有 upload_key 的半截上传;真为空说明那行本就不完整。
+            // 不递归重来,直接把废行删掉、让 resume 保持 None —— 下面会走正常的新上传分支。
+            let old_key = match old_key_col {
+                Some(k) => k,
+                None => {
+                    tracing::info!(item = old_iid, "续传:该行没有 upload_key,当作断点失效");
+                    let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL")
+                        .bind(old_iid).execute(&state.pool).await;
+                    String::new()
+                }
+            };
+            if old_key.is_empty() { /* 断点失效,继续往下走新上传 */ } else {
             match state.storage.list_parts(&old_key, &old_uid).await {
                 // 断点还在:复用它。已传的片原样保留,前端只补缺的。
                 // ⚠ 先校验切法一致:除最后一片外每片都必须正好 PART_SIZE。
@@ -103,7 +120,7 @@ pub async fn begin(
                     let last = done.iter().map(|(n, _, _)| *n).max().unwrap_or(0);
                     let uniform = done.iter().all(|(n, _, sz)| *n == last || *sz == PART_SIZE);
                     if uniform {
-                        resume = Some((old_iid, old_uid, done));
+                        resume = Some((old_iid, old_uid, old_key.clone(), done));
                     } else {
                         tracing::warn!(item = old_iid, "续传:分片大小与当前 PART_SIZE 不一致,弃用该断点");
                         state.storage.multipart_abort(&old_key, &old_uid).await;
@@ -118,16 +135,17 @@ pub async fn begin(
                         .bind(old_iid).execute(&state.pool).await;
                 }
             }
+            }
         }
     }
 
     let (iid, existing) = match &resume {
-        Some((old_iid, old_uid, done)) => (*old_iid, Some((old_uid.clone(), done.clone()))),
+        Some((old_iid, old_uid, old_key, done)) => (*old_iid, Some((old_uid.clone(), old_key.clone(), done.clone()))),
         None => {
             let iid: i64 = sqlx::query_scalar(
-                "INSERT INTO items (space_id, parent_id, kind, name, mime, created_by, upload_fp) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+                "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, upload_fp) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
             )
-            .bind(sid)
+            .bind(pid)
             .bind(input.parent_id)
             .bind(kind)
             .bind(name)
@@ -147,23 +165,28 @@ pub async fn begin(
     // 已存在则另起 `blobs/<sha>-<rand>`:客户端申报的哈希不可信,覆盖已有对象 = 内容投毒。
     // 续传时沿用原 key(断点是按那个 key 建的)。
     let key = match &existing {
-        Some(_) => format!("spaces/{sid}/{iid}/blob"),
-        None => match input.sha256.as_deref().map(str::trim).filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())) {
-            Some(sha) => {
-                let k = crate::http::items::blob_key(sha);
-                if state.storage.exists(&k).await { format!("{k}-{}", &rand_suffix()) } else { k }
-            }
-            None => format!("spaces/{sid}/{iid}/blob"),
-        },
+        // ★续传沿用**断点原本那个 key**★(v0.3.55 审计):这里原先也是硬拼 pid/iid,
+        // 于是即使断点侥幸认领成功,接下来的分片和 complete 也会打到另一个 key 上 —— 拼坏且不报错。
+        Some((_, old_key, _)) => old_key.clone(),
+        // ★直传永远不落在规范 key 上★(A2/D1,2026-08-09 全量审计)。
+        //
+        // 这里原来是「`blobs/<客户端申报的 sha>` 不存在就直接用它当 key」——
+        // 而申报值只校验了「64 位十六进制」这个形状,内容是什么完全没人看。
+        // 那句「已存在则另起 `-<rand>` 绝不覆盖」★只在 begin 那一刻成立★:
+        // complete 落对象时是**覆盖**语义,中间隔着 6 小时的分片有效期(TOCTOU)。
+        //
+        // 现在一律落临时 key,真实哈希由服务端在 `verify_and_promote` 里算完再归位。
+        // 申报的 sha 仍然记进 items.sha256(断点续传认领与秒传预检要用),但**不再参与 key 的推导**。
+        None => crate::http::items::tmp_upload_key(iid, &rand_suffix()),
     };
-    // key 记进行里:complete/part/abort 都要用同一个(内容寻址之后不能再按 sid/iid 现拼)。
+    // key 记进行里:complete/part/abort 都要用同一个(内容寻址之后不能再按 pid/iid 现拼)。
     sqlx::query("UPDATE items SET upload_key = $2, sha256 = $3 WHERE id = $1")
         .bind(iid).bind(&key).bind(input.sha256.as_deref()).execute(&state.pool).await?;
 
     let run = async {
         // 续传复用旧 upload_id;新上传才 create。
         let upload_id = match &existing {
-            Some((uid, _)) => uid.clone(),
+            Some((uid, _, _)) => uid.clone(),
             None => state.storage.multipart_begin(&key, &mime).await?,
         };
         let parts = ((input.size + PART_SIZE - 1) / PART_SIZE).max(1); // 有符号 div_ceil 尚未稳定
@@ -183,7 +206,7 @@ pub async fn begin(
             sqlx::query("UPDATE items SET upload_id = $1, upload_fp = COALESCE($2, upload_fp) WHERE id = $3")
                 .bind(&upload_id).bind(input.fp.as_deref()).bind(iid)
                 .execute(&state.pool).await?;
-            let done = existing.map(|(_, d)| d).unwrap_or_default();
+            let done = existing.map(|(_, _, d)| d).unwrap_or_default();
             if !done.is_empty() {
                 tracing::info!(item = iid, parts = done.len(), "续传:跳过已传分片");
             }
@@ -224,12 +247,12 @@ pub async fn part(
     axum::extract::Query(q): axum::extract::Query<PartQuery>,
     body: axum::body::Bytes,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
     if body.is_empty() {
         return Err(AppError::BadRequest("空分片".into()));
     }
-    let key = upload_key_of(&state, sid, iid).await?;
+    let key = upload_key_of(&state, iid).await?;
     let p = state
         .storage
         .multipart_part(&key, &q.upload_id, q.part_number, body.to_vec())
@@ -264,9 +287,9 @@ pub async fn complete(
     Path(iid): Path<i64>,
     Json(input): Json<CompleteIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
-    let key = upload_key_of(&state, sid, iid).await?;
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    let key = upload_key_of(&state, iid).await?;
     // ★分片清单以 S3 为准★(断点续传后必须这样):续传时前端手里只有**本次**传的那几片的 ETag,
     // 上一轮传好的它根本没有。ListParts 是权威来源,拿它组装;前端交回的 parts 只用来对数量、
     // 对不上就把两边的数字写进日志(不拦——以服务端看到的为准更安全)。
@@ -276,6 +299,25 @@ pub async fn complete(
     }
     if listed.len() != input.parts.len() {
         tracing::info!(item = iid, listed = listed.len(), client = input.parts.len(), "complete:分片数与前端不一致(续传属正常)");
+    }
+    // ★大小对账要排在 `multipart_complete` **之前**★(2026-08-15 对抗检查抓到)。
+    //   下面那道「差一个字节都不认」的闸原来排在 complete 之后,于是「分片没传全」这条路
+    //   会先把对象**拼出来**再报错 —— 两个后果:
+    //   ① 对象留在桶里没人删(行还是占位行、`s3_key` 仍为 NULL,清扫任务按行找不到它);
+    //   ② ★它自己给的补救办法当场失效★ —— 错误文案写着「再拖进来可从断点继续」,
+    //      而 complete 一旦成功,这个 multipart 就结束了,ListParts 什么都不剩,断点没了。
+    //   ⇒ 判据换成 ListParts 报的**分片字节之和**(权威且免费,反正已经拉过一次)。
+    //     对不上就直接返回:对象没拼、断点原封不动,那句「可从断点继续」这才是真的。
+    let 分片总字节: i64 = listed.iter().map(|(_, _, sz)| *sz).sum();
+    // items-ok: 上传占位行 —— complete 回填正在上传的那一行
+    let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    if let Some(d) = declared.filter(|d| *d > 0) {
+        if d != 分片总字节 {
+            tracing::warn!(item = iid, declared = d, parts_sum = 分片总字节, "complete:分片字节之和对不上,不拼对象");
+            return Err(AppError::BadRequest(format!(
+                "上传不完整(应为 {d} 字节,已传 {分片总字节} 字节)——分片没传全,把同一个文件再拖进来可从断点继续")));
+        }
     }
     let parts: Vec<_> = listed
         .iter()
@@ -287,25 +329,44 @@ pub async fn complete(
     let head = state.storage.s3.head_object().bucket(&state.storage.bucket).key(&key).send().await
         .map_err(|e| AppError::Other(e.into()))?;
     let size = head.content_length().unwrap_or(0);
-    // ★完整性校验★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
+    // ★兜底再对一次账★(2026-08-04 二轮审计,我自己 P2 代码里的洞):分片清单以 ListParts 为准之后,
     // 「只传了一半就调 complete」会拼出一个**不完整却报成功**的文件 —— 静默数据损坏,最难查。
-    // begin 时把前端申报的大小记进了 items.size,这里对账:差一个字节都不认。
-    let declared: Option<i64> = sqlx::query_scalar("SELECT size FROM items WHERE id = $1")
-        .bind(iid).fetch_optional(&state.pool).await?.flatten();
+    // 前面已经按分片字节之和拦过一道,这一道防的是「拼出来的对象和分片之和还不一样」
+    // (S3 自己出岔子);走到这里对象已经存在,所以必须**回滚**,不能只报错就走。
     if let Some(d) = declared.filter(|d| *d > 0) {
         if d != size {
-            tracing::warn!(item = iid, declared = d, actual = size, "complete:大小对不上,判定为不完整上传");
+            tracing::warn!(item = iid, declared = d, actual = size, "complete:拼完的对象大小仍对不上,回滚");
+            // 回滚口径与下面「配额超了」那一段**逐字相同**:先删行再数引用
+            // (`delete_unreferenced` 按 items ∪ item_versions 数,本行还在会把自己算进去)。
+            // ★绝不裸删 S3 对象★ —— 内容寻址下这个 key 可能已经被别人的行引用上了,
+            //   同一个洞在本仓库出现过三次,详见下面那段注释。
+            let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
+            crate::http::items::delete_unreferenced(&state, std::slice::from_ref(&key)).await;
             return Err(AppError::BadRequest(format!(
-                "上传不完整(应为 {d} 字节,实到 {size} 字节)——分片没传全,把同一个文件再拖进来可从断点继续")));
+                "上传不完整(应为 {d} 字节,实到 {size} 字节),已回滚本次上传,请重新上传")));
         }
     }
     // ★按实际大小复核配额★(2026-08-04 审计):begin 只按前端**申报**的 size 预判,
     // 而预签名 PUT 不限制单片实际字节数——申报 1MB 传 5GB 就把配额绕过去了。
     // 超了就地回滚(删对象 + 删行),不留既成事实。
-    let (quota, used) = space_quota_used(&state.pool, sid).await?;
+    // ★配额算项目 owner 的★（ADR-0004）：不是操作者的 —— 材料归项目，额度归主持人。
+    let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
     if used + size > quota {
-        let _ = state.storage.delete(&key).await;
+        // ⚠★2026-08-08 修:这里原来也是裸 `storage.delete(&key)` —— **同一个洞的第三处**★
+        //   (前两处:v0.4.38 的 projects::remove、v0.4.40 的 items::upload 收尾复核)。
+        //   看上面 begin 那段:`if exists(blobs/<sha>) { 另起 -rand } else { 就用 blobs/<sha> }`
+        //   —— ★`blobs/<sha>` 还不存在时,key 就是那个全库共享的 key★。于是:
+        //   我 begin 拿到 blobs/X(当时不存在)→ 传到一半,别人经普通上传把 blobs/X 建好了
+        //   → 我 complete 撞配额回滚 → **把别人那份打空**(行还在、点开是空的)。
+        //   两人并发 begin 同一个新 sha 也一样(exists 那个检查是 TOCTOU)。
+        //
+        // ★我一度在提交信息里写过「G7 是安全的,别顺手一起改」—— 那是照抄别人的结论没自己验。★
+        //   同一个洞第三次出现说明一件事:「删 S3 对象前先数引用」必须是**唯一入口**,
+        //   而不是每处各自判断「我这里安不安全」。
+        //
+        // 顺序:先删行再数引用(delete_unreferenced 按 items ∪ item_versions 数,本行还在会把自己算进去)。
         let _ = sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await;
+        crate::http::items::delete_unreferenced(&state, std::slice::from_ref(&key)).await;
         return Err(AppError::BadRequest("实际大小超出空间配额,已回滚本次上传".into()));
     }
     // 落 s3_key 的同时清掉续传痕迹:这一行已经完成,不该再被当成断点认领。
@@ -336,9 +397,9 @@ pub async fn abort(
     Path(iid): Path<i64>,
     Json(input): Json<AbortIn>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
-    let key = upload_key_of(&state, sid, iid).await?;
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
+    let key = upload_key_of(&state, iid).await?;
     state.storage.multipart_abort(&key, &input.upload_id).await;
     // 只删还没完成的行(s3_key 仍 NULL);已完成的 abort 无意义也不该误删。
     sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await?;
@@ -352,40 +413,85 @@ pub async fn play(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
+    headers: axum::http::HeaderMap,
 ) -> AppResult<Response> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     // ★只对可播类型放行★(2026-08-04 审计):/play 会吐一条 6 小时的预签名直链,
     // 谁拿到谁能取原件。对 video 这是刻意的(能播就能录屏,D4 也明说不拦播放);
     // 但对 pdf/zip/doc 就等于**把 viewer_no_download 整条开关废掉**——viewer 打一下
     // /api/items/{id}/play 就拿到原件下载地址。所以这里钉死 kind。
-    let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, s3_key FROM items WHERE id = $1")
-        .bind(iid)
-        .fetch_optional(&state.pool)
-        .await?;
+    // ⚠★「对 video 是刻意的」这半句 2026-08-15 已经收窄★:禁下载时连 video 也不再发预签名,
+    //   改走下面那条同源 Range 代理。理由见那一段。
+    // ★deleted_at IS NULL★(v0.3.55 审计):回收站里的录屏不再吐预签名直链。
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT kind, s3_key FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
+            .bind(iid)
+            .fetch_optional(&state.pool)
+            .await?;
     let Some((kind, key)) = row else { return Err(AppError::NotFound) };
     if kind != "video" {
         return Err(AppError::BadRequest("只有录屏/视频能用播放地址(其他类型走 /download,受空间下载策略约束)".into()));
     }
     let Some(key) = key else { return Err(AppError::NotFound) };
+
+    // ★禁下载的场景不发预签名直链★(2026-08-15 对抗检查抓到,liaoruili 拍板「要堵住」):
+    //   上面那段注释里「能播就能录屏,所以不拦播放」的推理**只对播放本身成立**,
+    //   对**预签名直链**不成立 —— 它是一条 6 小时有效、**不记名**的取原件能力:
+    //   复制出去谁都能下(不用登录、不是成员也行),`wget` 一下拿到的就是原始文件,
+    //   跟录屏(有损、要实时、拿不到原始码流)完全不是一回事。
+    //   于是「这次活动的材料禁止下载原件」这条开关,对**视频**从来没有真正生效过。
+    //   ⚠ 但也不能干脆不让播 —— 开关的原话就是「能看但不能下」。所以禁下载时改走
+    //   **同源、认 cookie、支持 Range** 的代理:进度条照样能拖,而 URL 离开这个会话就没用。
+    let 禁下载 = {
+        let 项目级: bool = sqlx::query_scalar("SELECT no_download FROM projects WHERE id = $1")
+            .bind(pid).fetch_one(&state.pool).await?;
+        let 活动级: Option<bool> = sqlx::query_scalar(
+            "SELECT m.no_download FROM items_alive i JOIN activities m ON m.id = i.activity_id WHERE i.id = $1")
+            .bind(iid).fetch_optional(&state.pool).await?;
+        // 判据与 `items::download` 逐字一致:项目级只拦 viewer,活动级对所有角色生效,两者叠加。
+        (项目级 && role == Role::Viewer) || 活动级 == Some(true)
+    };
+    if 禁下载 {
+        let rg = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let (stream, seg, cr, total) = state.storage.get_range(&key, rg.as_deref()).await
+            .map_err(AppError::Other)?;
+        let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(stream.into_async_read()));
+        let mut b = Response::builder()
+            .status(if cr.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
+            .header(header::ACCEPT_RANGES, "bytes")
+            // inline:这是拿来播的,不是拿来存的(浏览器不弹保存框)。
+            .header(header::CONTENT_DISPOSITION, "inline")
+            .header(header::CACHE_CONTROL, "no-store");
+        if let Some(n) = seg { b = b.header(header::CONTENT_LENGTH, n) }
+        if let Some(r) = cr { b = b.header(header::CONTENT_RANGE, r) }
+        let _ = total; // 总长已经编在 Content-Range 里,单独回没有额外信息
+        return b.body(body).map_err(|e| AppError::Other(e.into()));
+    }
+
     let target = match state.storage.presign_get(&key, GET_URL_TTL).await {
         Ok(u) => u,
         Err(_) => format!("/api/items/{iid}/download"),
     };
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, target)
         .header(header::CACHE_CONTROL, "no-store") // 预签名短时效,别被缓存住过期 URL
         .body(axum::body::Body::empty())
-        .map_err(|e| AppError::Other(e.into()))?)
+        .map_err(|e| AppError::Other(e.into()))
 }
 
-/// 直传期间该用哪个 key:begin 时记在 items.upload_key(内容寻址后不能再按 sid/iid 现拼)。
-/// 老行没有这一列就退回旧规则,不至于把历史上传搞挂。
-async fn upload_key_of(state: &AppState, sid: i64, iid: i64) -> AppResult<String> {
-    let k: Option<String> = sqlx::query_scalar("SELECT upload_key FROM items WHERE id = $1")
-        .bind(iid).fetch_optional(&state.pool).await?.flatten();
-    Ok(k.unwrap_or_else(|| format!("spaces/{sid}/{iid}/blob")))
+/// 直传期间该用哪个 key:begin 时记在 `items.upload_key`(内容寻址后不能再按 项目/条目 现拼)。
+///
+/// ★2026-08-06 清库后删掉了「老行没这一列就退回旧规则」的兼容分支★:
+/// 库与桶都清空了,不存在没有 upload_key 的历史行。留着那条回退等于**把一个真错误
+/// 变成静默的错 key** —— 分片会打到一个谁也不认识的路径上,complete 时才炸,还查不出原因。
+/// 现在缺这一列就直接报错,错在源头。
+async fn upload_key_of(state: &AppState, iid: i64) -> AppResult<String> {
+    // items-ok: 上传占位行 —— 读回原始 upload_key(内容寻址后 key 不能现拼,v0.3.55 的疤)
+    sqlx::query_scalar::<_, Option<String>>("SELECT upload_key FROM items WHERE id = $1")
+        .bind(iid).fetch_optional(&state.pool).await?.flatten()
+        .ok_or_else(|| AppError::Other(anyhow::anyhow!("条目 {iid} 没有 upload_key,begin 未正常完成")))
 }
 
 /// 后台核验对象的真实 sha256(从集群内部流式读,不占用户带宽)。
@@ -407,14 +513,60 @@ async fn verify_sha(state: AppState, iid: i64, key: String) {
         }
     }
     let real = hex::encode(hasher.finalize());
+    // items-ok: 上传占位行 —— 后台核验刚传完的 sha
     let declared: Option<String> = sqlx::query_scalar("SELECT sha256 FROM items WHERE id = $1")
         .bind(iid).fetch_optional(&state.pool).await.ok().flatten().flatten();
-    if declared.as_deref() != Some(real.as_str()) {
-        tracing::warn!(item = iid, declared = ?declared, real = %&real[..8], "核验哈希:与客户端申报不符,以真值为准");
+    // ★D3:「申报 ≠ 真值」要留痕,不能改写成「已核验」★(A2 的第二半)。
+    //
+    // 这里原来只 `warn!` 一句,然后照样置 sha_verified=true ——
+    // ★把「内容和客户端算的不一样」这个强信号,改写成「已核验」★。
+    // 而这个信号有价值:预签名 part 上没有任何 checksum(storage.rs 头注,刻意压掉的),
+    // complete 只对**字节数**,所以任何**保长度**的传输损坏(代理改写、坏内存、串片)都能过闸。
+    // 不符 = 很可能传坏了。不阻止使用(内容自洽),但别假装一切正常。
+    let mismatch = declared.as_deref() != Some(real.as_str());
+    if mismatch {
+        tracing::warn!(item = iid, declared = ?declared, real = %&real[..8],
+                       "核验哈希:与客户端申报不符 —— 很可能传输中损坏,已标记");
     }
-    let _ = sqlx::query("UPDATE items SET sha256 = $2, sha_verified = true WHERE id = $1")
-        .bind(iid).bind(&real).execute(&state.pool).await;
-    tracing::info!(item = iid, sha = %&real[..8], "核验哈希:完成,可作秒传源");
+
+    // ★D2:归位(promote)——只有算完真实哈希的这一刻,才允许往规范 key 上写★。
+    let dst = crate::http::items::blob_key(&real);
+    if key != dst {
+        if state.storage.exists(&dst).await {
+            // 已经有同内容的对象了 → 直接指过去,零拷贝。这就是去重。
+            // ⚠ 这里的「已存在」现在**可信**:D1 之后,`blobs/*` 只可能由本函数写出来。
+        } else {
+            // 不存在 → 服务端复制过去。大对象走分片复制(2026-08-09 实测 Garage 支持)。
+            const COPY_SINGLE_MAX: i64 = 4 * 1024 * 1024 * 1024;   // 贴着 5 GiB 上限留余量
+            let (size, mime): (Option<i64>, Option<String>) =
+                // items-ok: 上传占位行 —— 同上,核验尺寸与 mime
+                sqlx::query_as("SELECT size, mime FROM items WHERE id = $1")
+                    .bind(iid).fetch_optional(&state.pool).await.ok().flatten()
+                    .unwrap_or((None, None));
+            let mime = mime.unwrap_or_else(|| "application/octet-stream".into());
+            let r = match size {
+                Some(sz) if sz > COPY_SINGLE_MAX => state.storage.copy_multipart(&key, &dst, sz, &mime).await,
+                _ => state.storage.copy(&key, &dst).await,
+            };
+            if let Err(e) = r {
+                // ★归位失败就停在这里:s3_key 仍指临时对象,sha_verified 保持 false★。
+                // 文件照常下得到,但**不能当秒传源**(readable_blob 只认 sha_verified)——fail-closed。
+                tracing::warn!(error = %e, item = iid, "核验哈希:归位失败,保留临时对象且不置 verified");
+                let _ = sqlx::query("UPDATE items SET sha256 = $2, sha_declared_mismatch = $3 WHERE id = $1")
+                    .bind(iid).bind(&real).bind(mismatch).execute(&state.pool).await;
+                return;
+            }
+        }
+        // 先改指向再删临时对象:反过来的话中间崩一下就指着一个不存在的 key。
+        let _ = sqlx::query("UPDATE items SET s3_key = $2 WHERE id = $1")
+            .bind(iid).bind(&dst).execute(&state.pool).await;
+        let _ = state.storage.delete(&key).await;
+    }
+
+    let _ = sqlx::query(
+        "UPDATE items SET sha256 = $2, sha_verified = true, sha_declared_mismatch = $3 WHERE id = $1")
+        .bind(iid).bind(&real).bind(mismatch).execute(&state.pool).await;
+    tracing::info!(item = iid, sha = %&real[..8], key = %dst, "核验哈希:完成并已归位,可作秒传源");
 }
 
 /// 撞名时的随机后缀(短即可,只为避免覆盖已有对象)。
@@ -431,6 +583,7 @@ fn rand_suffix() -> String {
 /// 音频没有单独的 kind(items.kind 的 CHECK 只有 folder/doc/file/video),按 mime 认——
 /// 加一档 kind 要改 CHECK 约束还要牵动图标/播放器/预览三处,收益不抵改动面。
 pub async fn analyzable(pool: &sqlx::PgPool, iid: i64) -> AppResult<bool> {
+    // items-ok: 上传占位行 —— 判它能不能进转写队列
     let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT kind, mime FROM items WHERE id = $1")
         .bind(iid).fetch_optional(pool).await?;
     let (kind, mime) = row.ok_or(AppError::NotFound)?;
@@ -462,8 +615,8 @@ pub async fn analyze(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Editor).await?;
+    let pid = crate::http::items::project_of(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Editor).await?;
     if !analyzable(&state.pool, iid).await? {
         return Err(AppError::BadRequest("只能分析视频或音频".into()));
     }
@@ -489,8 +642,8 @@ pub async fn analysis(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let job: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT status, stage, progress, error FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1",
     ).bind(iid).fetch_optional(&state.pool).await?;
@@ -535,8 +688,8 @@ pub async fn subtitles(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Response> {
-    let sid = crate::http::items::space_of(&state.pool, iid).await?;
-    require_role(&state.pool, &id, sid, Role::Viewer).await?;
+    let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
+    require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<(String, Option<serde_json::Value>, Option<serde_json::Value>, Option<serde_json::Value>)> =
         sqlx::query_as("SELECT text, segments, char_ts, fine FROM transcripts WHERE item_id=$1")
             .bind(iid).fetch_optional(&state.pool).await?;

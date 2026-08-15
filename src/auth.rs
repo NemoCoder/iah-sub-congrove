@@ -271,7 +271,7 @@ impl Auth {
         if let Some(k) = self.keys.read().unwrap().get(kid).cloned() {
             return Some(k); // 别的任务刚拉完
         }
-        let due = last.map_or(true, |t| t.elapsed() >= REFRESH_MIN_GAP);
+        let due = last.is_none_or(|t| t.elapsed() >= REFRESH_MIN_GAP);
         if !due {
             return None;
         }
@@ -408,6 +408,39 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
                 name: claims.name,
                 email: claims.email,
                 is_super,
+            });
+            return Ok(next.run(req).await);
+        }
+    }
+    // 3) ★dev E2E 免登通道(平台 registry v1.3.80,群 #128/#131)★
+    //
+    // 平台的 dev 网关在**校验过 per-子系统的 X-IAH-E2E-Key 之后**,才会给下游注入
+    // `X-Forwarded-Preferred-Username: e2e`。key 不对的请求根本走不到这里(403/302,已用
+    // unit_tests/congrove/e2e/gate.spec.ts 钉死)。所以这个头**本身就是网关校验通过的凭证**。
+    //
+    // ★双重门闩,缺一不可★(2026-08-07 用户拍板走这条,权衡见 docs/E2E-CHANNEL.md):
+    //   ① `is_dev_channel()` —— 判据是平台按通道注入的 `PUBLIC_URL`,**不是**编译期常量、
+    //      也不是 iah.yaml 里的值(那些两个通道共用同一份,会跟着 promote 到 prod);
+    //   ② 请求确实带着这个头。
+    //
+    // ⚠ 这条分支**推翻了架构决策①的后半句**(「平台不注入身份头」)——那句话写于平台确实不注入的时候,
+    //   现在 dev 通道会注入,所以前提变了。但它只在 dev 成立:prod 的 IngressRoute **根本没有**
+    //   这条 E2E 路由,加上 ① 的门闩,prod 上这段代码永远不会执行。
+    //
+    // ⚠ 放在 cookie 与 Bearer **之后**:真人带着自己的会话来测时,身份应当是他本人而不是 `e2e`。
+    if state.config.is_dev_channel() {
+        if let Some(u) = req.headers().get("X-Forwarded-Preferred-Username")
+            .and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty())
+        {
+            let u = u.to_string();
+            // 与 Bearer 路径同一条 upsert:E2E 身份也要在 app_user 里落一行,
+            // 否则它建的项目、发的邀请都挂在一个「不存在的人」名下。
+            let is_super = ensure_app_user(&state.pool, &u, None, Some(&u), None, &state.config.super_users)
+                .await
+                .map_err(AppError::Other)?;
+            tracing::debug!(user = %u, "E2E 通道身份(仅 dev)");
+            req.extensions_mut().insert(Identity {
+                sub: None, username: Some(u.clone()), name: Some(u), email: None, is_super,
             });
             return Ok(next.run(req).await);
         }
@@ -549,7 +582,21 @@ pub async fn oidc_callback(State(state): State<AppState>, headers: HeaderMap, Qu
 }
 
 /// /auth/logout → 清会话 cookie 回首页。
-pub async fn oidc_logout() -> Response {
+///
+/// ★顺带把超管模式关掉★(2026-08-09 liaoruili 定的三条之一:「退出登录即失效」)。
+/// 模式存在库里(`app_user.admin_mode_until`),而会话在 cookie 里 —— 不显式清的话,
+/// 「退出再登进来」会发现自己**还开着超管模式**,而人退出时以为一切都归零了。
+/// ⚠ 这条路由在 `/api` 之外、没有 require_auth,所以身份要自己从 cookie 里解一次;
+///   解不出来(没登录 / 会话过期)就只清 cookie,不是错误。
+pub async fn oidc_logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let (Some(auth), Some(tok)) = (state.auth.as_ref(), cookie(&headers, "cg_session")) {
+        if let Some(id) = auth.verify_session(&tok) {
+            if let Some(u) = id.username.as_deref() {
+                let _ = sqlx::query("UPDATE app_user SET admin_mode_until = NULL WHERE username = $1")
+                    .bind(u).execute(&state.pool).await;
+            }
+        }
+    }
     Response::builder()
         .status(StatusCode::FOUND)
         .header(LOCATION, "/")
@@ -565,8 +612,18 @@ pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity
     // is_super 以库为准(cookie 里那份是登录时快照):撤销后前端的超管入口要立刻消失,
     // 否则用户看得见按钮却处处 403,比藏起来更糟。
     let is_super = crate::perm::is_super_now(&state.pool, &id).await.unwrap_or(id.is_super);
+    // ★资格与特权分开回★(超管模式,docs/TECH-DESIGN-admin-mode.md):
+    //   · `is_super` 语义**不变** = 此刻有没有超管特权 —— 前端所有「能不能」的判断继续用它;
+    //   · `can_super` = 有没有超管资格 —— 只用来决定「超管模式」那个开关画不画出来。
+    // 刻意不改 is_super 的含义:它已经散在前端多处,改语义会让「显示」和「能力」错配。
+    let (can_super, until): (bool, Option<chrono::DateTime<chrono::Utc>>) = match id.username.as_deref() {
+        Some(u) => sqlx::query_as("SELECT is_super, admin_mode_until FROM app_user WHERE username = $1")
+            .bind(u).fetch_optional(&state.pool).await.ok().flatten().unwrap_or((id.is_super, None)),
+        None => (false, None),
+    };
     Json(json!({
         "username": id.username, "name": id.name, "email": id.email, "is_super": is_super,
+        "can_super": can_super, "admin_mode_until": until,
         "direct_upload_endpoint": state.config.s3_public_endpoint,
     }))
 }

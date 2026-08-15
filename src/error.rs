@@ -20,9 +20,16 @@ pub enum AppError {
     #[error("unauthorized")]
     Unauthorized,
 
-    /// 已认证但角色不够(空间角色不足 / 非超管)。
+    /// 已认证但角色不够(项目角色不足 / 非超管)。
     #[error("forbidden")]
     Forbidden,
+
+    /// ★项目已归档,禁止写入★(2026-08-07 D17)。
+    /// 与 Forbidden 分开是因为**语义完全不同**:不是「你没权限」,而是「这个项目结束了」——
+    /// 同一个人换个项目就能做。前端据此显示「恢复为进行中」而不是「找管理员要权限」。
+    /// 用 409 Conflict:请求本身合法,只是与资源当前状态冲突。
+    #[error("{0}")]
+    Archived(String),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -32,6 +39,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            AppError::Archived(m) => (StatusCode::CONFLICT, m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden: 权限不足".to_string()),

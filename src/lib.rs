@@ -10,6 +10,9 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod notify;
+pub mod remind;
+pub mod tzutil;
 pub mod media_ai;
 pub mod perm;
 pub mod registry;
@@ -38,6 +41,27 @@ pub async fn run() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("migrations applied");
 
+    // ★超管白名单在**启动时**就种下去,不等谁来登录★。
+    //
+    // ⚠★2026-08-09 liaoruili:「超管没有显示开发者了吗」——ADR-0001 的清库把超管位清没了★。
+    // 原来 `CONGROVE_SUPER_USERS` 只在 `ensure_app_user`(登录路径)里生效,于是清库之后:
+    //   · 他的会话 cookie 还没过期 → ★不会再走一次登录★,而 /api/me 的 is_super 是**查库**的
+    //     (那是对的:撤销超管要立刻生效),于是超管入口凭空消失;
+    //   · 更糟的是 app_user 那一行可能被**非登录路径**先建出来(projects.rs 的
+    //     `ensure_platform_user`:把他加进项目成员时就会插一行,is_super 默认 false),
+    //     此后就算重新登录也只是 `OR` 上白名单——对,但得等他自己想起来重登。
+    // 而 ADR-0001 定的是**每次部署都清库**,所以这不是一次意外,是每次都会复现的。
+    // 白名单本来就自称「种子」——那它就该在**能种的最早时刻**种下去,而不是搭登录的顺风车。
+    if !cfg.super_users.is_empty() {
+        for u in &cfg.super_users {
+            sqlx::query(
+                "INSERT INTO app_user (username, is_super) VALUES ($1, true)
+                 ON CONFLICT (username) DO UPDATE SET is_super = true")
+                .bind(u).execute(&pool).await?;
+        }
+        tracing::info!(users = ?cfg.super_users, "超管白名单已种入 app_user");
+    }
+
     let storage = storage::Storage::build(&cfg).await;
     tracing::info!(bucket = %storage.bucket, "s3 client ready");
 
@@ -48,6 +72,23 @@ pub async fn run() -> anyhow::Result<()> {
             tracing::info!(issuer = %oidc.issuer, "OIDC enabled");
             Some(a)
         }
+        None if cfg.is_deployed() => {
+            // ★没配 OIDC 不是「降级」,是**全员超管**★(2026-08-15 对抗检查抓到)。
+            //   `require_auth` 在 `state.auth == None` 时给每一个请求插一个
+            //   `username="dev", is_super=true` 的假身份 —— 任何人、不用登录、
+            //   连**别人的**项目/材料/纪要全看得见改得动,而且审计日志里全记成 `dev`。
+            //   旁边那句注释写着「线上绝不能跑没配 OIDC 的构建」,★但没有任何东西在管这件事★:
+            //   平台哪次少注入一个 env(改 iah.yaml、换 Keycloak client、provisioner 出错),
+            //   pod 会**正常起来、健康检查全绿**,然后把整个库敞开着,日志里只有一行 WARN。
+            // ⇒ 跑在平台上就必须有 OIDC:缺了直接起不来。CrashLoopBackOff 是**看得见**的故障,
+            //   「静默全开放」不是。本地 `cargo run`(没有 PUBLIC_URL)照旧放行,不影响开发。
+            anyhow::bail!(
+                "★拒绝启动★:检测到部署环境(PUBLIC_URL={:?})但没有 OIDC_ISSUER。\
+                 鉴权关闭时每个请求都会拿到超管假身份 —— 这在平台上一律视为事故。\
+                 请检查平台注入的 OIDC_* env(见 DESIGN.md §2.2)。",
+                cfg.public_url
+            )
+        }
         None => {
             tracing::warn!(
                 "OIDC DISABLED (no OIDC_ISSUER) — all endpoints are UNAUTHENTICATED. \
@@ -56,6 +97,17 @@ pub async fn run() -> anyhow::Result<()> {
             None
         }
     };
+
+    // ★dev E2E 免登通道是一条真实的身份旁路,开着就要在日志里看得见★(2026-08-07)。
+    // 它不需要本地开关:平台的 dev 网关校验过 X-IAH-E2E-Key 才注入身份头,
+    // 而 prod 压根没有那条路由 + is_dev_channel() 门闩 —— 但「无声生效的旁路」本身就是隐患,
+    // 所以每次启动都喊一句,免得哪天有人在日志里看到 `e2e` 这个用户名却不知道它从哪来。
+    if cfg.is_dev_channel() {
+        tracing::warn!(
+            "dev E2E 免登通道生效中:带平台注入身份头的请求将以该用户名直接通过鉴权(仅 dev 通道)。\
+             prod 无此路由,详见 docs/E2E-CHANNEL.md"
+        );
+    }
 
     // 平台 registry 客户端:REGISTRY_URL + 机密客户端齐了才建(缺任一 = 本地 dev,降级)。
     let registry = match (&cfg.registry_url, &cfg.oidc) {
@@ -82,6 +134,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 录屏转写+纪要 worker(docs/VIDEO-SUMMARY.md P1):任务态在 PG,重启自动续跑。
     tokio::spawn(media_ai::run(state.clone()));
+    // 活动提醒(PRD F2/F3)。★本仓第一个「没有请求、到点就得发生」的循环★ ——
+    // 状态落 PG、去重靠行锁,理由见 remind.rs 头注。
+    tokio::spawn(remind::run(state.clone()));
 
     let app = http::build_router(state);
     let listener = TcpListener::bind(&cfg.bind_addr).await?;
@@ -134,17 +189,33 @@ async fn cleanup_stale_uploads(state: AppState) {
         // ★回收站保留 30 天★(2026-08-05 软删除):到期的「删除动作根」逐个 purge——
         // 走 purge_subtree 而不是一条 DELETE,因为要按引用计数决定对象删不删
         // (共享对象之后,直接删对象会把别人还引用着的内容清掉)。
+        // items-ok: 回收站生命周期 —— 30 天清扫任务,找的**就是**已删超期的行
         let expired: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM items i
               WHERE i.deleted_at IS NOT NULL AND i.deleted_at < now() - interval '30 days'
                 AND (i.parent_id IS NULL OR NOT EXISTS (
                       SELECT 1 FROM items p WHERE p.id = i.parent_id AND p.deleted_at IS NOT NULL))
+              -- limit-ok: 分批处理 —— 清扫任务每轮取 200 条,下一轮接着来,一条都不会丢。
               LIMIT 200",
         ).fetch_all(&state.pool).await.unwrap_or_default();
         for iid in expired {
             match crate::http::items::purge_subtree(&state, iid).await {
                 Ok(n) => tracing::info!(item = iid, objects = n, "cleanup: 回收站满 30 天,已彻底删除"),
                 Err(e) => tracing::warn!(error = %format!("{e:?}"), item = iid, "cleanup: 自动 purge 失败"),
+            }
+        }
+        // ★项目回收站也满 30 天就彻底删★(2026-08-09 审计 A5:删项目从硬删改成软删)。
+        // 到这一步才 FK CASCADE + 按引用计数删对象 —— 软删期间 S3 一个字节都没动过。
+        let dead: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM projects
+              WHERE deleted_at IS NOT NULL AND deleted_at < now() - interval '30 days'
+              -- limit-ok: 分批处理 —— 同上,每轮 20 个项目。
+              LIMIT 20",
+        ).fetch_all(&state.pool).await.unwrap_or_default();
+        for pid in dead {
+            match crate::http::projects::purge_project(&state, pid).await {
+                Ok(n) => tracing::info!(project = pid, objects = n, "cleanup: 项目回收站满 30 天,已彻底删除"),
+                Err(e) => tracing::warn!(error = %format!("{e:?}"), project = pid, "cleanup: 项目 purge 失败"),
             }
         }
     }

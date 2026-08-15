@@ -1,7 +1,7 @@
-//! 录屏自动转写 + 会议纪要(docs/VIDEO-SUMMARY.md 的 P1 实现)。
+//! 录屏自动转写 + 活动纪要(docs/VIDEO-SUMMARY.md 的 P1 实现)。
 //!
 //! 形态定案(五路调研):**ASR 转写为主干,摘要走平台 LLM 网关**——不用视频大模型直喂
-//! (视频模型长视频得分大半来自字幕;通用模型中文会议 CER 19% 而专用 ASR 4~6%;成本差 50~80 倍)。
+//! (视频模型长视频得分大半来自字幕;通用模型中文活动 CER 19% 而专用 ASR 4~6%;成本差 50~80 倍)。
 //! 关键帧 VLM 旁路留到 P3。
 //!
 //! 流水线:S3 取录屏 → ffmpeg 抽 16k/mono 音轨 → 按时长切段 → ASR → 拼逐字稿 → LLM 出三份纪要。
@@ -130,7 +130,8 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     stage(&state.pool, job_id, "下载录屏", 5).await;
     // 视频或音频都收(音频没有单独的 kind,按 mime 认;见 http::media::analyzable)。
     let key: String = sqlx::query_scalar(
-        "SELECT s3_key FROM items WHERE id=$1 AND (kind='video' OR mime LIKE 'audio/%')")
+        // deleted_at IS NULL:排队期间被删掉的,就别再花 GPU 转写了(v0.3.55 审计)。
+        "SELECT s3_key FROM items_alive WHERE id=$1 AND deleted_at IS NULL AND (kind='video' OR mime LIKE 'audio/%')")
         .bind(item_id).fetch_optional(&state.pool).await?
         .flatten().ok_or_else(|| anyhow!("这不是一个已上传完成的视频/音频"))?;
     let video = workdir.join("input.bin");
@@ -208,7 +209,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     .bind(&state.config.asr_model).bind(duration)
     .bind((!char_ts.is_empty()).then(|| serde_json::to_value(&char_ts)).transpose()?)
     // 重排结果落库(迁移 0008):读取路径不必每次重算(审计 2026-08-04)。
-    .bind(realign(&full_text, &segments, &char_ts).map(|v| serde_json::to_value(v)).transpose()?)
+    .bind(realign(&full_text, &segments, &char_ts).map(serde_json::to_value).transpose()?)
     .execute(&state.pool).await?;
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)
@@ -219,11 +220,11 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     let timed = timed_transcript(&full_text, &segments, &char_ts);
     let condensed = condense(state, &timed, &end_user).await.context("压缩长转写")?;
     for (kind, prompt, label, prog) in [
-        ("brief", "用中文写一段 150~300 字的会议摘要,直接给结论,不要客套和小标题。", "生成摘要", 84),
+        ("brief", "用中文写一段 150~300 字的活动摘要,直接给结论,不要客套和小标题。", "生成摘要", 84),
         ("outline", "用中文列出分段大纲,按时间顺序,不超过 15 行。★每行必须以原文里出现过的时间戳开头★,\
 格式:`[mm:ss] 议题 — 要点`。时间戳只能从原文抄,**绝对不许自己编**(原文每段开头的 [mm:ss] 就是它的真实时间);\
 一行一个议题,行与行之间用换行分隔,不要写成一段。", "生成分段大纲", 90),
-        ("decisions", "用中文列出这次会议的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
+        ("decisions", "用中文列出这次活动的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
     ] {
         stage(&state.pool, job_id, label, prog).await;
         let content = chat(state, prompt, &condensed, &end_user).await.with_context(|| format!("生成 {kind}"))?;
@@ -234,6 +235,29 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
         .bind(item_id).bind(kind).bind(&content).bind(&state.config.llm_model)
         .execute(&state.pool).await?;
     }
+
+    // ★纪要出来了要告诉人★(PRD 6.3.1 验收标准:「纪要生成后通知参会人」)。
+    // 转写 + 三份纪要要跑好几分钟,★没人会守着页面等★ —— 不通知的话这份东西就静静躺在那里,
+    // 等到有人想起来「那次会的录屏传了吧?」才被发现,而那通常是几天后。
+    //
+    // 只在**这个材料属于某场活动**时发(活动之外的音视频转写不打扰任何人),
+    // 且**只通知记录员**:纪要是他的活(D14——AI 只是原材料,他才是作者),
+    // 全员通知等于告诉一屋子人「有件不归你们管的事完成了」。
+    // items-ok: 纯归属解析 —— 转写任务取 activity_id;任务在跑中途条目可能已被删
+    if let Some(mid) = sqlx::query_scalar::<_, Option<i64>>("SELECT activity_id FROM items WHERE id = $1")
+        .bind(item_id).fetch_optional(&state.pool).await?.flatten()
+    {
+        if let Ok((title, recorder)) = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, recorder FROM activities WHERE id = $1")
+            .bind(mid).fetch_one(&state.pool).await
+        {
+            // ★通知只说发生了什么,不解释产品理念★(2026-08-09 用户:「这个直接通知转写完成即可」)。
+            // 原来这条还附了一段「它们是给你的原材料,正式纪要仍由你整理」——
+            // 那是**设计说明**,不是通知内容:收到通知的人正要去看,点进去自然就知道有哪几份。
+            crate::notify::notify_activity(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
+                &format!("「{title}」的录制已转写完。")).await;
+        }
+    }
     Ok(())
 }
 
@@ -242,6 +266,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
 /// - 逐字稿/段落:读的人可以慢慢看,合到 200 字/60 秒,信息密度高;
 /// - 字幕 cue:Netflix 简中规范 **单行 16 字 × 最多 2 行 = 32 字**、时长 1.2~7 秒、
 ///   **≤9 字/秒**;超了就是糊屏,再合并只会更糟(我 v0.3.19 用 120 字喂字幕是错的)。
+///
 /// 共同的硬规则:**说话人一变无条件断开**(优先级高于标点),这是"谁说了什么"的分界。
 /// 眼动实验(PMC7901653):断错位置让回看次数 +48%、主观疲劳显著上升,但理解率不变——
 /// 所以宁可段短,也别在词中间断。
@@ -299,6 +324,9 @@ pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<V
     //   (按分段文本切出的 token 数 = 16792,**逐个吻合**)。
     //   必须拿**分段文本**切:全文里英文之间没有空格(evaluation+function 粘成 evaluationfunction),
     //   只有分段文本保留了空格。对上之后最后一个实字落在 3670.2s = 音频真实结尾(此前 3624s 就用完)。
+    // ★走了哪条路必须可见★(v0.3.57):这三条分支的差别就是「时间轴准」与「时间轴漂移」,
+    // 而原先三条都不打日志 —— 掉到最后那条(只能按分段插值)是**静默降级**,
+    // 线上只会表现为「字幕又对不上了」,没有任何信号指向这里。
     if char_ts.len() == tokens.len() {
         for (&(st, ln), t) in tokens.iter().zip(char_ts.iter()) {
             // 一个 token 里的多个字符(英文单词)按字数均分它的时间跨度。
@@ -308,17 +336,31 @@ pub fn realign(text: &str, segs: &[Segment], char_ts: &[(f64, f64)]) -> Option<V
                 chars[st + k].2 = a + (b - a) * ((k + 1) as f64) / (ln as f64);
             }
         }
+        tracing::info!(tokens = tokens.len(), chars = chars.len(), "对齐:按 token 用字级时间戳(正常路径)");
     } else if char_ts.len() == chars.len() {
         // 万一哪天服务端改成按字给,也直接能用。
         for (c, t) in chars.iter_mut().zip(char_ts.iter()) { c.1 = t.0; c.2 = t.1 }
+        tracing::info!(chars = chars.len(), "对齐:按字符用字级时间戳(服务端改成按字给了)");
+    } else if !char_ts.is_empty() {
+        // ⚠ 有字级时间戳却哪条都对不上 —— 多半是 FunASR 换了分词/切法。退回分段插值 = 漂移回归。
+        tracing::warn!(char_ts = char_ts.len(), tokens = tokens.len(), chars = chars.len(),
+            "对齐:字级时间戳条数与 token/字符数都对不上,退回分段插值(时间轴会漂移,查 ASR 端是否换了分词)");
     }
     // 全文侧:实字必须与分段侧逐字相同,否则说明两边不是同一次响应(或热词替换只改了一边)。
     let full: Vec<char> = text.chars().collect();
     // ⚠ 比对**忽略大小写**:全文里句首英文会被大写(「……都没有听清Ok就是」),分段里是原样小写
     //   (「听清ok就是」)。实测 17338 个实字里只有这一类差异,不放过就会整段退回原分段(白修)。
-    if full.iter().filter(|c| !is_skippable(**c)).count() != chars.len() { return None }
+    let n_full = full.iter().filter(|c| !is_skippable(**c)).count();
+    if n_full != chars.len() {
+        tracing::warn!(full_chars = n_full, seg_chars = chars.len(),
+            "对齐:全文与分段的实字数不一致,放弃重对齐、退回原分段(时间轴仍按 sentence_info,会漂移)");
+        return None;
+    }
     if full.iter().filter(|c| !is_skippable(**c)).zip(chars.iter())
-        .any(|(a, b)| !a.eq_ignore_ascii_case(&b.0)) { return None }
+        .any(|(a, b)| !a.eq_ignore_ascii_case(&b.0)) {
+        tracing::warn!("对齐:全文与分段的实字**内容**不一致,放弃重对齐、退回原分段(热词替换只改了一边?)");
+        return None;
+    }
 
     // 按标点把全文切成细单元(与 sentence_info 本该给的粒度一致),再交给既有的两套合并阈值。
     let mut out: Vec<Segment> = Vec::new();
@@ -491,8 +533,9 @@ pub struct Asr { pub segments: Vec<Segment>, pub text: String, pub char_ts: Vec<
 /// 取这个视频该用的术语表:所在空间的词表 + `CONGROVE_ASR_HOTWORDS` 全局兜底,去重保序。
 /// 查不到空间(视频已删等)也不让转写失败——最多是没热词。
 async fn load_hotwords(pool: &PgPool, item_id: i64) -> String {
+    // items-ok: 纯归属解析 —— 取项目的热词表,与条目死活无关
     let space: Option<String> = sqlx::query_scalar(
-        "SELECT s.hotwords FROM items i JOIN spaces s ON s.id = i.space_id WHERE i.id = $1",
+        "SELECT s.hotwords FROM items i JOIN projects s ON s.id = i.project_id WHERE i.id = $1",
     ).bind(item_id).fetch_optional(pool).await.ok().flatten();
     let env = std::env::var("CONGROVE_ASR_HOTWORDS").unwrap_or_default();
     let mut out: Vec<String> = Vec::new();
@@ -550,21 +593,50 @@ async fn transcribe(state: &AppState, base: &str, part: &Path, end_user: &str, h
     let mut char_ts: Vec<(f64, f64)> = r.timestamp.as_ref().map(ms2s).unwrap_or_default();
     if let Some(segs) = r.segments {
         if char_ts.is_empty() {
-            char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(|v| ms2s(v)).collect();
+            char_ts = segs.iter().filter_map(|s| s.timestamp.as_ref()).flat_map(ms2s).collect();
         }
+        // ★2026-08-07 平台 asr-funasr v7 把响应单位全统一成整数毫秒★(群 #122,是我 #114 提的单位问题
+        // 的修法):`segments.start/end` 与 `duration` 由**秒**改成**毫秒**,`timestamp` 本就是毫秒不变。
+        // 我方全程按**秒**算(Segment.start/end 是 f64 秒),所以这里必须换算。
+        // ★但不硬编码「就是毫秒」★——理由是这个错**静默且灾难**:差 1000× 会让 [mm:ss] 前缀、字幕 cue、
+        // timeline_drift 全部崩掉,却不抛任何错;而集群上跑的到底是 v6 还是 v7,我这边看不出来。
+        // 所以用 char_ts 当**标尺自校准**:两者描述同一段音频,末值应当接近,哪种解释更接近就用哪种。
+        let raw_end_max = segs.iter().filter_map(|s| s.end).fold(0.0_f64, f64::max);
+        let ms = segs_are_ms(raw_end_max, char_ts.last().map(|(_, b)| *b));
+        let k = if ms { 1000.0 } else { 1.0 };
+        tracing::info!(unit = if ms { "毫秒" } else { "秒" }, raw_end_max,
+            ruler_sec = char_ts.last().map(|(_, b)| *b),
+            "ASR segments 单位判定(平台 v7 起=毫秒;拿 char_ts 当标尺校准)");
         let v: Vec<Segment> = segs.into_iter()
-            .map(|s| Segment { start: s.start.unwrap_or(0.0), end: s.end.unwrap_or(0.0), text: s.text, speaker: s.speaker })
+            .map(|s| Segment { start: s.start.unwrap_or(0.0) / k, end: s.end.unwrap_or(0.0) / k, text: s.text, speaker: s.speaker })
             .filter(|s| !s.text.trim().is_empty())
             .collect();
-        // ★这条日志就是 0137 要我验的那点★:字级时间戳条数 vs 全文实字数。
-        // 相等 = 「第 i 实字配第 i 时间戳」成立,时间轴根治;不等 = 仍是单元错配,得上 fa-zh 强制对齐。
+        // ★这条日志的判据一度过时,别再照 `aligned` 下结论★(v0.3.57 修正):
+        // 它原先叫 aligned,判的是「char_ts 条数 == 全文实字数」—— 那是 0137 时期的假设
+        // (以为字级时间戳按**字**给)。后来实测确认是**按 token 给的**(英文/数字连写整串算一条),
+        // 于是 realign 早就改走 token 分支了,而这条日志还在按老判据输出 `aligned: false` ——
+        // 一切正常时它也报 false,看日志的人(2026-08-06 我自己)会误判成「对齐失败」。
+        // 现在只报**原始数字**,真正的对齐结果由 realign 里那三条日志给。
         let n_chars = full.chars().filter(|c| !is_skippable(*c)).count();
         tracing::info!(char_ts = char_ts.len(), content_chars = n_chars, segs = v.len(),
-            aligned = (!char_ts.is_empty() && char_ts.len() == n_chars), "ASR 字级时间戳对齐自检");
+            diff = n_chars as i64 - char_ts.len() as i64,
+            "ASR 响应自检(char_ts 是 **token** 数,比实字数少属正常,差额=英文/数字连写)");
         if !v.is_empty() { return Ok(Asr { segments: v, text: full, char_ts }) }
     }
     if full.trim().is_empty() { return Ok(Asr { segments: vec![], text: full, char_ts }) }
     Ok(Asr { segments: vec![Segment { start: 0.0, end: 0.0, text: full.clone(), speaker: None }], text: full, char_ts })
+}
+
+/// segments 的 start/end 是**毫秒**还是**秒**?返回 true = 毫秒(要除 1000)。
+///
+/// 平台 asr-funasr v7 起契约是毫秒(群 #122),但**不把它写死**:单位判错是静默的 1000× 错,
+/// 而 char_ts(顶层 `timestamp`,一直是毫秒、这里传进来的已换算成**秒**)描述的是同一段音频,
+/// 天然就是一把免费的标尺——两种解释里哪个离标尺近就是哪个。
+/// 标尺缺失(没有字级时间戳)时按平台**当前**契约取毫秒。
+fn segs_are_ms(seg_end_max: f64, ruler_sec: Option<f64>) -> bool {
+    let Some(ts) = ruler_sec else { return true };
+    if seg_end_max <= 0.0 || ts <= 0.0 { return true }
+    (seg_end_max / 1000.0 - ts).abs() < (seg_end_max - ts).abs()
 }
 
 /// 长转写压缩:超过阈值就 map-reduce(分块摘要再合并),避免把 10 万字硬塞进上下文。
@@ -577,7 +649,7 @@ async fn condense(state: &AppState, full: &str, end_user: &str) -> anyhow::Resul
     let mut parts = Vec::new();
     for c in chars.chunks(MAP_CHUNK_CHARS) {
         let piece: String = c.iter().collect();
-        parts.push(chat(state, "把这段会议转写压缩成要点(中文,保留人名/数字/结论,去掉口水话),不要加评论。", &piece, end_user).await?);
+        parts.push(chat(state, "把这段活动转写压缩成要点(中文,保留人名/数字/结论,去掉口水话),不要加评论。", &piece, end_user).await?);
     }
     Ok(parts.join("\n\n"))
 }
@@ -610,7 +682,7 @@ async fn chat_once(state: &AppState, system: &str, user: &str, end_user: &str) -
     let body = serde_json::json!({
         "model": state.config.llm_model,
         "messages": [
-            {"role": "system", "content": format!("你是会议纪要助手。{system}")},
+            {"role": "system", "content": format!("你是活动纪要助手。{system}")},
             {"role": "user", "content": user},
         ],
         "temperature": 0.3,
@@ -673,6 +745,32 @@ mod tests {
 
     fn seg(start: f64, end: f64, text: &str, spk: &str) -> Segment {
         Segment { start, end, text: text.into(), speaker: Some(spk.into()) }
+    }
+
+    /// 一小时的会:v7 给 3_600_000(毫秒),标尺 3600 秒 → 判毫秒。
+    #[test]
+    fn 单位判定_v7毫秒() {
+        assert!(segs_are_ms(3_600_000.0, Some(3600.0)));
+    }
+
+    /// 同一场会若跑在旧版 v6 上,segments 给的是 3600(秒),标尺仍是 3600 秒 → 判秒,不能瞎除 1000。
+    #[test]
+    fn 单位判定_旧版秒制不误除() {
+        assert!(!segs_are_ms(3600.0, Some(3600.0)));
+    }
+
+    /// 短音频(12 秒)也要判对:毫秒 12000 vs 标尺 12。
+    #[test]
+    fn 单位判定_短音频() {
+        assert!(segs_are_ms(12_000.0, Some(12.0)));
+        assert!(!segs_are_ms(12.0, Some(12.0)));
+    }
+
+    /// 没有字级时间戳(标尺缺失)时,按平台**当前**契约取毫秒。
+    #[test]
+    fn 单位判定_无标尺时按当前契约() {
+        assert!(segs_are_ms(3_600_000.0, None));
+        assert!(segs_are_ms(0.0, Some(0.0)));   // 退化输入不 panic、不除零
     }
 
     /// 样本取自 2026-08-04 线上真实转写(item 20,30 分钟处):句界右移一字、

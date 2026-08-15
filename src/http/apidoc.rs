@@ -1,0 +1,523 @@
+//! 开发者页面的数据源:全部 API 的清单。
+//!
+//! ★为什么不手写一份 Markdown★:手写文档必然漂移——加了接口忘了写、改了权限忘了改,
+//! 三个月后没人敢信它。这里的做法是:
+//!   ① 清单是**代码里的常量**,`GET /api/_dev/apis` 直接吐它;
+//!   ② ★底下那个测试把 `mod.rs` 的源码读进来,逐条比对「注册了的」与「写了文档的」★——
+//!      **少写一条、多写一条、路径写错一个字,`cargo test` 就红**。
+//! 这样文档漂移在 CI 阶段就被挡住,而不是等人去发现。
+//!
+//! ⚠ 加新路由时:`mod.rs` 注册 + 这里补一行,两处缺一个测试就不过。这是刻意的摩擦。
+
+use axum::extract::State;
+use axum::Json;
+use serde::Serialize;
+
+use crate::auth::Identity;
+use crate::error::AppResult;
+use crate::state::AppState;
+
+#[derive(Serialize, Clone, Copy)]
+pub struct Api {
+    /// HTTP 方法。多方法同路径的写成多条(前端按方法分色)。
+    pub method: &'static str,
+    /// 路径。`{}` 占位与 axum 的写法一致,前端据此生成输入框。
+    pub path: &'static str,
+    /// 分组,前端左侧导航按它折叠。
+    pub group: &'static str,
+    /// 需要什么身份。★这一列是评审规范性时最该盯的★。
+    pub auth: &'static str,
+    /// 一句话说明它干什么。
+    pub summary: &'static str,
+    /// 入参说明(query / body 字段)。空串表示不需要。
+    pub params: &'static str,
+}
+
+macro_rules! api {
+    ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr) => {
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q }
+    };
+}
+
+/// 全部 API。★改路由必须同步改这里,否则测试红★
+pub const APIS: &[Api] = &[
+    // ── 探针 / 认证 ──
+    api!("GET", "/healthz", "探针", "开放", "存活探针:进程活着就返回 ok", ""),
+    api!("GET", "/readyz", "探针", "开放", "就绪探针:PG SELECT 1 + S3 head_bucket 都通才 ready", ""),
+    api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", ""),
+    api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state"),
+    api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", ""),
+    api!("GET", "/api/me", "认证", "登录",
+         "当前身份。★is_super = 此刻有没有超管**特权**★(超管模式关着时为 false);
+          can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", ""),
+    api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
+
+    // ── 项目 ──
+    api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", ""),
+    api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
+    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert;★整对象替换:传什么就是什么,没传的字段会被清空★——这样 null 才可表达)", "timezone, default_remind_minutes"),
+    api!("POST", "/api/me/admin-mode", "我的", "★有超管**资格**的人★（不是「此刻有特权」）",
+         "进 / 出超管模式。★超管平时就是普通用户★——关着的时候他看不到别人的项目与活动,
+          要用特权得刻意开一下,2 小时自动关、退出登录也关(照 GitLab Admin Mode)。
+          ⚠ 判据是 `app_user.is_super` 那一列而**不是** super_now 视图 ——
+          用视图的话「关掉之后就再也开不回来」。两个方向都进 audit_log", "on"),
+    // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
+    api!("GET", "/api/activity-types", "活动", "登录",
+         "列出预置的 + 我自建的活动类型。★能力位决定表单与校验★(ADR-0002):
+          has_minutes(记录员必填) / needs_project(关联项目必填) / busy_default(占不占忙闲) /
+          allow_past(能不能填过去的时间 —— 「会议」false 只能排未来,其余 true 可补录,F0)", ""),
+    api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
+    api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default"),
+    api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", ""),
+    api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", ""),
+    api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description"),
+    api!("GET", "/api/projects/{id}", "项目", "≥viewer", "项目详情", ""),
+    api!("PUT", "/api/projects/{id}", "项目", "admin",
+         "改名/描述/禁下载/术语表/禁分享。★开启禁分享会连带撤销已有公开链接★",
+         "name, description, no_download, hotwords, no_share"),
+    api!("DELETE", "/api/projects/{id}", "项目", "owner",
+         "★软删除★项目,进回收站 30 天,S3 一个字节都不动;连带撤销指向本项目的公开链接
+          (share.rs 判的是 items.deleted_at,而软删项目不给 item 打标记 —— 不撤销的话
+          项目删了、墙外链接照常下得到)。★owner 专属(D0)★不是 admin;归档的项目也能直接删。
+          ⚠ 2026-08-09 之前这里是**硬删除**,而这行文案一直写着「软删除」——契约说了谎半个月", ""),
+    api!("GET", "/api/projects/trash", "项目", "登录(只看自己是 owner 的)",
+         "我删掉的项目 + 还剩几天。★没有这一页,软删除就只是「永久看不见」★
+          (与 §J1b-2 同源:只能删不能还原的回收站不是回收站)", ""),
+    api!("POST", "/api/projects/{id}/undelete", "项目", "★仅 owner 本人★",
+         "从回收站还原。⚠ 不能走 require_owner —— 它查 `deleted_at IS NULL`,对已删项目直接
+          NotFound,那样项目就永远还不回来了;所以这里显式按 owner 判。
+          公开链接**不**随还原恢复(撤销是终态,与 no_share 一致)", ""),
+    api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", ""),
+    api!("PUT", "/api/projects/{id}/members", "项目", "admin;给 admin 需 owner",
+         "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),
+    api!("DELETE", "/api/projects/{id}/members", "项目", "admin",
+         "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username"),
+    api!("POST", "/api/projects/{id}/transfer", "项目", "owner",
+         "★发起★转移主持人(不是直接转,PRD ⑨.5)。只能转给本项目成员;归档项目不能发起;\
+          ★待接受期间原主持人仍是主持人★——发起即卸任会让项目在空档期无主。同一项目只允许一条 pending(库里唯一索引)", "to"),
+    api!("POST", "/api/projects/{id}/transfer/respond", "项目", "★仅被转让人本人★",
+         "接受 / 拒绝接手主持人。★接受时重新校验成员身份★(D3:权限是当前状态的函数,不信发起那刻的快照);\
+          接受后原主持人保留 admin(交棒不是逐出)。⚠ 归档项目的 pending **仍可接受**,否则归档把请求永久卡死", "accept"),
+    api!("DELETE", "/api/projects/{id}/transfer", "项目", "owner",
+         "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", ""),
+    api!("GET", "/api/projects/{id}/archive-blockers", "项目", "主持人", "★谁挡着归档★:未开始的活动清单(带 can_cancel),给「一键取消并归档」用", ""),
+    api!("POST", "/api/projects/{id}/archive", "项目", "owner",
+         "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,但不能再上传/改内容;配额仍占。
+          ⚠★有没开始的活动就拒绝归档★(PRD B2):归档 = 做完了,还有排在未来的活动就是没做完;
+          错误里**列出是哪几场**(跨项目的活动不能静默跳过)。已取消的不算。
+          ⚠★归档项目的活动照常进日历★(PRD B0 推翻了 D17 的这一半),只是淡化 + 标「已归档」。
+          传 {archived:false} 恢复为进行中",
+         "archived"),
+    api!("GET", "/api/projects/{id}/diagnose", "项目", "admin",
+         "权限诊断:他为什么能/不能看(超管? 成员表里什么角色?)", "username"),
+
+    // ── 活动与日程(M1)──
+    // ★这一组只管**活动元信息**,不管材料★:材料权限一律走上面项目那组(D3/D8/D9)。
+    api!("GET", "/api/activities", "活动", "登录",
+         "我的活动(参会人 / 所在项目的会)。★public 活动不进这里★——列表是我的日程不是全平台公告板",
+         "from, to, project_id"),
+    api!("POST", "/api/activities", "活动", "每个关联项目都要 ≥editor",
+         "建活动。★校验全按类型的能力位走,没有一条是写死的★(ADR-0002):
+          needs_project → 关联项目必填 / has_minutes → 记录员必填(D14) /
+          allow_past=false → 只能排未来(「会议」,留 5 分钟容差,F0)。
+          ⚠ 这行原文写的是「必须关联至少一个项目」——那是 ADR-0002 之前的规则,已过期。
+          可选 remind_minutes:不传=跟随个人默认 / 0=★这场不提醒★ / >0=提前这么多分钟(PRD F3)",
+         "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
+    api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
+         "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
+    api!("PUT", "/api/activities/{id}", "活动", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
+         "改活动。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
+         "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility"),
+    api!("DELETE", "/api/activities/{id}", "活动", "发起人 / 记录员",
+         "★取消不是删除★:置 canceled 留档(谁邀了谁、谁拒了是协作事实)", ""),
+    api!("PUT", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
+         "★批量★邀请(删组之后一场会拉 20 人不能点 20 次)。★恒为 attendee★——\
+          2026-08-07 推翻 D8 删掉了「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的,\
+          走 POST .../observe 不从这里进。required=false 标「选参」——\
+          ★只有必参人的冲突算「有冲突」★(6.1.2):一场 10 人的会总有人撞车,\
+          每个人都标红那个红色就成了背景噪音", "usernames[], required"),
+    api!("DELETE", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
+         "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username"),
+    api!("POST", "/api/activities/{id}/respond", "活动", "名单内的人(旁听者不能答复)",
+         "答复邀请。★counter(建议改期)必须带具体的替代时间★——它是私事冲突唯一的结构化出口(D2)",
+         "status, counter_starts_at, counter_ends_at, counter_reason"),
+    api!("GET", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员(★旁听者不给★)",
+         "活动讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer"),
+    api!("POST", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员",
+         "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer"),
+    api!("GET", "/api/activities/{id}/minutes", "活动", "参会人/关联项目成员(★旁听者不给★)",
+         "取活动纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
+    api!("PUT", "/api/activities/{id}/minutes", "活动", "发起人 / 记录员",
+         "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
+          ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
+         "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
+    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
+         "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
+          is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
+    api!("PUT", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
+         "给一份活动材料/录制改名。★和删除同一条路★——D10 说的是「在**项目树里**只读」
+          (名称与位置由活动决定),不是「永远不可改」,所以改名这个动作发生在活动页。
+          通用的 PUT /api/items/{id} 仍然拒绝带 activity_id 的 item。
+          不改活动文件夹本身(它的名字从活动的日期+标题派生,手改了下次改标题又会被覆盖)", "name"),
+    api!("DELETE", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
+         "删一份活动材料/录制(软删,进回收站)。★活动材料只能从这里删★ —— 通用的
+          DELETE /api/items/{id} 会拒绝带 activity_id 的 item(D10:项目树里是只读区)。
+          入口不同接口就不同,因为后端看不见调用方是哪个页面,只靠前端藏按钮等于没有这条规则。
+          不删活动文件夹本身(结构由活动决定)", ""),
+    api!("POST", "/api/activities/{id}/materials-project", "活动", "发起人本人",
+         "拿到这场活动材料的**落点项目**,并在需要时现建。★只对不关联项目的活动★(ADR-0002 的
+          needs_project=false,如「个人日程」):上传口是项目作用域的,而它手上没有 pid ——
+          PRD §J0 的答案是落到发起人自己的「我的活动材料」(kind='materials',每人至多一个)。
+          有关联项目的活动调它 400(材料该落项目里,D4);不是发起人 403(材料区只有 owner 有角色,ADR-0005)", ""),
+    api!("GET", "/api/activities/{id}/link-history", "活动", "参会人/关联项目成员",
+         "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
+    api!("POST", "/api/activities/{id}/remind", "活动", "发起人 / 记录员",
+         "催办。★只催还没答复的人★,已接受/已拒绝的不该再被打扰;走平台站内信,发不出去不报错",
+         "username(可选,不给则催全部待答复的)"),
+    api!("POST", "/api/activities/{id}/accept-counter", "活动", "发起人 / 记录员",
+         "采纳某人的改期建议 = 把活动时间改成他提议的时间。★随后所有人答复清回 pending★\
+          (含提议者本人:他提的是时间,不等于他一定能来)", "username"),
+    api!("POST", "/api/activities/{id}/reject-counter", "活动", "发起人 / 记录员",
+         "驳回改期建议。★驳回后他回到 pending 不是 declined★——拒绝的是这个**时间提议**,\
+          不代表替他决定「不来」", "username"),
+    api!("GET", "/api/activities/public", "活动", "登录",
+         "公开活动广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public 只是个字段。\
+          只列**还没结束**的;归档项目的会不进(与日历同口径)", "days(不给=全部未来)"),
+    api!("POST", "/api/activities/{id}/observe", "活动", "登录(仅 public 活动)",
+         "我要旁听 / 取消旁听。★自助,不需发起人同意★——标了 public 就是邀请全平台来听;\
+          旁听后进我的日历。★旁听不给材料★(D9 与 D3 正交);\
+          ★已是正式参会人不会被降级成 observer★", "observe(true/false)"),
+    api!("GET", "/api/projects/{id}/stats", "项目", "≥viewer",
+         "项目统计(6.5.2):活动数 / 总时长(★D5 三级回退,与个人统计同一套口径★)/ 参会率 / **每人次**平均时长(★分母是人次不是人数★,别叫「人均」) / 纪要完成数。\
+          ★取消的场次不计入★;参会率的分母**不含旁听者**(他不是被邀请的,计进去会稀释比例)。\
+          ⚠ 这是「分组展开」的数字(D6),把多个项目的加起来 ≠ 总数,跨项目求总须按活动去重", "range"),
+    api!("GET", "/api/me/stats", "活动", "登录",
+         "「我的投入」统计(原型 me 视图)。★口径在 handler 注释里,前端不自己算★:只算**已开完**的会、\
+          拒绝的不算、发起人不在名单也算;待写纪要=我是记录员且纪要非 done。\
+          ⚠ 分项目的次数之和 ≥ 总次数(一场会可关联多个项目)", "range(month/quarter/year)"),
+    api!("GET", "/api/me/transfers", "项目", "登录",
+         "等我答复的主持人转移(喂给「待我处理」卡)。★不做成只在项目页可见★——\
+          被转让人可能压根不打开那个项目,那样请求永远不会被答复", ""),
+    api!("GET", "/api/me/unread", "活动", "登录",
+         "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
+          否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),
+    api!("GET", "/api/me/minutes-todo", "活动", "登录",
+         "等我整理的纪要(喂给「待我处理」卡)。★判据走 activities_owing_minutes 视图★——\
+          与 /api/me/stats 的「待写纪要」同源,免得两份判据分叉(此前 stats 那份漏了 has_minutes,\
+          会把自建类型的活动也算成欠纪要)。不设时间下限:欠着的纪要不会因为放久了就不欠", ""),
+    api!("POST", "/api/items/{id}/copy", "内容", "★源要 viewer + 目标要 editor★",
+         "跨项目复制(PRD J2)。内容寻址下**盘上一个字节都不增加**——副本是新的一行 items 指向同一个 blob。\
+          ★源也要判权★:复制不走下载路径,所以它绕过了下载上的全部检查,不自己判一次就是\
+          「凭一个 id 把别人的文件搬进自己项目」。副本**独立**(改名/删除互不影响),\
+          不带 activity_id(否则会跟着出现在那场活动的材料里)。\
+          配额算**目标项目 owner** 的,同一 owner 内复制**用量不变**(按 blob 去重)。\
+          ⚠ 材料区不能当目标;文件夹不支持,明确拒绝而不是只复制一层",
+         "project_id, parent_id(可选), name(可选)"),
+    api!("GET", "/api/me/stats", "我的", "登录",
+         "个人面板统计。★两张表口径**不同**,各自带 totals★(PRD §K):\
+          `by_type`(主视角,答「我在做什么」)**不要求有关联项目**——读文献/写作这类个人日程\
+          正是它要回答的;`by_project`(答「我为哪个团队花了时间」)要求有活着的关联项目。\
+          两者合计对不上是**有意的**,界面上各自标明口径。时长走 D5 三级回退\
+          (录制>手工补录>排程)并给出 hours_by_source",
+         "range=month|quarter|year"),
+    api!("GET", "/api/me/reminders", "活动", "登录",
+         "页面内提醒弹窗的数据源。★since 用**服务端**时间★:响应带 now,前端下次原样送回 ——\
+          用客户端 Date.now() 的话,浏览器时钟快几秒就永远查不到刚发的提醒、慢几秒则每轮重弹同一条,\
+          而两种偏差都无声无息。不带 since 时回空列表(首轮只用来对时),否则一进页面就被早已开完的会糊脸",
+         "since(可选,上轮返回的 now)"),
+    api!("POST", "/api/me/unread/read", "活动", "登录",
+         "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
+          后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),
+    api!("GET", "/api/freebusy", "活动", "登录",
+         "忙闲(D1)。★只回时间段不回内容★;★按活动自己的 busy 分流★(PRD A4)——busy=false 的活动完全隐形(别人看到「空闲」)",
+         "users(逗号分隔), from, to"),
+
+    // ── 内容 ──
+    api!("GET", "/api/projects/{id}/items", "内容", "≥viewer", "内容树(扁平表,前端按 parent_id 组树)", ""),
+    api!("POST", "/api/projects/{id}/items", "内容", "≥editor", "建文件夹或空文档", "name, kind, parent_id"),
+    api!("POST", "/api/projects/{id}/precheck", "内容", "≥editor",
+         "秒传预检。★命中且我本来就读得到同 sha 的内容才免传★(防「凭哈希认领他人文件」)",
+         "sha256, size, name, mime, parent_id"),
+    api!("GET", "/api/projects/{id}/trash", "内容", "≥editor", "回收站(只列删除动作的根);★分页★,回 {total, items}", "page, size"),
+    api!("GET", "/api/items/{id}", "内容", "≥viewer", "条目详情", ""),
+    api!("PUT", "/api/items/{id}", "内容", "≥editor", "改名 / 移动", "name, parent_id"),
+    api!("DELETE", "/api/items/{id}", "内容", "≥editor", "★软删除★:整棵子树打标记进回收站,S3 不动", ""),
+    api!("POST", "/api/items/{id}/undelete", "内容", "≥editor",
+         "从回收站还原。★只还原与它同一批被删的行★,并连带还原上级目录", ""),
+    api!("DELETE", "/api/items/{id}/purge", "内容", "admin",
+         "彻底删除(★只能对回收站里的东西★),对象按引用计数清", ""),
+    api!("GET", "/api/items/{id}/content", "内容", "≥viewer", "文档正文(markdown)", ""),
+    api!("PUT", "/api/items/{id}/content", "内容", "≥editor", "保存文档;同 sha 重复保存是 no-op", "text, label"),
+    api!("GET", "/api/items/{id}/versions", "内容", "≥viewer", "版本历史", ""),
+    api!("POST", "/api/items/{id}/restore/{version_id}", "内容", "≥editor", "恢复到某个历史版本(恢复前自动快照)", ""),
+    api!("GET", "/api/items/{id}/progress", "内容", "≥viewer", "我上次看到哪", ""),
+    api!("PUT", "/api/items/{id}/progress", "内容", "≥viewer", "记录播放进度", "position_sec, duration_sec"),
+    api!("POST", "/api/projects/{id}/upload", "内容", "≥editor",
+         "流式上传(单文件不限大小,闸是**上传者本人**的配额 —— ADR-0004 起按人算,没有项目级配额)。★带 activity_id 即为活动材料★(D10 的写入口),\
+          is_recording=true 标记为录制 —— 只有录制会被转写、并作为活动时长依据(D5)",
+         "multipart file; parent_id, activity_id, is_recording"),
+    api!("GET", "/api/items/{id}/download", "内容", "≥viewer", "下载原件;viewer 受项目禁下载开关约束", "inline"),
+
+    // ── 大文件直传 ──
+    api!("POST", "/api/projects/{id}/media/begin", "直传", "≥editor",
+         "预签名直传开始;带指纹可认领 24h 内没传完的同一文件(断点续传)。
+          ⚠★对象先落临时 key `uploads/<iid>-<rand>`,与申报的 sha 无关★(A2/D1):
+          规范 key `blobs/<H>` 只能由**服务端算完真实哈希之后的归位**写出来 ——
+          否则任何人都能占住 blobs/<别人文件的哈希> 塞垃圾,让对方上传时被静默引用到它。
+          申报的 sha 仍用于断点认领与秒传预检,但不参与 key 的推导",
+         "name, size, mime, parent_id, sha256, fp"),
+    api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节"),
+    api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",
+         "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts"),
+    api!("POST", "/api/items/{id}/media/abort", "直传", "≥editor", "主动取消(★只有主动取消才 abort,失败不动断点★)", ""),
+    api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET;★禁下载(项目级对 viewer / 活动级对所有人)时改回 200/206 同源 Range 代理,不发直链★。★只对 video 放行★", ""),
+
+    // ── 转写与纪要 ──
+    api!("POST", "/api/items/{id}/analyze", "转写", "≥editor", "排一个转写+纪要任务(幂等)", ""),
+    api!("GET", "/api/items/{id}/analysis", "转写", "≥viewer", "转写结果与 AI 参考稿", ""),
+    api!("GET", "/api/items/{id}/subtitles.vtt", "转写", "≥viewer", "WebVTT 字幕", ""),
+
+    // ── 公开分享(管理面)──
+    api!("GET", "/api/items/{id}/shares", "分享", "≥editor", "本项的分享链接列表", ""),
+    api!("POST", "/api/items/{id}/shares", "分享", "≥editor",
+         "建公开链接。★这是全系统唯一绕过项目成员身份的入口★",
+         "code, expires_days, max_visits, allow_download, items[]"),
+    api!("GET", "/api/shares/mine", "分享", "登录", "我发出去的全部分享(跨项目);★分页★,回 {total, items}", "page, size"),
+    api!("DELETE", "/api/shares/{token}", "分享", "创建者本人无条件 / 他人需 admin", "撤销分享链接", ""),
+
+    // ── 公开分享(访客面,不需登录)──
+    api!("GET", "/pub/share/{token}", "分享·访客", "开放",
+         "只回「要不要提取码」。★不存在/过期/超次数/撤销一律 404 不区分★", ""),
+    api!("POST", "/pub/share/{token}/open", "分享·访客", "开放",
+         "校验提取码 → 计一次访问 → 发 2h 短命票。★失败 20 次/15 分钟即限速★", "code"),
+    api!("GET", "/pub/share/{token}/list", "分享·访客", "票", "列子目录(逐项验是被分享项的后代)", "k 票, parent"),
+    api!("GET", "/pub/share/{token}/file/{item_id}", "分享·访客", "票", "取内容(流式转发,不暴露对象存储)", "k 票, inline"),
+
+    // ── 超管 ──
+    api!("GET", "/api/admin/users", "超管", "超管", "全部用户", ""),
+    api!("PUT", "/api/admin/users/{username}/super", "超管", "超管", "设/撤超管位", "is_super"),
+    api!("PUT", "/api/admin/users/{username}/quota", "超管", "超管",
+         "调某个人的配额（ADR-0004：额度挂在人身上，不挂在项目上）。★upsert★：没有行 = 用系统默认",
+         "quota_bytes"),
+    api!("GET", "/api/admin/audit", "超管", "超管", "全局审计日志", "limit, actor, action"),
+
+    // ── 开发者 ──
+    api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", ""),
+    api!("GET", "/api/_dev/openapi.json", "开发者", "超管",
+         "OpenAPI 3.1 契约。★从 APIS 生成,不是手写的★——手写的契约一定会漂", ""),
+];
+
+/// GET /api/_dev/openapi.json —— OpenAPI 3.1 契约。
+///
+/// ★为什么是生成而不是手写★(IAH 开发规范相位 4 要求「每个 API 必有 OpenAPI 文档」):
+/// 手写一份 yaml 意味着**第三个真相源**(路由表 / APIS / yaml),而前两个已经由测试焊死了。
+/// 从 `APIS` 生成,契约就自动继承那条保证:**路由改了不同步,`cargo test` 先红**,
+/// 契约不可能偷偷落后于实现。
+///
+/// ⚠ 当前只到**路径级**(方法/路径/说明/所需身份/路径参数与 query 名)。
+/// request/response 的字段级 schema 还没进 `APIS`,所以契约里没有 —— 这是**已知欠账**,
+/// 别当成「接口没有出入参」。要补的话:给 `Api` 加 schema 字段,前后端都从这里取。
+pub async fn openapi(
+    State(state): State<AppState>,
+    axum::Extension(id): axum::Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !crate::perm::is_super_now(&state.pool, &id).await? {
+        return Err(crate::error::AppError::Forbidden);
+    }
+    Ok(Json(build_openapi()))
+}
+
+/// 生成本体(纯函数,好单测)。
+///
+/// ★`pub` 是为了 `src/bin/openapi-dump.rs`★:接口面门禁(oasdiff)要能**离线**拿到契约,
+/// 不依赖跑起来的服务器 —— 那样它才进得了 CI,也才不用平台令牌/内网 CA。
+pub fn build_openapi() -> serde_json::Value {
+    use serde_json::json;
+    let mut paths = serde_json::Map::new();
+    for a in APIS {
+        // 路径参数:`/api/items/{id}/restore/{version_id}` → 两个 path 参数,OpenAPI 要求必填。
+        let params: Vec<serde_json::Value> = path_params(a.path)
+            .into_iter()
+            .map(|p| json!({
+                "name": p, "in": "path", "required": true,
+                "schema": { "type": if p.ends_with("id") { "integer" } else { "string" } },
+            }))
+            .chain(query_params(a.params).into_iter().map(|q| json!({
+                "name": q, "in": "query", "required": false, "schema": { "type": "string" },
+            })))
+            .collect();
+        let op = json!({
+            "summary": a.summary,
+            "tags": [a.group],
+            // ★把「需要什么身份」放进契约★:它是评审接口规范性时最该看的一列,
+            // 藏在代码里等于没有。用 x- 扩展字段,标准 security 表达不了「≥editor」这种档位。
+            "x-iah-auth": a.auth,
+            "parameters": params,
+            "responses": {
+                "200": { "description": "成功" },
+                "401": { "description": "未登录" },
+                "403": { "description": "已登录但档位不够" },
+                "404": { "description": "不存在,或**完全没有授权**(刻意与不存在同一回应,防存在性探测)" },
+            },
+        });
+        let entry = paths.entry(a.path.to_string()).or_insert_with(|| json!({}));
+        entry[a.method.to_lowercase()] = op;
+    }
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "congrove(汇流)",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "★本文件由 src/http/apidoc.rs 的 APIS 生成,不要手改★。\
+                            路由与 APIS 的一致性由 cargo test 逐条比对保证。\
+                            当前只到路径级,字段级 schema 是已知欠账。",
+        },
+        "paths": paths,
+    })
+}
+
+/// 抽出 `{name}` 形式的路径参数。
+fn path_params(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = path;
+    while let Some(i) = rest.find('{') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('}') else { break };
+        out.push(&after[..j]);
+        rest = &after[j + 1..];
+    }
+    out
+}
+
+/// 从 `params` 那列的自由文本里抽 query 名。
+/// 写法是「`q 关键词, limit, actor`」这种,取每段第一个词;含中文说明的段落跳过。
+/// ⚠ 这是**尽力而为**的解析,不是契约的权威来源——权威在 handler 的 `Query<T>` 结构体。
+fn query_params(params: &str) -> Vec<&str> {
+    params
+        .split(',')
+        .filter_map(|seg| seg.split_whitespace().next())
+        .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.ends_with("[]") && *w != "multipart")
+        .collect()
+}
+
+/// GET /api/_dev/apis —— 给开发者页面用。超管可见:清单本身暴露了系统结构。
+pub async fn list(
+    State(state): State<AppState>,
+    axum::Extension(id): axum::Extension<Identity>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !crate::perm::is_super_now(&state.pool, &id).await? {
+        return Err(crate::error::AppError::Forbidden);
+    }
+    Ok(Json(serde_json::json!({ "count": APIS.len(), "apis": APIS })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// 从 mod.rs 源码里抠出所有实际注册的路径。
+    /// 读源码而不是内省 Router:axum 没有公开的路由内省 API,而源码是编译期就能拿到的确定事实。
+    fn registered() -> BTreeSet<String> {
+        let src = include_str!("mod.rs");
+        let mut out = BTreeSet::new();
+        // ⚠ 不能按行扫:rustfmt 会把长路由拆成
+        //     .route(
+        //         "/items/{id}/media/part",
+        //   —— `.route(` 与路径在两行上。所以在**整份源码**里找 `.route(`,再往后取第一个字符串。
+        for (i, _) in src.match_indices(".route(") {
+            let rest = &src[i + 7..];
+            let Some(a) = rest.find('"') else { continue };
+            let after = &rest[a + 1..];
+            let Some(b) = after.find('"') else { continue };
+            let p = &after[..b];
+            // /healthz /readyz /auth/* 在根;其余按 nest 分:/pub/* 是分享访客面,剩下的都在 /api 下
+            let full = if p.starts_with("/healthz") || p.starts_with("/readyz") || p.starts_with("/auth/") {
+                p.to_string()
+            } else if p.starts_with("/share/") {
+                format!("/pub{p}")
+            } else {
+                format!("/api{p}")
+            };
+            out.insert(full);
+        }
+        out
+    }
+
+    #[test]
+    fn openapi_每条路由都进了契约() {
+        let doc = build_openapi();
+        let paths = doc["paths"].as_object().expect("paths 必须是对象");
+        // 去重后的路径数应当一致(同一路径的多个方法合并成一个条目)
+        let want: BTreeSet<&str> = APIS.iter().map(|a| a.path).collect();
+        assert_eq!(paths.len(), want.len(), "契约里的路径数与 APIS 对不上");
+        for a in APIS {
+            let op = &paths[a.path][a.method.to_lowercase()];
+            assert!(!op.is_null(), "契约里缺 {} {}", a.method, a.path);
+            // ★「需要什么身份」必须进契约★:它是评审接口规范性最该看的一列,藏在代码里等于没有
+            assert_eq!(op["x-iah-auth"], a.auth, "{} {} 的所需身份没进契约", a.method, a.path);
+        }
+    }
+
+    #[test]
+    fn openapi_路径参数都被声明为必填() {
+        let doc = build_openapi();
+        // 两个路径参数的那条最容易漏
+        let op = &doc["paths"]["/api/items/{id}/restore/{version_id}"]["post"];
+        let names: Vec<&str> = op["parameters"].as_array().unwrap().iter()
+            .filter(|p| p["in"] == "path")
+            .map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["id", "version_id"]);
+        assert!(op["parameters"][0]["required"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn path_params_只抽花括号里的() {
+        assert_eq!(path_params("/api/projects"), Vec::<&str>::new());
+        assert_eq!(path_params("/api/items/{id}/media/part"), vec!["id"]);
+        assert_eq!(path_params("/pub/share/{token}/file/{item_id}"), vec!["token", "item_id"]);
+    }
+
+    #[test]
+    fn query_params_跳过中文说明只留标识符() {
+        // params 那列是给人看的自由文本,解析必须**宁可少抽也别抽出垃圾**
+        assert_eq!(query_params("q 关键词"), vec!["q"]);
+        assert_eq!(query_params("users(逗号分隔), from, to"), vec!["from", "to"]);
+        assert_eq!(query_params(""), Vec::<&str>::new());
+        assert_eq!(query_params("multipart file"), Vec::<&str>::new());
+        assert_eq!(query_params("usernames[], role"), vec!["role"]);
+    }
+
+    /// ★文档漂移在这里被挡住★:注册了却没写文档、或写了文档却没注册,都会红。
+    #[test]
+    fn 每个路由都有文档且没有多余文档() {
+        let actual = registered();
+        let documented: BTreeSet<String> = APIS.iter().map(|a| a.path.to_string()).collect();
+
+        let missing: Vec<_> = actual.difference(&documented).collect();
+        let extra: Vec<_> = documented.difference(&actual).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "\n★API 文档与路由表不一致★\n  注册了但没写文档: {missing:?}\n  写了文档但没注册: {extra:?}\n\
+             (加路由时 mod.rs 与 apidoc.rs 要同时改)"
+        );
+    }
+
+    #[test]
+    fn 文档字段不能留空() {
+        for a in APIS {
+            assert!(!a.summary.trim().is_empty(), "{} {} 缺 summary", a.method, a.path);
+            assert!(!a.auth.trim().is_empty(), "{} {} 缺 auth", a.method, a.path);
+            assert!(!a.group.trim().is_empty(), "{} {} 缺 group", a.method, a.path);
+        }
+    }
+
+    #[test]
+    fn 路径必须以斜杠开头且无尾斜杠() {
+        for a in APIS {
+            assert!(a.path.starts_with('/'), "{} 路径要以 / 开头", a.path);
+            assert!(a.path.len() == 1 || !a.path.ends_with('/'), "{} 不要以 / 结尾", a.path);
+        }
+    }
+}

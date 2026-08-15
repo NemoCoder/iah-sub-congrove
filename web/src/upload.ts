@@ -43,7 +43,7 @@ function fingerprint(f: File): string {
 }
 
 export async function directUpload(
-  sid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
+  pid: number, file: File, parentId: number | null, onProgress: (p: number) => void,
   mode: 'presigned' | 'proxy', ctl: UploadCtl = newCtl(),
   /// 内容的 sha256(调用方在秒传预检时已经算过,顺手带来):有它服务端就按内容寻址落对象,
   /// 同内容全库一份。没有也能传,只是不去重。
@@ -51,7 +51,7 @@ export async function directUpload(
   onResume?: (skippedParts: number, skippedBytes: number) => void,
   sha256?: string,
 ): Promise<boolean> {
-  const begin = await fetch(`/api/spaces/${sid}/media/begin`, {
+  const begin = await fetch(`/api/projects/${pid}/media/begin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -93,7 +93,7 @@ export async function directUpload(
           break
         } catch (pe) {
           if (ctl.canceled || (pe as Error).message === CANCELED) throw new Error(CANCELED)
-          if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败(已重试 3 次):${(pe as Error).message}`)
+          if (attempt >= 3) throw new Error(`第 ${i + 1}/${part_urls.length} 片失败（已重试 3 次）:${(pe as Error).message}`)
           await new Promise((r) => setTimeout(r, attempt * 1000))
           report(0)
         }
@@ -125,20 +125,23 @@ function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, vi
       if (xhr.status < 200 || xhr.status >= 300) {
         let detail = `${xhr.status}`
         try { detail = JSON.parse(xhr.responseText).error || detail } catch { /* 非 JSON */ }
-        return reject(new Error(`分片上传失败:${detail}`))
+        return reject(new Error(`分片上传失败：${detail}`))
       }
       // 代理模式 ETag 在 JSON 体里;直传模式在响应头(跨源可读靠桶 CORS ExposeHeaders:[ETag])。
       const etag = viaProxy ? (JSON.parse(xhr.responseText).etag as string) : xhr.getResponseHeader('ETag')
       if (etag) resolve(etag.replaceAll('"', ''))
-      else reject(new Error(viaProxy ? '分片响应缺 etag' : 'part 直传缺 ETag(桶 CORS?)'))
+      else reject(new Error(viaProxy ? '分片响应缺 etag' : 'part 直传缺 ETag（桶 CORS？）'))
     }
-    xhr.onerror = () => reject(new Error(viaProxy ? '分片上传网络错误' : 'part 直传网络错误(证书/CORS?)'))
+    xhr.onerror = () => reject(new Error(viaProxy ? '分片上传网络错误' : 'part 直传网络错误（证书/CORS？）'))
     xhr.send(blob)
   })
 }
 
 /// XHR 上传(fetch 至今无标准上传进度,对抗核查 §7.4b-5):onProgress 喂给 antd Upload 画进度条。
-export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void, ctl?: UploadCtl): Promise<void> {
+/// ★把响应体交出去★(2026-08-09):上传接口会告诉调用方「这份是完全重复的、没有新建行」
+/// (方案 C),而原来这里 `resolve()` 什么都不带 —— 调用方只能一律报「上传完成」,
+/// 而列表里并没有多出东西。**报成功却什么都没发生**比重复本身更让人困惑。
+export function xhrUpload(url: string, file: File, onProgress: (percent: number) => void, ctl?: UploadCtl): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     if (ctl) ctl.xhr = xhr
@@ -147,7 +150,10 @@ export function xhrUpload(url: string, file: File, onProgress: (percent: number)
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)) }
     xhr.onload = () => {
       if (xhr.status === 401) { window.location.href = `/auth/login?return=${encodeURIComponent(window.location.pathname)}`; return }
-      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)) } catch { resolve(undefined) }
+        return
+      }
       else {
         // 后端 JSON 错误取 error 字段;axum 框架层的纯文本错误(如 query 解析失败)取原文,别只剩裸状态码。
         let msg = `${xhr.status}`

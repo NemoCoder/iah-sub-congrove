@@ -3,10 +3,21 @@
 
 port: 8030                    # 单镜像单端口,与 Dockerfile 的 BIND_ADDR / EXPOSE 一致
 display_name: 汇流 Congrove
-description: 团队知识库:空间 + 小组分权共享,会议记录 / 会议录屏 / 论文资料
+description: 团队协作:项目资料 + 会议与日程,会议纪要 / 录屏转写 / 论文资料
 
 want_db: true                 # 共享 iah-pg(PG18)→ 平台注入 DATABASE_URL
 want_oss: true                # Garage S3 → 平台注入 AWS_* / S3_ENDPOINT / S3_BUCKET
+
+# dev E2E 免登通道(平台 registry v1.3.80,群 #128)——★仅 dev 生效,prod 没有这条路由★。
+# 开了它平台会生成 per-子系统 key,带 `X-IAH-E2E-Key` 的请求在 dev 网关**跳过 SSO 三道**,
+# 供 Playwright 自动化测试用。key 用个人令牌调 GET /api/subsystems/congrove/e2e-key 取,
+# ★是凭证,不进仓库、不进前端★。平台侧边界:per-slug 校验(别的 slug 借用 403)+ prod host 拒 + 常量时间比较。
+#
+# ⚠ 这条通道跳过的是**第一层**(平台网关 SSO)。第二层(congrove 自己的 OIDC/HS256 会话)怎么接,
+#   是**待拍板的设计决策**,别想当然:平台在跳过 SSO 时会注入 X-Forwarded-Preferred-Username: e2e,
+#   但 congrove 的架构决策①明确写着「身份自建 OIDC、平台不注入身份头」——要不要开始信任这个头,
+#   以及**同一个镜像 promote 到 prod 后会不会跟着信任**,必须先想清楚(见 docs/E2E-CHANNEL.md)。
+e2e: true
 
 # OIDC:机密客户端 sub-congrove(id+secret)+ OIDC_ISSUER 平台自动注入,无需声明。
 env:
@@ -14,8 +25,9 @@ env:
   CONGROVE_SUPER_USERS: liaoruili
   # 非 dev 值 → telemetry.rs 输出 JSON 结构化日志(平台 Loki 规范);本地 cargo run 缺省 dev = 人读格式。
   APP_ENV: cluster
-  # 建空间白名单(D2,docs/PERMISSIONS.md):不配/空 = 全员可建;要收紧填逗号分隔用户名(超管恒可建)。
-  # CONGROVE_SPACE_CREATORS: liaoruili
+  # 建项目白名单(D2,docs/PERMISSIONS.md):不配/空 = 全员可建;要收紧填逗号分隔用户名(超管恒可建)。
+  # ★变量名跟着 0.4.0 的「空间→项目」改过★,别再写 CONGROVE_SPACE_CREATORS(config.rs 已不认)。
+  # CONGROVE_PROJECT_CREATORS: liaoruili
   # 预签名专用外部端点(§7.4b-2):未配则录屏走后端流式代理回退。
   # ⚠ 配它之前必须先让平台给桶配 CORS(ExposeHeaders:ETag,pod 的 key 无 owner 位自己配不了,§7.4b-1)。
   S3_PUBLIC_ENDPOINT: https://s3api.ruciah.com
