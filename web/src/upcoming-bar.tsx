@@ -36,8 +36,17 @@ export function UpcomingBar({ reloadKey, onOpen }: {
     const to = new Date(now.getTime() + 7 * 864e5)
     // ★from 用「此刻」不用「今天零点」★：正在开的那场要算进来（后端判据是区间相交），
     // 而今天早上已经开完的那些不该再出现在「接下来」里。
+    // ★我拒绝掉的不算「接下来要去的」★（2026-08-15，E2E 修好一条**空跑的否定断言**之后才暴露）。
+    //   2026-08-14 加「拒绝的不进日程」时,过滤只落在 `schedule-view` 的 `load` 里,
+    //   那里的注释还写着「顶部『接下来 7 天 N 场』的计数也从 `items` 派生」——
+    //   ★而这条摘要早在 08-12 就被抽成独立组件、自带一次取数了,那句断言当天就不成立。★
+    //   于是「拒绝的会」从网格里消失了,却仍被顶部计成一场、名字还挂在「最近一场」上 ——
+    //   正是 liaoruili 最初那句「我拒绝的会议为啥出现在日程中？」没修干净的另一半。
+    // ⚠ 教训:**注释里那种「这些都从同一个地方派生」的断言会过期**,而它过期时不报错。
+    //   `docs/adr/README.md` 那条「关于代码的断言不写进文档,写成可执行门禁」在这儿同样适用 ——
+    //   真正把它钉住的不是这段话,是下面那条**不再空跑的** E2E。
     api<Activity[]>(`/api/activities?from=${encodeURIComponent(now.toISOString())}&to=${encodeURIComponent(to.toISOString())}`)
-      .then((r) => { if (!dead) setRows(r) })
+      .then((r) => { if (!dead) setRows(r.filter((m) => m.my_status !== 'declined')) })
       .catch(() => { if (!dead) setRows([]) })   // 静默：这是一条辅助信息，挂了不该弹错打断人
     return () => { dead = true }
   }, [reloadKey])

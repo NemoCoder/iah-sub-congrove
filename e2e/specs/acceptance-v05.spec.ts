@@ -21,6 +21,7 @@
 // 所以直接 `npx playwright test specs/acceptance-v05.spec.ts` 就能在那台屏幕上看着它走。
 import { expect, request as pwRequest, test, type APIRequestContext, type Page } from '@playwright/test'
 import { 每条都留图 } from './_shot'
+import { 本周内可见的时刻 } from './_when'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -186,8 +187,8 @@ test.describe('v0.5 验收', () => {
     const api = await 接口(我)
     try {
       const pid = (await (await api.post('/api/projects', { data: { name: `E2E-M2-项目-${t}` } })).json()).id
-      const 今天 = new Date(); 今天.setHours(14, 0, 0, 0)
-      if (今天.getTime() < Date.now()) 今天.setDate(今天.getDate() + 1)
+      // ★必须落在日程页当前显示的那一周里★（见 _when.ts:这条曾在周六红）
+      const 今天 = 本周内可见的时刻(14)
       const r = await api.post('/api/activities', {
         data: { type_id: 1, title: `E2E-M2-组会-${t}`, recorder: 我, project_ids: [pid],
                 starts_at: 今天.toISOString(), ends_at: new Date(今天.getTime() + 3600e3).toISOString() },
@@ -270,8 +271,12 @@ test.describe('v0.5 验收', () => {
       const 弹窗 = page.locator('.ant-modal:visible')
       // ★按「可见」筛,而不是按顺序挑★:那两个副本里 `.ant-modal-title` 是**隐藏的**
       //   (antd 拿它做 aria-labelledby),`.first()` 恰好挑中它 → 永远 hidden。
+      // ⚠★断言别咬死标点★（2026-08-15）:这条原来写的是半角逗号 `活动,归不了档`,
+      //   而全站中文文案改全角那一批把它变成了 `活动，归不了档` —— 用例当场红,
+      //   ★而产品完全没坏★。这类「判据咬住了一个随时会被排版规范改掉的字符」的脆弱性,
+      //   修法不是跟着改成全角(下次再调又断),是**让它对标点风格不敏感**:`[,，]`。
       const 见 = (re: RegExp) => 弹窗.getByText(re).filter({ visible: true }).first()
-      await expect(见(/还有 \d+ 场没开始的活动,归不了档/),
+      await expect(见(/还有 \d+ 场没开始的活动[,，]归不了档/),
         '★挡路清单对话框没出现(或标题变了)★').toBeVisible({ timeout: 10_000 })
       await expect(见(new RegExp(`E2E-M2-未来会-${t}`)),
         '★清单里没列出是哪几场 —— 人不知道该去处理什么★').toBeVisible()

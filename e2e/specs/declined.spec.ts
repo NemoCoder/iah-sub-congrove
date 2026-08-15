@@ -14,6 +14,7 @@
 import { expect, request as pwRequest, test, type Page } from '@playwright/test'
 import { 会议 } from './_presets'
 import { 每条都留图 } from './_shot'
+import { 本周内可见的时刻 } from './_when'
 
 test.skip(!process.env.IAH_E2E_KEY, '没配 IAH_E2E_KEY,跳过(见 README)')
 
@@ -31,7 +32,9 @@ async function 造一场被我拒掉的活动(t: string) {
   const pid = (await (await host.post('/api/projects', { data: { name: `E2E-拒绝-项目-${t}` } })).json()).id as number
   // 拉我进项目,否则我看不见这场活动(D3:非成员一律 404)
   await host.put(`/api/projects/${pid}/members`, { data: { username: 我, role: 'editor' } }).catch(() => {})
-  const 明天 = new Date(); 明天.setDate(明天.getDate() + 1); 明天.setHours(14, 0, 0, 0)
+  // ★这里尤其要用它★:本文件断言的是「日程里**不再**出现」——
+//   活动若本来就不在显示的那一周,断言会**凭空通过**(见 _when.ts 末尾那段)。
+const 明天 = 本周内可见的时刻(14)
   const 标题 = `E2E-被我拒掉的会-${t}`
   const r = await host.post('/api/activities', {
     data: { type_id: 会议, title: 标题, recorder: 发起人, project_ids: [pid],
