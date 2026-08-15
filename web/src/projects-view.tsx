@@ -1313,12 +1313,14 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
           filterOption={false} placeholder="输入用户名，可多选（没搜到也能直接输入）" style={{ flex: 1 }}
           notFoundContent={null}
           options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}（${u.name}）` : u.username }))} />
+        {/* ★这里是**第二个**角色下拉,上一轮只改了行内那个 —— 又一次「只修了一半」★
+            (2026-08-15 界面验收截图当场发现:成员表行内已经是「可编辑」了,
+             而这个「批量添加」旁边的还写着「成员」)。
+            ⚠ 讽刺的是这条 finding 本身就叫「同一个角色两个名字」——
+              我修它的时候,自己又在同一个文件里留了第二个硬编码。
+            ★所以这次不是「再改一处」,是让**任何**角色下拉都只能从 `ROLE_LABEL` 取词。★ */}
         <Select value={role} onChange={setRole} style={{ width: 120 }}
-          options={[
-            { value: 'viewer', label: '只读成员' },
-            { value: 'editor', label: '成员' },
-            { value: 'admin', label: '管理员' },
-          ]} />
+          options={(['viewer', 'editor', 'admin'] as Role[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))} />
         <Button type="primary" onClick={addBatch}>批量添加</Button>
       </AntSpace.Compact>}
 
