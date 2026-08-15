@@ -8,6 +8,16 @@
 # ★prod 的 pod 起不来★(sqlx:`migration N was previously applied but has been modified`),
 # 而它是在**部署那一刻**才炸的 —— 这正是 2026-08-15 晚上在 dev 上真实发生过的事。
 #
-# 要改 schema:**新建** `0002_xxx.sql`,并把它的哈希登记到本文件(登记是一个有意识的动作)。
-# 校验:scripts/migration-frozen-check.sh(纯静态,进 CI)。
+# ★本文件登记的是「**prod 已经应用过**的迁移」,不是「所有迁移」★(2026-08-16 订正)。
+# prod 冻在 v0.5.0、到 0.6 才 promote —— 在那之前 `0002` 是一个**工作文件**:
+# 可以反复改、dev 清库重建(`scripts/wipe-dev.sh`),★因为 prod 还没见过它★。
+# liaoruili 2026-08-16:「到 0.6 的时候,应该只有一个 0002」—— 这一轮的所有 schema 改动
+# 合成一份,而不是攒成 0002/0003/0004(散成几份会让「这一轮改了什么」查起来要拼)。
+#
+# 节奏:
+#   改 schema → 改工作中那个迁移(没有就建一个)→ dev 清库重建验 → …反复…
+#   → promote 到 prod → **这时**才把它的哈希追加到本文件(冻住)→ 下一轮开新的。
+#
+# 校验:scripts/migration-frozen-check.sh(纯静态,进 CI)——
+#   已登记的内容一字不许变;没登记的随便改;但没登记的**最多一个**。
 b81a60b70e6eb0f0b0ff0ee5239b948f8e46910dfa9b87db24ba3312f36ee54775da8ad4b69c60d3e036993b0e9e7c16  0001_init.sql
