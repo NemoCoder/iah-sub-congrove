@@ -42,6 +42,10 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /// 当前输入的关键词。★候选只覆盖登录过汇流的人★(/api/users 查本地 app_user),
   /// 而后端能拉任何平台用户 —— 所以搜不到时要允许直接用输入的用户名。
+  /// ⚠★2026-08-15 起 /api/users 更窄了★:陌生人**只认完整用户名**(精确等值),
+  ///   只有与我共过项目的人才能按前缀/姓名搜(liaoruili 拍板,防目录枚举)。
+  ///   ⇒ 「搜不到也能直接输入」这条从**便利**升级成了**必需**:约一个没共过项目的人,
+  ///     除非你正好输全了他的账号,否则下拉里一条候选都不会有。别把这条兜底去掉。
   const [typed, setTyped] = useState('')
 
   useEffect(() => {
@@ -292,7 +296,7 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
           rules={needRecorder ? [{ required: true, message: '必须指定记录员' }] : []}
         >
           <Select showSearch placeholder="谁来整理纪要（默认是你自己）" options={userOpts}
-            onSearch={search} filterOption={false} notFoundContent="输入用户名或姓名搜索" />
+            onSearch={search} filterOption={false} notFoundContent="同项目的人可搜姓名；其他人请输完整用户名" />
         </Form.Item>}
 
         {/* ★议题与议程★（原型「新建活动」有这一栏，而代码里一直没有 —— 2026-08-09 并排对照才发现）。

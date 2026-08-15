@@ -1317,7 +1317,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
             候选只覆盖登录过汇流的人,而后端能拉任何平台用户(见 searchUsers 上面的注释)。
             用 multiple 的话,新同事永远加不进来。真伪由后端 ensure_platform_user 判,加错了会被拒。 */}
         <Select mode="tags" value={picked} onChange={setPicked} onSearch={searchUsers}
-          filterOption={false} placeholder="输入用户名，可多选（没搜到也能直接输入）" style={{ flex: 1 }}
+          filterOption={false} placeholder="完整用户名，可多选（同项目的人可搜姓名；没搜到也能直接输入）" style={{ flex: 1 }}
           notFoundContent={null}
           options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}（${u.name}）` : u.username }))} />
         {/* ★这里是**第二个**角色下拉,上一轮只改了行内那个 —— 又一次「只修了一半」★

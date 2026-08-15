@@ -364,7 +364,11 @@ test.describe('副手不能废副手', () => {
       const 移 = await 甲.delete(`/api/projects/${pid}/members?username=e2e-admin-b`)
       expect(移.status(), '★也不能把他移出★——能单方面撤销,等于把任命权拿走了一半').toBe(403)
       // 真的没动:乙还在,还是 admin
-      const 成员 = await (await 主持人.get(`/api/projects/${pid}/members`)).json() as { username: string; role: string }[]
+      // ⚠ `/members` 回的是 `{ owner, members: [...] }`,**不是**裸数组 —— 我第一版当成数组
+      //   直接 `.find`,用例红在 TypeError 上,看起来却像「产品没拦住」。
+      //   ★断言的形状要从代码里查,别凭印象写★(同一天在分享那条上已经栽过一次:漏了 `k`)。
+      const 成员 = (await (await 主持人.get(`/api/projects/${pid}/members`)).json())
+        .members as { username: string; role: string }[]
       expect(成员.find((x) => x.username === 'e2e-admin-b')?.role, '乙必须原封不动').toBe('admin')
 
       // ── 许:甲对**普通成员**的权力一点没少(否则就是把接口改坏了,不是修好了) ──
@@ -379,5 +383,88 @@ test.describe('副手不能废副手', () => {
 
       await 主持人.delete(`/api/projects/${pid}`)
     } finally { await 主持人.dispose(); await 甲.dispose() }
+  })
+})
+
+// ════════ 选人接口:能问「有没有这个人」,不能要「有哪些人」 ════════
+//
+// liaoruili 2026-08-15:「只能通过完整账号搜索,然后同一个项目的人是可以直接列举出来的,
+// 也就是说你可以看到所有项目里面的人,但是你看不到整个系统的人」。
+// ⚠ 这一组同样必须两侧都有:只测「搜不到」的话,把接口改成永远回空数组也全绿。
+test.describe('选人接口不是名册', () => {
+  test('★陌生人只认完整账号;同项目的人才能按前缀搜★', async () => {
+    const 我 = await asUser('e2e-seeker')
+    const 陌生人 = await asUser('e2e-stranger-xyz')
+    try {
+      // 让两个人都在 app_user 里落行(接口查的是本地表)
+      expect((await (await 陌生人.get('/api/me')).json()).username).toBe('e2e-stranger-xyz')
+      const 搜 = async (q: string) =>
+        (await (await 我.get(`/api/users?q=${encodeURIComponent(q)}`)).json()) as { username: string }[]
+
+      // ── 能:完整账号 ──(拉人所必需 —— 没有这一条,你根本约不到没共事过的人)
+      expect((await 搜('e2e-stranger-xyz')).map((x) => x.username),
+        '★完整账号必须查得到★:这是 oracle,不是 dump').toContain('e2e-stranger-xyz')
+
+      // ── 不能:前缀 ──(差一个字都不给 —— 否则敲 26 个字母就能把名册抄走)
+      expect((await 搜('e2e-stranger-xy')).map((x) => x.username),
+        '★少一个字就不该出现★').not.toContain('e2e-stranger-xyz')
+      expect((await 搜('e2e-')).map((x) => x.username),
+        '★更不该拿一个宽前缀把人一批批捞出来★').not.toContain('e2e-stranger-xyz')
+
+      // ── 能:共过项目之后,前缀就行了 ──(他的名字在成员页上本来就列着)
+      const pid = (await (await 我.post('/api/projects', {
+        data: { name: `E2E-选人-${tag()}`, visibility: 'public' } })).json()).id as number
+      expect((await 我.put(`/api/projects/${pid}/members`,
+        { data: { usernames: ['e2e-stranger-xyz'], role: 'viewer' } })).status()).toBe(200)
+      expect((await 搜('e2e-stranger-xy')).map((x) => x.username),
+        '★同项目的人可以按前缀搜★——否则这个下拉就没法用了').toContain('e2e-stranger-xyz')
+
+      await 我.delete(`/api/projects/${pid}`)
+    } finally { await 我.dispose(); await 陌生人.dispose() }
+  })
+})
+
+// ════════ 预置活动类型:全系统共用的一行,谁都不能改 ════════
+test.describe('预置活动类型不可改', () => {
+  test('★改预置类型的占忙闲必须被拒;自建的照旧能改★', async () => {
+    const 我 = await asUser('e2e-typer')
+    try {
+      const 类型 = (await (await 我.get('/api/activity-types')).json()) as
+        { id: number; owner: string | null; name: string; busy_default: boolean }[]
+      const 预置 = 类型.filter((t) => t.owner === null)
+      expect(预置.length, '前提:必须真的有预置行,否则这条用例什么都没测').toBeGreaterThan(0)
+
+      // ── 不能:任何预置行 ──(它 owner IS NULL = 全系统共用,改它就是替所有人做决定)
+      // ⚠★这几行是**破坏性**的,而破坏的是全系统共用的一行★:闸没修好时 PUT 会真的成功。
+      //   所以下面先把原值记下来,断言完**无论如何都还原**(还原在修好的版本上会 400,忽略即可)。
+      //   —— 2026-08-15 我第一版没写还原:在没修的线上跑完,「个人日程」的占忙闲就被留成了 true,
+      //   全所有人的个人日程从此占忙闲。★它当时没出事纯粹是因为 retry 又翻了一次翻回来了。★
+      const 原值 = new Map(预置.map((t) => [t.id, t.busy_default]))
+      try {
+        for (const t of 预置) {
+          const r = await 我.put(`/api/activity-types/${t.id}`, { data: { busy_default: !t.busy_default } })
+          expect([400, 403], `★预置「${t.name}」不该改得动(拿到 ${r.status()})★`).toContain(r.status())
+        }
+        // 真的没动
+        const 后 = (await (await 我.get('/api/activity-types')).json()) as typeof 类型
+        for (const t of 预置) {
+          expect(后.find((x) => x.id === t.id)?.busy_default, `「${t.name}」的忙闲必须原封不动`).toBe(t.busy_default)
+        }
+      } finally {
+        const 现 = (await (await 我.get('/api/activity-types')).json()) as typeof 类型
+        for (const [id, v] of 原值) {
+          if (现.find((x) => x.id === id)?.busy_default !== v) {
+            await 我.put(`/api/activity-types/${id}`, { data: { busy_default: v } })
+          }
+        }
+      }
+
+      // ── 能:自建的 ──(否则就是把功能删了,不是修好了)
+      const nid = (await (await 我.post('/api/activity-types',
+        { data: { name: `写作${tag()}`.slice(0, 12), busy_default: true } })).json()).id as number
+      expect((await 我.put(`/api/activity-types/${nid}`, { data: { busy_default: false } })).status(),
+        '★自建类型的占忙闲照旧可改★').toBe(200)
+      expect((await 我.delete(`/api/activity-types/${nid}`)).status(), '自建的照旧能删').toBe(200)
+    } finally { await 我.dispose() }
   })
 })

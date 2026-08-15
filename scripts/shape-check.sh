@@ -53,7 +53,12 @@ baseline)
   echo "→ 提交它。之后任何接口的响应体字段变动,都要在 $EXP 里有对应的几行。" ;;
 freeze)
   [ -f "$BASE" ] || { echo "没有基线,先跑 $0 baseline"; exit 2; }
-  T=$(mktemp); render > "$T" || { rm -f "$T"; exit 1; }
+  # ★freeze 必须和 check **用同一种渲染**★(2026-08-15 修):这里原来是 `render`(不传基线),
+  #   而 check 用的是 `render "$BASE"`(带「没样本就沿用基线」的填空)。两边渲染方式不同 ⇒
+  #   ★freeze 冻下来的差异,check 永远对不上★ —— 我刚 freeze 完立刻 check,当场红,
+  #   而中间一行代码都没改。冻进去的还是 `by_project` 空/非空、`revoked_at` null/非 null
+  #   这些**天生随数据抖**的格子,正是填空要滤掉的东西。
+  T=$(mktemp); render "$BASE" > "$T" || { rm -f "$T"; exit 1; }
   diff -u --label baseline --label current "$BASE" "$T" > "$EXP"; rm -f "$T"
   echo "★已冻结 $(grep -c '^[+-][^+-]' "$EXP") 处预期变更 → $EXP★"
   echo "→ ★逐行读一遍★:每一行都该是你**打算**造成的响应体变化。" ;;

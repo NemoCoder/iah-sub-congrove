@@ -73,28 +73,54 @@ pub struct UserQuery {
     pub q: Option<String>,
 }
 
-/// GET /api/users?q=前缀 —— 选人下拉的数据源(**不在** admin 闸内,任何登录用户可用)。
-/// ★2026-08-04 审计收紧★:原来不带参数就吐全表 = 任何登录用户可枚举全所名单
-/// (username + 真名),这是没必要的暴露面。现在**必须带 q 前缀**、只回 20 条、且要求 ≥1 字符;
-/// 不带 q 回空数组(前端下拉在用户开始输入后才有候选)。仍不回邮箱。
-/// 口径仍是「登录过汇流的人」(平台名录真相在 Keycloak,拉人时由 users/exists 兜底校验)。
+/// GET /api/users?q=… —— 选人下拉的数据源(**不在** admin 闸内,任何登录用户可用)。
+///
+/// ★两条口径,合起来才是「能选到人,但看不到名册」★
+/// (2026-08-15 对抗检查提出,liaoruili 拍板:「只能通过完整账号搜索,
+///  然后同一个项目的人是可以直接列举出来的 —— 你可以看到所有项目里面的人,
+///  但是你看不到整个系统的人」):
+///
+///   ① **陌生人:只认完整账号**。`username = q`,一个字都不能少。
+///      这是一个 **oracle**(问「有没有这个人」),不是 **dump**(要「有哪些人」)——
+///      前者是拉人所必需的,后者就是目录枚举。
+///   ② **同项目的人:随便搜,前缀就行**。你们已经在同一个项目里共事,
+///      他的名字对你本来就不是秘密(成员页上就列着)。
+///
+/// ⚠★为什么把前缀搜索砍掉★:此前是「username 或 name 前缀 ILIKE,回 20 条」。
+///   `q=a` 就能拿到 20 个人,`q=b` 再 20 个 —— 敲 26 个字母基本就把全所名册抄走了,
+///   带真名。★限 20 条限的是**每次**的量,不是**总共**能拿到的量★,
+///   而枚举攻击从来不介意多打几次请求。这与平台「不做用户 list/search 接口」
+///   (2026-08-07 liaoruili 拍板)是同一条线。
+///
+/// 仍不回邮箱。口径仍是「登录过汇流的人」(平台名录真相在 Keycloak,拉人时 users/exists 兜底)。
 pub async fn user_options(
     State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
     Query(q): Query<UserQuery>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
-    let prefix = q.q.unwrap_or_default().trim().to_string();
-    if prefix.is_empty() {
+    let 输入 = q.q.unwrap_or_default().trim().to_string();
+    if 输入.is_empty() {
         return Ok(Json(vec![]));
     }
-    let like = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let me = id.require_username()?;
+    let like = format!("{}%", 输入.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT username, name FROM app_user
-          WHERE username ILIKE $1 ESCAPE '\\' OR name ILIKE $1 ESCAPE '\\'
-          ORDER BY username -- limit-ok: 输入即搜的候选 —— typeahead 取前 20 个,人再敲一个字就换一批;
+        "SELECT u.username, u.name FROM app_user u
+          WHERE
+            -- ① 完整账号精确命中:问得出「有没有这个人」,问不出「有哪些人」
+            u.username = $1
+            -- ② 与我共过项目的人:名字对我本来就不是秘密,允许前缀搜
+            OR ((u.username ILIKE $2 ESCAPE '\\' OR u.name ILIKE $2 ESCAPE '\\')
+                AND EXISTS (SELECT 1 FROM project_members 我 JOIN project_members 他
+                                     ON 他.project_id = 我.project_id
+                                  WHERE 我.username = $3 AND 他.username = u.username))
+          ORDER BY u.username -- limit-ok: 输入即搜的候选 —— typeahead 取前 20 个,人再敲一个字就换一批;
               --   ★它不是「用户列表」★:平台明令不做用户 list/search(会变成目录枚举)。
               LIMIT 20",
     )
+    .bind(&输入)
     .bind(&like)
+    .bind(me)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows.into_iter().map(|(u, n)| serde_json::json!({ "username": u, "name": n })).collect()))

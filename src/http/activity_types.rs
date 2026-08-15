@@ -185,32 +185,32 @@ pub async fn create(
     Ok(Json(json!({ "id": nid })))
 }
 
-/// 一行的可改范围。★预置行与自建行不是「能改 / 不能改」两档★ ——
-/// 原型（相位 3 已签核）画得很清楚：
-///   · 「会议」行：占忙闲显示「✅ 固定」，末列 **不可改**；
-///   · 「个人日程」行：占忙闲是**可勾的 checkbox**，末列 **不可删**。
-/// ★措辞不同是有意的★：个人日程的 `busy_default` 可以改，只是不能删。
+/// 一行的可改范围。★两档,就两档★:自建的随便改,预置的一点都不能动。
+///
+/// ⚠★这里原来有第三档 `BusyOnly`(预置的简单型可以改 `busy_default`),已删★
+///   (2026-08-15 对抗检查抓到,liaoruili 拍板「预置的不能改」)。它的来历是相位 3 的原型:
+///   「个人日程」那一行的占忙闲画成了**可勾的复选框**,于是我照着实现了。
+///   ★原型对的是「一个人看到的界面」,而 `owner IS NULL` 的那一行是**全系统共用的一行**★ ——
+///   甲把「个人日程」勾成不占忙闲,乙、丙、丁的个人日程当场跟着不占,
+///   而他们四个人的界面上什么提示都没有,只有别人约他们时才会发现「他明明有安排却显示空闲」。
+///   ★把「一个人的偏好」写进一行全局记录,是这类 bug 的通用形状★:
+///   界面上它长得像个人设置,数据上它是共享状态。
+///   真想要一个「不占忙闲的个人分类」,自建一个就是了 —— 自建行 `owner = 我`,天然只归我。
 #[derive(Debug, PartialEq, Eq)]
 pub enum TypeScope {
-    /// 自建的：改名 / 改忙闲 / 删，都行
+    /// 自建的:改名 / 改忙闲 / 删,都行
     Full,
-    /// 预置的简单型：★只能改 busy_default★，不能改名、不能删
-    BusyOnly,
-    /// 预置的全能力型：一点都不能动
+    /// 预置的(以及别人自建的):一点都不能动
     None,
 }
 
-/// ★判据（从原型反推，与 O4 的理由一致）★：`has_minutes || needs_project` 的类型，
-/// 占忙闲**固定为 true 不可改** —— O4 拍板 `busy_default` 时的原话是
-/// 「占忙闲 = **影响别人**，而会议本来就是多人的事」。要出纪要、要挂项目的活动，
-/// 按定义就是多人的事，让人把它调成「不占」等于给「我开着会但别人约得到我」开门。
-/// 简单型（两位都 false）才可调 —— 自建类型全是简单型，所以它们天然可调。
-pub fn scope_of(owner: Option<&str>, me: &str, has_minutes: bool, needs_project: bool) -> TypeScope {
+/// ★判据★:只问一句「这一行是不是我自己建的」。
+/// 预置行归全系统共用,任何一次修改都是替所有人做决定 —— 那不是用户该有的权力。
+/// (`has_minutes` / `needs_project` 曾经参与判定,现在不再需要:预置行一律不可改。)
+pub fn scope_of(owner: Option<&str>, me: &str, _has_minutes: bool, _needs_project: bool) -> TypeScope {
     match owner {
         Some(o) if o == me => TypeScope::Full,
-        Some(_) => TypeScope::None,          // 别人自建的：看不到也动不了
-        None if has_minutes || needs_project => TypeScope::None,
-        None => TypeScope::BusyOnly,
+        _ => TypeScope::None,   // 别人自建的看不到也动不了;预置的谁都不能动
     }
 }
 
@@ -237,13 +237,12 @@ pub async fn update(
     Json(input): Json<TypeIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    let scope = scope_or_err(&state.pool, tid, me).await?;
-    // ★预置的简单型只让改 busy_default★：改名会让所有人的历史活动跟着变名字。
+    // 走到这里 scope 只可能是 Full(预置行与别人的行在 scope_or_err 里就被拒了)。
+    let _ = scope_or_err(&state.pool, tid, me).await?;
     // ★没传 name 就只改 busy_default★:这正是「占忙闲」那个复选框走的路(A4)。
-    // 预置的简单型也只让改 busy_default —— 改名会让所有人的历史活动跟着变名字。
-    let name = match (&input.name, scope == TypeScope::Full) {
-        (Some(n), true) => Some(clean_name(n)?),
-        _ => None,
+    let name = match &input.name {
+        Some(n) => Some(clean_name(n)?),
+        None => None,
     };
     if name.is_none() && input.busy_default.is_none() {
         return Err(AppError::BadRequest("没有要改的字段".into()));
@@ -273,10 +272,9 @@ pub async fn remove(
     Path(tid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     let me = id.require_username()?;
-    // ★删只对自建的开放★：预置行删了 = 历史活动失去类型名（`type_id` 是 NOT NULL 外键）
-    if scope_or_err(&state.pool, tid, me).await? != TypeScope::Full {
-        return Err(AppError::BadRequest("预置的活动类型不能删".into()));
-    }
+    // ★删只对自建的开放★：预置行删了 = 历史活动失去类型名（`type_id` 是 NOT NULL 外键）。
+    // scope_or_err 已经把预置行与别人的行拒掉了,这里只剩 Full。
+    let _ = scope_or_err(&state.pool, tid, me).await?;
     sqlx::query("UPDATE activity_types SET deleted_at = now() WHERE id = $1")
         .bind(tid)
         .execute(&state.pool)
@@ -360,9 +358,12 @@ mod tests {
     }
 
     #[test]
-    fn 预置的个人日程可以改忙闲但不能删() {
-        // ★原型措辞不同是有意的★：会议「不可改」，个人日程「不可删」
-        assert_eq!(scope_of(None, "alice", false, false), TypeScope::BusyOnly);
+    fn 预置的个人日程也一点都不能动() {
+        // ★这条用例的断言 2026-08-15 反过来了★:原来是 `BusyOnly`(照相位 3 的原型,
+        //   那一行画的是可勾的复选框)。而 `owner IS NULL` 的行是**全系统共用的一行** ——
+        //   甲勾一下,乙丙丁的个人日程一起变成不占忙闲,四个人的界面上什么都不会说。
+        //   liaoruili 拍板:预置的不能改;想要不占忙闲的个人分类就自建一个(那才归自己)。
+        assert_eq!(scope_of(None, "alice", false, false), TypeScope::None);
     }
 
     #[test]
@@ -372,11 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn 只要沾一个能力位就固定忙闲() {
-        // 判据是 has_minutes || needs_project，不是「两个都要」——
-        // 要出纪要的活动即使不挂项目，也是多人的事
-        assert_eq!(scope_of(None, "alice", true, false), TypeScope::None);
-        assert_eq!(scope_of(None, "alice", false, true), TypeScope::None);
+    fn 预置行的可改范围与能力位无关() {
+        // 能力位曾经参与这个判定(简单型可改忙闲),现在不再 —— 四种组合一律 None。
+        // ⚠ 留着这条是为了钉住「不再看能力位」这件事本身:哪天有人想按能力位再开口子,
+        //   会先看到这四行断言,而不是重新发明一遍上面那个 bug。
+        for (hm, np) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(scope_of(None, "alice", hm, np), TypeScope::None);
+        }
     }
 
     #[test]
