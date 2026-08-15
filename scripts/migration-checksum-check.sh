@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# ★第十七道:代码里的迁移文件,和 dev 库记着的「我跑过的那份」还是同一份吗★(2026-08-15)
+#
+# ══ 它补的是哪一格 ══
+# 现有十六道闸全都在问「代码自己对不对」,★没有一道在问「代码和**运行环境的状态**还对得上吗」★。
+# 2026-08-15 当晚就掉进这一格:v0.4.165 往 `0001_init.sql` 里加了一个视图
+# (ADR-0001 允许随便改这个文件,**但配套纪律是每次部署清库重建**,我漏了那一步)。
+# 十六道全绿、CI 全绿、PR 合并、部署 —— 一路没有任何一处提到「dev 库还不知道你改了它」,
+# 直到 pod 起不来:`Error: migration 1 was previously applied but has been modified`。
+# ★唯一会发现问题的东西是生产环境本身,而那是最贵的发现方式。★
+#
+# 判据:sqlx 在 `_sqlx_migrations` 里存的是当时那个文件的 **SHA-384**。这里把同一个比对**提前**到本地。
+#
+# ⚠ 进不了 CI(要连活的 dev 库),和 SQL PREPARE / schema 对拍 / 响应体形状同一类 ——
+#   PR 里如实标「人工验证」,别标成 CI 绿。
+# ⚠ 「量不到」不算通过:连不上库 / 读不到文件一律 exit 2。
+set -uo pipefail
+cd "$(dirname "$0")/.."
+: "${CONGROVE_DEV_DSN:?缺 CONGROVE_DEV_DSN（source ~/.config/iah/congrove-dev.env）}"
+
+FAIL=0
+FOUND=0
+for f in migrations/*.sql; do
+  [ -e "$f" ] || continue
+  FOUND=$((FOUND + 1))
+  ver=$(basename "$f" | sed -E 's/^0*([0-9]+).*/\1/')
+  mine=$(python3 -c "import hashlib,sys;print(hashlib.sha384(open(sys.argv[1],'rb').read()).hexdigest())" "$f") || { echo "★算不出 $f 的校验和★"; exit 2; }
+  theirs=$(psql "$CONGROVE_DEV_DSN" -Atc \
+    "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
+    || { echo "★连不上 dev 库,查不到 _sqlx_migrations —— 不能当成通过★"; exit 2; }
+  if [ -z "$theirs" ]; then
+    # 库里没这一条 = 这个库还没跑过它(全新库/刚清过库),启动时会正常跑一遍,不是问题。
+    echo "  · $f:dev 库还没跑过它(启动时会跑)—— 跳过"
+    continue
+  fi
+  if [ "$mine" = "$theirs" ]; then
+    echo "  ✓ $f 与 dev 库记录一致"
+  else
+    echo "  ✗ ★$f 改过了,而 dev 库记的还是老的★"
+    echo "      文件 = $mine"
+    echo "      库里 = $theirs"
+    FAIL=1
+  fi
+done
+[ "$FOUND" -gt 0 ] || { echo "★migrations/ 下一个文件都没有 —— 不能当成通过★"; exit 2; }
+
+if [ "$FAIL" != 0 ]; then
+  cat <<'TXT'
+
+★门禁不通过★:这样部上去,pod 会 CrashLoop 在
+    Error: migration N was previously applied but has been modified
+两条出路(按 ADR-0001,上线前 dev 可以清库):
+  ① 清库重建(CLAUDE.md 里那五条 SQL)—— 干净,但清掉 dev 全部数据;
+  ② 先证明「现库结构已等于新迁移建出来的样子」:
+       bash scripts/schema-check.sh sim-diff migrations/0001_init.sql   # 差异必须为 0
+     确认之后再把记录改成实话:
+       UPDATE _sqlx_migrations SET checksum = decode('<文件的 sha384>','hex') WHERE version = 1;
+★别反过来做★:先改记录再看结构,那是把「对不上」这件事盖掉,不是解决它。
+TXT
+  exit 1
+fi
+echo "★迁移校验和门禁通过★:代码里的迁移与 dev 库记录一致"
