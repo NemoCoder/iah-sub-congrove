@@ -846,17 +846,39 @@ pub async fn respond(
     // ⚠ 这里**不自动改 recorder**:指派记录员是发起人的决定,系统替他改等于偷偷换人;
     //   而且换给谁也没有正确答案。给他一条明确的站内信,让他去改。
     if st == "declined" {
+        // ★记录员拒绝出席 → 纪要**自动落回发起人**★（2026-08-15 liaoruili 拍板,改掉 08-14 的方案 B）。
+        //
+        // 08-14 那版是「仍挂在他名下 + 通知发起人另指派」,理由是**责任不能凭空蒸发**。
+        // 这一版换了落点、但守的是同一条:★责任仍然不许悬空,只是默认落到**一个真实存在的人**头上★。
+        // 为什么更好:方案 B 把活儿留给一个**已经说了不来**的人 —— 他多半不会写,
+        // 而系统每天都在催他;发起人则是这场活动的所有者,由他兜底最自然,
+        // 而且他**随时可以改指派**(记录员本来就是可编辑字段)。
+        //
+        // ⚠★两个边界★:
+        //   ① 发起人自己就是记录员时(organizer == username)不动 —— 转给他自己没有意义,
+        //      他拒绝自己发起的会本来就是个奇怪状态,但那不该由这里替他决定;
+        //   ② 只有**我确实是记录员**时才转;普通参会人拒绝出席跟纪要没关系。
         let 我是记录员: bool = sqlx::query_scalar(
             "SELECT recorder = $2 FROM activities WHERE id = $1")
             .bind(mid).bind(username).fetch_one(&state.pool).await?;
+        let mut 已转给发起人 = false;
         if 我是记录员 && organizer != username {
+            sqlx::query("UPDATE activities SET recorder = $2 WHERE id = $1")
+                .bind(mid).bind(&organizer).execute(&state.pool).await?;
+            已转给发起人 = true;
             let 标题: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
                 .bind(mid).fetch_one(&state.pool).await.unwrap_or_default();
-            notify_activity(&state, mid, std::slice::from_ref(&organizer), "记录员拒绝了出席,请另指派",
-                &format!("{username} 拒绝出席「{标题}」,但他仍是这场活动的记录员 —— \
-                          请改指派别人,否则这场的纪要不会有人写。")).await;
+            notify_activity(&state, mid, std::slice::from_ref(&organizer), "记录员拒绝出席,纪要已转到你名下",
+                &format!("{username} 拒绝出席「{标题}」。为免这场的纪要没人写,\
+                          记录员已**默认改成你**;要换人的话,在活动页把「记录员」改掉就行。")).await;
         }
-        return Ok(Json(json!({ "ok": true, "status": st, "still_recorder": 我是记录员 })));
+        // `still_recorder`:拒绝之后我**还是不是**记录员。转走了就是 false ——
+        // 界面靠它当场告诉我「这摊子已经不归你了」,否则我只会纳闷「我都拒了怎么还挂着」。
+        return Ok(Json(json!({
+            "ok": true, "status": st,
+            "still_recorder": 我是记录员 && !已转给发起人,
+            "recorder_moved_to": if 已转给发起人 { Some(organizer.clone()) } else { None },
+        })));
     }
     Ok(Json(json!({ "ok": true, "status": st })))
 }

@@ -761,7 +761,16 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                   <Button size="small" icon={<FileAddOutlined />} onClick={() => newItem('doc')} />
                 </Tooltip>
               )}
-              <Button size="small" icon={<DeleteOutlined />} onClick={() => setTrashOpen(true)}>回收站</Button>
+              {/* ★「我的活动材料」不给回收站入口★（2026-08-15 liaoruili:「不合理,没有增删改查权力」）:
+                  这个区标着「系统 · 只读」,横幅也明说「加材料、删材料都回到那条活动里做」——
+                  ★既然在这里删不了东西,这里就不该有「装被删东西的地方」★。
+                  它此前一直在,点开永远是「回收站是空的」(删除动作发生在活动那边,
+                  软删的行也归属那条活动)—— 于是这个按钮**只会让人以为自己漏看了什么**。
+                  ⚠ 判据用 `isMaterials()`(唯一推导),不用 `readOnly` ——
+                    归档项目也是只读,但它**确实有**自己的回收站,那个入口要留着。 */}
+              {!isMaterials(cur) && (
+                <Button size="small" icon={<DeleteOutlined />} onClick={() => setTrashOpen(true)}>回收站</Button>
+              )}
               {/* 批量操作三个都是写(建分享链接/移动/删除),归档时整块不出现。
                   ⚠ ★已经发出去的分享链接仍然有效★——归档是「只读」不是「封存」,
                   读得到才是归档的意义;要断链接请用「禁止分享」开关或撤销。 */}

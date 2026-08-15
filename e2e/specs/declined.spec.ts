@@ -160,7 +160,13 @@ test.describe('拒绝掉的活动', () => {
     // ★两种修法都有明显坏处★:
     //   A：拒绝就不再催 → ★这场会的纪要从此没人写、也没人知道★,安静地消失在所有人的待办里;
     //   B：仍挂在我名下,但**当场通知发起人另指派** → 多一步打扰,但责任不会凭空蒸发。
-    // 他选 B,理由和本仓反复踩的坑一致:**「安静地消失」比「烦人地留着」难查得多**。
+    // 他先选了 B,理由和本仓反复踩的坑一致:**「安静地消失」比「烦人地留着」难查得多**。
+    //
+    // ★2026-08-15 他改了落点(仍然不是 A)★:拒绝之后**纪要自动转给发起人**,发起人可随时改指派。
+    //   守的还是「责任不许悬空」那一条,只是不再把活儿留给一个**已经说了不来**的人 ——
+    //   他多半不会写,而系统每天都在催他;发起人是这场活动的所有者,由他兜底最自然。
+    //   所以这条用例现在钉的是:①接口说「你不再是记录员」并告诉转给了谁;
+    //   ②它**从我的待办里消失、出现在发起人的待办里** —— 落点变了,责任没蒸发。
     //
     // 所以这条用例钉三件事,缺一件这个决定就没落实:
     //   ① 拒绝的接口回 `still_recorder: true`(界面靠它当场告诉我,不然我只会纳闷「我都拒了」);
@@ -193,16 +199,22 @@ test.describe('拒绝掉的活动', () => {
       expect(改.status(), `★改到过去没成功,这条用例后面全是空跑: ${await 改.text()}★`).toBe(200)
       // ⚠ 改时间会把所有人的答复清回 pending(update 的既有行为),所以拒绝要在**改完之后**做。
 
-      // ① 拒绝 → 接口要如实说「你还是记录员」
+      // ① 拒绝 → 接口要说清「这摊子已经不归你了,转给谁了」
       const rp = await 他.post(`/api/activities/${id}/respond`, { data: { status: 'declined' } })
       expect(rp.status(), await rp.text()).toBe(200)
-      expect((await rp.json()).still_recorder,
-        '★接口没告诉我「你仍是记录员」—— 界面就没法当场提醒我,我只会纳闷「我都拒了」★').toBe(true)
+      const 回 = await rp.json()
+      expect(回.still_recorder,
+        '★转走之后还说「你仍是记录员」—— 界面会照着提醒我,而事实已经变了★').toBe(false)
+      expect(回.recorder_moved_to,
+        '★接口没说转给了谁 —— 界面就只能含糊地说「已转走」,人不知道该找谁★').toBe(发起人)
 
-      // ② ★纪要仍然挂在我名下★(这是 B,不是 A)
-      const 待办 = await (await 他.get('/api/me/minutes-todo')).json() as { activity_id: number }[]
-      expect(待办.some((x) => x.activity_id === id),
-        '★纪要从我的待办里消失了 —— 那是方案 A:这场会的纪要从此没人写、也没人知道★').toBe(true)
+      // ② ★纪要落到发起人名下,不是消失★(这是这条决定的分界:落点变了,责任没蒸发)
+      const 我的待办 = await (await 他.get('/api/me/minutes-todo')).json() as { activity_id: number }[]
+      expect(我的待办.some((x) => x.activity_id === id),
+        '★拒绝之后这场还挂在我待办里 —— 那就等于没转★').toBe(false)
+      const 他的待办 = await (await host.get('/api/me/minutes-todo')).json() as { activity_id: number }[]
+      expect(他的待办.some((x) => x.activity_id === id),
+        '★发起人的待办里没有它 —— 那这场纪要就真的没人写了,正是这条决定要防的★').toBe(true)
 
       // ③ ★「发起人真的收到站内信」这条,这里验不了 —— 写清楚,不假装验过★
       //
