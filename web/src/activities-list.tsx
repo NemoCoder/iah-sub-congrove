@@ -147,8 +147,14 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
             )}
             {rows.length === 0 && (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                // ★空态要回答「这个筛选下为什么是空的」,不是笼统说时间★(2026-08-15 巡检截图看出来的):
+                //   原来只特判了 past / declined,`mine`(我发起的)落进默认分支 ——
+                //   于是「我发起的」筛出 0 条时说「接下来没有安排」,
+                //   ★而这里的 0 是「你没发起过活动」,和「接下来」半点关系没有。★
                 description={tab === 'past' ? '还没有结束的活动'
-                  : tab === 'declined' ? '你还没有拒绝过任何活动' : '接下来没有安排'} />
+                  : tab === 'declined' ? '你还没有拒绝过任何活动'
+                  : tab === 'mine' ? '你还没有发起过活动'
+                  : '接下来没有安排'} />
             )}
           </>
         )}

@@ -125,7 +125,7 @@ function putPart(url: string, blob: Blob, onLoaded: (loaded: number) => void, vi
       if (xhr.status < 200 || xhr.status >= 300) {
         let detail = `${xhr.status}`
         try { detail = JSON.parse(xhr.responseText).error || detail } catch { /* 非 JSON */ }
-        return reject(new Error(`分片上传失败:${detail}`))
+        return reject(new Error(`分片上传失败：${detail}`))
       }
       // 代理模式 ETag 在 JSON 体里;直传模式在响应头(跨源可读靠桶 CORS ExposeHeaders:[ETag])。
       const etag = viaProxy ? (JSON.parse(xhr.responseText).etag as string) : xhr.getResponseHeader('ETag')

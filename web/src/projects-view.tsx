@@ -222,7 +222,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       const report = (percent: number) => patch(t.key, { percent })
       // 断点续传命中时说一声:否则用户会以为进度条从 60% 起跳是出了错(2026-08-04 P2)。
       const resumed = (parts: number, bytes: number) =>
-        message.info(`${f.name}:从断点继续,已跳过 ${parts} 片(${fmtSize(bytes)})`)
+        message.info(`${f.name}：从断点继续，已跳过 ${parts} 片(${fmtSize(bytes)})`)
       try {
         // ★秒传预检★(2026-08-05):先在本地按块算 SHA-256(不吃内存,GB 级也行),
         // 服务端若发现**我本来就能读到**同内容的文件,直接建引用、零字节传输。
@@ -321,7 +321,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
   const del = (targets: Item[]) => {
     const names = targets.map((t) => t.name).join('、')
     modal.confirm({
-      title: `删除 ${targets.length} 项?`,
+      title: `删除 ${targets.length} 项？`,
       // 软删除之后文案要改:不再是「不可撤销」,而是「进回收站、30 天内可还原」(2026-08-05)。
       content: <span>{names.slice(0, 120)}{names.length > 120 ? '…' : ''}<br />
         文件夹会连同其中全部内容一起放进<b>回收站</b>,30 天内可以还原。</span>,
@@ -355,7 +355,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
     挡: { total: number; items: { id: number; title: string; starts_at: string; can_cancel: boolean }[] }) => {
     const 可取消 = 挡.items.filter((x) => x.can_cancel)
     modal.confirm({
-      title: `还有 ${挡.total} 场没开始的活动,归不了档`,
+      title: `还有 ${挡.total} 场没开始的活动，归不了档`,
       width: 560,
       icon: null,
       content: (
@@ -393,11 +393,11 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
           catch (e) { 失败.push(`${x.title}(${(e as Error).message})`) }
         }
         if (失败.length) {
-          message.error(`有 ${失败.length} 场没取消成功:${失败.join('、')}`)
+          message.error(`有 ${失败.length} 场没取消成功：${失败.join('、')}`)
           throw new Error('部分取消失败')   // 抛出去让弹窗留着,别让人以为成了
         }
         if (可取消.length < 挡.total) {
-          message.warning(`已取消 ${可取消.length} 场;还有 ${挡.total - 可取消.length} 场你取消不了,项目仍未归档`)
+          message.warning(`已取消 ${可取消.length} 场；还有 ${挡.total - 可取消.length} 场你取消不了，项目仍未归档`)
           throw new Error('还有挡路的')
         }
         try { await api(`/api/projects/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: true }) }) }
@@ -490,7 +490,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       }
       if (key === 'delete') {
         modal.confirm({
-          title: `删除项目「${s.name}」?`,
+          title: `删除项目「${s.name}」？`,
           // ⚠★文案跟着行为改★(2026-08-09 审计 A5):原来写的是「不可撤销」——
           // 那时后端确实是硬删除;现在是软删除进回收站 30 天。
           // ★说明文案和实现不一致时,人会按文案决策★:说「不可撤销」会让人不敢删该删的东西,
@@ -518,7 +518,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
       //   顶着**一模一样的警告标记**。★什么都是警告,就等于没有警告★ —— 真到删除那一下,
       //   那个图标已经不再让人停顿了。这里换成中性的编辑图标,把橙色留给真会造成损失的动作。
       icon: <EditOutlined style={{ color: '#1677ff' }} />,
-      content: <Input placeholder="项目名,如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
+      content: <Input placeholder="项目名，如「组会记录」「论文库」" onChange={(e) => (name = e.target.value)} />,
       onOk: async () => {
         try {
           await api('/api/projects', { method: 'POST', body: JSON.stringify({ name }) })
@@ -811,7 +811,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                 setSortAsc(s2?.order !== 'descend')
               }}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={canEdit ? '这里还是空的——上传文件,或把文件拖进来' : '这里还是空的'} /> }}
+                description={canEdit ? '这里还是空的——上传文件，或把文件拖进来' : '这里还是空的'} /> }}
               rowSelection={canEdit ? {
                 selectedRowKeys: checked, onChange: (k) => setChecked((k as number[]).filter((x) => x > 0)),
                 // ★活动材料不给勾选★:勾上之后「移动 / 删除」两个批量动作会整批失败,
@@ -863,7 +863,11 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                 { title: '上传时间', dataIndex: 'created_at', width: 150,
                   sorter: true, sortOrder: sortKey === 'created_at' ? (sortAsc ? 'ascend' : 'descend') : null, render: (v, it) => (up(it) || it.id === PARENT_ROW_ID ? '—' : fmtTime(v)) },
                 { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true,
-                  sorter: true, sortOrder: sortKey === 'created_by' ? (sortAsc ? 'ascend' : 'descend') : null },
+                  sorter: true, sortOrder: sortKey === 'created_by' ? (sortAsc ? 'ascend' : 'descend') : null,
+                  // ★同一行里别出现两种「空」★(2026-08-15 巡检截图看出来的):
+                  //   「..」这行的大小、上传时间都渲染成「—」,唯独上传者是**纯空白** ——
+                  //   读的人会以为「这条数据缺了上传者」,而它根本不是一条数据。
+                  render: (v, it) => (it.id === PARENT_ROW_ID ? '—' : v) },
                 {
                   // ★图标化★(2026-08-04 反馈:操作列太宽,把文件名挤没了)。
                   // 「打开」去掉——点名称就是打开,重复给一个按钮只是占地方;
@@ -938,7 +942,7 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
                 `length !== 0`,AntD 认为表格非空。所以补在表格外面,而不是去改 emptyText。 */}
             {cwd != null && 本页行.length === 0 && upRows.length === 0 && (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ margin: '4px 0 12px' }}
-                description={canEdit ? '这个文件夹是空的——上传文件,或把文件拖进来' : '这个文件夹是空的'} />
+                description={canEdit ? '这个文件夹是空的——上传文件，或把文件拖进来' : '这个文件夹是空的'} />
             )}
             {/* ★只有真需要翻页时才出现★:三五个文件的项目底下挂一个「1」的翻页器纯是噪音。 */}
             {rows.length > 文每页 && (
@@ -1184,7 +1188,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           size="small" dataSource={versions}
           renderItem={(v) => (
             <List.Item actions={canEdit ? [
-              <Popconfirm key="r" title="恢复到此版本?(当前版会自动存为快照)" onConfirm={async () => {
+              <Popconfirm key="r" title="恢复到此版本？(当前版会自动存为快照)" onConfirm={async () => {
                 await api(`/api/items/${item.id}/restore/${v.id}`, { method: 'POST' })
                 setVersionsOpen(false)
                 setText(await api<string>(`/api/items/${item.id}/content`)); setDirty(false); onChanged()
@@ -1269,6 +1273,24 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
 
   const body = (
     <>
+      {/* ★把「你随时可以撤回」这句空头承诺兑现掉★（2026-08-15 逐张看巡检截图看出来的）:
+          转让确认框里明明写着「他会收到一条站内信；**你随时可以撤回**」,
+          后端也确实有 `DELETE /api/projects/{id}/transfer` —— 可**界面上没有任何入口**,
+          发起方甚至看不到「我发出去的那笔还挂着」(`/api/me/transfers` 是给**接收方**的)。
+          ★这句话恰恰是在一个有后果的动作前用来让人放心的★ —— 在最需要它的时候它是假的。
+          数据一直都在(详情接口的 `pending_transfer`),只是前端从没用过。 */}
+      {space.pending_transfer && space.pending_transfer.from === me?.username && (
+        <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+          message={<span>主持人正在转给 <b>{space.pending_transfer.to}</b>，等他接受</span>}
+          description="在他答复之前，主持人还是你。"
+          action={<Popconfirm title="撤回这次转让？" description="撤回后他那条站内信里的按钮就失效了。"
+            onConfirm={async () => {
+              try {
+                await api(`/api/projects/${space.id}/transfer`, { method: 'DELETE' })
+                message.success('已撤回'); await load(); onChanged()
+              } catch (e) { message.error((e as Error).message) }
+            }}><Button size="small">撤回</Button></Popconfirm>} />
+      )}
       <Typography.Text strong>成员（{members.length}）</Typography.Text>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 10px' }}>
         进了项目就能看到<b>本项目全部资料</b>，包括他加入之前的历史；移出即失去全部。
@@ -1308,11 +1330,13 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
               <Select size="small" value={m.role} style={{ width: 118 }}
                 disabled={m.username === owner || !可管理}
                 onChange={(r) => changeRole(m, r as Role)}
-                options={[
-                  { value: 'viewer', label: '只读成员' },
-                  { value: 'editor', label: '成员' },
-                  { value: 'admin', label: '管理员' },
-                ]} />),
+                // ★用唯一真相源 ROLE_LABEL,别在这儿另写一套词★(2026-08-15 巡检截图看出来的):
+                //   本文件开头就写着「★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限★」
+                //   并给了 `ROLE_LABEL` —— 可这个下拉自己写了「只读成员 / 成员 / 管理员」。
+                //   后果是**同一个人、同一个项目、同一屏**:左边列表徽章写「可编辑」,
+                //   右边成员表下拉写「成员」。★读的人会以为那是两种不同的身份。★
+                //   ⚠ 这正是本仓最核心的那条纪律的反例:每样东西只有一个真相源。
+                options={(['viewer', 'editor', 'admin'] as Role[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))} />),
           },
           { title: '加入', dataIndex: 'added_at', width: 110, render: (t: string) => t?.slice(0, 10) },
           {
@@ -1471,11 +1495,18 @@ function TrashDrawer({ space, open, onClose, onChanged }:
   //   而其实前面还有 100 条 —— 又一次「界面替数据撒谎」。所以往前退一页。
   useEffect(() => { if (!loading && rows.length === 0 && 页 > 1) set页((n) => n - 1) }, [loading, rows.length, 页])
 
+  // ★标题要带作用域★(2026-08-15 巡检截图看出来的):侧栏那个叫「项目回收站」(删掉的**项目**),
+  //   这个只叫「回收站」(项目里删掉的**文件**)。而左上角按钮写着「回收站 4」——
+  //   那个 4 是**项目**回收站的数,同屏打开这个却说「回收站是空的」,
+  //   ★读起来像「我那 4 样东西不见了」★。加上项目名和「文件」两个字就分得开。
+  // ⚠★JSX 注释别放进 `return (` 的根元素旁边★ —— 那是两个根节点,tsc 直接报
+  //   `Declaration or statement expected`。今天第二次踩(第一次在 activity-detail 那边),
+  //   所以这条注释就放在这儿:**函数体里,return 之前**。
   // ★宽度 640 → 760★(2026-08-15 逐张看巡检截图看出来的):后面四列是写死的
   //   92 + 148 + 100 + 130 = 470,「名称」只分得到约 130px,于是文件名被截成「博士论文一…」——
   //   而回收站里恰恰**只剩名字可认**(内容已经看不到了),名字截掉就等于让人猜该还原哪一个。
   return (
-    <Drawer title="🗑 回收站" open={open} onClose={onClose} width={760}>
+    <Drawer title={`🗑 ${space.name} · 文件回收站`} open={open} onClose={onClose} width={760}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         {/* ★「项目配额」这个东西已经不存在了★(2026-08-15 逐张看巡检截图看出来的):
             ADR-0004 起配额**按人算**(`user_quota`),库里根本没有项目级配额;
@@ -1505,8 +1536,8 @@ function TrashDrawer({ space, open, onClose, onChanged }:
               }}>还原</a>
               {space.my_role === 'admin' && (
                 <a style={{ color: '#ff4d4f' }} onClick={() => modal.confirm({
-                  title: '彻底删除?', okButtonProps: { danger: true },
-                  content: '这一步不可撤销:内容会从对象存储里真正抹掉(若没有别处引用同一份内容)。',
+                  title: '彻底删除？', okButtonProps: { danger: true },
+                  content: '这一步不可撤销：内容会从对象存储里真正抹掉(若没有别处引用同一份内容)。',
                   onOk: async () => {
                     try { await api(`/api/items/${r.id}/purge`, { method: 'DELETE' }); message.success('已彻底删除'); await load(); onChanged() }
                     catch (e) { message.error((e as Error).message) }
@@ -1596,7 +1627,11 @@ function ProjectActivities({ projectId }: { projectId: number }) {
               数没算错,是名字把它说成了另一件事;而「人均」正是最容易被当成「每人花了多久」的说法。
               改叫「每人次」:它字面就是分母,读的人不会再往「每个人」上想。 */}
           {stats.avg_hours_per_person != null && <span>每人次 <b>{stats.avg_hours_per_person}</b> h</span>}
-          <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.activities}</span>
+          {/* ★同一条指标带里三个数,不能两个藏一个不藏★(2026-08-15):
+              「参会率」在没人被邀请时藏了、「每人次」本来就有守卫,唯独这个还渲染成 `0/0`。
+              ⚠ 这是我自己修「参会率 0%」时**只修了一半**留下的 —— 判据是同一个:
+                没有可度量的对象时,分数不是 0,是**没有**。 */}
+          {stats.activities > 0 && <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.activities}</span>}
         </AntSpace>
         {stats.hours > 0 && (
           <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 6 }}>
@@ -1691,8 +1726,14 @@ function ProjectSettings({ space, menu }: {
               成员 tab 里根本没有;本文件只是**读** `no_download` 来对 viewer 隐掉下载按钮。
           管理员项目的成员页实拍只有「成员 / 权限诊断 / 转写术语表」三块。
           ★指错路的提示比没有提示更坏★:人会照着去翻,翻不到就以为是自己权限不够或者页面坏了。 */}
+      {/* ★这句也要跟着角色裁剪★(2026-08-15 巡检截图看出来的):上面三个按钮我已经按
+          「是不是主持人」收了口,却把这句原样留着 —— 又一次**只修了一半**。
+          「转写术语表」只有**项目管理员**能维护(成员页自己就写着这句),
+          对「可编辑」角色来说,照这句去成员页是**找不到**那一块的。 */}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        成员、转写术语表在「成员」标签页里；禁止下载是每场活动材料区自己的开关。
+        {space.my_role === 'admin'
+          ? '成员、转写术语表在「成员」标签页里；禁止下载是每场活动材料区自己的开关。'
+          : '成员名单在「成员」标签页里（加人、改角色、转写术语表只有管理员能动）；禁止下载是每场活动材料区自己的开关。'}
       </Typography.Text>
     </AntSpace>
   )

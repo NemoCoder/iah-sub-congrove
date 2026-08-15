@@ -1704,7 +1704,12 @@ pub async fn my_stats(
                 (SELECT count(*) FROM activities_owing_minutes o
                    JOIN activity_projects mp ON mp.activity_id = o.activity_id
                   WHERE mp.project_id = p.id)::bigint
-         FROM projects p WHERE p.owner = $1 AND p.deleted_at IS NULL
+         -- ★「我的活动材料」不是项目,别算进「主持 N 个项目」★(2026-08-15 巡检截图看出来的):
+         --   它在项目列表里是置顶特殊项、不计入「进行中 9 / 已归档 1」、
+         --   搜索框也只说「在 10 个项目里找」—— 唯独这里把它当成一个我主持的项目数进去了,
+         --   于是个人面板写「主持 8 个项目」而项目页只认 7 个。★同一个东西一处算一处不算。★
+         --   判据用 kind(ADR-0005 定的 team/materials),与 `isMaterials()` 前端那处同源。
+         FROM projects p WHERE p.owner = $1 AND p.deleted_at IS NULL AND p.kind <> 'materials'
          ORDER BY p.archived_at IS NOT NULL, p.name")
         .bind(who).fetch_all(&state.pool).await?;
 
