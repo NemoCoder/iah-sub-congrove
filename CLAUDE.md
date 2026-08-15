@@ -159,6 +159,13 @@ dev 库改 schema 可走 `POST .../db/sql`(dev-only,prod 403)。API 都带个人
 `migration 1 was previously applied but has been modified`。那次代价是「改一条记录」,
 ★从 2026-08-16 起同样的操作发生在 prod 上就是生产事故★。
 
+★★prod 有真实数据,必须保住★★(2026-08-16 liaoruili 强调,我一度说反过)。
+所以「后续迁移可以是破坏性的」指的是 **schema 层面**:删列、改类型、拆表都行,
+★但必须带着 prod 已有的数据走★ —— 要删一列就得先想清楚那列现有的值去哪;
+要拆表就得先 `INSERT INTO 新表 SELECT … FROM 旧表` 再 DROP。**绝不清库、绝不「反正重建一次」。**
+⚠ prod 冻在 v0.5.0,liaoruili 说到 0.6 才再 promote —— 那天 prod 会**顺序补跑** 0002/0003…,
+  所以每一个新迁移都要按「它将来会落在一个装着真实数据的库上」来写。
+
 下面这段清库流程**只对 dev 有效,prod 永远不许清**(★2026-08-16 liaoruili:「prod 里面禁止动任何数据」★)。
 清库是**五条**不是两条,少一条 pod 起不来:
 
