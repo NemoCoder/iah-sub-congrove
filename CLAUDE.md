@@ -101,7 +101,8 @@ bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— �
 | schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ❌ 要活库 |
 | 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
 | 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
-| 迁移校验和 | `scripts/migration-checksum-check.sh` | `migrations/*.sql` 的 sha384 == dev 库 `_sqlx_migrations` 里记的 | ❌ 要活库 |
+| 已应用的迁移不许改 | `scripts/migration-frozen-check.sh` | `migrations/*.sql` 的 sha384 == `migrations/checksums.txt`(只增不改) | ✅ |
+| 迁移校验和 | `scripts/migration-checksum-check.sh` | 同上 == **dev 与 prod 两库** `_sqlx_migrations` 里记的(★只 SELECT★) | ❌ 要活库 |
 
 ⚠★改了 `0001_init.sql` 就必须处理 dev 库★(ADR-0001 的配套纪律,2026-08-15 漏过一次):
 sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
@@ -113,6 +114,9 @@ sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
 免得对着旧镜像跑 E2E 拿一堆「关于别人代码的绿」(要故意对旧版本跑就 `SKIP_VERSION_CHECK=1`)。
 
 连库:`source ~/.config/iah/congrove-dev.env`(DSN + 口令,**仓库外**)。
+prod 那道闸另读 `~/.config/iah/congrove-prod.env` 里的 `CONGROVE_PROD_DSN`
+(★建议配只读角色★:脚本只 SELECT);没配则那一格报 **「? 未跑」不算通过** ——
+★「我没查」和「查了没问题」是两件事★,汇总行也不会再说「全部通过」。
 ★`--pre` 是 PREPARE 闸最值钱的用法★:先施加 schema 变更、跑全量检查、最后 ROLLBACK,
 于是「这个改动会打断哪些 SQL」由**数据库穷举** —— M0 全程没手数过一次清单。
 
@@ -143,10 +147,20 @@ cd web && pnpm typecheck             # ⚠ 平台构建管道零类型检查,改
 `POST registry.ruciah.com/api/subsystems/congrove/deploy` 首次部署 + `autobuild:true` 挂 webhook,
 之后 push 到通道分支即自动构建。构建失败唯一入口 `GET .../build-log?channel=dev`(不进 Loki);
 dev 库改 schema 可走 `POST .../db/sql`(dev-only,prod 403)。API 都带个人令牌(门户「日志」页生成)。
-★**迁移纪律已变**(ADR-0001,2026-08-08 liaoruili 定)★:上线前**每次部署都清库重建**,
-`migrations/` 里**永远只有一个 `0001_init.sql`**,它可以随便改;不写 0002、不写 ALTER。
-理由是 congrove 还没有 prod 通道、没有任何要保护的数据,而「只增不改」这条纪律
-**存在的唯一理由**就是保护已有实例的数据。清库是**五条**不是两条,少一条 pod 起不来:
+★★迁移纪律:**只增不改**(2026-08-16 起)★★ —— 当晚打上 v0.5.0 并 promote 出 **prod 通道**
+(`congrove.sub.ruciah.com`),★ADR-0001 当场失效★(它文末写的「推翻它的条件」就是这一条)。
+现在 `migrations/` 里**已应用的文件内容冻结**,改 schema 一律**新建** `0002_xxx.sql`
+并把哈希登记进 `migrations/checksums.txt`。
+
+⚠★这条不靠人记,有两道闸★:`scripts/migration-frozen-check.sh`(纯静态,进 CI)
+与 `scripts/migration-checksum-check.sh`(对 **dev 与 prod 两个库**核 sqlx 记的校验和,只 SELECT 不写)。
+⚠★为什么值得两道闸★:2026-08-15 晚上我改了 `0001_init.sql` 却漏了配套清库 ——
+十六道门禁全绿、CI 全绿、合并、部署,**一路零提醒**,直到 pod CrashLoop 在
+`migration 1 was previously applied but has been modified`。那次代价是「改一条记录」,
+★从 2026-08-16 起同样的操作发生在 prod 上就是生产事故★。
+
+下面这段清库流程**只对 dev 有效,prod 永远不许清**(★2026-08-16 liaoruili:「prod 里面禁止动任何数据」★)。
+清库是**五条**不是两条,少一条 pod 起不来:
 
 ```sql
 DROP SCHEMA public CASCADE; CREATE SCHEMA public;
@@ -184,7 +198,7 @@ liaoruili 也是日常用户,而超管默认能看到所有人的内容 —— �
 改掉并留在那里,之后 CI 的 `ci-deploy` 沿用它 —— **每次合并到 dev 构建的都是那个过期分支**,
 而且完全静默(gate 绿、deploy 绿、构建成功,只有线上版本不变)。
 
-★prod 通道一旦开出来,ADR-0001 当场失效★,立刻回到「只增不改」。
+~~★prod 通道一旦开出来,ADR-0001 当场失效★,立刻回到「只增不改」。~~ → **已发生(2026-08-16)**,见上。
 
 sqlx 全用 runtime 查询(无 `query!` 宏)→ **改 SQL 编译器不报错**。
 ★但这已经不是「只能靠人肉核对」了★:`scripts/sql-prepare-check.py` 把全部 SQL 字面量

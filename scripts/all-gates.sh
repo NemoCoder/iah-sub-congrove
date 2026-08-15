@@ -28,12 +28,19 @@ CI_ONLY=${1:-}
 #   写成 `declare -a 结果=()` 会直接 `syntax error near unexpected token '('` —— 我刚踩过。
 declare -a RESULTS=()
 FAILED=0
+SKIPPED=0
 
+# ★退出码 3 = 「这道闸没跑成」,既不算绿也不算红★(2026-08-16 加):
+#   有些闸只能覆盖一部分环境(比如迁移校验和要连 prod 库,而 prod DSN 未必配了)。
+#   把「没查」显示成绿是本仓栽过五次的那个坑;显示成红又会逼人去绕过它。
+#   所以给它第三种结果,在汇总里明确写「? 未跑」——★看报告的人一眼知道这一格没有守护★。
 gate() {   # gate <名字> <命令...>
   local name=$1; shift
   local out rc
   out=$("$@" 2>&1); rc=$?
   if [ $rc -eq 0 ]; then RESULTS+=("  ✓ $name")
+  elif [ $rc -eq 3 ]; then RESULTS+=("  ? $name（部分未跑,见下）"); SKIPPED=1
+       printf '%s\n' "── $name 的输出 ──" "$out" | tail -12
   else RESULTS+=("  ✗ ★$name★"); FAILED=1
        printf '%s\n' "── $name 的输出 ──" "$out" | tail -25; fi
 }
@@ -54,12 +61,16 @@ gate "时间不裸格式化(时区)"       bash scripts/no-naked-time.sh
 # ★DDL 纪律(ADR-0001)★与★内容寻址不变量★:这两道**一直只在 CI 里跑**,本地这份漏了 ——
 #   于是「本地十一道全绿」这句话从来都不是全部,而两边各有各的清单这件事本身
 #   就是漂移源(2026-08-15 对抗检查数出来的)。★现在 CI 直接调本脚本 --ci,清单只有这一份。★
-gate "DDL 纪律(ADR-0001)"        bash scripts/ddl-check.sh
+gate "DDL 纪律(裸 CREATE TABLE)"  bash scripts/ddl-check.sh
 gate "内容寻址(A2/D1)"           bash scripts/blobkey-check.sh
 # 版本号两处一致:CI 里原来是内联的 shell,抽成脚本才能两边共用(逻辑一字不改,含那条
 # 「只认 export const VERSION 那一行」的坑注)。
 # ★内网地址不许进仓库★(2026-08-15 新增):本仓外推 Gitee/GitHub,进仓库=出内网。
 #   一台测试机的地址曾在 11 个已跟踪文件里写死 14 遍(连 ssh 用户名一起)。★纯静态,能进 CI。★
+# ★已应用的迁移不许改★(2026-08-16 开 prod 当天加):ADR-0001 失效,回到「只增不改」。
+#   改老迁移的报应是**延迟且致命**的 —— prod pod 起不来,而且是在部署那一刻才炸。
+#   ★纯静态、不连任何库(所以也永远碰不到 prod 数据),能进 CI。★
+gate "已应用的迁移不许改"         bash scripts/migration-frozen-check.sh
 gate "内网地址不入库"             bash scripts/no-internal-addr.sh
 gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
@@ -72,10 +83,10 @@ if [ "$CI_ONLY" != "--ci" ]; then
     # ★迁移校验和★(2026-08-15 事故当晚补的):前十六道全在问「代码自己对不对」,
     #   ★没有一道在问「代码和**运行环境的状态**还对得上吗」★ —— 改了 0001_init.sql
     #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
-    gate "迁移校验和对得上 dev 库" bash scripts/migration-checksum-check.sh
+    gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
   else
     # ★没跑 ≠ 通过★:缺 DSN 时明确标出来,免得看报告的人以为这几道也绿了
-    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍 / 迁移校验和（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）")
+    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍 / 迁移校验和（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）"); SKIPPED=1
   fi
   gate "接口面 api-check" bash scripts/api-check.sh check
   # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——
@@ -86,11 +97,16 @@ if [ "$CI_ONLY" != "--ci" ]; then
   if [ -n "${IAH_E2E_KEY:-}" ]; then
     gate "响应体形状对拍" bash scripts/shape-check.sh check
   else
-    RESULTS+=("  ? 未跑:响应体形状对拍（缺 IAH_E2E_KEY）")
+    RESULTS+=("  ? 未跑:响应体形状对拍（缺 IAH_E2E_KEY）"); SKIPPED=1
   fi
 fi
 
 printf '\n══ 门禁汇总 ══\n'
 printf '%s\n' "${RESULTS[@]}"
-[ $FAILED -eq 0 ] && echo "★全部通过★" || echo "★有门禁未通过 —— 不要提交★"
+# ★「有闸没跑」不能报成「全部通过」★(2026-08-16):本仓栽过五次「工具没跑 → 输出为空 → 报绿」,
+#   而我刚给 exit 3 加完「? 未跑」这一档,汇总行**还是照旧打「全部通过」** —— 等于把刚做的区分又抹掉了。
+#   三种收尾各说各话:全绿 / 全绿但有格子没守 / 有红。
+if [ $FAILED -ne 0 ]; then echo "★有门禁未通过 —— 不要提交★"
+elif [ $SKIPPED -ne 0 ]; then echo "★没有红,但上面带「?」的格子**没跑**(不等于通过)—— 提交前想清楚那几格谁来守★"
+else echo "★全部通过★"; fi
 exit $FAILED
