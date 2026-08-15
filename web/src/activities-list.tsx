@@ -40,6 +40,11 @@ export function ActivitiesListView({ me, onOpen, onOpenMinutes, onNew }: {
     if (!silent) setLoading(true)
     try {
       // ★范围要大★:这一页是「我的全部活动」,不是日历那一屏。前后各半年。
+      // ⚠ 与 `todo-card.tsx` 的 `卡片天数` 是**同一个 183**,而两边各自拉一次
+      //   `/api/activities?from…to…` —— ★这一页因此把同样的请求打了两遍★(2026-08-16 审计)。
+      //   没改成共用:卡要能在**任何**宿主页里自足(那正是 2026-08-15 收它数据的理由),
+      //   而这一页要的是「全部活动」用来分 tab/搜索/分页,两者只是**恰好**同一个范围。
+      //   ★为「碰巧一样」建立依赖,是下一次漂移的起点★;代价是一次内网 GET,认了。
       const from = new Date(Date.now() - 183 * 864e5).toISOString()
       const to = new Date(Date.now() + 183 * 864e5).toISOString()
       setAll(await api<Activity[]>(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`))

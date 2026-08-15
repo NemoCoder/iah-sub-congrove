@@ -520,6 +520,14 @@ test.describe('安全网·出口闸', () => {
     expect([200, 206], `★设之后不能再 302★(拿到的是 ${r.status()})`).toContain(r.status())
     expect(r.headers()['location'], '★一条 location 都不能有★——直链一旦发出去就不记名了').toBeUndefined()
     expect(r.headers()['accept-ranges'], '同源代理必须支持 Range,否则进度条拖不动').toBe('bytes')
+    // ★没有 Content-Type 浏览器 <video> 多半直接拒播★(2026-08-16 审计实测就是缺的)——
+    //   那样「能看但不能下」就成了「既不能下也不能看」。这一条钉的正是那个缺口。
+    expect(r.headers()['content-type'], '★必须带 MIME,否则播不了★').toContain('video/')
+    // 越界 Range 是**客户端要错了**,不是服务端坏了:必须 416,不能 500。
+    const 越界 = await request.get(`/api/items/${iid}/play`, {
+      maxRedirects: 0, headers: { Range: 'bytes=99999999-999999999' },
+    })
+    expect(越界.status(), '★越界 Range 要 416,不是 500★').toBe(416)
   })
 
   test('★纪要定稿后,改一个字段不能把它打回草稿★', async ({ request }) => {
