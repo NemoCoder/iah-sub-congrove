@@ -2,7 +2,7 @@
 //! 探针/auth 开放,/api 整层 route_layer 挂 require_auth(404 不要 token),
 //! 超管面用 require_super 叠内层(403 不是 401),SPA 由后端同源托管。
 
-mod admin;
+pub mod admin;   // pub:media_ai 要用 effective_llm_model(★模型的唯一推导★)
 /// ★pub 是给集成测试用的★:`tests/api_cases.rs` 要读 `APIS` 逐条核对「每个接口都有测试用例」。
 pub mod apidoc;
 pub(crate) mod items;
@@ -62,6 +62,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/users/{username}/super", put(admin::set_super))
         .route("/admin/users/{username}/quota", put(admin::set_quota))
         .route("/admin/audit", get(admin::audit_list))
+        // ★AI 模型由超管在后台选★(2026-08-16 热修):平台换模型后 congrove 还在调老模型 →
+        //   `403 无权调用模型` → 纪要功能整个哑掉,而子系统没有自助恢复的办法。
+        .route("/admin/llm/models", get(admin::llm_models))
+        .route("/admin/llm/model", put(admin::set_llm_model))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_super));
 
     // 快路由:30s 超时。上传/下载**不能**在这层(2026-08-02 单文件不限大小后,几百 MB 的

@@ -253,7 +253,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             "INSERT INTO summaries (item_id, kind, content, model) VALUES ($1,$2,$3,$4)
              ON CONFLICT (item_id, kind) DO UPDATE SET content=EXCLUDED.content, model=EXCLUDED.model, created_at=now()",
         )
-        .bind(item_id).bind(kind).bind(&content).bind(&state.config.llm_model)
+        .bind(item_id).bind(kind).bind(&content).bind(crate::http::admin::effective_llm_model(state).await)
         .execute(&state.pool).await?;
     }
 
@@ -276,7 +276,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             // 原来这条还附了一段「它们是给你的原材料,正式纪要仍由你整理」——
             // 那是**设计说明**,不是通知内容:收到通知的人正要去看,点进去自然就知道有哪几份。
             crate::notify::notify_activity(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
-                &format!("「{title}」的录制已转写完。")).await;
+                &format!("「{title}」的录制已转写完。"), crate::notify::Kind::MinutesReady).await;
         }
     }
     Ok(())
@@ -701,7 +701,7 @@ async fn chat_once(state: &AppState, system: &str, user: &str, end_user: &str) -
     // 纪要会带一大段自言自语。chat_template_kwargs.enable_thinking=false 实测干净(2026-08-03 验)。
     // max_tokens 兜住:没有上限时思考模型能生成很久,任务看起来像卡死。
     let body = serde_json::json!({
-        "model": state.config.llm_model,
+        "model": crate::http::admin::effective_llm_model(state).await,
         "messages": [
             {"role": "system", "content": format!("你是活动纪要助手。{system}")},
             {"role": "user", "content": user},

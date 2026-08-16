@@ -106,13 +106,27 @@ impl Registry {
             if let Some(r) = ref_ {
                 payload["ref"] = serde_json::json!(r);
             }
-            self.http
+            let r = self.http
                 .post(format!("{}/api/notifications/send", self.base))
                 .bearer_auth(t)
                 .json(&payload)
                 .send()
                 .await?
                 .error_for_status()?;
+            // ★2xx 不等于「送到了」★(2026-08-16 事故):平台按 `(recipient, ref)` 幂等 ——
+            //   撞了已有的 ref 就**跳过插入、回查旧行、照样返 2xx**。
+            //   于是「邀请占住 ref → 之后所有关于这个活动的通知全被吞」这件事,
+            //   在我们这边**一点痕迹都没有**:日志说「已投递」,收件箱里什么都没有。
+            //   平台同日加了 `deduped` 标志(registry v1.4.19),这里读它 ——
+            //   ★宁可日志吵一点,也不要一个「成功」是假的★。
+            //   (ref 现在按种类分,见 notify::Kind;正常情况下不该再看到这条 WARN,
+            //    它出现就说明还有某种通知在复用别人的 ref。)
+            let deduped = r.json::<serde_json::Value>().await.ok()
+                .and_then(|v| v["deduped"].as_bool()).unwrap_or(false);
+            if deduped {
+                tracing::warn!(recipient, ref_ = ref_.unwrap_or(""),
+                    "★站内信被平台按 ref 去重,实际没有投递★(说明这个 ref 已被同收件人的旧消息占住)");
+            }
             anyhow::Ok(())
         };
         if let Err(e) = run.await {

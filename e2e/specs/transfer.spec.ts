@@ -21,7 +21,12 @@ async function newProject(req: APIRequestContext, name: string) {
 
 /// 造一个「我是主持人 + 有另一个成员」的项目。
 /// 拉的人用固定用户名 `liaoruili`：平台 users/exists 校验真实存在的用户才让加（不能编一个）。
-const PEER = process.env.E2E_PEER ?? 'liaoruili'
+// ★默认**不能**是真人★(2026-08-16 liaoruili 的收件箱里躺着 6 条「Congrove 项目转移申请 · e2e 想把项目…」)。
+//   转移主持人会给被转让人**发站内信**,于是每跑一次 E2E 就往他真实收件箱里灌一条 ——
+//   ★测试的副作用落到了真人身上,而且是在他排查别的问题时才发现的。★
+//   平台承认保留前缀 `e2e-*` 为 dev-only 虚拟身份(users/exists 放行),用它就够。
+//   `multi-identity.spec.ts` 早就改成 `e2e-b` 了,★这一份漏了★ —— 同一条教训只落实在一处。
+const PEER = process.env.E2E_PEER ?? 'e2e-b'
 
 async function projectWithPeer(req: APIRequestContext, tag: string) {
   const pid = await newProject(req, `E2E-转移-${tag}-${Date.now()}`)
