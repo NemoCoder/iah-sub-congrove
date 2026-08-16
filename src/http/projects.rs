@@ -171,8 +171,11 @@ pub async fn create(
     Json(input): Json<ProjectIn>,
 ) -> AppResult<Json<serde_json::Value>> {
     let username = id.require_username()?;
-    // D2 决策(docs/PERMISSIONS.md):CONGROVE_PROJECT_CREATORS 非空时仅名单内 + 超管可建。
-    let creators = &state.config.project_creators;
+    // D2 决策(docs/PERMISSIONS.md):名单非空时仅名单内 + 超管可建;★空 = 人人可建★。
+    // ⚠★取值必须走 effective_project_creators★(2026-08-16):名单现在超管能在后台改,
+    //   直接读 `state.config.project_creators` 的话**他改了也不生效**,而且不报错。
+    //   门禁 `scripts/no-bypass-effective.sh` 守着这一条。
+    let (creators, _) = crate::settings::effective_project_creators(&state.pool, &state.config).await;
     if !creators.is_empty() && !crate::perm::is_super_now(&state.pool, &id).await? && !creators.iter().any(|u| u == username) {
         return Err(AppError::Forbidden);
     }

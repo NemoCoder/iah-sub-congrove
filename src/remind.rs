@@ -26,12 +26,10 @@ use crate::state::AppState;
 
 type Ts = chrono::DateTime<chrono::Utc>;
 
-/// 个人默认也没设时的兜底（PRD F3 + 2026-08-11 liaoruili 拍板）。
-///
-/// ⚠★这个常量改变了一条无声的系统行为★：没有偏好行的人本来一条提醒都收不到
-/// （功能上线等于没上线），现在他们默认会收到。所以设置页必须写明「默认 15 分钟、可以关」。
-/// ★只有这一处写死★ —— 与 `user_quota` 那个「config.rs 与 SQL 两处同步」的已知重复不同。
-const DEFAULT_REMIND_MIN: i32 = 15;
+// 个人默认也没设时的兜底,2026-08-16 起搬去了 `settings::DEFAULT_REMIND_MIN`
+// (超管可在后台改)。取值走 `settings::effective_default_remind(pool)`。
+// ★这里不再留一份常量★ —— 留着就迟早有人读它,而读它的地方「超管改了不生效」且不报错。
+// 那条「它改变了一条无声的系统行为」的原始注释,连同 PRD F3 的出处,一起搬到了新家。
 
 /// 扫描间隔。
 /// ★30 秒不是随手定的★：提醒的精度需求是分钟级（「提前 15 分钟」误差 30 秒无感），
@@ -73,6 +71,9 @@ pub async fn run(state: AppState) {
 
 /// 扫一轮：把到点该发的取出来、发站内信、标记已发。★整轮在一个事务里★。
 async fn once(state: &AppState) -> anyhow::Result<()> {
+    // ★在开事务之前读★:它是一次独立的短查询,没必要占着这轮的事务;
+    //   而且每跳读一次正是我们要的「超管改完下一跳就生效」。
+    let (默认提前量, _) = crate::settings::effective_default_remind(&state.pool).await;
     let mut tx = state.pool.begin().await?;
 
     // ⚠ `FOR UPDATE SKIP LOCKED` 必须落在 activity_participants 上（`OF p`）——
@@ -108,7 +109,8 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
          --   配合 SKIP LOCKED,多副本也不会重复投同一条。
          LIMIT 200
          FOR UPDATE OF p SKIP LOCKED")
-        .bind(DEFAULT_REMIND_MIN)
+        // ★走唯一推导★:超管可在后台改全站默认(门禁 no-bypass-effective.sh 守这一条)
+        .bind(默认提前量)
         .fetch_all(&mut *tx).await?;
 
     if due.is_empty() { return Ok(()) }
