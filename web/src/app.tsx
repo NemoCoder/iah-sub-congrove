@@ -72,6 +72,18 @@ export function App() {
   const [backTo, setBackTo] = useState<{ view: View; projectId: number | null } | null>(null)
   /// 回到项目页时先选中哪个项目(即 backTo.projectId 的落地)
   const [backToProject, setBackToProject] = useState<number | null>(null)
+  /// ★从项目页「发起活动」带过来的项目★(2026-08-16 liaoruili:「点进具体的项目,
+  /// 增加发起活动的功能,自动关联该项目」)——只作**表单的初值**,人仍可在表单里改掉或再加。
+  /// ⚠ 它和 backTo 是两件事:backTo 管「怎么回去」,这个管「表单里预填谁」。
+  const [newActivityProject, setNewActivityProject] = useState<number | null>(null)
+  /// ★离开活动子页时:有来路就原路退回,没有就退到本 tab 的列表★
+  /// (2026-08-13 定下的规矩「一个把你送去别处的链接,必须自己负责把你送回来」——
+  ///  原先只有活动详情的「返回」守着它,而**取消发起活动**走的是另一条路,漏了;
+  ///  2026-08-16 加项目页「发起活动」入口时,这条路第一次真的有人走。)
+  const 退出活动子页 = () => {
+    setActivityId(null); setNewActivityProject(null)
+    if (backTo) { setView(backTo.view); setBackToProject(backTo.projectId); setBackTo(null) }
+  }
 
   useEffect(() => {
     api<Me>('/api/me')
@@ -207,14 +219,15 @@ export function App() {
           minutesOf != null ? (
             <ActivityMinutesView activityId={minutesOf} onBack={() => setMinutesOf(null)} />
           ) : activityId === 'new' ? (
-            <ActivityNewView me={me} onCreated={(id) => setActivityId(id)} onCancel={() => setActivityId(null)} />
+            <ActivityNewView me={me} prefillProjectId={newActivityProject}
+              // 建完落到活动详情(liaoruili 2026-08-16 选的):建完一般还要接着拉人、改记录员、传材料。
+              // 来路留着不清 —— 详情页的「返回项目」还要用它。
+              onCreated={(id) => { setActivityId(id); setNewActivityProject(null) }}
+              onCancel={退出活动子页} />
           ) : activityId != null ? (
             <ActivityDetailView id={activityId} me={me?.username ?? ''} onOpenMinutes={setMinutesOf}
-              onBack={() => {
-                setActivityId(null)
-                // 从项目页跳过来的:原路退回那个项目,而不是留在活动列表
-                if (backTo) { setView(backTo.view); setBackToProject(backTo.projectId); setBackTo(null) }
-              }}
+              // 从项目页跳过来的:原路退回那个项目,而不是留在活动列表
+              onBack={退出活动子页}
               backLabel={backTo ? '返回项目' : '返回活动'} />
           ) : (
             <ActivitiesListView me={me} onOpen={setActivityId} onOpenMinutes={setMinutesOf} onNew={() => setActivityId('new')} />
@@ -233,6 +246,12 @@ export function App() {
             onOpenActivity={(aid, fromProject) => {
               setBackTo({ view: 'projects', projectId: fromProject ?? null })
               setView('activities'); setActivityId(aid); setMinutesOf(null)
+            }}
+            // ★项目页「发起活动」★:走的是同一条「记住来路」的路 —— 建完(或取消)都退回这个项目。
+            onNewActivity={(fromProject) => {
+              setBackTo({ view: 'projects', projectId: fromProject })
+              setNewActivityProject(fromProject)
+              setView('activities'); setActivityId('new'); setMinutesOf(null)
             }} />
         )
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />

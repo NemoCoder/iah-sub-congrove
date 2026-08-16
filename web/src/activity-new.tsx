@@ -15,10 +15,15 @@ import { myTz, pickedToUtc, TZ_OPTIONS } from './tz'
 import { TimeRangePicker } from './time-range'
 
 
-export function ActivityNewView({ me, onCreated, onCancel }: {
+export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
   me: Me | null
   onCreated: (id: number) => void
   onCancel: () => void
+  /// ★从项目页「发起活动」带过来的项目,预填进「关联项目」★
+  /// (2026-08-16 liaoruili:「点进具体的项目,增加发起活动的功能,自动关联该项目」)。
+  /// ⚠ 只是**初值**:人可以在表单里删掉它、也可以再加别的项目 ——
+  ///   一场活动本来就能关联多个项目(D6),预填不该变成锁定。
+  prefillProjectId?: number | null
 }) {
   const { message, modal } = AntdApp.useApp()
   const [form] = Form.useForm()
@@ -54,9 +59,20 @@ export function ActivityNewView({ me, onCreated, onCancel }: {
     // ★「我的活动材料」不进这个下拉★(PRD §J1):它是个人存档区不是协作项目。
     // 后端也拒(材料区在 require_role 上全只读,关联项目要 ≥editor),这里只是别引导人去点。
     api<Project[]>('/api/projects')
-      .then((ps) => setProjects(ps.filter((p) => !isMaterials(p) && (p.my_role === 'editor' || p.my_role === 'admin'))))
+      .then((ps) => {
+        const 可选 = ps.filter((p) => !isMaterials(p) && (p.my_role === 'editor' || p.my_role === 'admin'))
+        setProjects(可选)
+        // ★预填放在这里而不是 initialValues★:两个理由 ——
+        //   ① 选项还没到时先塞 id,下拉框会先秃着显示一个数字(「3」)再变成项目名;
+        //   ② ★预填的项目必须真在「我能建会的项目」里★ —— 万一它不在(角色刚被降成
+        //      viewer、或项目刚归档),预填就是**给人一个必然被后端拒的初值**,
+        //      而人多半不会去看那一栏。宁可留空让必填校验拦住他。
+        if (prefillProjectId != null && 可选.some((p) => p.id === prefillProjectId)) {
+          form.setFieldValue('project_ids', [prefillProjectId])
+        }
+      })
       .catch(() => setProjects([]))
-  }, [])
+  }, [prefillProjectId, form])
 
   /// ★/api/users 是「输入即搜」的接口:不带 q 时返回空数组★(admin.rs user_options)。
   /// 2026-08-07 这里原本不带 q 调一次就把结果当全部候选,于是下拉框永远「暂无数据」——

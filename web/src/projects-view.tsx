@@ -58,12 +58,15 @@ const fmtTime = fmtStamp
 /// - 项目里的内容操作(上传 / 新建 / 下载 / 重命名 / 移动 / 删除)→ 右侧工具栏与每行操作列,
 ///   editor 及以上可用。
 /// 导航是「进文件夹 + 面包屑」而非一棵永远展开的树(内容多了树没法看)。
-export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
+export function ProjectsView({ me, onOpenActivity, onNewActivity, initialProjectId }: {
   me: Me | null
   /// 跳到某条活动的详情页。★由 app.tsx 注入而不是在这里改 URL★:
   /// 本应用整层不引路由库(app.tsx 头注的既有约定),视图切换是状态,不是地址。
   /// 第二个参数是**离开时选中的项目**,给「返回」用(见 initialProjectId)。
   onOpenActivity?: (activityId: number, fromProjectId?: number | null) => void
+  /// 从这个项目发起一场活动(表单里预填「关联项目」= 它)。
+  /// ★同样由 app.tsx 注入★:换视图是 app.tsx 的事,这里只报告「他点了」。
+  onNewActivity?: (fromProjectId: number) => void
   /// 进来时先选中哪个项目。★这是「从活动详情返回」用的★（2026-08-13 liaoruili:
   /// 「我从项目点击去活动，返回却到了活动tab」）—— 切走时本视图整个被卸载,
   /// 选中的项目、右侧的 tab 全丢了;光把根 tab 切回「项目」,人落回的还是列表根,
@@ -705,12 +708,29 @@ export function ProjectsView({ me, onOpenActivity, initialProjectId }: {
             </AntSpace>
           }
           extra={
-            /* ★配额条去掉了★（ADR-0004）：额度不再挂在项目上，挂在**人**身上。
-               这里只显示「这个项目占了多少」—— 一个项目的占用除以**别人的**总额度
-               画出来的进度条，是在误导人。总额度看「个人面板」的 /api/me/quota。 */
-            <Tooltip title="这个项目占用的空间；总额度按人算，见个人面板">
-              <span style={{ color: '#888', fontSize: 12 }}>占用 {fmtSize(cur.used_bytes)}</span>
-            </Tooltip>
+            <AntSpace size={12}>
+              {/* ★项目页的「发起活动」★(2026-08-16 liaoruili:「点进具体的项目,增加发起活动的
+                  功能,自动关联该项目」)。放在**标题栏**而不是活动 tab 里 —— 他选的:
+                  四个 tab 上都看得见,不必先切到活动 tab 才发现有这个入口。
+                  ⚠ 三种情况不给这个按钮,判据都不是「好看」而是**点了必然失败**:
+                    ① 只读的「我的活动材料」(isMat):它是个人存档区不是协作项目,
+                       后端的关联项目要求 ≥editor,材料区在 require_role 上全只读;
+                    ② 已归档项目:归档弹窗自己写着「不能再上传或建活动」,后端也拒;
+                    ③ viewer:后端要求每个关联项目 ≥editor。
+                  ★这三条和「发起活动」表单里那个项目下拉的过滤判据是同一套★
+                  (activity-new.tsx 的 `!isMaterials(p) && my_role in (editor,admin)`)——
+                  两处不一致的话,就会出现「按钮点得进去、进去却选不到这个项目」。 */}
+              {onNewActivity && !isMat && !cur.archived_at
+                && (cur.my_role === 'editor' || cur.my_role === 'admin') && (
+                <Button size="small" type="primary" onClick={() => onNewActivity(cur.id)}>+ 发起活动</Button>
+              )}
+              {/* ★配额条去掉了★（ADR-0004）：额度不再挂在项目上，挂在**人**身上。
+                 这里只显示「这个项目占了多少」—— 一个项目的占用除以**别人的**总额度
+                 画出来的进度条，是在误导人。总额度看「个人面板」的 /api/me/quota。 */}
+              <Tooltip title="这个项目占用的空间；总额度按人算，见个人面板">
+                <span style={{ color: '#888', fontSize: 12 }}>占用 {fmtSize(cur.used_bytes)}</span>
+              </Tooltip>
+            </AntSpace>
           }
         >
           {/* ★四个 tab★(原型 proj 视图):成员 / 内容 / 活动 / 设置。
@@ -1591,6 +1611,28 @@ function AudioPanel({ item }: { item: Item }) {
 /// 项目的活动(原型 proj 视图的「活动」tab)。
 /// ★D7 说材料有两个入口:项目 与 时间线★——活动同理:在项目里就该看得到「这个项目开过哪些会」,
 /// 而不是只能去日程/活动页按项目筛。后端 `/api/activities?project_id=` 早就支持,只是没有入口。
+/// ★2026-08-16 liaoruili:统计条只留「次数 / 小时 / 纪要完成」★——
+/// 参会率、每人次、时长来源、D6 去重说明**四项从界面上去掉**。
+/// ⚠ 后端这四组字段**故意保留不删**:删字段是破坏性接口变更,而留着零成本;
+///   哪天确定不要了再删。所以下面这些字段现在没有任何地方引用,这是有意的,不是漏删。
+///
+/// ★下面两段是被去掉的控件留下的教训,控件没了但教训没过期,原样存着★——
+/// 它们讲的不是「那个控件怎么写」,而是**这套统计的口径本身怎么骗人**;
+/// 哪天有人想把这些数字放回界面(或放进导出、报表、别的页面),先读这两段:
+///
+///   ① ★没人可邀请时别报「0%」★(2026-08-15 逐张看巡检截图看出来的):
+///      空项目上原来渲染成「参会率 **0%**(0/0)」—— 读起来是**「叫了人但没人来」**,
+///      而事实是「压根没有可度量的东西」。★0/0 不是 0,把它算成 0 就是在编一个坏消息★。
+///      判据照抄旁边的「人均」:那一项**早就**有 `!= null` 守卫,
+///      说明这套代码本来就知道「没意义的数字要藏起来」,只是参会率漏了。
+///
+///   ② ★「人均」这个词把这个数说错了★(2026-08-15 逐张看巡检截图看出来的)。
+///      后端算的是 `SUM(每场时长 × 该场接受人数) / SUM(接受人数)` —— ★分母是**人次**,不是人数★
+///      (`activities.rs` 那段注释自己写着「分母是人次」,变量却叫 `per_person`)。
+///      实拍反例:课题组·计量经济学 3 场、共 4 小时、每场只有 liaoruili 一个人 →
+///      显示「人均 1.3 h」,而**那个人实际坐了 4 小时** —— ★少报了 3 倍★。
+///      数没算错,是名字把它说成了另一件事;而「人均」正是最容易被当成「每人花了多久」的说法。
+///      ⚠ 后端 `avg_hours_per_person` 这个**字段名至今还是错的**(它是每人次),别被它骗了。
 type ProjStats = {
   range: string; activities: number; hours: number
   hours_by_source: { recording: number; manual: number; scheduled: number }
@@ -1628,43 +1670,12 @@ function ProjectActivities({ projectId }: { projectId: number }) {
             options={[{ value: 'month', label: '本月' }, { value: 'quarter', label: '本季度' }, { value: 'year', label: '本年' }]} />
           <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.activities}</b> 次活动</span>
           <span><b style={{ fontSize: 18, color: '#0d9488' }}>{stats.hours}</b> 小时</span>
-          {/* ★没人可邀请时别报「0%」★(2026-08-15 逐张看巡检截图看出来的):
-              空项目上原来渲染成「参会率 **0%**(0/0)」—— 读起来是**「叫了人但没人来」**,
-              而事实是「压根没有可度量的东西」。★0/0 不是 0,把它算成 0 就是在编一个坏消息★。
-              判据照抄旁边的「人均」:那一项**早就**有 `!= null` 守卫,
-              说明这套代码本来就知道「没意义的数字要藏起来」,只是参会率漏了。
-              下面的空态已经写着「这个项目还没有活动」,不必再补一句解释。 */}
-          {stats.invited > 0 && (
-            <span>参会率 <b>{Math.round(stats.accept_rate * 100)}%</b>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{stats.accepted}/{stats.invited}）</Typography.Text></span>
-          )}
-          {/* ★「人均」这个词把这个数说错了★(2026-08-15 逐张看巡检截图看出来的)。
-              后端算的是 `SUM(每场时长 × 该场接受人数) / SUM(接受人数)` —— ★分母是**人次**,不是人数★
-              (`activities.rs` 那段注释自己写着「分母是人次」,变量却叫 `per_person`)。
-              实拍反例:课题组·计量经济学 3 场、共 4 小时、每场只有 liaoruili 一个人 →
-              显示「人均 1.3 h」,而**那个人实际坐了 4 小时** —— ★少报了 3 倍★。
-              数没算错,是名字把它说成了另一件事;而「人均」正是最容易被当成「每人花了多久」的说法。
-              改叫「每人次」:它字面就是分母,读的人不会再往「每个人」上想。 */}
-          {stats.avg_hours_per_person != null && <span>每人次 <b>{stats.avg_hours_per_person}</b> h</span>}
           {/* ★同一条指标带里三个数,不能两个藏一个不藏★(2026-08-15):
               「参会率」在没人被邀请时藏了、「每人次」本来就有守卫,唯独这个还渲染成 `0/0`。
               ⚠ 这是我自己修「参会率 0%」时**只修了一半**留下的 —— 判据是同一个:
                 没有可度量的对象时,分数不是 0,是**没有**。 */}
           {stats.activities > 0 && <span>纪要完成 <b>{stats.minutes_done}</b>/{stats.activities}</span>}
         </AntSpace>
-        {stats.hours > 0 && (
-          <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 6 }}>
-            {/* D5:口径来源要透明,「按排程估算」的那部分最不可信,标出来 */}
-            时长来源：
-            {stats.hours_by_source.recording > 0 && `${stats.hours_by_source.recording} h 录制　`}
-            {stats.hours_by_source.manual > 0 && `${stats.hours_by_source.manual} h 手工　`}
-            {stats.hours_by_source.scheduled > 0 && (
-              <Typography.Text type="warning" style={{ fontSize: 12 }}>{stats.hours_by_source.scheduled} h 按排程估算</Typography.Text>
-            )}
-            {/* ★D6★:不说这句,有人会把几个项目的数字相加当总数 */}
-            <span style={{ marginLeft: 12 }}>· 一场活动可关联多个项目，跨项目求总数需按活动去重</span>
-          </div>
-        )}
       </div>
     )}
     <Table<Activity> size="small" rowKey="id" dataSource={rows} loading={loading}
