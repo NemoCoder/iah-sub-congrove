@@ -176,8 +176,12 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
             </div>
           )}
           {job?.status === 'failed' && (
-            <Typography.Text type="danger" style={{ fontSize: 12, display: 'block', margin: '8px 0' }}>
-              转写失败：{job.error || '未知原因'}
+            <Typography.Text type="danger" style={{ fontSize: 12, display: 'block', margin: '8px 0' }}
+              title={job.error || undefined}>
+              {/* 原始报文留在 title 里(悬停可见)+ media_jobs.error 里,不占界面 */}
+              转写失败：{失败人话(job.error)}
+              <br />
+              <span style={{ color: '#8c8c8c' }}>要重试:点上面那一行右侧的「转写」。</span>
             </Typography.Text>
           )}
           {recs.length === 0
@@ -346,10 +350,35 @@ function peopleOf(d: ActivityDetail, kind: 'accepted' | 'observer' | 'absent') {
 /// ⚠ 旧文案是 `转写中：${job.stage}`,而任务跑完后 stage 正是「完成」,
 /// 于是屏幕上写着「转写中：完成」—— ★一句自相矛盾的话,还恰好把真正的问题
 /// (kind 对不上,摘要其实拿不到)伪装成了「还在跑,再等等」。★
+/// 把转写失败的原因翻成人话。★上游的原始 JSON 不许直接糊给用户★(2026-08-16 线上事故)。
+///
+/// 线上那次的 `job.error` 长这样:
+///   `转写第 1 段: ASR 返回 502 Bad Gateway:{"error":{"code":null,"message":"ASR 上游连接失败:ConnectError","type":"upstream_error"}}`
+/// 用户看到的是一整坨 JSON,而里面唯一对他有用的信息是「语音识别服务连不上,不是你的文件有问题」。
+/// ★错误信息的读者是人,不是日志检索★ —— 原文该进日志(它已经在 media_jobs.error 里),
+/// 界面上给一句能据以行动的话。
+export function 失败人话(err: string | null | undefined): string {
+  const e = err || ''
+  if (!e) return '未知原因'
+  // 网关/上游连不上:这一类用户做什么都没用,只能等或找管理员
+  if (/upstream_error|ConnectError|502|Bad Gateway|连接失败/.test(e)) {
+    return '语音识别服务暂时连不上（不是这个文件的问题）—— 服务恢复后点「转写」重试即可'
+  }
+  if (/转写结果为空/.test(e)) return '没识别出人声（这段录制可能没有说话声，或音轨是静音的）'
+  if (/ffmpeg/i.test(e)) return '音轨提取失败（文件可能损坏，或是不支持的编码）'
+  if (/超时|timeout/i.test(e)) return '转写超时（录制过长或服务繁忙）—— 可以再点一次「转写」'
+  // 认不出来的:截短,别把一整坨糊上去
+  return e.length > 80 ? e.slice(0, 80) + '…' : e
+}
+
+/// ⚠★同一条失败原因,页面上只说一次★(2026-08-16 线上事故:实测出现 **4 次** ——
+///   录制行下面一条红字,四个 tab 的空状态里各一条)。
+///   ★重复不会让人更明白,只会让人以为出了四个错。★
+///   所以空状态只说「这一份为什么没有」,失败的**原因**由上面那条红字统一负责。
 function emptyWhy(job: Job | null, what: string) {
   if (!job) return `还没有 AI ${what}（上传录制后点「转写」）`
   if (isRunning(job)) return `转写中：${job.stage}`
-  if (job.status === 'failed') return `转写失败：${job.error || '未知原因'}`
+  if (job.status === 'failed') return `转写失败了，原因见上方红字`
   return `转写已完成，但没有生成${what}`
 }
 
@@ -423,6 +452,16 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
       {canEdit && <div style={{ marginBottom: 10 }}>{up.button}</div>}
       {up.zone(
       <Table<ActivityItem> size="small" rowKey="id" dataSource={items} pagination={false} showHeader={false}
+        // ★tableLayout=fixed:长文件名不许把后面的列顶出可视区★(2026-08-16 线上事故)
+        //
+        // AntD Table 默认 `auto` 布局 —— 列宽由内容撑。录屏文件名普遍很长
+        // (`20260816CS【高老师】思想史benchmark_UI讨论二.mp4`),于是第一列把整张表撑宽,
+        // 后面那两列(改名/删除、★转写★)被挤到容器外面,**在中间栏里根本看不见**。
+        // ⇒ 用户的原话是「**无法重新转录**」——按钮一直在、也没禁用(实测 disabled=false),
+        //   只是**不在视口里**。★一个存在但看不见的按钮,与不存在没有区别。★
+        // ⚠ 第一列本来就写了 ellipsis 的样式,而 `auto` 布局下那个省略号**永远不会触发** ——
+        //   因为列会先被撑开。★省略号只在列宽被限住时才有意义。★
+        tableLayout="fixed"
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有录屏或录音" /> }}
         // ★选中的那一行要看得出来★(2026-08-09 用户:「选中后没有高亮」):
         // 下面三份稿讲的是**哪一段**,全靠这一行的高亮回答 —— 没有它,
