@@ -60,10 +60,15 @@ pub fn build_router(state: AppState) -> Router {
     let admin = Router::new()
         .route("/admin/users", get(admin::users))
         .route("/admin/users/{username}/super", put(admin::set_super))
-        .route("/admin/users/{username}/quota", put(admin::set_quota))
+        .route("/admin/users/{username}/quota", put(admin::set_quota).delete(admin::reset_quota))
         .route("/admin/audit", get(admin::audit_list))
         // ★AI 模型由超管在后台选★(2026-08-16 热修):平台换模型后 congrove 还在调老模型 →
         //   `403 无权调用模型` → 纪要功能整个哑掉,而子系统没有自助恢复的办法。
+        // ★治理配置★(2026-08-16):谁能建项目 / 全站默认配额 / 全站默认提醒提前量。
+        //   取值的唯一推导在 settings.rs;这里只是它的 HTTP 面。
+        .route("/admin/settings", get(admin::settings_get))
+        .route("/admin/settings/default-quota/impact", get(admin::default_quota_impact))
+        .route("/admin/settings/{key}", put(admin::settings_put))
         .route("/admin/llm/models", get(admin::llm_models))
         .route("/admin/llm/model", put(admin::set_llm_model))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_super));

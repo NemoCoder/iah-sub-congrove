@@ -72,6 +72,10 @@ gate "内容寻址(A2/D1)"           bash scripts/blobkey-check.sh
 #   ★纯静态、不连任何库(所以也永远碰不到 prod 数据),能进 CI。★
 gate "已应用的迁移不许改"         bash scripts/migration-frozen-check.sh
 gate "内网地址不入库"             bash scripts/no-internal-addr.sh
+# ★取值只走 effective_*★(2026-08-16 超管后台):三项治理配置改成超管可配之后,
+#   任何一处仍读旧常量都会造成「超管改了、页面显示新值、行为还是旧的」——
+#   ★这类错不报错★,只能靠一道会红的规则拦。★纯静态,能进 CI。★
+gate "取值只走 effective_*"       bash scripts/no-bypass-effective.sh
 gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
