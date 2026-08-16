@@ -16,6 +16,7 @@ pub mod tzutil;
 pub mod media_ai;
 pub mod perm;
 pub mod registry;
+pub mod settings;
 pub mod state;
 pub mod storage;
 pub mod telemetry;

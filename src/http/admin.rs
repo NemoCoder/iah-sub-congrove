@@ -18,16 +18,84 @@ pub struct UserRow {
     pub is_super: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_login: Option<chrono::DateTime<chrono::Utc>>,
+    /// 生效额度:单独设过就是他自己的,没设过就是全站默认。
+    pub quota_bytes: i64,
+    /// ★true = 没有 `user_quota` 行,跟着全站默认走★。
+    ///
+    /// ⚠ 这一列**不是冗余**:只给 `quota_bytes` 的话,「50 GiB 是他自己的,
+    ///   还是全站默认正好是 50 GiB」在界面上**分不出来** ——
+    ///   而这恰恰决定了「改全站默认会不会影响他」。
+    ///   2026-08-16 实测 dev:108 个用户里 **0 个**设过,全都是 true。
+    pub quota_is_default: bool,
 }
 
-/// GET /api/admin/users —— 登录过的全部用户。
+/// GET /api/admin/users —— 登录过的全部用户(含生效配额与它是不是默认值)。
 pub async fn users(State(state): State<AppState>) -> AppResult<Json<Vec<UserRow>>> {
+    // 全站默认只读一次,不在 SQL 里 join 常量:它的唯一推导在 settings.rs(库 > 常量)。
+    let (默认额度, _) = crate::settings::effective_default_quota(&state.pool).await;
     let rows: Vec<UserRow> = sqlx::query_as(
-        "SELECT username, name, email, is_super, created_at, last_login FROM app_user ORDER BY username",
+        "SELECT u.username, u.name, u.email, u.is_super, u.created_at, u.last_login,
+                COALESCE(q.quota_bytes, $1)::bigint AS quota_bytes,
+                (q.username IS NULL)              AS quota_is_default
+           FROM app_user u
+           LEFT JOIN user_quota q ON q.username = u.username
+          ORDER BY u.username",
     )
+    .bind(默认额度)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct ImpactQuery { pub bytes: i64 }
+
+/// GET /api/admin/settings/default-quota/impact?bytes=N —— ★改全站默认之前,先算清楚会影响谁★。
+///
+/// 为什么这是个独立接口而不是前端自己算:`would_exceed` 要跨 `items` / `item_versions`
+/// 求和(就是 `owner_quota_used` 那段 SQL),前端拿不到也不该拿。
+/// ★而没有它,「一键把全站配额调小」就是一个**无法预估后果**的按钮★ ——
+/// 点下去之后有人立刻传不了东西,而超管完全不知道自己做了这件事。
+pub async fn default_quota_impact(
+    State(state): State<AppState>, Query(q): Query<ImpactQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    if q.bytes <= 0 { return Err(AppError::BadRequest("配额要大于 0".into())) }
+    // 跟随默认的人 = 没有 user_quota 行的
+    let 跟随: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM app_user u LEFT JOIN user_quota q ON q.username = u.username
+          WHERE q.username IS NULL")
+        .fetch_one(&state.pool).await?;
+    // 这些人里,谁的已用量会超过新额度。★只算跟随默认的人★——设过配额的人不受这次改动影响。
+    let 超额: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT t.owner, t.used FROM (
+           SELECT p.owner,
+                  COALESCE(sum(x.sz),0)::bigint AS used
+             FROM projects p
+             JOIN LATERAL (
+               SELECT k, max(sz) sz FROM (
+                 SELECT i.s3_key k, i.size sz FROM items_alive i
+                  WHERE i.project_id = p.id AND i.s3_key IS NOT NULL
+                 UNION ALL
+                 SELECT v.s3_key, v.size FROM item_versions v
+                   JOIN items_alive i ON i.id = v.item_id
+                  WHERE i.project_id = p.id
+               ) y GROUP BY k
+             ) x ON true
+            WHERE p.deleted_at IS NULL
+              AND p.owner NOT IN (SELECT username FROM user_quota)
+            GROUP BY p.owner
+         ) t
+         WHERE t.used > $1
+         ORDER BY t.used DESC
+         -- limit-ok: 只是给界面举例「有哪些人」,总数用上面的 count;20 条够看
+         LIMIT 20")
+        .bind(q.bytes)
+        .fetch_all(&state.pool).await?;
+    Ok(Json(json!({
+        "following_default": 跟随,
+        "would_exceed": 超额.len(),
+        "exceeding": 超额.iter().map(|(u, n)| json!({ "username": u, "used_bytes": n })).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -262,4 +330,67 @@ pub async fn set_llm_model(
         .bind(m).bind(who).execute(&state.pool).await?;
     audit::record(&state.pool, who, "admin.llm_model", "llm_model", m).await;
     Ok(Json(json!({ "ok": true, "model": m })))
+}
+
+// ══════ ★治理配置:超管在后台改,不再是一次部署★(2026-08-16,docs/TECH-DESIGN-admin-console.md)══════
+//
+// 取值一律走 `crate::settings::effective_*`(那里有唯一推导与「为什么不加缓存」的说明)。
+// 这里只负责 HTTP:读出来带上「值是从哪来的」、写进去之前过校验与白名单。
+
+/// GET /api/admin/settings —— 三项治理配置的**当前生效值 + 它从哪来**。
+///
+/// ★`source` 不是调试信息★:超管看到「10 GiB」得知道它是「有人设成了 10」
+/// 还是「没人设过,恰好默认是 10」—— 这两种状态在他改 env 或升级版本时表现完全不同。
+pub async fn settings_get(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+    let (creators, c_src) = crate::settings::effective_project_creators(&state.pool, &state.config).await;
+    let (quota, q_src) = crate::settings::effective_default_quota(&state.pool).await;
+    let (remind, r_src) = crate::settings::effective_default_remind(&state.pool).await;
+    Ok(Json(json!({
+        "project_creators":       { "value": creators, "source": c_src },
+        "default_quota_bytes":    { "value": quota,    "source": q_src },
+        "default_remind_minutes": { "value": remind,   "source": r_src },
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct SettingIn { pub value: String }
+
+/// PUT /api/admin/settings/{key} —— 改一项(超管)。值一律用字符串传,语义由 key 决定
+/// (和 `app_setting` 的存法一致 —— 存的和传的是同一种东西,少一层需要对齐的表示)。
+pub async fn settings_put(
+    State(state): State<AppState>, Extension(id): Extension<Identity>,
+    Path(key): Path<String>, Json(input): Json<SettingIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    // ★白名单在最前面★:不在名单里的 key 连校验都不该走到(见 settings.rs 上那段「权限自动扩大」)
+    if !crate::settings::可写的键.contains(&key.as_str()) {
+        return Err(AppError::BadRequest(format!("不认识的设置项:{key}")));
+    }
+    let 规范值 = crate::settings::校验(&state.pool, &key, &input.value).await
+        .map_err(AppError::BadRequest)?;
+    let who = id.require_username()?;
+    sqlx::query(
+        "INSERT INTO app_setting (key, value, updated_by, updated_at) VALUES ($1,$2,$3,now())
+         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()")
+        .bind(&key).bind(&规范值).bind(who).execute(&state.pool).await?;
+    audit::record(&state.pool, who, "admin.setting", &key, &规范值).await;
+    Ok(Json(json!({ "ok": true, "value": 规范值 })))
+}
+
+/// DELETE /api/admin/users/{username}/quota —— ★把这个人放回「跟随全站默认」★。
+///
+/// 为什么必须有这条(2026-08-16 liaoruili:「可以修改默认,也可以单独给每个人配额」):
+/// `set_quota` 只有 upsert 没有删除 ⇒ ★一旦给某人单独设过配额,他就永久脱离了全站默认值,
+/// 再也回不去★ —— 以后全站默认从 10 GiB 抬到 50 GiB,他还卡在当初随手设的那个数上,
+/// 而界面上看不出他为什么没跟上。两套机制要并存,就必须有一条退回默认的路。
+///
+/// 幂等:本来就没有行也回 204(「让他跟随默认」这个**结果**已经成立)。
+pub async fn reset_quota(
+    State(state): State<AppState>, Extension(id): Extension<Identity>, Path(username): Path<String>,
+) -> AppResult<axum::http::StatusCode> {
+    let who = username.trim();
+    if who.is_empty() { return Err(AppError::BadRequest("用户名不能为空".into())) }
+    let actor = id.require_username()?;
+    sqlx::query("DELETE FROM user_quota WHERE username = $1").bind(who).execute(&state.pool).await?;
+    audit::record(&state.pool, actor, "admin.quota_reset", who, "").await;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
