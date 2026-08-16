@@ -195,3 +195,71 @@ pub async fn audit_list(State(state): State<AppState>, Query(q): Query<AuditQuer
             .await?;
     Ok(Json(rows))
 }
+
+// ══════ ★AI 模型:超管在后台选,不再写死在 env 里★(2026-08-16 热修)══════
+//
+// 起因是 prod 上的一次真实故障:平台换了模型,congrove 还在调 `Qwen3.6-35B-A3B`,
+// 于是 `LLM 返回 403:无权调用模型 Qwen3.6-35B-A3B` —— ★纪要功能整个哑掉,
+// 而子系统这边没有任何自助恢复的办法★,只能等人去改平台的环境变量再重启。
+// ⇒ 配置项该由超管在界面上选。env 仍然是**兜底默认值**,库里有值就以库为准。
+
+/// 「现在该用哪个模型」——★唯一推导★:库里的设置 > env(`CONGROVE_LLM_MODEL`)> 编译期默认。
+/// ⚠ 别在别处直接读 `state.config.llm_model` —— 那样超管改了也不生效,
+///   而它**不报错**,只是继续用老模型(这正是「安静地不工作」那一类)。
+pub async fn effective_llm_model(state: &AppState) -> String {
+    sqlx::query_scalar::<_, String>("SELECT value FROM app_setting WHERE key = 'llm_model'")
+        .fetch_optional(&state.pool).await.ok().flatten()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| state.config.llm_model.clone())
+}
+
+/// GET /api/admin/llm/models —— 列出网关当前可用的模型 + 现在选的是哪个(超管)。
+///
+/// ⚠★网关的 `/v1/models` 只列常驻模型★:按需(scale-to-zero)的模型**不在列表里,但能调**。
+///   所以界面上必须**同时允许手输**一个不在列表里的名字 —— 只给下拉等于把按需模型全挡了。
+///   (这条是平台侧的既有事实,不是 bug;我在别处踩过,记在这儿免得下次又当成列表坏了。)
+/// ⚠ 网关不可达时**不编造空列表**:如实回 `error`,让界面说「列不出来,但你仍可手输」。
+pub async fn llm_models(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+    let current = effective_llm_model(&state).await;
+    let (base, key) = (state.config.llm_base_url.clone(), state.config.llm_api_key.clone());
+    let Some(base) = base else {
+        return Ok(Json(json!({ "current": current, "models": [], "error": "未注入 IAH_BASE_URL,列不出模型" })));
+    };
+    let cli = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()
+        .map_err(|e| AppError::Other(e.into()))?;
+    let mut req = cli.get(format!("{base}/models"));
+    if let Some(k) = key { req = req.bearer_auth(k) }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => {
+            let v: serde_json::Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let models: Vec<String> = v["data"].as_array().map(|a| a.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+            Ok(Json(json!({ "current": current, "models": models })))
+        }
+        Ok(r) => Ok(Json(json!({ "current": current, "models": [],
+            "error": format!("网关返回 {}", r.status()) }))),
+        Err(e) => Ok(Json(json!({ "current": current, "models": [],
+            "error": format!("连不上网关:{e}") }))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ModelIn { pub model: String }
+
+/// PUT /api/admin/llm/model —— 选一个模型(超管)。
+/// ★不校验它在不在列表里★:按需模型本来就不在列表里(见上)。写错的代价是下一次生成纪要报 403,
+/// 那条错误现在会原样显示给用户,改回来只要再选一次 —— 比「拦住一个其实可用的模型」好。
+pub async fn set_llm_model(
+    State(state): State<AppState>, Extension(id): Extension<Identity>, Json(input): Json<ModelIn>,
+) -> AppResult<Json<serde_json::Value>> {
+    let m = input.model.trim();
+    if m.is_empty() { return Err(AppError::BadRequest("模型名不能为空".into())) }
+    if m.chars().count() > 200 { return Err(AppError::BadRequest("模型名过长".into())) }
+    let who = id.require_username()?;
+    sqlx::query(
+        "INSERT INTO app_setting (key, value, updated_by, updated_at) VALUES ('llm_model',$1,$2,now())
+         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()")
+        .bind(m).bind(who).execute(&state.pool).await?;
+    audit::record(&state.pool, who, "admin.llm_model", "llm_model", m).await;
+    Ok(Json(json!({ "ok": true, "model": m })))
+}

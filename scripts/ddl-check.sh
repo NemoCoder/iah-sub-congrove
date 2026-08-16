@@ -26,6 +26,7 @@ fi
 #   这个脚本自己的注释当时就写着「prod 通道开出来之后这条失效,那时请连同本脚本一起改」,
 #   ★而如果没人真去改,它会在第一个 0002_xxx.sql 出现时把正当的改动拦下来★ ——
 #   一道编码着过期规则的门禁,拦的就不再是错误,而是正确的做法。
+#   ★这不是假想:main 线的热修 `0002_app_setting.sql` 当场撞上了它。★
 #   现在「已应用的迁移不许改」由 `scripts/migration-frozen-check.sh` 接管(它允许新增、只冻内容)。
 
 echo "★DDL 门禁通过★:$(grep -c '^CREATE TABLE' migrations/*.sql | awk -F: '{s+=$2} END{print s}') 个建表全是裸 CREATE TABLE,$(ls migrations/*.sql | wc -l) 个迁移文件"

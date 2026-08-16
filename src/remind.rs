@@ -152,7 +152,7 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
             title, 人话时长(*mins),
             crate::tzutil::when_labeled(*starts_at, crate::tzutil::parse(mtz)),
         );
-        crate::notify::notify_activity(state, *mid, std::slice::from_ref(_user), "活动即将开始", &body).await;
+        crate::notify::notify_activity(state, *mid, std::slice::from_ref(_user), "活动即将开始", &body, crate::notify::Kind::Remind).await;
     }
     tracing::info!(count = due.len(), "已投递活动提醒");
     Ok(())

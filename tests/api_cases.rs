@@ -836,6 +836,14 @@ const CASES: &[Case] = &[
     c!("GET", "/api/admin/audit", "全局审计可筛", "有多条审计", "GET /api/admin/audit?actor=x&limit=50",
        "200,按 actor 过滤;★敏感动作(建分享/移出成员/purge/改超管)都必须有记录★", ""),
 
+    // ★AI 模型:超管可配★(2026-08-16 热修)。它存在的理由本身就是一次事故:
+    // 平台换了模型 → congrove 还调老的 → `403 无权调用模型` → 纪要功能整个哑掉,
+    // 而子系统这边**没有自助恢复的办法**,只能等人改 env 再重启。
+    c!("GET", "/api/admin/llm/models", "列可用模型", "网关可达", "GET /api/admin/llm/models",
+       "200,{current, models[]};★网关不可达时不编造空列表★,回 error 字段让界面说「列不出来但仍可手输」", ""),
+    c!("PUT", "/api/admin/llm/model", "选模型", "我是超管", "PUT /api/admin/llm/model {model:'X'}",
+       "200 且立即生效(存库,不用改 env/重启);★不校验它在不在列表里★——按需模型本就不在列表里", ""),
+
     // ══════════ 开发者 ══════════
     c!("GET", "/api/_dev/apis", "开发者页面数据源", "我是超管", "GET /api/_dev/apis",
        "200,count 与 apis 一致;★与实际路由表逐条相符★(由 apidoc.rs 的测试保证)", ""),
@@ -911,6 +919,11 @@ const CASES: &[Case] = &[
        "PUT {is_super:true}", "403;★这条是提权路径,最该盯★", ""),
     c!(deny "PUT", "/api/admin/users/{username}/quota", "项目 admin 也不能自己调配额", "我是项目 admin 但非超管",
        "PUT {quota_bytes:大数}", "403;配额是平台资源,不能自助", "P1"),
+    c!(deny "GET", "/api/admin/llm/models", "非超管列不了模型", "我已登录但非超管", "GET /api/admin/llm/models",
+       "403;模型清单属于系统配置面,不该对普通用户开放", ""),
+    c!(deny "PUT", "/api/admin/llm/model", "非超管改不了模型", "我已登录但非超管", "PUT /api/admin/llm/model",
+       "403;★这是全系统级设置★——一个人改,所有人的纪要都换模型", ""),
+
     c!(deny "GET", "/api/admin/audit", "非超管读不了全局审计", "我已登录但非超管", "GET /api/admin/audit",
        "403;审计日志跨项目,含他人动作", ""),
 ];

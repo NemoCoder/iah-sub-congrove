@@ -315,7 +315,7 @@ pub async fn create(
     let 类型名: String = sqlx::query_scalar("SELECT name FROM activity_types WHERE id=$1")
         .bind(input.type_id).fetch_optional(&state.pool).await?.unwrap_or_else(|| "活动".into());
     notify_activity(&state, mid, &who, &format!("{类型名}邀请"),
-        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at, crate::tzutil::parse(input.timezone.as_deref().unwrap_or_default())))).await;
+        &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at, crate::tzutil::parse(input.timezone.as_deref().unwrap_or_default()))), crate::notify::Kind::Invite).await;
     mark_notified(&state.pool, mid, &who).await?;
     Ok(Json(json!({ "id": mid })))
 }
@@ -594,11 +594,11 @@ pub async fn update(
             .bind(mid).fetch_one(&state.pool).await?;
         if time_changed {
             notify_activity(&state, mid, &who, "活动时间已改",
-                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&cur.4)))).await;
+                &format!("「{mtitle}」改到 {} —— ★你之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&cur.4))), crate::notify::Kind::Reschedule).await;
         }
         if link_changed {
             notify_activity(&state, mid, &who, "线上活动链接已改",
-                &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s, crate::tzutil::parse(&cur.4)))).await;
+                &format!("「{mtitle}」({})的线上链接已更换,开会前请从活动页重新点开。", fmt_when(s, crate::tzutil::parse(&cur.4))), crate::notify::Kind::LinkChanged).await;
         }
         // ★ADR-0003 边界①:补录 → 改到未来,必须补发邀请**并置位**★。
         // 上面那两条通知就是「补发邀请」;这里把事实记下来 —— 否则一条从没通知过的活动
@@ -643,7 +643,7 @@ pub async fn cancel(
     // ★取消最需要通知★:不通知的后果是有人按原计划去了,而会不存在了
     let who = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &who, "活动已取消",
-        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts, crate::tzutil::parse(&mtz)))).await;
+        &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts, crate::tzutil::parse(&mtz))), crate::notify::Kind::Canceled).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -717,7 +717,7 @@ pub async fn invite(
             "SELECT t.name FROM activities a JOIN activity_types t ON t.id = a.type_id WHERE a.id=$1")
             .bind(mid).fetch_optional(&state.pool).await?.unwrap_or_else(|| "活动".into());
         notify_activity(&state, mid, &fresh, &format!("{类型名}邀请"),
-            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts, crate::tzutil::parse(&mtz)))).await;
+            &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts, crate::tzutil::parse(&mtz))), crate::notify::Kind::Invite).await;
         mark_notified(&state.pool, mid, &fresh).await?;
     }
     Ok(Json(json!({ "ok": true, "invited": n })))
@@ -833,7 +833,7 @@ pub async fn respond(
             let why = r.counter_reason.as_deref().filter(|x| !x.trim().is_empty())
                 .map(|x| format!(",理由:{x}")).unwrap_or_default();
             notify_activity(&state, mid, &[organizer], "改期建议",
-                &format!("{username} 对「{mtitle}」提议改到 {when}{why}。")).await;
+                &format!("{username} 对「{mtitle}」提议改到 {when}{why}。"), crate::notify::Kind::Counter).await;
         }
     }
     // ★拒绝出席的人如果还挂着记录员,责任不能凭空蒸发★
@@ -875,7 +875,7 @@ pub async fn respond(
                 .bind(mid).fetch_one(&state.pool).await.unwrap_or_default();
             notify_activity(&state, mid, std::slice::from_ref(&organizer), "记录员拒绝出席,纪要已转到你名下",
                 &format!("{username} 拒绝出席「{标题}」。为免这场的纪要没人写,\
-                          记录员已**默认改成你**;要换人的话,在活动页把「记录员」改掉就行。")).await;
+                          记录员已**默认改成你**;要换人的话,在活动页把「记录员」改掉就行。"), crate::notify::Kind::RecorderMoved).await;
         }
         // `still_recorder`:拒绝之后我**还是不是**记录员。转走了就是 false ——
         // 界面靠它当场告诉我「这摊子已经不归你了」,否则我只会纳闷「我都拒了怎么还挂着」。
@@ -1381,7 +1381,9 @@ pub async fn remind(
         for u in &targets {
             let body = format!("「{title}」将于 {} 开始,你还没有答复。", fmt_when(starts, crate::tzutil::parse(&mtz)));
             // notify 是 best-effort(不返回 Result):站内信发不出去不该让催办接口失败
-            reg.notify(u, "活动待你答复", &body, None, Some(&format!("activity:{mid}"))).await;
+            // ★ref 走 Kind 的唯一推导,别在这儿手拼★:手拼的那份正是 2026-08-16 事故的一半 ——
+            //   催办与邀请共用 `activity:{mid}`,平台按 (recipient, ref) 幂等 → 催办永远发不出去。
+            reg.notify(u, "活动待你答复", &body, None, Some(&crate::notify::Kind::Nudge.ref_of(mid))).await;
             sent += 1;
         }
     }
@@ -1415,7 +1417,7 @@ pub async fn reject_counter(
     let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
         .bind(mid).fetch_one(&state.pool).await?;
     notify_activity(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
-        &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。")).await;
+        &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。"), crate::notify::Kind::CounterRejected).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1452,7 +1454,7 @@ pub async fn accept_counter(
         .bind(mid).fetch_one(&state.pool).await?;
     let all = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &all, "活动时间已改",
-        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&mtz)))).await;
+        &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&mtz))), crate::notify::Kind::Reschedule).await;
     Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
 }
 
