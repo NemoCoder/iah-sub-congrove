@@ -4,13 +4,14 @@ import { Avatar, Button, Dropdown, Result, Segmented, Spin, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { api, type Me } from './api'
 
-type View = 'schedule' | 'projects' | 'activities' | 'shares' | 'apis' | 'atypes' | 'me'
+type View = 'schedule' | 'projects' | 'activities' | 'shares' | 'apis' | 'atypes' | 'me' | 'admin'
 import { IahHeader } from './iah-header'
 import { ViewerPage } from './viewer-page'
 import { ProjectsView } from './projects-view'
 import { SharePage } from './share-page'
 import { SharesView } from './shares-view'
 import { ApiDocView } from './apidoc-view'
+import { AdminView } from './admin-view'
 import { ScheduleView } from './schedule-view'
 import { RemindPoll } from './remind-poll'
 import { TzBanner } from './tz-banner'
@@ -161,6 +162,10 @@ export function App() {
               // ★开发者入口按「资格」显示,不按「特权」★(超管模式):按特权的话,
               // 一关模式入口就消失了,人会以为超管被撤了 —— 2026-08-09 liaoruili 定的三条之一
               // 「入口留着,点了提示开启」。点进去发现 403 比入口凭空消失好解释得多。
+              // ★后台与开发者是两件事★(2026-08-16 liaoruili 的 Q1):后台=改系统、开发者=看文档。
+              //   两个都按「资格」显示不按「特权」—— 一关超管模式入口就消失的话,
+              //   人会以为超管被撤了(2026-08-09 定的三条之一「入口留着,点了提示开启」)。
+              ...(me?.can_super ? [{ key: 'admin', label: '后台' }] : []),
               ...(me?.can_super ? [{ key: 'apis', label: '开发者' }] : []),
               // ★超管模式开关★(docs/TECH-DESIGN-admin-mode.md):有资格才画。
               // 平时关着 = 我就是个普通用户,看不到别人的东西;要用特权刻意开一下,2 小时自动关。
@@ -173,7 +178,7 @@ export function App() {
             ],
             onClick: ({ key }) => {
               if (key === 'adminmode') { void toggleAdminMode(!me?.is_super); return }
-              if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes') { setView(key as View); setActivityId(null); setMinutesOf(null); setBackTo(null); setBackToProject(null) }
+              if (key === 'me' || key === 'shares' || key === 'apis' || key === 'atypes' || key === 'admin') { setView(key as View); setActivityId(null); setMinutesOf(null); setBackTo(null); setBackToProject(null) }
             },
           }}>
             <Button type="text" style={{ height: 'auto', padding: '4px 8px' }}>
@@ -255,6 +260,7 @@ export function App() {
             }} />
         )
           : view === 'me' ? <MeView me={me} onOpenShares={() => setView('shares')} />
+          : view === 'admin' ? <AdminView me={me} />
           : view === 'apis' ? <ApiDocView />
           : view === 'atypes' ? <ActivityTypesView me={me?.username ?? ''} /> : <SharesView />}
       </div>
