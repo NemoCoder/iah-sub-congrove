@@ -28,13 +28,78 @@ pub async fn notify_targets(pool: &sqlx::PgPool, mid: i64, exclude: &str) -> Vec
 }
 
 /// 发一批站内信。`targets` 空则什么都不做(不是错误 —— 一个人的会就是没人要通知)。
-pub async fn notify_activity(state: &AppState, mid: i64, targets: &[String], title: &str, body: &str) {
+/// ★一条站内信的「种类」—— 它决定平台按 `ref` 去重时把哪些消息当成同一条★(2026-08-16 热修)。
+///
+/// ══ 这个枚举是一次线上事故换来的 ══
+/// 在此之前**所有**关于某个活动的站内信共用 `ref = activity:{mid}`。而平台的 `notify()` 是
+/// `insert … on conflict (recipient, ref) do nothing returning id` —— 撞了就跳过插入、
+/// **回查旧行并返回 2xx**。于是:
+///   邀请永远是第一条 → 占住 `(收件人, activity:34)` →
+///   ★此后关于这个活动的**每一条**通知(改期/链接改/取消/催办/提醒)都被静默吞掉,而我们收到 2xx★。
+/// 2026-08-16 liaoruili 反馈「早上的会没收到提醒」,查到最后是这个;平台侧同日已改成回 `deduped` 标志。
+/// (发起人反而收得到提醒 —— 他不收邀请,提醒是该 ref 的第一条。这个反常现象正是线索。)
+///
+/// ⚠★分种类还不够,还要分「会不会重复发生」★:
+///   同一场会可以**改期两次**、催办两次 —— 那是两条各自成立的新消息,不能被去重。
+///   所以下面 `ref_of` 里,可重复的种类会带一个时间戳;一次性的不带(去重是对的,避免重复打扰)。
+///   ★把这个策略放在**一个 match** 里,而不是让 9 个调用点各自记得★ ——
+///   编译器会强制新增种类时也做这个决定。
+#[derive(Clone, Copy)]
+pub enum Kind {
+    /// 邀请:一场活动对一个人只该有一条(重复邀请不该再打扰)
+    Invite,
+    /// 到点提醒:每场每人只投一次(`reminded_at` 保证),去重与否都无所谓,分开只是为了不占住 invite 的位置
+    Remind,
+    /// 记录员拒绝出席 → 纪要转给发起人:同一场只会发生一次
+    RecorderMoved,
+    /// 改期:★可重复★
+    Reschedule,
+    /// 线上链接变更:★可重复★
+    LinkChanged,
+    /// 取消:一场只会取消一次
+    Canceled,
+    /// 有人提改期建议:★可重复★(不同人、或同一人再提)
+    Counter,
+    /// 改期建议未被采纳:★可重复★
+    CounterRejected,
+    /// 催办「你还没答复」:★可重复★——催第二次就是要再响一声
+    Nudge,
+    /// AI 纪要生成好了:★可重复★——「重新生成」是正当操作,生成完该再响一次
+    MinutesReady,
+}
+
+impl Kind {
+    /// 这条消息在平台侧的去重键。
+    /// ⚠ 加新种类时**必须**在这里决定它可不可重复 —— match 不写全编译不过。
+    pub fn ref_of(self, mid: i64) -> String {
+        let (名, 可重复) = match self {
+            Kind::Invite => ("invite", false),
+            Kind::Remind => ("remind", false),
+            Kind::RecorderMoved => ("recorder", false),
+            Kind::Canceled => ("canceled", false),
+            Kind::Reschedule => ("reschedule", true),
+            Kind::LinkChanged => ("link", true),
+            Kind::Counter => ("counter", true),
+            Kind::CounterRejected => ("counter-rejected", true),
+            Kind::Nudge => ("nudge", true),
+            Kind::MinutesReady => ("minutes", true),
+        };
+        if 可重复 {
+            // 时间戳只为「让 ref 不同」,不表达语义;秒级足够(同一秒内重复发同一种类=误触,去重反而是对的)。
+            format!("activity:{mid}:{名}:{}", chrono::Utc::now().timestamp())
+        } else {
+            format!("activity:{mid}:{名}")
+        }
+    }
+}
+
+pub async fn notify_activity(state: &AppState, mid: i64, targets: &[String], title: &str, body: &str, kind: Kind) {
     let Some(reg) = &state.registry else { return };      // 本地 dev 无 registry:静默跳过
     // 站内信点进去要能到那场会。前端不用路由库(app.tsx 头注的既有约定),所以用查询参数,
     // 由 app.tsx 启动时读一次 ?activity= 直接把人放到那场会上。
     let url = state.config.public_url.as_ref().map(|b| format!("{b}/?activity={mid}"));
     for u in targets {
-        reg.notify(u, title, body, url.as_deref(), Some(&format!("activity:{mid}"))).await;
+        reg.notify(u, title, body, url.as_deref(), Some(&kind.ref_of(mid))).await;
     }
 }
 
@@ -56,5 +121,42 @@ pub async fn notify_project(state: &AppState, pid: i64, targets: &[String], titl
     let url = state.config.public_url.as_ref().map(|b| format!("{b}/?project={pid}"));
     for u in targets {
         reg.notify(u, title, body, url.as_deref(), Some(&format!("project:{pid}"))).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★同一场活动的不同种类,ref 必须互不相同★ —— 这正是 2026-08-16 事故的判据:
+    /// 邀请与提醒共用 `activity:{mid}` → 平台按 (recipient, ref) 幂等 → 提醒永远发不出去。
+    #[test]
+    fn 不同种类的ref互不相同() {
+        let ks = [Kind::Invite, Kind::Remind, Kind::RecorderMoved, Kind::Canceled];
+        let mut v: Vec<String> = ks.iter().map(|k| k.ref_of(7)).collect();
+        v.sort(); v.dedup();
+        assert_eq!(v.len(), ks.len(), "一次性种类之间不能撞 ref");
+        // 不同活动之间也不能撞
+        assert_ne!(Kind::Invite.ref_of(7), Kind::Invite.ref_of(8));
+    }
+
+    /// ★可重复的种类,连发两次也必须是两个不同的 ref★ ——
+    /// 改期两次、催办两次都是**各自成立的新消息**,被去重掉等于第二次没发生。
+    #[test]
+    fn 可重复的种类每次都是新ref() {
+        for k in [Kind::Reschedule, Kind::LinkChanged, Kind::Counter, Kind::CounterRejected,
+                  Kind::Nudge, Kind::MinutesReady] {
+            let a = k.ref_of(7);
+            // 时间戳是秒级:同一秒内故意视为同一条(误触去重是对的),所以这里跨一秒再取
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            assert_ne!(a, k.ref_of(7), "可重复的种类第二次必须换 ref");
+        }
+    }
+
+    /// ★一次性的种类必须**稳定**★:重复邀请同一个人不该再打扰他。
+    #[test]
+    fn 一次性的种类ref稳定() {
+        assert_eq!(Kind::Invite.ref_of(7), Kind::Invite.ref_of(7));
+        assert_eq!(Kind::Canceled.ref_of(9), Kind::Canceled.ref_of(9));
     }
 }

@@ -255,7 +255,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             // 原来这条还附了一段「它们是给你的原材料,正式纪要仍由你整理」——
             // 那是**设计说明**,不是通知内容:收到通知的人正要去看,点进去自然就知道有哪几份。
             crate::notify::notify_activity(state, mid, std::slice::from_ref(&recorder), "AI 纪要已生成",
-                &format!("「{title}」的录制已转写完。")).await;
+                &format!("「{title}」的录制已转写完。"), crate::notify::Kind::MinutesReady).await;
         }
     }
     Ok(())
