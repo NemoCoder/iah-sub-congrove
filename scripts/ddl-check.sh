@@ -21,13 +21,11 @@ if [ -n "$bad" ]; then
   exit 1
 fi
 
-# 顺带钉住 ADR-0001 的另一半:migrations/ 里只该有一个文件
-n=$(ls migrations/*.sql | wc -l)
-if [ "$n" -ne 1 ]; then
-  echo "★DDL 门禁不通过★:ADR-0001 说 migrations/ 里**永远只有一个 0001_init.sql**,现在有 $n 个。"
-  echo "(prod 通道开出来之后这条失效,回到「只增不改」——那时请连同本脚本一起改。)"
-  ls migrations/*.sql
-  exit 1
-fi
+# ⚠★「migrations/ 里只该有一个文件」这一半已删★(2026-08-16)
+#   —— 它是 ADR-0001 的另一半,而 ADR-0001 在 prod 通道开出来的那一刻就失效了。
+#   这个脚本自己的注释当时写着「prod 通道开出来之后这条失效,那时请连同本脚本一起改」,
+#   ★而没人真去改的话,它会在第一个 0002 出现时把**正当的改动**拦下来★ ——
+#   本次热修(0002_app_setting.sql)当场撞上了它。
+#   一道编码着过期规则的门禁,拦的不再是错误,而是正确的做法。
 
-echo "★DDL 门禁通过★:$(grep -c '^CREATE TABLE' migrations/0001_init.sql) 个建表全是裸 CREATE TABLE,migrations/ 只有一个文件"
+echo "★DDL 门禁通过★:$(grep -c '^CREATE TABLE' migrations/*.sql | awk -F: '{s+=$2} END{print s}') 个建表全是裸 CREATE TABLE,$(ls migrations/*.sql | wc -l) 个迁移文件"
