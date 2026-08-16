@@ -162,13 +162,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/items/{id}/versions", get(items::versions))
         .route("/items/{id}/restore/{version_id}", post(items::restore))
         // P2 预签名直传:begin/complete/abort 都是快 API(字节不经 pod)。
-        // ⚠★`/play` 已挪进下面的 slow 组★(2026-08-16 审计):它 2026-08-15 起多了一条分支 ——
-        //   禁下载时**把整个视频的字节流经 pod 推出去**,而这一组是 30 秒超时,视频播到 30 秒就断。
-        //   ★这行注释当时写的还是「play 判权后 302 预签名 GET」,而行为已经不是了★ ——
-        //   路由分组编码的是「这个端点合法情况下能跑多久」,行为一变,分组就得跟着变。
         .route("/projects/{id}/media/begin", post(media::begin))
         .route("/items/{id}/media/complete", post(media::complete))
         .route("/items/{id}/media/abort", post(media::abort))
+        // ★`/play` 留在 fast 组 —— 哪怕它禁下载时会推整个视频★
+        //
+        // ⚠★这里我先搞错过一次,而且很自信地写了一大段论证,现在把真相记下来★(2026-08-16):
+        //   `/play` 2026-08-15 多了一条「禁下载 → 同源 Range 代理」的分支,我据此判定
+        //   「30 秒超时会把视频掐断」、把它挪进了 slow 组,还给了三层理由。★那个判断是假的。★
+        //
+        //   查 tower-http 0.6.11 的 `timeout::ResponseFuture::poll`:
+        //       if this.sleep.poll(cx).is_ready() { …超时… }
+        //       this.inner.poll(cx)          // ← race 的是 **inner service future**
+        //   而 `inner` 在 **handler 返回 Response 的那一刻**就 resolve 了 ——
+        //   那时 body 只是一个还没被读的流对象。★之后的流式传输完全不受这个 layer 约束。★
+        //   要约束响应体得用**另一个** layer(`ResponseBodyTimeoutLayer`,把 body 包成
+        //   `TimeoutBody`)—— 本仓没有用。
+        //
+        // ⇒ 所以 fast/slow 的真实含义是「**handler 自己**能跑多久」,不是「响应有多大」:
+        //   · slow 组真正需要它的是 `upload` / `media/part` —— 那两个的 handler **要读完整个请求体**,
+        //     那是在 inner future 里面,确实被 layer 管着;
+        //   · `download` / `play` 的 handler 只是**打开** S3 流就返回了,毫秒级,fast 组绰绰有余。
+        //   (顺带:`download` 现在还在 slow 组。没动它 —— 无害,而且改它属于另一件事;
+        //    但别再把它当成「因为要流式所以放 slow」的先例,那个理由是不成立的。)
+        //
+        // ★教训记在这儿★:一个改动的理由一旦被证伪,改动本身就该跟着撤 ——
+        //   否则留下的是「一段自信但错误的论证」,下一个人会照着它推理。
+        .route("/items/{id}/play", get(media::play))
         // 录屏分析:排任务 + 查结果(实际跑在后台 worker,见 media_ai.rs)
         .route("/items/{id}/analyze", post(media::analyze))
         .route("/items/{id}/analysis", get(media::analysis))
@@ -185,16 +205,6 @@ pub fn build_router(state: AppState) -> Router {
             put(media::part).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/items/{id}/download", get(items::download))
-        // ★/play 在这里,不在 fast 组★(2026-08-16):它有两种行为 —— 不禁下载时 302 到预签名(瞬间返回),
-        // 禁下载时走同源 Range 代理(**推整个视频**)。一条路由表达不了两个时长档,
-        // 而放错的那一档是**功能直接不可用**(30 秒掐断)。
-        // ⚠ 挪过来对 302 那条路径**零代价**:`presign_get` 是**纯本地签名计算、不打网络**,
-        //   其余只有几条 SQL(被 DB_STATEMENT_TIMEOUT_MS 兜着)——★那条路上没有任何无界操作★。
-        // ⚠ 也考虑过拆成两条路由让时长档更纯粹,否掉了:那要**新增一个取原件字节的入口**,
-        //   而本仓每一个字节出口都出过洞(share 访客面 / play / copy),新入口得把
-        //   require_role + 禁下载 + deleted_at 三道判据重写一遍,漏一条就是新洞。
-        // ⚠ 安全前提已核:鉴权是在 `fast.merge(slow)` **之后**挂的,挪动路由不会丢掉认证。
-        .route("/items/{id}/play", get(media::play))
         .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(2 * 3600)));
 
     // 每个 /api 端点都要认证(route_layer:404 不要 token);探针 + /auth/* 开放。
