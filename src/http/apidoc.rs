@@ -300,6 +300,8 @@ pub const APIS: &[Api] = &[
          "调某个人的配额（ADR-0004：额度挂在人身上，不挂在项目上）。★upsert★：没有行 = 用系统默认",
          "quota_bytes"),
     api!("GET", "/api/admin/audit", "超管", "超管", "全局审计日志", "limit, actor, action"),
+    api!("GET", "/api/admin/llm/models", "超管", "超管", "列网关当前**常驻**的模型 + 现在选的是哪个。★按需模型不在列表里但能调★,所以界面允许手输", ""),
+    api!("PUT", "/api/admin/llm/model", "超管", "超管", "选生成纪要用的模型(存库,立即生效,不用改 env 也不用重启)", "model"),
 
     // ── 开发者 ──
     api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", ""),

@@ -232,7 +232,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             "INSERT INTO summaries (item_id, kind, content, model) VALUES ($1,$2,$3,$4)
              ON CONFLICT (item_id, kind) DO UPDATE SET content=EXCLUDED.content, model=EXCLUDED.model, created_at=now()",
         )
-        .bind(item_id).bind(kind).bind(&content).bind(&state.config.llm_model)
+        .bind(item_id).bind(kind).bind(&content).bind(crate::http::admin::effective_llm_model(state).await)
         .execute(&state.pool).await?;
     }
 
@@ -680,7 +680,7 @@ async fn chat_once(state: &AppState, system: &str, user: &str, end_user: &str) -
     // 纪要会带一大段自言自语。chat_template_kwargs.enable_thinking=false 实测干净(2026-08-03 验)。
     // max_tokens 兜住:没有上限时思考模型能生成很久,任务看起来像卡死。
     let body = serde_json::json!({
-        "model": state.config.llm_model,
+        "model": crate::http::admin::effective_llm_model(state).await,
         "messages": [
             {"role": "system", "content": format!("你是活动纪要助手。{system}")},
             {"role": "user", "content": user},
