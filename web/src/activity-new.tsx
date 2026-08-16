@@ -62,14 +62,13 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
       .then((ps) => {
         const 可选 = ps.filter((p) => !isMaterials(p) && (p.my_role === 'editor' || p.my_role === 'admin'))
         setProjects(可选)
-        // ★预填放在这里而不是 initialValues★:两个理由 ——
-        //   ① 选项还没到时先塞 id,下拉框会先秃着显示一个数字(「3」)再变成项目名;
-        //   ② ★预填的项目必须真在「我能建会的项目」里★ —— 万一它不在(角色刚被降成
-        //      viewer、或项目刚归档),预填就是**给人一个必然被后端拒的初值**,
-        //      而人多半不会去看那一栏。宁可留空让必填校验拦住他。
-        if (prefillProjectId != null && 可选.some((p) => p.id === prefillProjectId)) {
-          form.setFieldValue('project_ids', [prefillProjectId])
-        }
+        // ★预填要连 label 一起给★(2026-08-16,真浏览器里看出来的,详见下面 Select 的注释):
+        //   只塞 id 的话,chip 上画出来的是**「1 ×」**这个裸数字 —— 见过一眼就忘不了。
+        // ★预填的项目必须真在「我能建会的项目」里★ —— 万一它不在(角色刚被降成 viewer、
+        //   或项目刚归档),预填就是**给人一个必然被后端拒的初值**,而人多半不会去看那一栏。
+        //   宁可留空让必填校验拦住他。
+        const 预填 = prefillProjectId != null ? 可选.find((p) => p.id === prefillProjectId) : undefined
+        if (预填) form.setFieldValue('project_ids', [{ value: 预填.id, label: 预填.name }])
       })
       .catch(() => setProjects([]))
   }, [prefillProjectId, form])
@@ -129,7 +128,10 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
   /// 直接根据关联成员的并集多选即可」）。原来是「一个搜索框 + 一个『从其它项目导入』下拉」
   /// 两截,既丑又绕:导入是个**批量动作**,却长得像个筛选器。
   /// 现在关联项目一选定,能请的人就自动摆在这儿 —— ★选项目本来就已经回答了「有哪些人」★。
-  const projIds: number[] = Form.useWatch('project_ids', form) ?? []
+  /// ⚠★这一栏是 `labelInValue`,表单里存的是 `{value,label}` 不是裸 id★(2026-08-16,理由见 Select 的注释)。
+  ///   所以凡是要拿 id 的地方都得 `.value` —— 下面三处(projKey / 提交 / options 过滤)都改过了。
+  const projSel: { value: number; label?: React.ReactNode }[] = Form.useWatch('project_ids', form) ?? []
+  const projIds: number[] = projSel.map((x) => x.value)
   const projKey = projIds.join(',')          // ← 依赖用字符串,数组每次渲染都是新引用
   const [pool, setPool] = useState<UserOpt[]>([])
   useEffect(() => {
@@ -171,7 +173,8 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
   const submit = async (v: {
     title: string; agenda?: string; recorder: string
     range: [{ toISOString(): string }, { toISOString(): string }]
-    project_ids: number[]; participants?: string[]
+    // ★labelInValue★:表单里是 `{value,label}`,发给后端前要摘出 id(见下面 Select 的注释)
+    project_ids: { value: number }[]; participants?: string[]
     location?: string; online_url?: string
   }) => {
     // ★补录超过 7 天要确认一次★(PRD F1,liaoruili 定的阈值)。
@@ -200,7 +203,8 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
           starts_at: pickedToUtc(new Date(v.range[0].toISOString()), tz).toISOString(),
           ends_at: pickedToUtc(new Date(v.range[1].toISOString()), tz).toISOString(),
           timezone: tz,
-          project_ids: needProject ? v.project_ids : [],
+          // ★摘 id★:labelInValue 让表单里存的是 {value,label},后端要的是裸 id 数组
+          project_ids: needProject ? (v.project_ids ?? []).map((x) => x.value) : [],
           participants: people,
           location: v.location ?? '',
           online_url: v.online_url ?? '',
@@ -298,9 +302,28 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
               多选框默认「选完不关、已选项打个勾留在原地」,于是列表越用越长、
               还要自己去分辨哪几个已经选过 —— 而**这台机器是知道的**。
               想再选就点一下空白处,下拉重新展开(此时列表里只剩没选过的)。
-              ⚠ 已选项从 options 里摘掉后,它的中文名靠 rc-select 的 label 缓存显示;
-              缓存是它专为「options 变了但已选项还要显示」做的,不是我们在碰运气。 */}
-          <Select mode="multiple" placeholder="选一个或多个项目" optionFilterProp="label"
+
+              ══ ★2026-08-16:这套设计有个只对「人手点」成立的隐含前提★ ══
+              这里原来的注释写着「已选项从 options 里摘掉后,中文名靠 rc-select 的 label 缓存显示;
+              缓存是它专为『options 变了但已选项还要显示』做的,**不是我们在碰运气**」。
+              这句话当时是对的 —— 但它成立的条件是**值是被人点进来的**。
+
+              加了项目页「发起活动」的预填(`form.setFieldValue`)之后,第一次在真浏览器里
+              看截图,chip 上画的是★「1 ×」★—— 项目 id 的裸数字。
+              读 `@rc-component/select` 的 `useCache` 源码才明白:
+                · 缓存只对**当前已选中**的值刷新,而 label 来自「此刻能在 options 里查到它」;
+                · 而这个 filter 保证了★一旦选中就从 options 里消失★
+                  ⇒ 不存在「既选中、又在 options 里」的那一帧,缓存**永远收不到**这一条;
+                · 人手点选之所以有名字,是因为 onChange 直接带着被点那个 option 的 label,
+                  跟 options 里还有没有它无关。
+              ⇒ 结构上,**任何程序化赋值**都拿不到名字。这不是时机问题 ——
+                我一开始以为是,还把预填挪到「项目列表加载完之后」并在注释里写下这个理由,
+                ★那条注释是错的,而且它错得很安静★(界面照常渲染,只是画了个数字)。
+
+              ⇒ 改成 `labelInValue`:★让 label 跟着值一起走,彻底不依赖那个缓存★。
+              代价是表单里存的变成 `{value,label}`,取 id 的三处都要 `.value`(已改)。
+              ⚠ 别为了「少改两行」退回去只塞 id —— 那等于把这个坑原样留给下一个预填场景。 */}
+          <Select mode="multiple" labelInValue placeholder="选一个或多个项目" optionFilterProp="label"
             open={projOpen} onDropdownVisibleChange={setProjOpen} onSelect={() => setProjOpen(false)}
             options={projects.filter((p) => !projIds.includes(p.id)).map((p) => ({ value: p.id, label: p.name }))} />
         </Form.Item>
