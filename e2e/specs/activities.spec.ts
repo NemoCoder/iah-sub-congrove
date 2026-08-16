@@ -339,3 +339,36 @@ test.describe('项目归档(D17)', () => {
     expect(iArc, '归档项目没有沉到后面').toBeGreaterThan(iAct)
   })
 })
+
+/// 这一批用例的唯一后缀。⚠ 本文件原来没有 tag() —— 我加用例时直接用了它,
+/// tsc 也没报(web 的 tsconfig 不覆盖 e2e/),★靠跑一遍才发现★。
+const tag = () => `${Date.now()}-${Math.floor(Math.random() * 1e4)}`
+
+// ★补录的活动必须能删掉★(2026-08-16 liaoruili 在 prod 上撞到)
+//
+// 2026-08-15 加过一条「开完了就不能再取消」的界面规则 —— 对**真开过的会**是对的。
+// 但补录的活动**按定义就在过去**,于是它从出生起就没有任何移除入口:打错了也去不掉。
+// ⚠ 后端一直是允许的(`cancel` 不看 ends_at),★被砍掉的只有界面入口★ ——
+//   所以这条用例钉的是**接口这一层的事实**,免得将来有人「顺手」在后端也加上那条限制。
+test('★已结束(补录)的活动仍然删得掉★', async ({ request }) => {
+  const pid = await newProject(request, `E2E-删补录-${tag()}`)
+  // 用允许补录的类型建一场**过去**的活动(会议类型 allow_past=false,建不了过去的)
+  const t = (await (await request.post('/api/activity-types', {
+    data: { name: `补录${tag()}`.slice(0, 12), busy_default: false } })).json()).id as number
+  const 昨天 = new Date(Date.now() - 26 * 3600e3)
+  const r = await request.post('/api/activities', { data: {
+    type_id: t, title: `E2E-补录-${tag()}`, recorder: '', project_ids: [pid],
+    starts_at: 昨天.toISOString(), ends_at: new Date(昨天.getTime() + 3600e3).toISOString() } })
+  expect(r.status(), await r.text()).toBe(200)
+  const mid = (await r.json()).id as number
+
+  const del = await request.delete(`/api/activities/${mid}`)
+  expect(del.status(), '★后端必须允许删已结束的活动★——补录打错了得能去掉').toBe(200)
+  // 删掉之后它不该再出现在「我的活动」里(列表按 status='active' 过滤)
+  const from = new Date(Date.now() - 3 * 864e5).toISOString()
+  const to = new Date(Date.now() + 864e5).toISOString()
+  const 列表 = await (await request.get(`/api/activities?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)).json() as { id: number }[]
+  expect(列表.some((x) => x.id === mid), '删了就该从列表里消失').toBe(false)
+  await request.delete(`/api/activity-types/${t}`)
+  await request.delete(`/api/projects/${pid}`)
+})
