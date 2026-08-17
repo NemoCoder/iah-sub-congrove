@@ -120,7 +120,19 @@ pub async fn 校验(pool: &PgPool, key: &str, value: &str) -> Result<String, Str
             //   打错一个字母的后果是「这个人从此建不了项目」,而**没有任何地方会报错**,
             //   还要等那个人某天想建项目才暴露。⇒ 在写入这一刻就拦住。
             for u in &名单 {
-                let 有: Option<i64> = sqlx::query_scalar("SELECT 1 FROM app_user WHERE username = $1")
+                // ⚠★别写 `SELECT 1` 再当 i64 收★(2026-08-16 上线后被 E2E 抓到):
+                //   PG 里字面量 `1` 是 **INT4**,而 Rust 侧要 `i64`(INT8)—— 解码当场报
+                //   「mismatched types」。后果不是「消息不好看」,是★这一项**永远存不进去**★:
+                //   任何值(哪怕名单里全是真实用户)都 400。
+                //   ⚠ 为什么一路没人拦住它,值得记:
+                //     · `cargo test` 是纯的,我那条单测用永不连接的 pool,恰好跳过了这个分支;
+                //     · ★「SQL 对真库 PREPARE」那道门禁也看不见★ —— `SELECT 1 FROM app_user`
+                //       PREPARE 完全合法,错发生在 **Rust 解码**阶段,不在 SQL 阶段;
+                //     · 界面上没点到(白名单没改动时「保存」是禁用的)。
+                //   ★唯一抓到它的是一条断言**错误消息内容**的 E2E★:只断言「回 400」的话,
+                //     这个 400 会因为一个完全错误的理由而"通过"。
+                //   直接选 username(text)最稳:不引入任何整数字面量的类型问题。
+                let 有: Option<String> = sqlx::query_scalar("SELECT username FROM app_user WHERE username = $1")
                     .bind(u).fetch_optional(pool).await.map_err(|e| e.to_string())?;
                 if 有.is_none() { return Err(format!("没有这个用户:{u}(只能从登录过的用户里选)")) }
             }
