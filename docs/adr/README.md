@@ -48,5 +48,6 @@ ADR 只承载**决策**；「改动到底影响了什么」由五道机械门禁
 | [0003](0003-backfill-via-notified-at.md) | 「补录」判据存 `notified_at` 事实，不用生成列推导 | 已定（PRD L0b 已回填） |
 | [0004](0004-quota-per-user.md) | 配额从项目挪到人；`user_quota` 与 `user_prefs` 拆两张 | 已定（PRD L3/J2 已回填） |
 | [0005](0005-materials-project-isolation.md) | 项目分 `team` / `materials`；隔离靠 `effective_role` 单点否决 | 已定 |
+| [0006](0006-observer-whitelist-and-attendee-materials.md) | ★旁听只看「活动是什么」(白名单+单点否决)；参会人对活动材料有完整读写权 —— **推翻 D8** | 已定 |
 
 实施顺序与每个 PR 的门禁在 [../M0-PLAN.md](../M0-PLAN.md)。
