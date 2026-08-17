@@ -366,7 +366,7 @@ pub async fn detail(
     }
     let parts: Vec<Participant> = sqlx::query_as(
         "SELECT p.username, u.name, p.kind, p.required, p.status, p.counter_starts_at, p.counter_ends_at,
-                p.counter_reason, p.responded_at
+                p.counter_reason, p.responded_at, p.reminded_at
            FROM activity_participants p LEFT JOIN app_user u ON u.username = p.username
           WHERE p.activity_id = $1 ORDER BY p.invited_at")
         .bind(mid).fetch_all(&state.pool).await?;
@@ -397,6 +397,14 @@ pub struct Participant {
     pub counter_ends_at: Option<Ts>,
     pub counter_reason: Option<String>,
     pub responded_at: Option<Ts>,
+    /// ★提醒是什么时候投出去的★(2026-08-16;NULL = 还没投)。
+    ///
+    /// 为什么要把它端到界面上:prod 上出过一次「改期通知没收到」,
+    /// ★排查全靠猜★ —— 界面上看不出「到底提醒过没有」,只能进库查 activity_participants。
+    /// 而这两种情况的处置完全不同:**没投**是我们的问题(扫描没跑到/判据把它排除了),
+    /// **投了没收到**是站内信那一段的问题(registry 不可达、被去重吞掉)。
+    /// ⚠ 它是「投递那一刻」,不是「会开始的时刻」——两个都是时间戳,极易看混。
+    pub reminded_at: Option<Ts>,
 }
 
 /// 让 `Option<Option<T>>` 能区分「没传」与「传了 null」。

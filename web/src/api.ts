@@ -161,6 +161,9 @@ export type Participant = {
   kind: 'attendee' | 'guest' | 'observer'; status: RespondStatus
   counter_starts_at: string | null; counter_ends_at: string | null; counter_reason: string | null
   responded_at: string | null
+  /// ★提醒是什么时候投出去的★(2026-08-16;null = 还没投)。
+  /// ⚠ 它是「投递那一刻」,不是「会开始的时刻」—— 两个都是时间戳,极易看混。
+  reminded_at: string | null
 }
 export type ActivityDetail = {
   activity: Activity

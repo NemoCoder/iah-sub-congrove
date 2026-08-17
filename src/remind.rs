@@ -156,7 +156,23 @@ async fn once(state: &AppState) -> anyhow::Result<()> {
         );
         crate::notify::notify_activity(state, *mid, std::slice::from_ref(_user), "活动即将开始", &body, crate::notify::Kind::Remind).await;
     }
-    tracing::info!(count = due.len(), "已投递活动提醒");
+    // ★日志要能回答「这一条到底投没投、投给了谁」★(2026-08-16)。
+    //   原来只有 `count = N` —— prod 上出「没收到提醒」时,Loki 里翻到这行也只知道
+    //   「那一跳投了 N 条」,★哪一场、发给谁,一个字都没有★,于是排查只能进库。
+    //   ⚠ 逐条 debug、汇总 info:一跳最多 200 条,全打 info 会把这行有用的汇总淹掉;
+    //     而真要追某一场时,把级别调到 debug 就有逐条的。
+    for (mid, user, ..) in &due {
+        tracing::debug!(activity = mid, to = %user, "投递活动提醒");
+    }
+    tracing::info!(
+        count = due.len(),
+        activities = %{
+            // 去重后的活动 id,顺序稳定 —— ★这行是给人在 Loki 里 grep 的★
+            let mut v: Vec<i64> = due.iter().map(|(a, ..)| *a).collect();
+            v.sort_unstable(); v.dedup();
+            v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+        },
+        "已投递活动提醒");
     Ok(())
 }
 
