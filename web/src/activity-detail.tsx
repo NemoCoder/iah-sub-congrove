@@ -15,6 +15,7 @@ import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, sameDayIn, utcToPicked } 
 import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
+import { 算提醒态 } from './remind-status'
 import { useActivityUpload } from './activity-upload'
 import { useRenameActivityItem } from './activity-item-rename'
 import { ShareModal } from './share-modal'
@@ -786,9 +787,24 @@ function PeopleCard({ people, mid, organizer, canHost, onDone }: {
 }) {
   const joined = people.filter((p) => p.kind !== 'observer')
   const observers = people.filter((p) => p.kind === 'observer')
+  /// ★提醒投没投,得在界面上看得出来★(2026-08-16)——判据抽在 remind-status.ts,带测试。
+  ///   起因:prod 上一次「没收到提醒」的排查,界面上完全看不出提醒过没有,只能进库查。
+  ///   而「没投」(我们的问题)和「投了没收到」(站内信那段的问题)处置完全不同。
+  const 提醒 = 算提醒态(joined)
   return (
     <Card size="small" title={`参会人（${joined.length}）`}
       extra={canHost && <AddParticipants mid={mid} onDone={onDone} />}>
+      {提醒.kind !== 'none' && (
+        <div style={{ fontSize: 12, marginBottom: 8, color: '#8c8c8c' }}>
+          提醒 · {提醒.kind === 'pending'
+            ? <Typography.Text type="secondary">尚未发出</Typography.Text>
+            : 提醒.kind === 'done'
+              ? <Typography.Text type="success">已于 {fmtHM(提醒.at)} 发给 {提醒.total} 人</Typography.Text>
+              : <Typography.Text type="warning">
+                  已于 {fmtHM(提醒.at)} 发给 {提醒.sent} / {提醒.total} 人（其余下一轮补）
+                </Typography.Text>}
+        </div>
+      )}
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
         {joined.map((p) => (
           <ParticipantRow key={p.username} p={p} mid={mid} organizer={organizer} canHost={canHost} onDone={onDone} />
