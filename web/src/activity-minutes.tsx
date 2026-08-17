@@ -22,6 +22,8 @@ import { fmtStamp } from './tz'
 import { useActivityUpload } from './activity-upload'
 import { useRenameActivityItem } from './activity-item-rename'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
+import { 失败人话 } from './job-error'
+import { 拆决议与待办 } from './ai-decisions'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 // ⚠ 原来这里抄了第 3 份 fmtTime(2026-08-12 收敛进 tz.ts)。`pad` 留着给 mmss 用。
@@ -316,14 +318,20 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
                     onSave={(x) => save({ content_md: x })}
                     pull={{ label: '从 AI 摘要导入', text: sum(K_BRIEF), why: aiWhy }}
                     pull2={{ label: '从分段大纲导入', text: sum(K_OUTLINE), why: aiWhy }} />
+                  {/* ★两个按钮各拉各的那一半★(2026-08-17 liaoruili:「同时把待办也导入了;
+                      应该把决议和待办分开吧」)。AI 的 `decisions` 是**一份里写了两者**
+                      (media_ai.rs 的提示词),按它自己产出的小标题切开 —— 判据与兜底在
+                      `ai-decisions.ts`,带 7 条测试(含实拍那份的复现)。
+                      ⚠ 切不出来时**两栏仍旧都给全文**,回到今天的样子 ——
+                        一个空的「决议事项」比一个混着待办的糟得多。
+                      ⚠ 真正的修法是后端拆成两份提示词(`decisions` 只要决议 + 新增 `todos`),
+                        那要动 AI 流水线并给存量数据兜底,排在 dev 线,不在这次 prod 热修里。 */}
                   <Field label="决议事项" value={v.resolutions} canEdit={canEdit} rows={4}
                     onSave={(x) => save({ resolutions: x })}
-                    pull={{ label: '从 AI 决议导入', text: sum(K_DECISIONS), why: aiWhy }} />
-                  {/* AI 的 `decisions` 一份里同时写了决议**和**待办(见 media_ai.rs 的提示词),
-                      所以待办这一栏也给同一份当起点,由记录员自己删掉不属于这里的行。 */}
+                    pull={{ label: '从 AI 决议导入', text: 拆决议与待办(sum(K_DECISIONS)).决议, why: aiWhy }} />
                   <Field label="待办事项" hint="谁、做什么、什么时候之前" value={v.todos} canEdit={canEdit} rows={4}
                     onSave={(x) => save({ todos: x })}
-                    pull={{ label: '从 AI 决议/待办导入', text: sum(K_DECISIONS), why: aiWhy }} />
+                    pull={{ label: '从 AI 待办导入', text: 拆决议与待办(sum(K_DECISIONS)).待办, why: aiWhy }} />
                 </div>
               ),
             },
@@ -350,26 +358,12 @@ function peopleOf(d: ActivityDetail, kind: 'accepted' | 'observer' | 'absent') {
 /// ⚠ 旧文案是 `转写中：${job.stage}`,而任务跑完后 stage 正是「完成」,
 /// 于是屏幕上写着「转写中：完成」—— ★一句自相矛盾的话,还恰好把真正的问题
 /// (kind 对不上,摘要其实拿不到)伪装成了「还在跑,再等等」。★
-/// 把转写失败的原因翻成人话。★上游的原始 JSON 不许直接糊给用户★(2026-08-16 线上事故)。
-///
-/// 线上那次的 `job.error` 长这样:
-///   `转写第 1 段: ASR 返回 502 Bad Gateway:{"error":{"code":null,"message":"ASR 上游连接失败:ConnectError","type":"upstream_error"}}`
-/// 用户看到的是一整坨 JSON,而里面唯一对他有用的信息是「语音识别服务连不上,不是你的文件有问题」。
-/// ★错误信息的读者是人,不是日志检索★ —— 原文该进日志(它已经在 media_jobs.error 里),
-/// 界面上给一句能据以行动的话。
-export function 失败人话(err: string | null | undefined): string {
-  const e = err || ''
-  if (!e) return '未知原因'
-  // 网关/上游连不上:这一类用户做什么都没用,只能等或找管理员
-  if (/upstream_error|ConnectError|502|Bad Gateway|连接失败/.test(e)) {
-    return '语音识别服务暂时连不上（不是这个文件的问题）—— 服务恢复后点「转写」重试即可'
-  }
-  if (/转写结果为空/.test(e)) return '没识别出人声（这段录制可能没有说话声，或音轨是静音的）'
-  if (/ffmpeg/i.test(e)) return '音轨提取失败（文件可能损坏，或是不支持的编码）'
-  if (/超时|timeout/i.test(e)) return '转写超时（录制过长或服务繁忙）—— 可以再点一次「转写」'
-  // 认不出来的:截短,别把一整坨糊上去
-  return e.length > 80 ? e.slice(0, 80) + '…' : e
-}
+// ★`失败人话` 2026-08-17 搬去了 job-error.ts(纯模块,带测试)★。
+// 搬家的直接原因:那天 prod 上它把 **LLM 的 502** 翻成了「语音识别服务暂时连不上」,
+// 而语音识别当时是好的 —— 一个只按「是什么毛病」不按「哪一步出的毛病」分类的翻译,
+// 会把人指向一个根本没坏的服务。
+// ★而它当时测不了★:这个文件 import 了 React/antd,`node --test` 跑不起来,
+// 于是这段纯逻辑一直没有任何用例守着。搬进纯模块之后 7 条用例钉住,含那次事故的复现。
 
 /// ⚠★同一条失败原因,页面上只说一次★(2026-08-16 线上事故:实测出现 **4 次** ——
 ///   录制行下面一条红字,四个 tab 的空状态里各一条)。
