@@ -1,6 +1,30 @@
 --- baseline
 +++ current
-@@ -376,6 +376,7 @@
+@@ -127,6 +127,7 @@
+       "counter_starts_at": "null",
+       "kind": "string",
+       "name": "string",
++      "reminded_at": "null",
+       "required": "boolean",
+       "responded_at": "string",
+       "status": "string",
+@@ -186,6 +187,7 @@
+       "counter_starts_at": "null",
+       "kind": "string",
+       "name": "string",
++      "reminded_at": "null",
+       "required": "boolean",
+       "responded_at": "string",
+       "status": "string",
+@@ -245,6 +247,7 @@
+       "counter_starts_at": "null",
+       "kind": "string",
+       "name": "string",
++      "reminded_at": "null",
+       "required": "boolean",
+       "responded_at": "string",
+       "status": "string",
+@@ -376,6 +379,7 @@
     "kind": "string",
     "mime": "string",
     "name": "string",
@@ -8,7 +32,7 @@
     "parent_id": "string",
     "project_id": "string",
     "sha_declared_mismatch": "boolean",
-@@ -504,6 +505,7 @@
+@@ -504,6 +508,7 @@
       "kind": "string",
       "mime": "string",
       "name": "string",
