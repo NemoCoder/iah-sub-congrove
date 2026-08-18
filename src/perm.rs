@@ -391,6 +391,100 @@ pub async fn require_activity_host(pool: &PgPool, id: &Identity, activity_id: i6
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ★活动材料的权:唯一推导★(2026-08-17,ADR-0006)
+// ══════════════════════════════════════════════════════════════════════════
+
+/// 我对「某一份活动材料」有什么权。
+///
+/// ══ 为什么要有它 ══
+/// liaoruili 2026-08-17:「现在你给人家看到材料又上传不了」。
+/// 查下来是**两套判据不同源**:前端按「是不是参会人」画材料卡片,
+/// 后端按「是不是关联项目的成员」判权(D8)—— 于是「参会人但非项目成员」看到的是
+/// ★卡片在、列表空(403)、上传失败★。
+/// ★根因不是权限判错(后端拒得对),是前端拿「是不是参会人」当了「能不能看材料」的替身判据。★
+///
+/// ══ ADR-0006 推翻了 D8 ══
+/// D8 原话是「材料按项目成员身份判权,不是按参会身份;临时参会人看得到活动,看不到材料」。
+/// liaoruili 的产品判断:★「开会带材料」是这个产品的核心场景★ ——
+/// 参会人手里的 PPT、数据、录音正是活动材料的**主要来源**;堵住它,发起人就得当人肉中转。
+/// ⇒ 参会人对**这场活动**的材料有完整读写权,但边界收在这场活动,不是这个项目:
+///   ★他是被请进这一间会议室,不是拿到了整栋楼的钥匙。★
+///
+/// ⚠★本推导**不含**任何对旁听的否决★(ADR-0006 的更正一节):
+///   `decide_view` 里旁听是**只加不减**的 —— 外人点旁听落到 `Observer`(材料本来就拿不到),
+///   而项目成员点旁听仍按成员看(liaoruili 2026-08-16 拍板维持)。
+///   我在 ADR 初版里把「旁听压过成员」写成了最要紧的一条,那是**基于一个不存在的漏洞**,已更正。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum 材料权 {
+    /// 什么都不给(调用方转 403;活动本身都看不到的转 404,那由 activity_view 判)
+    无,
+    /// 能看能下载,不能传不能改
+    只读,
+    /// 能看能传;但只能改/删**自己传的**
+    可传,
+    /// 能看能传能改能删(含别人传的)
+    可管,
+}
+
+/// 由「我与这份材料的全部关系」判出材料权。★纯函数,能被单测钉死★——
+/// 与 `decide_view` 同一个手法:关系由 SQL 查,结论由 Rust 定。
+///
+/// ⚠★取**最高**的那一档,别写成「谁先匹配算谁」★:一个人可以既是参会人又是项目 editor。
+pub fn decide_material(
+    是项目editor: bool, 是项目viewer: bool, 是参会人: bool,
+    是发起人的个人活动: bool, 是超管且活动有关联项目: bool, 我传的: bool,
+) -> 材料权 {
+    if 是项目editor || 是超管且活动有关联项目 || 是发起人的个人活动 { return 材料权::可管 }
+    // ★参会人:能传,自己传的能管★(ADR-0006 决定二)
+    if 是参会人 { return if 我传的 { 材料权::可管 } else { 材料权::可传 } }
+    if 是项目viewer { return 材料权::只读 }
+    材料权::无
+}
+
+/// 查关系 + 判档位。`item_created_by` 传 `None` 表示「不针对某一份具体材料」
+/// (比如列清单、或问「我能不能往这场活动传东西」)。
+///
+/// ⚠★入参是**材料自己属于哪场活动**★,不是「我正在看哪场活动」——
+///   否则拿 A 活动的身份去读 B 活动的材料就能绕过去。
+pub async fn activity_material_access(
+    pool: &PgPool, id: &Identity, activity_id: i64, item_created_by: Option<&str>,
+) -> AppResult<材料权> {
+    let username = id.require_username()?;
+    // 一次查完全部关系(与 activity_view 同样的 UNION 手法,零额外往返)
+    let 关系: Vec<String> = sqlx::query_scalar(
+        "SELECT 'proj:' || pm.role FROM activity_projects mp
+           JOIN project_members pm ON pm.project_id = mp.project_id
+           JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
+          WHERE mp.activity_id = $1 AND pm.username = $2
+         UNION ALL
+         -- ★参会人(不含旁听)★:旁听是「我来听听」,不给材料(D9 一直如此)
+         SELECT 'part' FROM activity_participants ap
+           WHERE ap.activity_id = $1 AND ap.username = $2 AND ap.kind <> 'observer'
+         UNION ALL
+         -- ★不关联项目的个人活动:材料落发起人自己的材料区,只有他★(PRD §J0)
+         SELECT 'solo' FROM activities a
+           WHERE a.id = $1 AND a.organizer = $2
+             AND NOT EXISTS (SELECT 1 FROM activity_projects mp0 WHERE mp0.activity_id = a.id)
+         UNION ALL
+         -- ⚠★超管这一条限定在「有关联项目」的活动上★(PRD §J1c,liaoruili 拍板):
+         --   材料区里是体检报告、私人录音这类东西,超管短路读得到就等于 J1 承诺的「只有我」不成立。
+         SELECT 'super' FROM super_now u
+           WHERE u.username = $2
+             AND EXISTS (SELECT 1 FROM activity_projects mps WHERE mps.activity_id = $1)")
+        .bind(activity_id).bind(username).fetch_all(pool).await?;
+    let 有 = |k: &str| 关系.iter().any(|x| x == k);
+    let 项目角色 = 关系.iter().filter_map(|x| x.strip_prefix("proj:")).filter_map(Role::parse).max();
+    Ok(decide_material(
+        项目角色.map(|r| r >= Role::Editor).unwrap_or(false),
+        项目角色.is_some(),
+        有("part"),
+        有("solo"),
+        有("super"),
+        item_created_by == Some(username),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +619,54 @@ mod tests {
         // 未登录(没有用户名)不是 owner
         assert_eq!(decide_owner("team", "alice", None), OwnerVerdict::AskSuper);
         assert_eq!(decide_owner("materials", "alice", None), OwnerVerdict::Deny);
+    }
+
+    // ══ ★活动材料的权★(ADR-0006,2026-08-17)══
+    use super::{decide_material, 材料权};
+
+    #[test]
+    fn 参会人能传但只能管自己传的() {
+        // 参会人 + 不是项目成员 —— ★这正是 liaoruili 撞到的那种人★
+        let 传别人的 = decide_material(false, false, true, false, false, false);
+        let 传自己的 = decide_material(false, false, true, false, false, true);
+        assert_eq!(传别人的, 材料权::可传, "★参会人必须能看能传★(ADR-0006 推翻 D8)");
+        assert_eq!(传自己的, 材料权::可管, "自己传的要能改能删");
+        assert!(传别人的 < 材料权::可管, "★但管不了别人传的★——被请进会议室不是拿到整栋楼钥匙");
+    }
+
+    #[test]
+    fn 项目editor管得了别人传的() {
+        // ★正向对照★:别把项目成员一起降权了
+        assert_eq!(decide_material(true, true, false, false, false, false), 材料权::可管);
+        // 参会人同时又是 editor,照 editor 算(取最高档,不是「谁先匹配算谁」)
+        assert_eq!(decide_material(true, true, true, false, false, false), 材料权::可管);
+    }
+
+    #[test]
+    fn 项目viewer只读() {
+        let r = decide_material(false, true, false, false, false, false);
+        assert_eq!(r, 材料权::只读);
+        assert!(r < 材料权::可传, "viewer 不能传");
+    }
+
+    #[test]
+    fn 谁都不是就什么都没有() {
+        assert_eq!(decide_material(false, false, false, false, false, false), 材料权::无);
+        // ⚠★「这份是我传的」本身不给任何权★:否则一个已被移出项目的人,
+        //   靠「我当初传的」就能永远改删它。归属只在**已有的参会权之上**加一档。
+        assert_eq!(decide_material(false, false, false, false, false, true), 材料权::无);
+    }
+
+    #[test]
+    fn 个人活动只有发起人() {
+        assert_eq!(decide_material(false, false, false, true, false, false), 材料权::可管);
+    }
+
+    #[test]
+    fn 超管只在有关联项目的活动上短路() {
+        assert_eq!(decide_material(false, false, false, false, true, false), 材料权::可管);
+        // ★没有关联项目(= 个人材料区)时调用方传 false★,超管什么都拿不到 ——
+        //   PRD §J1c:那里面是体检报告、私人录音,超管短路读得到就等于 J1 承诺的「只有我」不成立。
+        assert_eq!(decide_material(false, false, false, false, false, false), 材料权::无);
     }
 }
