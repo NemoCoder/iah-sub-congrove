@@ -15,6 +15,7 @@ import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, sameDayIn, utcToPicked } 
 import { RemindSelect } from './remind-poll'
 import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
+import { openViewer } from './video-player'
 import { 算提醒态 } from './remind-status'
 import { useActivityUpload } from './activity-upload'
 import { useRenameActivityItem } from './activity-item-rename'
@@ -401,16 +402,22 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
           </Card>
 
           {/* ★线上活动区★:链接 + 复制 + 改动历史(开会前十分钟改链接是真实场景,事后要能追溯) */}
-          {m.online_url && d.participants && (
-            <OnlineCard id={id} url={m.online_url} />
-          )}
+          {/* ★线上地址对旁听也显示★(2026-08-17,ADR-0006 决定一的反方向缺口):
+              原来卡在 `d.participants`(旁听拿不到名单)上 —— 于是旁听者**拿得到 online_url
+              却没有任何地方显示它**,而白名单里明确含「线上地址或者会议号」。
+              ⚠ 但**不给改动历史**:那是活动内部的过程信息,不在白名单里。 */}
+          {m.online_url && <OnlineCard id={id} url={m.online_url} 只读={!d.participants} />}
 
           {/* ★材料 / 录制★(D5:录制 ≠ 材料,只有录制会被转写、并作为活动时长依据) */}
           {/* ★不关联项目的个人活动也能传材料★(PRD §J0):落点由后端算(发起人的「我的活动材料」),
               所以 canEdit 不再拿「有没有关联项目」当判据 —— 那正是它整类传不了东西的原因。 */}
-          {d.participants && (
+          {/* ★显隐改用后端算的 can_see_items★(2026-08-17,ADR-0006):
+              原来用 `d.participants`(= 是不是参会人)当判据,而后端按「是不是关联项目成员」判权
+              —— 两套判据不同源,于是「参会人但非项目成员」看到:★卡片在、列表空、上传失败★。
+              ★前端隐藏不是安全边界,后端仍然逐个接口判★;这里只管别再画一张骗人的卡片。 */}
+          {d.can_see_items && (
             <MaterialsCard id={id} projectId={d.projects?.[0]?.id ?? null}
-              canEdit={!canceled && (!!d.projects?.length || !!d.can_edit)} onOpenMinutes={onOpenMinutes}
+              canEdit={!canceled && d.can_upload_items} onOpenMinutes={onOpenMinutes}
               policy={d.can_edit ? { no_download: m.no_download, no_share: m.no_share } : null}
               onPolicy={(v) => patch(v)} />
           )}
@@ -898,13 +905,16 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
 
 /// 线上活动:链接 + 复制 + 改动历史。
 /// ★改动历史不是装饰★:临开会前换链接很常见,事后「我进的是旧链接」要能查清是谁什么时候改的。
-function OnlineCard({ id, url }: { id: number; url: string }) {
+function OnlineCard({ id, url, 只读 = false }: { id: number; url: string; 只读?: boolean }) {
   const { message } = AntdApp.useApp()
   const [hist, setHist] = useState<LinkChange[]>([])
   const [open, setOpen] = useState(false)
   useEffect(() => {
+    // ★旁听者不拉改动历史★:地址本身在白名单里,而「谁什么时候把链接改成了什么」不在。
+    //   ⚠ 不拉是**省一次必然 403 的请求**,不是安全边界 —— 真闸在后端 link_history 上。
+    if (只读) { setHist([]); return }
     api<LinkChange[]>(`/api/activities/${id}/link-history`).then(setHist).catch(() => setHist([]))
-  }, [id])
+  }, [id, 只读])
   return (
     <Card size="small" title="线上活动" style={{ marginBottom: 12 }}>
       <Space wrap>
@@ -1057,9 +1067,22 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
     <Table<ActivityItem> size="small" rowKey="id" dataSource={rows} pagination={false}
       locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} /> }}
       columns={[
-        { title: '名称', render: (_, it) => <span><ItemIcon it={it} />{it.name}</span> },
+        // ★名称可点开★(2026-08-17 liaoruili:「录制那里应该可以直接点开查看视频什么的」)。
+        // `openViewer` + <VideoPlayer standalone>(带 Range 拖动)**早就有**,项目树里就在用 ——
+        // ★又是「能力早就有、这里没入口」★(和超管后台那四个 API 是同一个形状)。
+        // viewer 页按 kind 分流:video 直接播,PDF/图片/文本各按既有预览走。
+        { title: '名称', render: (_, it) => (
+          <a onClick={() => openViewer(it.id)} style={{ color: 'inherit' }}>
+            <ItemIcon it={it} />{it.name}
+          </a>
+        ) },
         { title: '大小', dataIndex: 'size', width: 90, render: (v) => fmtSize(v) },
-        { title: '上传', width: 150, render: (_, it) => `${it.created_by} · ${fmtTime(it.created_at).slice(5, 16)}` },
+        // ★「上传」拆成两列★(2026-08-17 liaoruili 截图:「材料哪里上传跨行了,增加一个单独的
+        //   列显示上传时间」)——原来是 `${created_by} · ${时间}` 挤在 150px 里,实拍折成两行。
+        //   ⚠ 这个文件里就记着上一次同样的教训(「下载分享删除 成了 2 行」):
+        //   ★width 只是**建议值**,拦不住换行★ —— 两样东西塞一列,迟早会挤。
+        { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
+        { title: '上传时间', width: 130, render: (_, it) => fmtTime(it.created_at).slice(5, 16) },
         {
           // ⚠★width 只是**建议值**,拦不住换行★(2026-08-09 liaoruili:「下载分享删除 成了 2 行」)。
           // 名称列没设宽,它会把剩余宽度全吃掉;真到装不下时 AntD 压缩的是这一列,
