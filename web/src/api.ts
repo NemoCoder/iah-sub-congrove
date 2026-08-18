@@ -168,6 +168,11 @@ export type Participant = {
 export type ActivityDetail = {
   activity: Activity
   participants: Participant[]
+  /// ★能不能看这场活动的材料/录制★——★由后端算,前端别自己拿「是不是参会人」当替身判据★
+  /// (2026-08-17,ADR-0006):那个替身判据正是「卡片在、列表空、上传失败」的成因。
+  can_see_items: boolean
+  /// 能不能往这场活动传材料(参会人也能传,ADR-0006 决定二推翻了 D8)
+  can_upload_items: boolean
   projects: { id: number; name: string }[]
   can_edit: boolean
   /// 旁听者拿到的是裁剪版(无名单、无材料入口),后端会带这个标记

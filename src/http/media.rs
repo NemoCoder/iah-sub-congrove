@@ -415,8 +415,9 @@ pub async fn play(
     Path(iid): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> AppResult<Response> {
-    let pid = crate::http::items::project_of(&state.pool, iid).await?;
-    let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    let (pid, 属于活动) = crate::http::items::project_and_activity_of(&state.pool, iid).await?;
+    // ★项目角色不够时回落到「这份材料所属活动」的参会人材料权★(2026-08-17,ADR-0006)
+    let role = crate::perm::require_read_item(&state.pool, &id, pid, 属于活动).await?;
     // ★只对可播类型放行★(2026-08-04 审计):/play 会吐一条 6 小时的预签名直链,
     // 谁拿到谁能取原件。对 video 这是刻意的(能播就能录屏,D4 也明说不拦播放);
     // 但对 pdf/zip/doc 就等于**把 viewer_no_download 整条开关废掉**——viewer 打一下
@@ -645,8 +646,10 @@ pub async fn analysis(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let (_, 属于活动) = crate::http::items::project_and_activity_of(&state.pool, iid).await?;
     let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    // ★同上:参会人能看这场活动的转写/字幕★(它们是材料的一部分)
+    crate::perm::require_read_item(&state.pool, &id, pid, 属于活动).await?;
     let job: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT status, stage, progress, error FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1",
     ).bind(iid).fetch_optional(&state.pool).await?;
@@ -691,8 +694,10 @@ pub async fn subtitles(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
 ) -> AppResult<Response> {
+    let (_, 属于活动) = crate::http::items::project_and_activity_of(&state.pool, iid).await?;
     let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
-    require_role(&state.pool, &id, pid, Role::Viewer).await?;
+    // ★同上:参会人能看这场活动的转写/字幕★(它们是材料的一部分)
+    crate::perm::require_read_item(&state.pool, &id, pid, 属于活动).await?;
     let row: Option<(String, Option<serde_json::Value>, Option<serde_json::Value>, Option<serde_json::Value>)> =
         sqlx::query_as("SELECT text, segments, char_ts, fine FROM transcripts WHERE item_id=$1")
             .bind(iid).fetch_optional(&state.pool).await?;

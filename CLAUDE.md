@@ -118,7 +118,7 @@ sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
 令牌从 `IAH_TOKEN` 或 `~/.config/iah/congrove-token` 取 —— ★什么都不用 export 就能跑★。
 
 ⚠ 起因值得记:iah101 加入集群成为节点后,它去 `data` 命名空间的 pod 改走 VXLAN overlay,
-源 IP 变成 flannel.1 的 pod 网段地址,而 `data-tier-isolation` 只放行 `172.18.0.0/22` ——
+源 IP 变成 flannel.1 的 **pod 网段**地址,而 `data-tier-isolation` 只放行**内网网段**(不含 pod 网段)——
 于是从 iah101 直连 PG 全部超时。★我的第一反应是去请平台改那条 NetworkPolicy,
 而 liaoruili 问了一句「你需要实现什么功能」★ —— 一查:没有任何**产品功能**需要它,
 只有这几道开发期门禁需要,而平台早就给了合规的接口。请求已在群里撤回。

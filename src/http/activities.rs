@@ -356,11 +356,19 @@ pub async fn detail(
                 "visibility": m.visibility, "status": m.status,
                 // 旁听者不属于名单,也没有答复 —— 显式给 null,别让前端读到 undefined
                 "my_status": serde_json::Value::Null, "is_private": false,
-                "organizer": "", "recorder": "", "created_at": m.created_at,
+                // ★发起人如实给★(2026-08-17,ADR-0006 决定一的反方向缺口):原来置空串,
+                //   旁听者界面上「发起人」那一行是**空的** —— 而白名单里明确含「发起人」:
+                //   知道这场活动是谁攒的,正是旁听者判断「要不要去听」的主要依据之一。
+                // ⚠ `recorder` **仍然置空**:记录员是活动内部的分工,不在白名单里。
+                "organizer": m.organizer, "recorder": "", "created_at": m.created_at,
             },
             "participants": serde_json::Value::Null,
             "projects": [],
             "can_edit": false,
+            // ★外层形状必须与正常版一致★(同上面那段 A3 的教训):正常版有的键这里也要有 ——
+            //   前端 `d.can_see_items && …` 读到 undefined 虽然也是假,但★「靠 undefined 恰好为假」
+            //   不是判据,是运气★。
+            "can_see_items": false, "can_upload_items": false,
             "observer": true,
         })));
     }
@@ -374,10 +382,16 @@ pub async fn detail(
         "SELECT p.id, p.name FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
           WHERE mp.activity_id = $1 AND p.deleted_at IS NULL")
         .bind(mid).fetch_all(&state.pool).await?;
+    // ★由后端如实算「能不能看材料 / 能不能传」,前端别再拿「是不是参会人」当替身判据★
+    // (2026-08-17,ADR-0006 的实现纪律之二)——那个替身判据正是
+    // 「卡片在、列表空、上传失败」这个半截状态的成因。判据只有一处,新增入口自动被覆盖。
+    let 材料权 = crate::perm::activity_material_access(&state.pool, &id, mid, None).await?;
     Ok(Json(json!({
         "activity": m, "participants": parts,
         "projects": projects.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect::<Vec<_>>(),
         "can_edit": require_activity_host(&state.pool, &id, mid).await.is_ok(),
+        "can_see_items": 材料权 >= crate::perm::材料权::只读,
+        "can_upload_items": 材料权 >= crate::perm::材料权::可传,
     })))
 }
 
@@ -1189,29 +1203,12 @@ pub async fn activity_items(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
 ) -> AppResult<Json<Vec<ActivityItem>>> {
-    // ★材料按项目成员身份判权,不是按参会身份★(D8):临时参会人看得到活动,看不到材料。
-    // 所以这里不能只用 activity_view —— 要求他在**任一关联项目**里至少是 viewer。
-    let username = id.require_username()?;
-    let ok: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM activity_projects mp
-           JOIN project_members pm ON pm.project_id = mp.project_id
-           JOIN projects p ON p.id = mp.project_id AND p.deleted_at IS NULL
-          WHERE mp.activity_id = $1 AND pm.username = $2
-         UNION ALL
-          -- ★不关联项目的个人活动:材料落发起人自己的材料区,所以只有他看得到★(PRD §J0)。
-          -- 没有这一条的话「个人日程」的材料列表恒 403 —— 材料传得进去、列不出来。
-          SELECT 1 FROM activities a
-            WHERE a.id = $1 AND a.organizer = $2
-              AND NOT EXISTS (SELECT 1 FROM activity_projects mp0 WHERE mp0.activity_id = a.id)
-         UNION ALL
-          -- ⚠★超管这一条要限定在「有关联项目」的活动上★(PRD §J1c,liaoruili 拍板):
-          -- 材料区里是体检报告、私人录音这类东西,超管短路读得到就等于 J1 承诺的「只有我」不成立。
-          -- 救火走影子账户(留痕、只读、以本人视角),不走这里。
-          SELECT 1 FROM super_now u
-            WHERE u.username = $2
-              AND EXISTS (SELECT 1 FROM activity_projects mps WHERE mps.activity_id = $1)
-          LIMIT 1")
-        .bind(mid).bind(username).fetch_optional(&state.pool).await?;
+    // ★材料权走 perm::activity_material_access 这一处推导★(2026-08-17,ADR-0006 推翻 D8)。
+    // 原来这里自己拼一段 UNION 判「是不是任一关联项目的成员」——★而前端另按「是不是参会人」
+    // 画卡片★,两套判据不同源,于是「参会人但非项目成员」看到:卡片在、列表空、上传失败。
+    // 判据收进一处之后,新增入口自动被覆盖(和 ADR-0005 的单点否决同一理由)。
+    let 权 = crate::perm::activity_material_access(&state.pool, &id, mid, None).await?;
+    let ok = if 权 >= crate::perm::材料权::只读 { Some(1i32) } else { None };
     if ok.is_none() {
         // 看得见活动但不是项目成员 → 403(他知道有这场会,只是拿不到材料);完全看不见 → 404
         activity_view(&state.pool, &id, mid).await?;
@@ -1249,7 +1246,16 @@ pub async fn rename_activity_item(
     Json(p): Json<ItemRename>,
 ) -> AppResult<Json<serde_json::Value>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
-    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
+    // ★项目角色不够时,参会人可以改/删**自己传的**那一份★(2026-08-17,ADR-0006 决定二):
+    //   传错了一份却改不了删不掉,他只能再传一份对的 —— 错版本永远躺在那儿,还占着召集人的额度。
+    // ⚠ 归属取库里的 `created_by`,不信调用方;失败时抛回项目那边的原错(别把 404 改成 403)。
+    if let Err(项目那边的错) = crate::perm::require_material_owner(&state.pool, &id, pid).await {
+        // items-ok: 只取归属判权,不读内容
+        let 谁传的: Option<String> = sqlx::query_scalar("SELECT created_by FROM items WHERE id = $1")
+            .bind(iid).fetch_optional(&state.pool).await?;
+        if crate::perm::activity_material_access(&state.pool, &id, mid, 谁传的.as_deref()).await?
+            < crate::perm::材料权::可管 { return Err(项目那边的错) }
+    }
     let actor = id.require_username()?;
     let name = p.name.trim();
     if name.is_empty() { return Err(AppError::BadRequest("名称不能为空".into())) }
@@ -1280,7 +1286,16 @@ pub async fn delete_activity_item(
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     // 材料区在 require_role 上是全只读的(PRD §J1),而「删材料」正是它放行的两条写路径之一
     // —— 普通项目里这个函数就等于 require_role(Editor),行为不变。
-    crate::perm::require_material_owner(&state.pool, &id, pid).await?;
+    // ★项目角色不够时,参会人可以改/删**自己传的**那一份★(2026-08-17,ADR-0006 决定二):
+    //   传错了一份却改不了删不掉,他只能再传一份对的 —— 错版本永远躺在那儿,还占着召集人的额度。
+    // ⚠ 归属取库里的 `created_by`,不信调用方;失败时抛回项目那边的原错(别把 404 改成 403)。
+    if let Err(项目那边的错) = crate::perm::require_material_owner(&state.pool, &id, pid).await {
+        // items-ok: 只取归属判权,不读内容
+        let 谁传的: Option<String> = sqlx::query_scalar("SELECT created_by FROM items WHERE id = $1")
+            .bind(iid).fetch_optional(&state.pool).await?;
+        if crate::perm::activity_material_access(&state.pool, &id, mid, 谁传的.as_deref()).await?
+            < crate::perm::材料权::可管 { return Err(项目那边的错) }
+    }
     let actor = id.require_username()?;
     // ★路径里的 mid 必须与这份材料实际归属的活动一致★:否则「在我能编辑的 A 活动下,
     // 报一个属于 B 活动的 item id」就能删掉 B 的材料 —— 一个典型的越权形状。
@@ -1317,9 +1332,13 @@ pub async fn materials_project(
     let me = id.require_username()?;
     // 先按看得见与否判 404/403(与其他活动接口同一套语义:看不见的活动不该确认它存在)
     activity_view(&state.pool, &id, mid).await?;
-    let organizer: String = sqlx::query_scalar("SELECT organizer FROM activities WHERE id = $1")
-        .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
-    if organizer != me { return Err(AppError::Forbidden) }
+    // ★从「只有发起人」放宽到「能往这场活动传东西的人」★(2026-08-17,ADR-0006 决定二)。
+    // 原来是 `organizer != me → Forbidden` —— 参会人在**第一步**就被挡住,后面的上传根本走不到。
+    // ⚠ 落点仍由**后端**算(下面那段),前端给不了任意 project_id ——
+    //   这是这次放宽仍然安全的三条既有机制之一(另两条:配额算项目 owner、禁下载是活动级策略)。
+    let _ = &me;
+    if crate::perm::activity_material_access(&state.pool, &id, mid, None).await?
+        < crate::perm::材料权::可传 { return Err(AppError::Forbidden) }
     let linked: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
           WHERE mp.activity_id = $1 AND p.deleted_at IS NULL LIMIT 1")
