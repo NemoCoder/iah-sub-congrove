@@ -24,9 +24,14 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 DIR=schema; BASE=$DIR/baseline.sql; EXP=$DIR/expected.diff
-: "${CONGROVE_DEV_DSN:?缺 CONGROVE_DEV_DSN（source ~/.config/iah/congrove-dev.env）}"
+# ★不再需要 DSN★:走 db/sql 接口(dbq.py)。sim-diff 那条路仍用 psql(要在一个事务里跑迁移再回滚)。
+CONGROVE_DEV_DSN="${CONGROVE_DEV_DSN:-（走 db/sql 接口，不用 DSN）}"
 
-render() { psql "$CONGROVE_DEV_DSN" -At -f scripts/schema_ddl.sql; }
+# ★不直连库,走平台的 db/sql 接口★(2026-08-17,理由见 scripts/dbq.py 头注)。
+# dbq.py 的输出刻意与 `psql -At` 同格式(无表头 / 列间 TAB / NULL 印空串),
+# 所以基线不用重冻 —— ★换了取数通道但没换输出格式,这是刻意的★。
+render() { IAH_TOKEN="${IAH_TOKEN:-$(cat "$HOME/.config/iah/congrove-token" 2>/dev/null)}" \
+           python3 scripts/dbq.py -f scripts/schema_ddl.sql; }
 
 # ★在事务里模拟「清库 + 跑新迁移」,渲染出它会建成什么样,然后回滚★
 #

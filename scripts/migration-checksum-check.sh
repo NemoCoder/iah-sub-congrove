@@ -31,7 +31,8 @@
 #   要改这个决定,得先有 prod 的只读账号;那是 liaoruili 的决定,不是脚本能自己补的。
 set -uo pipefail
 cd "$(dirname "$0")/.."
-: "${CONGROVE_DEV_DSN:?缺 CONGROVE_DEV_DSN（source ~/.config/iah/congrove-dev.env）}"
+# ★dev 侧不再需要 DSN★:走 db/sql 接口(dbq.py)。prod 侧仍用 DSN(那个接口 prod 是 403)。
+CONGROVE_DEV_DSN="${CONGROVE_DEV_DSN:-（走 db/sql 接口，不用 DSN）}"
 
 FAIL=0; FOUND=0; PROD_SKIPPED=0
 
@@ -43,9 +44,21 @@ FAIL=0; FOUND=0; PROD_SKIPPED=0
     ver=$(basename "$f" | sed -E 's/^0*([0-9]+).*/\1/')
     mine=$(python3 -c "import hashlib,sys;print(hashlib.sha384(open(sys.argv[1],'rb').read()).hexdigest())" "$f") || { echo "★算不出 $f 的校验和★"; exit 2; }
     # ★只读★:整个脚本对库的全部操作就是下面这一条 SELECT
-    theirs=$(psql "$dsn" -Atc \
-      "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
-      || { echo "★连不上 $ch 库,查不到 _sqlx_migrations —— 不能当成通过★"; exit 2; }
+    # ★不直连库,走平台的 db/sql 接口★(2026-08-17,见 scripts/dbq.py 头注):
+    #   iah101 成为集群节点后直连 PG 被 data-tier NP 挡掉;而这几道闸本来就不需要直连。
+    #   dbq.py 的输出刻意与 `psql -At` 同格式,所以这里除了换个命令什么都没变。
+    #   ⚠ prod 通道这个接口是 403(dev-only),所以 prod 那半仍旧只能靠 DSN —— 而 liaoruili
+    #     2026-08-16 定了「不给 prod DSN」,于是 [prod] 那行照旧「未核」(见下面头注那一节)。
+    if [ "$ch" = dev ]; then
+      theirs=$(IAH_TOKEN="${IAH_TOKEN:-$(cat "$HOME/.config/iah/congrove-token" 2>/dev/null)}" \
+        python3 scripts/dbq.py -c \
+        "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
+        || { echo "★读不到 dev 的 _sqlx_migrations —— 不能当成通过★"; exit 2; }
+    else
+      theirs=$(psql "$dsn" -Atc \
+        "SELECT encode(checksum,'hex') FROM _sqlx_migrations WHERE version = $ver") \
+        || { echo "★连不上 $ch 库,查不到 _sqlx_migrations —— 不能当成通过★"; exit 2; }
+    fi
     if [ -z "$theirs" ]; then
       # 库里没这一条 = 这个库还没跑过它(全新库),启动时会正常跑一遍,不是问题。
       echo "  · [$ch] $f:该库还没跑过它(启动时会跑)—— 跳过"
