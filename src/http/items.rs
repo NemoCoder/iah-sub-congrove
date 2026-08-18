@@ -283,6 +283,14 @@ pub async fn project_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
 /// `transcripts` / `media_jobs` / `share_links` 这些**兄弟表**,只在最开始用
 /// `project_of` 解析一下归属。于是「读的是不是已删内容」这件事,在 SQL 层面看不出来。
 /// 其中 `/subtitles.vtt` 和 `/analysis` 漏的是**内容本身**(字幕正文、AI 摘要正文)。
+/// 一次取回「这份材料属于哪个项目、属于哪场活动」——★判权要两样都要★(2026-08-17,ADR-0006):
+/// 项目用来走 require_role,活动用来在项目角色不够时回落到参会人的材料权。
+/// items-ok: 纯归属解析(与 project_of 同口径,读内容仍走 *_alive)
+pub async fn project_and_activity_of(pool: &sqlx::PgPool, item_id: i64) -> AppResult<(i64, Option<i64>)> {
+    sqlx::query_as("SELECT project_id, activity_id FROM items WHERE id = $1")
+        .bind(item_id).fetch_optional(pool).await?.ok_or(AppError::NotFound)
+}
+
 pub async fn project_of_alive(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i64> {
     sqlx::query_scalar("SELECT project_id FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
         .bind(item_id)
@@ -1166,8 +1174,18 @@ pub async fn upload(
     let actor0 = id.require_username()?;
     match q.activity_id {
         Some(mid) => {
-            crate::perm::require_material_owner(&state.pool, &id, pid).await?;
-            // ★A1:活动与项目必须对账★——判权判的是 pid,写的是 mid,少这一句就是越权注入口
+            // ★项目角色不够时,回落到「这场活动的参会人」★(2026-08-17,ADR-0006 决定二):
+            //   「开会带材料」是核心场景,参会人手里的 PPT/数据/录音正是材料的主要来源。
+            // ⚠★顺序:先按项目判、失败再看活动★——反过来会让项目成员在活动路径上被静默降权。
+            // ⚠★失败时抛回**项目那边的原错**★:材料区对别人是 404(不确认存在性),
+            //   在这里改成 403 就等于告诉他「这个材料区存在」。
+            if let Err(项目那边的错) = crate::perm::require_material_owner(&state.pool, &id, pid).await {
+                if crate::perm::activity_material_access(&state.pool, &id, mid, None).await?
+                    < crate::perm::材料权::可传 { return Err(项目那边的错) }
+            }
+            // ★A1:活动与项目必须对账★——判权判的是 pid,写的是 mid,少这一句就是越权注入口。
+            //   ⚠ 放宽之后这一条更要紧:没有它,「我是 A 活动的参会人」+「pid 指向一个
+            //     我碰不到的项目」就能往任意项目里写东西。
             check_activity_target(&state.pool, mid, pid, actor0).await?;
         }
         None => { require_role(&state.pool, &id, pid, Role::Editor).await?; }

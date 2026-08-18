@@ -485,6 +485,31 @@ pub async fn activity_material_access(
     ))
 }
 
+/// 读一份**具体材料**时的判权:先按项目角色判,不够时回落到「这份材料所属活动」的材料权。
+///
+/// ⚠★顺序必须是「先 require_role、失败再看活动」★(ADR-0006 的实现纪律之一):
+///   反过来写会让**项目成员**在活动路径上拿到比自己项目角色更低的权 —— ★等于静默降权★。
+///
+/// ⚠★回落进来的人一律按 `Viewer` 对待★:禁下载这类策略对 viewer 生效,
+///   那对「不是项目成员的参会人」当然也该生效 —— 放宽的是「能不能看到」,不是「能不能绕过策略」。
+///
+/// ⚠ `activity_id` 为 None(不属于任何活动的普通项目文件)时不回落 —— 那种材料本来就只归项目管。
+pub async fn require_read_item(
+    pool: &PgPool, id: &Identity, project_id: i64, activity_id: Option<i64>,
+) -> AppResult<Role> {
+    match require_role(pool, id, project_id, Role::Viewer).await {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let Some(aid) = activity_id else { return Err(e) };
+            if activity_material_access(pool, id, aid, None).await? >= 材料权::只读 {
+                Ok(Role::Viewer)
+            } else {
+                Err(e)   // ★原样把项目那边的错抛回去★:404/403 的口径由它决定,别在这里改口
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
