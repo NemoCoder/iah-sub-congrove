@@ -81,17 +81,24 @@ gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
 if [ "$CI_ONLY" != "--ci" ]; then
-  if [ -n "${CONGROVE_DEV_DSN:-}" ]; then
-    gate "SQL 对真库 PREPARE" python3 scripts/sql-prepare-check.py
-    gate "schema 对拍"        bash scripts/schema-check.sh check
-    # ★迁移校验和★(2026-08-15 事故当晚补的):前十六道全在问「代码自己对不对」,
-    #   ★没有一道在问「代码和**运行环境的状态**还对得上吗」★ —— 改了 0001_init.sql
-    #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
-    gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
-  else
-    # ★没跑 ≠ 通过★:缺 DSN 时明确标出来,免得看报告的人以为这几道也绿了
-    RESULTS+=("  ? 未跑:SQL PREPARE / schema 对拍 / 迁移校验和（缺 CONGROVE_DEV_DSN，source ~/.config/iah/congrove-dev.env）"); SKIPPED=1
-  fi
+  # ══ ★这三道 2026-08-17 起不再直连库,走平台的 db/sql 接口★(scripts/dbq.py 头注写了来龙去脉)══
+  #   起因:iah101 加入集群成为节点后,直连 PG 被 `data-tier-isolation` 这条 NetworkPolicy 挡掉。
+  #   ★我的第一反应是去请平台改那条 NP,而 liaoruili 问了一句「你需要实现什么功能」★ ——
+  #   一查:没有任何**产品功能**需要直连,只有这三道开发期门禁需要;
+  #   而平台早有 `POST /api/subsystems/{slug}/db/sql`(dev-only),`sql-prepare-check.py`
+  #   本来就默认走它。⇒ 那个请求是多余的,已在群里撤回。
+  #   ★教训:遇到「连不上」先问「我到底需不需要这条路」,别直接跳到「怎么把这条路修通」。★
+  #
+  #   ⚠ 所以这里**不再用 `CONGROVE_DEV_DSN` 当开关** —— 用它当开关的话,
+  #     一个没配 DSN 的环境(比如 CI)会把这三道显示成「未跑」,而它们其实跑得了。
+  #     令牌从 `IAH_TOKEN` 或 `~/.config/iah/congrove-token` 取,取不到各脚本自己 exit 2(= 红,不是绿)。
+  #   ⚠ prod 那半仍要 DSN(db/sql 对 prod 是 403),而 liaoruili 定了不给 —— 那一格照旧「未核」。
+  gate "SQL 对真库 PREPARE" python3 scripts/sql-prepare-check.py
+  gate "schema 对拍"        bash scripts/schema-check.sh check
+  # ★迁移校验和★(2026-08-15 事故当晚补的):前十六道全在问「代码自己对不对」,
+  #   ★没有一道在问「代码和**运行环境的状态**还对得上吗」★ —— 改了 0001_init.sql
+  #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
+  gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
   gate "接口面 api-check" bash scripts/api-check.sh check
   # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——
   #   生成的契约里响应只写 `{"description":"成功"}`、没有 schema,于是把响应体

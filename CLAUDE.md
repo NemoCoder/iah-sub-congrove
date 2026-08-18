@@ -97,12 +97,12 @@ bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— �
 | 内容寻址 | `scripts/blobkey-check.sh` | 规范 key 只由 `items.rs::blob_key` 产出 | ✅ |
 | 版本号两处一致 | `scripts/version-sync-check.sh` | `Cargo.toml` == `web/src/version.ts` | ✅ |
 | 前端 tsc / test | `cd web && pnpm typecheck` / `pnpm test` | strict 类型 + 单测 | ✅ |
-| SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) | ❌ 要活库 |
-| schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ❌ 要活库 |
+| SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) | ⭕ ★不再直连库★,走平台 `db/sql`;只要令牌 |
+| schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ⭕ 同上 |
 | 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
 | 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
 | 已应用的迁移不许改 | `scripts/migration-frozen-check.sh` | `migrations/*.sql` 的 sha384 == `migrations/checksums.txt`(只增不改) | ✅ |
-| 迁移校验和 | `scripts/migration-checksum-check.sh` | 同上 == **dev 与 prod 两库** `_sqlx_migrations` 里记的(★只 SELECT★) | ❌ 要活库 |
+| 迁移校验和 | `scripts/migration-checksum-check.sh` | 同上 == **dev 与 prod 两库** `_sqlx_migrations` 里记的(★只 SELECT★) | ⭕ dev 半边同上;prod 半边要 DSN(不给,永久「未核」) |
 
 ⚠★改了 `0001_init.sql` 就必须处理 dev 库★(ADR-0001 的配套纪律,2026-08-15 漏过一次):
 sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
@@ -113,7 +113,18 @@ sqlx 记着「我跑过的那份」的 sha384,文件一改,pod 启动就
 `scripts/deployed-version-check.sh` 比对线上与代码版本 —— ★`e2e/run.sh` 跑测试前会先调它★,
 免得对着旧镜像跑 E2E 拿一堆「关于别人代码的绿」(要故意对旧版本跑就 `SKIP_VERSION_CHECK=1`)。
 
-连库:`source ~/.config/iah/congrove-dev.env`(DSN + 口令,**仓库外**)。
+★2026-08-17 起前三道**不再直连 PG**★:走平台的 `POST /api/subsystems/congrove/db/sql`
+(dev-only),取数封装在 `scripts/dbq.py`,输出**刻意与 `psql -At` 同格式**所以基线不用重冻。
+令牌从 `IAH_TOKEN` 或 `~/.config/iah/congrove-token` 取 —— ★什么都不用 export 就能跑★。
+
+⚠ 起因值得记:iah101 加入集群成为节点后,它去 `data` 命名空间的 pod 改走 VXLAN overlay,
+源 IP 变成 flannel.1 的 pod 网段地址,而 `data-tier-isolation` 只放行 `172.18.0.0/22` ——
+于是从 iah101 直连 PG 全部超时。★我的第一反应是去请平台改那条 NetworkPolicy,
+而 liaoruili 问了一句「你需要实现什么功能」★ —— 一查:没有任何**产品功能**需要它,
+只有这几道开发期门禁需要,而平台早就给了合规的接口。请求已在群里撤回。
+★教训:遇到「连不上」先问「我到底需不需要这条路」,别直接跳到「怎么把这条路修通」。★
+
+连库(只剩 prod 半边与 `sim-diff` 用):`source ~/.config/iah/congrove-dev.env`(DSN + 口令,**仓库外**)。
 prod 那道闸另读 `~/.config/iah/congrove-prod.env` 里的 `CONGROVE_PROD_DSN`
 (★建议配只读角色★:脚本只 SELECT);没配则那一格报 **「? 未跑」不算通过** ——
 ★「我没查」和「查了没问题」是两件事★,汇总行也不会再说「全部通过」。
@@ -128,7 +139,7 @@ prod 那道闸另读 `~/.config/iah/congrove-prod.env` 里的 `CONGROVE_PROD_DSN
 
 | # | 问题 | 挡住什么 |
 |---|---|---|
-| O2 | CI 挂一个测试 PG | PREPARE 闸与 schema 闸进不了 CI ——★五道闸现在只有一道在 CI 里★ |
+| O2 | CI 挂一个测试 PG | ~~PREPARE 闸与 schema 闸进不了 CI~~ ★2026-08-17 起这两道改走平台 `db/sql`,**不再需要测试 PG**★ —— 只要 CI 有令牌就能跑,这条阻塞基本解掉了(待在 CI 里实测) |
 | O4 | 共享 runner 装 `oasdiff` | 接口面闸**本来就能进 CI**(离线生成契约、不连库),卡在没这个二进制 |
 | O3b | 两个专用 E2E 账号 | 「加入即可见/离开即失去」等 2 条 E2E 暂跳过 |
 

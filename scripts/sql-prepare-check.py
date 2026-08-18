@@ -82,7 +82,14 @@ def via_psql(dsn, sqls, pre=None):
 
 def via_registry(sqls):
     """本地用：走平台的 dev-only db/sql 端点，一条一个请求（并发 8）。"""
+    # ★令牌兜底读文件★(2026-08-17):此前只认环境变量,忘了 export 就直接 exit 2 ——
+    #   而 all-gates 会把它显示成一道**红闸**,读的人会去查代码里哪条 SQL 错了,
+    #   ★而真相只是「我没 export 一个变量」★。这类假红比不红更浪费时间。
+    #   与 scripts/dbq.py 用同一个兜底路径,两处别分叉。
     tok = os.environ.get('IAH_TOKEN')
+    if not tok:
+        _p = pathlib.Path.home() / '.config/iah/congrove-token'
+        if _p.exists(): tok = _p.read_text().strip()
     if not tok:
         print('缺 IAH_TOKEN（门户「日志」页生成的个人令牌）；或改用 --dsn', file=sys.stderr); sys.exit(2)
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
