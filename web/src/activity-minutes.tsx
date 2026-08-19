@@ -128,6 +128,25 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
     agenda_text: '', content_md: '', resolutions: '', todos: '',
   }
   const done = v.status === 'done'
+  const [导出中, set导出中] = useState(false)
+  /// 导出 PDF。★失败要说人话★——上游 latex-svc 会回一段带行号的 TeX 日志,
+  /// 那对记录员毫无意义(沿用 2026-08-17 prod 那次的教训:原始日志进日志,界面给能据以行动的话)。
+  const 导出pdf = async () => {
+    set导出中(true)
+    try {
+      const r = await api<{ item_id: number; draft: boolean }>(`/api/activities/${activityId}/minutes/pdf`,
+        { method: 'POST' })
+      message.success(r.draft ? '已导出(这份带「草稿」标记)' : '已导出')
+      await load()
+      window.open(`/api/items/${r.item_id}/download`, '_blank')
+    } catch (e) {
+      const t = (e as Error).message
+      message.error(
+        /排版服务连不上/.test(t) ? '排版服务暂时连不上 —— 稍后再点一次'
+        : /排版失败/.test(t) ? '排版失败:纪要里可能有 LaTeX 处理不了的写法(常见是表格没对齐)'
+        : t.length > 80 ? t.slice(0, 80) + '…' : t)
+    } finally { set导出中(false) }
+  }
   const mt = detail?.activity
   const sum = (k: string) => ana?.summaries.find((x) => x.kind === k)?.content ?? ''
   const recs = items.filter((x) => x.is_recording)
@@ -149,6 +168,16 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>最后保存 {fmtTime(m.updated_at)}</Typography.Text>
           )}
           <span style={{ flex: 1 }} />
+          {/* ★导出 PDF★(2026-08-17,走平台共享 latex-svc)。liaoruili 定「随时可导出,草稿也能」——
+              ⚠ 而草稿导出的那份 PDF **自己抬头印着「草稿 · 尚未定稿」**(后端拼的),
+                所以这里不必再拦、也不该再拦:★靠人记得「这份是草稿」不可靠,靠文件自己带标记可靠。★
+              已经导过就多一个「下载」直接拿最新那份(item id 稳定,重导不换 id、分享链接不失效)。 */}
+          {canEdit && <Button size="small" loading={导出中} onClick={导出pdf}>
+            {m?.pdf_item_id ? '重新导出 PDF' : '导出 PDF'}
+          </Button>}
+          {m?.pdf_item_id && (
+            <a href={`/api/items/${m.pdf_item_id}/download`}>下载 PDF</a>
+          )}
           {canEdit && (
             <Button size="small" type={done ? 'default' : 'primary'}
               onClick={() => save({ status: done ? 'draft' : 'done' })}>
