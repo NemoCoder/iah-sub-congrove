@@ -1,6 +1,15 @@
 --- baseline
 +++ current
-@@ -127,6 +127,7 @@
+@@ -118,6 +118,8 @@
+     "visibility": "string"
+    },
+    "can_edit": "boolean",
++   "can_see_items": "boolean",
++   "can_upload_items": "boolean",
+    "participants": {
+     "<len>": "number",
+     "<of>": [
+@@ -127,6 +129,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -8,7 +17,16 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -186,6 +187,7 @@
+@@ -177,6 +180,8 @@
+     "visibility": "string"
+    },
+    "can_edit": "boolean",
++   "can_see_items": "boolean",
++   "can_upload_items": "boolean",
+    "participants": {
+     "<len>": "number",
+     "<of>": [
+@@ -186,6 +191,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -16,7 +34,16 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -245,6 +247,7 @@
+@@ -236,6 +242,8 @@
+     "visibility": "string"
+    },
+    "can_edit": "boolean",
++   "can_see_items": "boolean",
++   "can_upload_items": "boolean",
+    "participants": {
+     "<len>": "number",
+     "<of>": [
+@@ -245,6 +253,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -24,7 +51,7 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -376,6 +379,7 @@
+@@ -376,6 +385,7 @@
     "kind": "string",
     "mime": "string",
     "name": "string",
@@ -32,7 +59,7 @@
     "parent_id": "string",
     "project_id": "string",
     "sha_declared_mismatch": "boolean",
-@@ -504,6 +508,7 @@
+@@ -504,6 +514,7 @@
       "kind": "string",
       "mime": "string",
       "name": "string",
