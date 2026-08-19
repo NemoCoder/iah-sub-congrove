@@ -196,7 +196,7 @@ pub async fn project_owner(pool: &sqlx::PgPool, pid: i64) -> AppResult<String> {
 /// ⚠ 并发同时传两个文件会各查各的、都查不到 → 建出两个同名文件夹。
 /// 这里靠**部分唯一索引**兜(见 0001_init.sql 的 `items_activity_folder_uniq`):
 /// 第二个 INSERT 冲突,回头再查一次拿到第一个建好的那个。
-async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> AppResult<i64> {
+pub(crate) async fn activity_folder(state: &AppState, pid: i64, mid: i64, actor: &str) -> AppResult<i64> {
     if let Some(fid) = find_activity_folder(&state.pool, pid, mid).await? {
         return Ok(fid);
     }
@@ -1525,6 +1525,62 @@ pub(crate) fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+/// 把一份**后端生成的**字节存成活动材料里的一条 item(纪要 PDF 用)。
+///
+/// ⚠★与用户上传走同一套存储语义★:内容寻址(`blobs/<sha>`)、`sha_verified=true`
+///   (这份是我们自己算的哈希,不是客户端申报的)、落进活动的材料文件夹。
+///
+/// ⚠★已有 item 就写成它的新版本,不新建行★:一条稳定的 item id 意味着
+///   ★分享链接不会因为重新导出而失效★;旧版本进 `item_versions`,历史看得见。
+#[allow(clippy::too_many_arguments)]   // ★7 个参数都是必需的:项目/活动/人/名字/内容/类型/已有那条。
+//   合成一个结构体只是把同样的东西换个地方写,读的人还要多跳一次。
+pub async fn 存一份活动材料(
+    state: &AppState, pid: i64, mid: i64, actor: &str,
+    文件名: &str, 字节: Vec<u8>, mime: &str, 已有: Option<i64>,
+) -> AppResult<i64> {
+    use sha2::{Digest, Sha256};
+    let size = 字节.len() as i64;
+    let sha = format!("{:x}", Sha256::digest(&字节));
+    let key = blob_key(&sha);
+    // ★已存在就不重复写★(内容寻址:同内容全库一份)。⚠ 不覆盖 —— 覆盖是内容投毒的口子。
+    if !state.storage.exists(&key).await {
+        state.storage.put_bytes(&key, 字节, mime).await.map_err(AppError::Other)?;
+    }
+    let 文件夹 = activity_folder(state, pid, mid, actor).await?;
+    // 已有那条还活着才复用(被删进回收站就重新建一条,否则会往一个"已删除"的行上写新版本)
+    let 活着: Option<i64> = match 已有 {
+        Some(iid) => sqlx::query_scalar("SELECT id FROM items_alive WHERE id = $1 AND deleted_at IS NULL")
+            .bind(iid).fetch_optional(&state.pool).await?,
+        None => None,
+    };
+    if let Some(iid) = 活着 {
+        let mut tx = state.pool.begin().await?;
+        // 先把**当前版**记进历史,再让当前版指向新内容 —— 顺序反了就丢一版
+        sqlx::query(
+            "INSERT INTO item_versions (item_id, s3_key, size, sha256, label, created_by)
+             SELECT id, s3_key, size, sha256, '导出前', $2 FROM items WHERE id = $1 AND s3_key IS NOT NULL")
+            .bind(iid).bind(actor).execute(&mut *tx).await?;
+        sqlx::query(
+            "UPDATE items SET s3_key = $2, size = $3, sha256 = $4, sha_verified = true,
+                              mime = $5, updated_at = now() WHERE id = $1")
+            .bind(iid).bind(&key).bind(size).bind(&sha).bind(mime).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(iid);
+    }
+    // ★直接用文件名,不去重名★:库里没有「同目录同名唯一」约束,而且这条路只会走一次 ——
+    //   第二次导出走上面的「复用已有 item、加新版本」分支。真撞上同名(有人手工传了个同名的),
+    //   两条并存也不会坏事,而**自动加序号**反而会让人以为导出了两份不同的纪要。
+    let 名 = 文件名.to_string();
+    let iid: i64 = sqlx::query_scalar(
+        "INSERT INTO items (project_id, parent_id, kind, name, mime, created_by, s3_key, size, sha256,
+                            sha_verified, activity_id)
+         VALUES ($1,$2,'file',$3,$4,$5,$6,$7,$8,true,$9) RETURNING id")
+        .bind(pid).bind(文件夹).bind(&名).bind(mime).bind(actor)
+        .bind(&key).bind(size).bind(&sha).bind(mid)
+        .fetch_one(&state.pool).await?;
+    Ok(iid)
 }
 
 #[cfg(test)]

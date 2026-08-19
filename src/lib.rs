@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod minutes_pdf;
 pub mod notify;
 pub mod remind;
 pub mod tzutil;
