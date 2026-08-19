@@ -151,7 +151,13 @@ pub const APIS: &[Api] = &[
          "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
           ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
          "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
-    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
+
+    api!("POST", "/api/activities/{id}/minutes/pdf", "活动", "发起人 / 记录员",
+         "★把纪要排成 PDF★(走平台共享 latex-svc,congrove 镜像不装 TeX)。存成**活动材料里的一条 item**,
+          可下载/分享;★再次导出写成同一条 item 的新版本★——一条稳定的 id 意味着分享链接不会失效。
+          ⚠ 草稿也能导,但那份 PDF 抬头会印「草稿 · 尚未定稿」:靠人记得不可靠,靠文件自己带标记可靠。
+          ⚠ 权限与写纪要同一判据(导出是产出正式文件,不是读)",
+         ""),    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
          "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
           is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
     api!("PUT", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",

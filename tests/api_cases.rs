@@ -861,6 +861,18 @@ const CASES: &[Case] = &[
     c!("DELETE", "/api/admin/users/{username}/quota", "恢复为默认,且幂等", "某人单独设过 50GiB",
        "DELETE 一次,再 DELETE 一次",
        "两次都 204;之后 /admin/users 里他 quota_is_default=true 且额度跟着全站默认变", "admin-console"),
+    // ══ 纪要导出 PDF(2026-08-17,docs/TECH-DESIGN-minutes-pdf.md)══
+    c!(deny "POST", "/api/activities/{id}/minutes/pdf", "普通参会人导不了纪要 PDF", "我是参会人但不是发起人/记录员",
+       "POST /api/activities/1/minutes/pdf",
+       "403;★导出是**产出正式文件**不是读,权限与写纪要同一判据★", "minutes-pdf"),
+    c!("POST", "/api/activities/{id}/minutes/pdf", "★正向对照:记录员能导★", "我是记录员,纪要有内容",
+       "POST /api/activities/1/minutes/pdf",
+       "200 {item_id,draft};★没有这条,上面那条 403 在「谁都导不了」时也会绿★", "minutes-pdf"),
+    c!("POST", "/api/activities/{id}/minutes/pdf", "★再导一次:同一个 item_id、版本 +1★", "已经导过一次",
+       "再 POST 一次",
+       "item_id **不变**;item_versions 多一行。★一条稳定的 id 意味着分享链接不会因为重新导出而失效★", "minutes-pdf"),
+    c!("POST", "/api/activities/{id}/minutes/pdf", "空纪要不给导", "纪要三段全空",
+       "POST …/minutes/pdf", "400「纪要还是空的」;★导出一份什么都没有的 PDF 比报错更让人困惑★", "minutes-pdf"),
     c!("GET", "/api/admin/audit", "全局审计可筛", "有多条审计", "GET /api/admin/audit?actor=x&limit=50",
        "200,按 actor 过滤;★敏感动作(建分享/移出成员/purge/改超管)都必须有记录★", ""),
 

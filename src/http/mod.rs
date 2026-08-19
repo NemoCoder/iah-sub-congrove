@@ -208,6 +208,12 @@ pub fn build_router(state: AppState) -> Router {
     // 慢路由:流式上传/下载 + 代理分片。body limit 整个解除(单文件不限大小,真闸是空间配额),超时 2h。
     let slow = Router::new()
         .route("/projects/{id}/upload", post(items::upload).layer(DefaultBodyLimit::disable()))
+        // ★纪要导出 PDF★(2026-08-17,走平台共享 latex-svc):★放这里不放 fast★——
+        //   实测一份小纪要 3.2s,但 LaTeX 是 CPU 密集的,大纪要可能顶到十几秒,
+        //   而 fast 组 30s 超时会把它拦腰掐断(与上传/下载同一个理由)。
+        //   ⚠ 我第一版就写在 fast 组里、注释却写着「放 slow 组」——★断言和代码对不上,
+        //     而两者不一致时没有任何东西会报错★。是核了一遍位置才发现的。
+        .route("/activities/{id}/minutes/pdf", post(activities::minutes_pdf))
         // 代理分片:单片 8MiB,上限给 32MiB 余量(防前端换算/编码开销顶格)。
         .route(
             "/items/{id}/media/part",

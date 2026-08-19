@@ -2081,6 +2081,63 @@ pub async fn project_stats(
 }
 
 
+// ══════ ★纪要导出 PDF★(2026-08-17,docs/TECH-DESIGN-minutes-pdf.md)══════
+
+/// POST /api/activities/{id}/minutes/pdf —— 把纪要排成 PDF,存为活动材料里的一条 item。
+///
+/// ⚠★权限 = 能写纪要的人★(`require_activity_host`,与 minutes_put 同一判据):
+///   导出是**产出正式文件**,不是读 —— 不放宽给普通参会人。
+///
+/// ⚠★已有 PDF 就写成同一条 item 的新版本,不新建行★:`pdf_item_id` 是单个 FK,
+///   而且一条稳定的 item id 意味着★分享链接不会因为重新导出而失效★。
+pub async fn minutes_pdf(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(mid): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_activity_host(&state.pool, &id, mid).await?;
+    let actor = id.require_username()?;
+    let m: ActivityRow = sqlx::query_as(
+        "SELECT m.*, at.name AS type_name, at.has_minutes, NULL::text AS my_status, NULL::text AS my_kind,
+                NULL::timestamptz AS my_responded_at, NULL::text AS minutes_status
+           FROM activities m LEFT JOIN activity_types at ON at.id = m.type_id WHERE m.id = $1")
+        .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+    let mn: Option<Minutes> = sqlx::query_as("SELECT * FROM activity_minutes WHERE activity_id = $1")
+        .bind(mid).fetch_optional(&state.pool).await?;
+    let mn = mn.ok_or_else(|| AppError::BadRequest("这场活动还没有纪要,先写点内容再导出".into()))?;
+    // ★空纪要不给导★:导出一份什么都没有的 PDF,比报错更让人困惑(他会以为系统坏了)
+    if mn.content_md.trim().is_empty() && mn.resolutions.trim().is_empty() && mn.todos.trim().is_empty() {
+        return Err(AppError::BadRequest("纪要还是空的 —— 写点内容再导出".into()));
+    }
+
+    let 是草稿 = mn.status != "done";
+    let 时间 = crate::tzutil::when_labeled(m.starts_at, crate::tzutil::parse(&m.timezone));
+    let md = crate::minutes_pdf::拼纪要markdown(
+        &m.title, 是草稿, &时间, &m.location, &m.online_url,
+        &m.recorder, &mn.attendees, &mn.observers, &mn.absentees,
+        &mn.agenda_text, &mn.content_md, &mn.resolutions, &mn.todos);
+    let pdf = crate::minutes_pdf::编译(&md, "纪要.md").await?;
+
+    // ── 落点:与「上传材料」同一条路(后端算,前端给不了任意 project_id)──
+    // ★落点由后端算★(与「上传材料」同一套规则):有关联项目就落第一个关联项目,
+    //   没有就落发起人自己的材料区(PRD §J0)。
+    let pid: i64 = match sqlx::query_scalar::<_, i64>(
+        "SELECT mp.project_id FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
+          WHERE mp.activity_id = $1 AND p.deleted_at IS NULL ORDER BY mp.project_id LIMIT 1")
+        .bind(mid).fetch_optional(&state.pool).await? {
+        Some(p) => p,
+        None => crate::http::projects::materials_project(&state, actor).await?,
+    };
+    let 文件名 = format!("{}-纪要.pdf", m.title.trim());
+    let item = crate::http::items::存一份活动材料(
+        &state, pid, mid, actor, &文件名, pdf, "application/pdf", mn.pdf_item_id).await?;
+    sqlx::query("UPDATE activity_minutes SET pdf_item_id = $2, updated_at = now() WHERE activity_id = $1")
+        .bind(mid).bind(item).execute(&state.pool).await?;
+    crate::audit::record(&state.pool, actor, "minutes.pdf", &mid.to_string(),
+        if 是草稿 { "draft" } else { "done" }).await;
+    Ok(Json(json!({ "item_id": item, "draft": 是草稿 })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
