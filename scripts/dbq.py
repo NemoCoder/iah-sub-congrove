@@ -53,6 +53,15 @@ def 跑(sql: str, channel: str = 'dev') -> list:
     try:
         with urllib.request.urlopen(req, timeout=180, context=ctx) as r:
             d = json.load(r)
+    except urllib.error.HTTPError as e:
+        # ★SQL 写错 ≠ 连不上★(2026-08-19 踩到):SQL 报错时服务端回 **400 + JSON body**,
+        #   而 urllib 把 4xx 抛成异常 —— 于是原来这里一律印「★连不上 db/sql 接口★」,
+        #   把「表名写错了」说成「网络/接口坏了」。★这两件事的处置完全相反★:
+        #   一个改 SQL,一个去查网络,而错误文案会把人直接送去查错的那一边。
+        #   ⇒ 有 body 就把 body 里的真话印出来。
+        try: d = json.loads(e.read().decode())
+        except Exception: 炸(f'★连不上 db/sql 接口:{e}★')
+        炸(f"★SQL 报错(HTTP {e.code})★:{d.get('error', d)}")
     except Exception as e:
         # ★连不上不是「没有差异」★:一律非零退出,让调用方报「量不到」而不是「通过」
         炸(f'★连不上 db/sql 接口:{e}★')

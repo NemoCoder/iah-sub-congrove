@@ -38,6 +38,19 @@ const 源文件名: &str = "minutes.md";
 ///   `0001_init.sql` 原设计是「点完成时才生成」,理由是防「未定稿被当正式件发出去」。
 ///   改成随时可导出之后,那个顾虑不会消失 —— ★解法不是拒绝需求,是让那份文件自己说明身份★。
 ///   靠人记得「这份是草稿」不可靠;靠文件自己带标记可靠。
+/// 把**换行分隔**的名单拼成一行,用顿号连。
+///
+/// ⚠★2026-08-19 打开 PDF 看出来的★:库里 `attendees` / `observers` / `absentees` 存的是
+///   **一行一个人**(见 `activity_minutes`)。原来直接 `值.trim()` 塞进元信息那一行 ——
+///   Markdown 把单个换行折成**空格**,于是三个人印出来是「张三 李四 王五」:
+///   ★读的人分不清这是三个人还是一个名字★(中英文名混排时更糟)。
+///
+/// ★这条只有把 PDF 打开看才发现★ —— 接口 200、字节数正常、单测全绿,
+///   而错误恰恰长在「渲染之后」那一层。
+fn 名单成一行(值: &str) -> String {
+    值.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("、")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn 拼纪要markdown(
     标题: &str, 是草稿: bool,
@@ -63,7 +76,7 @@ pub fn 拼纪要markdown(
     if !元.is_empty() { s.push_str(&元.join("　")); s.push_str("\n\n") }
     let mut 人 = Vec::new();
     for (名, 值) in [("到场", 到场), ("旁听", 旁听), ("缺席", 缺席)] {
-        if !值.trim().is_empty() { 人.push(format!("**{名}**：{}", 值.trim())) }
+        if !值.trim().is_empty() { 人.push(format!("**{名}**：{}", 名单成一行(值))) }
     }
     if !人.is_empty() { s.push_str(&人.join("　")); s.push_str("\n\n") }
 
@@ -144,6 +157,19 @@ mod tests {
         assert!(s.contains("## 主要内容"), "非空的还是要出");
         // 只有空白也算空
         assert!(!拼(false, "   \n  ", "\t").contains("## 决议事项"));
+    }
+
+    #[test]
+    fn 名单按行拆开用顿号连() {
+        // ★这条是「打开 PDF 看」才发现的★:Markdown 把单个换行折成空格,
+        //   三个人会印成「张三 李四 王五」——分不清是三个人还是一个名字。
+        let s = 拼纪要markdown("t", false, "", "", "", "", "张三\n李四\n王五", "", "",
+                               "", "正文", "", "");
+        assert!(s.contains("**到场**：张三、李四、王五"), "{s}");
+        assert!(!s.contains("张三\n李四"), "★换行不能留在一行元信息里★");
+        // 空行 / 首尾空白不能变成空的一段
+        assert!(拼纪要markdown("t", false, "", "", "", "", " 甲 \n\n 乙 \n", "", "",
+                               "", "正文", "", "").contains("**到场**：甲、乙"));
     }
 
     #[test]
