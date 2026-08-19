@@ -18,6 +18,17 @@ use crate::error::{AppError, AppResult};
 /// ⚠ 真要换地址时改这一行 —— 而不是在四个地方各写一遍。
 const LATEX_SVC: &str = "http://latex-svc.platform.svc:8000/compile-md";
 
+/// 交给 latex-svc 的**源文件名**。★必须纯 ASCII★ —— 它那边的白名单是
+/// `^[A-Za-z0-9][A-Za-z0-9._-]*$`(`latex-svc/app.py` 的 `_SAFE`,挡路径穿越用的),
+/// 中文名一律 400「main 文件名非法」。
+///
+/// ⚠★2026-08-17 踩过★:这里原本写的是 `纪要.md`,而我手工验服务时用的是 ASCII 名 ——
+///   **测的和代码发的不是同一个东西**,于是「latex-svc 验证通过」这条结论对这行代码
+///   一句话都没说。线上第一次真点导出就 400。★下面那条单测就是钉死这件事的。★
+///
+/// 与用户看到的文件名**无关**:那个是 `{活动标题}-纪要.pdf`,在 `activities.rs` 里另拼。
+const 源文件名: &str = "minutes.md";
+
 /// 拼给 latex-svc 的 Markdown。★纯函数★——两个命门都在这里,能被单测钉死。
 ///
 /// ⚠★空段落不出标题★:一个只有「决议事项」四个字、底下什么都没有的段落,
@@ -71,7 +82,7 @@ pub fn 拼纪要markdown(
 ///
 /// ⚠★失败要说人话★(沿用 2026-08-17 那次 prod 事故的教训:上游的原始 JSON/日志
 ///   不许整坨糊给用户)。这里把上游日志**截断**后放进错误里,由前端再翻一层。
-pub async fn 编译(md: &str, 文件名: &str) -> AppResult<Vec<u8>> {
+pub async fn 编译(md: &str) -> AppResult<Vec<u8>> {
     let cli = reqwest::Client::builder()
         // ★120s★:实测一份小纪要 3.2s;留足余量,但**必须有上限** —— LaTeX 可以写死循环,
         //   而平台侧虽然自己也有 wall-clock 闸,我们这边不设上限就等于把一个连接挂死在那儿。
@@ -79,8 +90,8 @@ pub async fn 编译(md: &str, 文件名: &str) -> AppResult<Vec<u8>> {
         .build().map_err(|e| AppError::Other(e.into()))?;
     let 表单 = reqwest::multipart::Form::new()
         // ⚠★字段名是 `files` 不是 `files[]`★——见本文件头注那个契约坑
-        .part("files", reqwest::multipart::Part::text(md.to_string()).file_name(文件名.to_string()))
-        .text("main", 文件名.to_string())
+        .part("files", reqwest::multipart::Part::text(md.to_string()).file_name(源文件名.to_string()))
+        .text("main", 源文件名)
         .text("engine", "xelatex");
     let r = cli.post(LATEX_SVC).multipart(表单).send().await
         .map_err(|e| AppError::BadRequest(format!("排版服务连不上:{e}")))?;
@@ -96,7 +107,18 @@ pub async fn 编译(md: &str, 文件名: &str) -> AppResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::拼纪要markdown;
+    use super::{拼纪要markdown, 源文件名};
+
+    #[test]
+    fn 源文件名必须过得了latex_svc的白名单() {
+        // ★这条测的是「我发出去的那个值」,不是「我手工试过的那个值」★。
+        // 判据抄自 latex-svc/app.py 的 `_SAFE`:^[A-Za-z0-9][A-Za-z0-9._-]*$
+        let 合法 = |n: &str| { let mut c = n.chars();
+            c.next().is_some_and(|f| f.is_ascii_alphanumeric())
+                && n.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-') };
+        assert!(合法(源文件名), "★中文名会被 latex-svc 400 掉★:{源文件名}");
+        assert!(!合法("纪要.md"), "反向对照:判据要真能把中文名判出来,否则这条测试是空的");
+    }
 
     fn 拼(草稿: bool, 决议: &str, 待办: &str) -> String {
         拼纪要markdown("八月第二次组会", 草稿, "2026-08-12 04:00", "3 号楼 401", "",

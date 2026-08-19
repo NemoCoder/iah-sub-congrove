@@ -2116,7 +2116,7 @@ pub async fn minutes_pdf(
         &m.title, 是草稿, &时间, &m.location, &m.online_url,
         &m.recorder, &mn.attendees, &mn.observers, &mn.absentees,
         &mn.agenda_text, &mn.content_md, &mn.resolutions, &mn.todos);
-    let pdf = crate::minutes_pdf::编译(&md, "纪要.md").await?;
+    let pdf = crate::minutes_pdf::编译(&md).await?;
 
     // ── 落点:与「上传材料」同一条路(后端算,前端给不了任意 project_id)──
     // ★落点由后端算★(与「上传材料」同一套规则):有关联项目就落第一个关联项目,
