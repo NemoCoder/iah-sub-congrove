@@ -2112,9 +2112,12 @@ pub async fn minutes_pdf(
 
     let 是草稿 = mn.status != "done";
     let 时间 = crate::tzutil::when_labeled(m.starts_at, crate::tzutil::parse(&m.timezone));
+    // ★记录员印姓名不印账号★(2026-08-19):`m.recorder` 存的是账号名,
+    //   而纪要是给人读的 —— 「liaoruili」对读者没有信息量。
+    let 记录员 = crate::minutes_pdf::显示名(&state.pool, &m.recorder).await;
     let md = crate::minutes_pdf::拼纪要markdown(
         &m.title, 是草稿, &时间, &m.location, &m.online_url,
-        &m.recorder, &mn.attendees, &mn.observers, &mn.absentees,
+        &记录员, &mn.attendees, &mn.observers, &mn.absentees,
         &mn.agenda_text, &mn.content_md, &mn.resolutions, &mn.todos);
     let pdf = crate::minutes_pdf::编译(&md).await?;
 

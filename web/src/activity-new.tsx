@@ -8,7 +8,7 @@
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
 import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, isMaterials, showUser, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
+import { api, isMaterials, showUserWithAccount, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
 import { RemindSelect } from './remind-poll'
 import { myTz, pickedToUtc, TZ_OPTIONS } from './tz'
@@ -155,7 +155,7 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
     const out: { value: string; label: string }[] = []
     const push = (u: string, n?: string | null) => {
       if (!u || seen.has(u)) return
-      seen.add(u); out.push({ value: u, label: showUser(u, n) })
+      seen.add(u); out.push({ value: u, label: showUserWithAccount(u, n) })
     }
     if (me?.username) push(me.username, me.name)
     for (const u of pool) push(u.username, u.name)

@@ -99,8 +99,21 @@ export type Item = {
 /// name = 真实姓名(app_user.name);★拉进来但还没登录过的人为空★,只显示用户名即可。
 export type Member = { username: string; name?: string | null; role: Role; added_by: string; added_at: string }
 /// 「用户名（姓名）」的统一显示。姓名为空时只给用户名 —— 别显示成「zhangsan（）」。
+/// 陈述事实时怎么称呼一个人 —— ★只显示姓名★(2026-08-19 liaoruili:「都使用中文,不要用账号」)。
+///
+/// 「谁参会了」「谁是记录员」「谁传的这份材料」这些地方,读的人要的是**人**,
+/// 而 `liaoruili` 这种账号名对读者没有信息量。姓名缺失(没登录过 / 平台没填)才退回账号。
+///
+/// ⚠★别拿它去做「选人」和「管理操作」★——那两类场景账号名是**操作凭据**不是称呼:
+///   搜人是按账号搜的,授撤超管/改配额也要能唯一定位到账号(重名时姓名不唯一)。
+///   那些地方用下面的 `showUserWithAccount`。
 export const showUser = (username: string, name?: string | null) =>
-  name && name !== username ? `${username}（${name}）` : username
+  name && name !== username ? name : username
+
+/// 选人 / 管理操作时怎么称呼 —— ★姓名在前、账号在括号里★。
+/// 姓名让人认得出是谁,账号保证唯一定位。姓名缺失就只剩账号。
+export const showUserWithAccount = (username: string, name?: string | null) =>
+  name && name !== username ? `${name}（${username}）` : username
 export type MemberList = { owner: string | null; members: Member[] }
 export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }
 

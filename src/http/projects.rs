@@ -48,8 +48,12 @@ pub async fn ensure_platform_user(state: &AppState, username: &str) -> AppResult
             Ok((true, name)) => {
                 // 顺手把显示名占位进 app_user(还没登录过的人下拉里也能显示人名;登录后 upsert 会补全)。
                 let _ = sqlx::query(
+                    // ★平台回的姓名优先★(2026-08-19):原来是 `COALESCE(app_user.name, EXCLUDED.name)`
+                    // —— 已有值就不覆盖,于是登录时 OIDC 落的**拉丁拼法**(「佳豪 林」)会一直赢,
+                    // 平台按中文习惯拼好的「林佳豪」永远写不进来。姓名的真相源是平台(见 auth.rs 登录回填),
+                    // 这里跟它保持同一条规则。⚠ `NULLIF(...,'')`:平台回空名时**不许**把已有的名字擦掉。
                     "INSERT INTO app_user (username, name) VALUES ($1,$2)
-                     ON CONFLICT (username) DO UPDATE SET name = COALESCE(app_user.name, EXCLUDED.name)",
+                     ON CONFLICT (username) DO UPDATE SET name = COALESCE(NULLIF(EXCLUDED.name,''), app_user.name)",
                 )
                 .bind(username)
                 .bind(&name)

@@ -562,6 +562,33 @@ pub async fn oidc_callback(State(state): State<AppState>, headers: HeaderMap, Qu
         }
     };
 
+    // ★姓名的真相源是平台,不是 OIDC 的 `name` claim★(2026-08-19)。
+    //
+    // Keycloak 默认的 `name` claim 是拉丁式 `firstName + " " + lastName`,
+    // 而中文用户在 KC 里填的是 first=名 / last=姓 —— 于是这个 claim 拼出来是
+    // **「佳豪 林」**(名在前、还带空格),中文里这是错的读法。
+    // 平台的 `registry-svc/keycloak.py::_fmt_name` 判到 CJK 会拼「林佳豪」(姓+名不空格),
+    // ★那才是唯一正确的拼法,而且它只该有一处★ —— 所以 congrove **不自己拼**,
+    // 而是把平台 `users/exists` 回的那份读回来覆盖。
+    //
+    // ⚠★fire-and-forget,不挡登录★:平台不可达时登录必须照常成功。
+    //   代价是本次会话里右上角还显示旧名字,下次登录/刷新就对 —— 用「登录变慢甚至登不进」
+    //   换「名字早一次刷新」是亏的。
+    if let Some(reg) = state.registry.clone() {
+        let (pool, u) = (state.pool.clone(), username.clone());
+        tokio::spawn(async move {
+            match reg.user_exists(&u).await {
+                Ok((true, Some(n))) if !n.trim().is_empty() => {
+                    if let Err(e) = sqlx::query("UPDATE app_user SET name = $2 WHERE username = $1")
+                        .bind(&u).bind(n.trim()).execute(&pool).await
+                    { tracing::warn!(error = %e, user = %u, "回填平台显示名失败") }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, user = %u, "取平台显示名失败,沿用 OIDC claim"),
+            }
+        });
+    }
+
     let id = Identity {
         sub: Some(claims.sub),
         username: Some(username),
