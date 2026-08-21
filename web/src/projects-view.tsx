@@ -33,7 +33,7 @@ import { effectiveScope, effectiveTab, showScopeSwitch, shownProjects } from './
 import type { Activity } from './api'
 import { ShareModal } from './share-modal'
 import { fmtDay, fmtHM, fmtStamp } from './tz'
-import { api, isMaterials, showUser, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
+import { api, isMaterials, showUser, showUserWithAccount, type Diagnose, type Item, type Me, type Role, type Project, type UserOpt, type Version, type Member, type MemberList } from './api'
 import { isEnded } from './activity-state'
 
 /// ★角色只有四个词(2026-08-03 用户定):管理员 / 可编辑 / 只读 / 无权限。★
@@ -1340,7 +1340,7 @@ function MembersModal({ space, open, onClose, onChanged, inline = false, me }:
         <Select mode="tags" value={picked} onChange={setPicked} onSearch={searchUsers}
           filterOption={false} placeholder="完整用户名，可多选（同项目的人可搜姓名；没搜到也能直接输入）" style={{ flex: 1 }}
           notFoundContent={null}
-          options={users.map((u) => ({ value: u.username, label: u.name ? `${u.username}（${u.name}）` : u.username }))} />
+          options={users.map((u) => ({ value: u.username, label: showUserWithAccount(u.username, u.name) }))} />
         {/* ★这里是**第二个**角色下拉,上一轮只改了行内那个 —— 又一次「只修了一半」★
             (2026-08-15 界面验收截图当场发现:成员表行内已经是「可编辑」了,
              而这个「批量添加」旁边的还写着「成员」)。

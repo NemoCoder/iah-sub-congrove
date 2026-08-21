@@ -13,7 +13,7 @@ import {
   Select, Space, Table, Tabs, Tag, Tooltip, Typography,
 } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, showUser, type Me } from './api'
+import { api, showUserWithAccount, type Me } from './api'
 import { fmtSize } from './preview'
 import { fmtHM, fmtDay } from './tz'
 
@@ -71,7 +71,7 @@ function 用户表({ me, onChanged }: { me: Me | null; onChanged: () => void }) 
   const 改超管 = (r: UserRow) => {
     const 收回 = r.is_super
     modal.confirm({
-      title: 收回 ? `撤掉 ${showUser(r.username, r.name)} 的超管?` : `把 ${showUser(r.username, r.name)} 设为超管?`,
+      title: 收回 ? `撤掉 ${showUserWithAccount(r.username, r.name)} 的超管?` : `把 ${showUserWithAccount(r.username, r.name)} 设为超管?`,
       // ★两条边界必须**动手之前**说清楚★(PRD §5.1):否则人会以为系统坏了。
       content: 收回 ? (
         <div style={{ fontSize: 13 }}>
@@ -98,7 +98,7 @@ function 用户表({ me, onChanged }: { me: Me | null; onChanged: () => void }) 
   const 改配额 = (r: UserRow) => {
     let 值 = Math.round((r.quota_bytes / GiB) * 100) / 100
     modal.confirm({
-      title: `${showUser(r.username, r.name)} 的配额`,
+      title: `${showUserWithAccount(r.username, r.name)} 的配额`,
       content: (
         <div style={{ fontSize: 13 }}>
           <p>
@@ -129,7 +129,7 @@ function 用户表({ me, onChanged }: { me: Me | null; onChanged: () => void }) 
   }
 
   const 恢复默认 = (r: UserRow) => modal.confirm({
-    title: `让 ${showUser(r.username, r.name)} 跟回全站默认?`,
+    title: `让 ${showUserWithAccount(r.username, r.name)} 跟回全站默认?`,
     content: <p style={{ fontSize: 13 }}>他现在单独设着 <b>{fmtSize(r.quota_bytes)}</b>。
       恢复之后，他的额度就跟着「治理 → 全站默认配额」走，那里改他也跟着变。</p>,
     okText: '恢复为默认', cancelText: '算了',
@@ -167,7 +167,7 @@ function 用户表({ me, onChanged }: { me: Me | null; onChanged: () => void }) 
           { title: '用户', dataIndex: 'username', width: 220,
             render: (_: unknown, r) => (
               <Space size={6}>
-                <span>{showUser(r.username, r.name)}</span>
+                <span>{showUserWithAccount(r.username, r.name)}</span>
                 {r.username === me?.username && <Tag color="cyan">我</Tag>}
                 {r.is_super && <Tag color="purple">超管</Tag>}
               </Space>
@@ -347,7 +347,7 @@ function 治理({ users }: { users: UserRow[] }) {
           rowSelection={{ selectedRowKeys: 名单, onChange: (k) => set名单(k as string[]), preserveSelectedRowKeys: true }}
           columns={[
             { title: '用户', render: (_: unknown, r) => (
-              <Space size={6}>{showUser(r.username, r.name)}{r.is_super && <Tag color="purple">超管</Tag>}</Space>) },
+              <Space size={6}>{showUserWithAccount(r.username, r.name)}{r.is_super && <Tag color="purple">超管</Tag>}</Space>) },
           ]} />
         <Space style={{ marginTop: 8 }}>
           <Button type="primary" disabled={!名单变了} loading={saving === 'project_creators'}

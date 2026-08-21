@@ -13,7 +13,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { InlineEdit } from './inline-edit'
 import { annotate, fmtHM, fmtStamp, myTz, pickedToUtc, sameDayIn, utcToPicked } from './tz'
 import { RemindSelect } from './remind-poll'
-import { api, isMaterials, showUser, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
+import { api, isMaterials, showUser, showUserWithAccount, type LinkChange, type ActivityDetail, type ActivityItem, type ActivityMessage, type Minutes, type Participant, type RespondStatus } from './api'
 import { fmtSize, ItemIcon, MarkdownView } from './preview'
 import { openViewer } from './video-player'
 import { 算提醒态 } from './remind-status'
@@ -880,7 +880,7 @@ function AddParticipants({ mid, onDone }: { mid: number; onDone: () => void }) {
         <Select mode="tags" value={picked} onChange={setPicked} onSearch={search} filterOption={false}
           open={dropOpen} onDropdownVisibleChange={setDropOpen} onSelect={() => setDropOpen(false)}
           style={{ width: '100%' }} placeholder="完整用户名（同项目的人可搜姓名；没搜到也能直接输入）" notFoundContent={null}
-          options={found.map((u) => ({ value: u.username, label: showUser(u.username, u.name) }))} />
+          options={found.map((u) => ({ value: u.username, label: showUserWithAccount(u.username, u.name) }))} />
         {/* ⚠★原来这里有个「临时参会人（guest）」选项，而它**选了就会报错**★
             （2026-08-12 liaoruili：「为啥还有临时参会人的概念！！！临时参会就按照旁听处理即可」）。
             `activity_participants.kind` 的 CHECK 只允许 `attendee` / `observer` ——

@@ -38,6 +38,21 @@ const 源文件名: &str = "minutes.md";
 ///   `0001_init.sql` 原设计是「点完成时才生成」,理由是防「未定稿被当正式件发出去」。
 ///   改成随时可导出之后,那个顾虑不会消失 —— ★解法不是拒绝需求,是让那份文件自己说明身份★。
 ///   靠人记得「这份是草稿」不可靠;靠文件自己带标记可靠。
+/// 账号名 → 姓名。★陈述事实时称呼人用姓名,不用账号★
+/// (2026-08-19 liaoruili:「记录员和参会人都使用中文,不要用账号」)。
+///
+/// 与前端 `api.ts::showUser` **同一条规则**:有姓名且不等于账号就用姓名,否则退回账号。
+/// ⚠ 姓名的**真相源是平台的 Keycloak**(`registry-svc/keycloak.py::_fmt_name`,
+///   它按中文习惯拼「姓+名」不空格);congrove 只是把 `app_user.name` 里那份读出来,
+///   ★绝不在这里自己拼姓名★ —— 拼法只能有一处。
+///
+/// ⚠ 查不到 / 姓名为空 → 原样回账号名。**不报错**:一份纪要不该因为查不到人名就导不出。
+pub async fn 显示名(pool: &sqlx::PgPool, 账号: &str) -> String {
+    let n: Option<String> = sqlx::query_scalar("SELECT name FROM app_user WHERE username = $1")
+        .bind(账号).fetch_optional(pool).await.ok().flatten();
+    match n { Some(n) if !n.trim().is_empty() && n != 账号 => n, _ => 账号.to_string() }
+}
+
 /// 把**换行分隔**的名单拼成一行,用顿号连。
 ///
 /// ⚠★2026-08-19 打开 PDF 看出来的★:库里 `attendees` / `observers` / `absentees` 存的是
