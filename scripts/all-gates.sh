@@ -100,6 +100,8 @@ if [ "$CI_ONLY" != "--ci" ]; then
   #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
   gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
   gate "接口面 api-check" bash scripts/api-check.sh check
+  # 字段级 schema 的欠账只许变少 —— 见脚本头注:做很久的活的共同死法是「做了一半就停在那」。
+  gate "schema 覆盖率(只减不增)" bash scripts/schema-coverage.sh
   # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——
   #   生成的契约里响应只写 `{"description":"成功"}`、没有 schema,于是把响应体
   #   从 `[...]` 改成 `{total, items}`(2026-08-13,货真价实的破坏性变更)时,

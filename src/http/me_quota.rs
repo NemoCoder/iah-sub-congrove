@@ -13,32 +13,50 @@ use crate::state::AppState;
 ///
 /// ★用量算的是「我名下所有项目」★（我是 owner 的那些），不是「我上传的东西」——
 /// 材料归项目，额度归主持人（PRD L3，口径改过一次）。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct QuotaOut {
+    /// 生效额度(字节)。没单独设过的话是全站默认值。
+    pub quota_bytes: i64,
+    /// 已用(字节)。★算我名下所有项目、同 owner 按 blob 去重★(ADR-0004)。
+    pub used_bytes: i64,
+}
+
 pub async fn get_quota(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<QuotaOut>> {
     let me = id.require_username()?;
-    let (quota, used) = crate::http::items::owner_quota_used(&state.pool, me).await?;
-    Ok(Json(json!({ "quota_bytes": quota, "used_bytes": used })))
+    let (quota_bytes, used_bytes) = crate::http::items::owner_quota_used(&state.pool, me).await?;
+    Ok(Json(QuotaOut { quota_bytes, used_bytes }))
 }
 
 /// GET /api/me/prefs —— 我的偏好。★没有行就回 null，不回默认值★
 /// （PRD E0「不设默认北京」：服务端不猜时区，由前端按浏览器时区显示）。
+/// `GET /api/me/prefs` 的响应体。★两个字段都可为 null★——见下面 handler 的注释:
+/// 服务端不猜时区,「没设过」和「设成某个值」是两种状态,不能用默认值把前者抹掉。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PrefsOut {
+    /// IANA 时区名,如 `Asia/Shanghai`。null = 没设过,前端按浏览器时区显示。
+    pub timezone: Option<String>,
+    /// 默认提醒提前量(分钟)。null = 没设过,跟随全站默认。
+    pub default_remind_minutes: Option<i32>,
+}
+
 pub async fn get_prefs(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<PrefsOut>> {
     let row: Option<(Option<String>, Option<i32>)> = sqlx::query_as(
         "SELECT timezone, default_remind_minutes FROM user_prefs WHERE username = $1",
     )
     .bind(id.require_username()?)
     .fetch_optional(&state.pool)
     .await?;
-    let (tz, remind) = row.unwrap_or((None, None));
-    Ok(Json(json!({ "timezone": tz, "default_remind_minutes": remind })))
+    let (timezone, default_remind_minutes) = row.unwrap_or((None, None));
+    Ok(Json(PrefsOut { timezone, default_remind_minutes }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct PrefsIn {
     #[serde(default)] pub timezone: Option<String>,
     #[serde(default)] pub default_remind_minutes: Option<i32>,

@@ -1,6 +1,6 @@
 [package]
 name = "congrove"
-version = "0.7.17"
+version = "0.7.18"
 edition = "2021"
 rust-version = "1.86"
 description = "congrove — 汇流:团队知识库(空间+小组+会议录屏+论文库),IAH 平台子系统"
@@ -59,6 +59,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # 算不了 "Asia/Shanghai" 这种带夏令时和历史变更的真时区 —— 而我们存的就是 IANA 名。
 # ⚠ 前端不引第三方时区库(浏览器有 Intl),后端没有等价物,所以这个依赖是必须的,不是图省事。
 chrono-tz = "0.10"
+schemars = { version = "1.2.2", features = ["preserve_order"] }
 
 # ---- CI 门禁:cargo clippy -- -D warnings(见平台 CODE-QUALITY.md,congrove 是硬门禁试点)----
 # 规范是「clippy 零 warning、别用 #[allow] 压 bug 类 lint」。这里**只**豁免 type_complexity 一条,

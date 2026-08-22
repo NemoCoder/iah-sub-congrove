@@ -31,11 +31,37 @@ pub struct Api {
     pub summary: &'static str,
     /// 入参说明(query / body 字段)。空串表示不需要。
     pub params: &'static str,
+    /// ★请求体的字段级 schema★。`None` = 这条还没接(不是「没有请求体」——
+    /// GET 之类本来就没有 body 的也是 None,两者靠 method 分得开)。
+    ///
+    /// ⚠★存的是**生成器函数指针**,不是写死的 JSON★ —— 这一条是整件事的关键:
+    ///   schema 从 Rust 类型现推(`schemars`),★结构体加一个字段,契约里就多一个字段★。
+    ///   手写 JSON 的话它会**静默过期**:类型改了没人会去改那份 JSON,
+    ///   而过期的契约比没有契约更坏(它让人以为已经对齐了)。
+    ///   这正是 `docs/adr/README.md` 那条「关于代码的断言不写进文档,写成可执行门禁」。
+    #[serde(skip)]
+    pub req: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
+    /// 响应体的字段级 schema。同上。
+    #[serde(skip)]
+    pub res: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
 }
 
+/// 声明一条接口。★后两个参数是可选的★,按需写:
+/// - `api!(M, P, G, A, S, Q)`                      —— 还没接 schema(欠账,门禁会数)
+/// - `api!(M, P, G, A, S, Q, res: T)`              —— 只有响应体
+/// - `api!(M, P, G, A, S, Q, req: R, res: T)`      —— 请求体 + 响应体
 macro_rules! api {
     ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr) => {
-        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q }
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
+              req: None, res: None }
+    };
+    ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, res: $r:ty) => {
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
+              req: None, res: Some(|g| g.subschema_for::<$r>()) }
+    };
+    ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, req: $rq:ty, res: $r:ty) => {
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
+              req: Some(|g| g.subschema_for::<$rq>()), res: Some(|g| g.subschema_for::<$r>()) }
     };
 }
 
@@ -48,7 +74,8 @@ pub const APIS: &[Api] = &[
          "后端自报版本。★给 scripts/deployed-version-check.sh 用★——那道闸原来只量前端 bundle,\
           纯后端的改动它完全是瞎的(v0.7.9/v0.7.10 都是纯后端,它照样报「一致」)。\
           免鉴权是有意的:版本号本来就印在前端 bundle 里,不是秘密;而要 token 才能量的闸,\
-          在 CI 里会变成「没配 token 就跳过」= 又一个假绿", ""),
+          在 CI 里会变成「没配 token 就跳过」= 又一个假绿", "",
+         res: crate::http::VersionOut),
     api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", ""),
     api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state"),
     api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", ""),
@@ -58,9 +85,12 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
 
     // ── 项目 ──
-    api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", ""),
-    api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", ""),
-    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert;★整对象替换:传什么就是什么,没传的字段会被清空★——这样 null 才可表达)", "timezone, default_remind_minutes"),
+    api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", "",
+         res: crate::http::me_quota::QuotaOut),
+    api!("GET", "/api/me/prefs", "我的", "登录", "我的偏好。★没有行回 null 不回默认★（E0 不设默认时区）", "",
+         res: crate::http::me_quota::PrefsOut),
+    api!("PUT", "/api/me/prefs", "我的", "登录", "改我的偏好（upsert;★整对象替换:传什么就是什么,没传的字段会被清空★——这样 null 才可表达)", "timezone, default_remind_minutes",
+         req: crate::http::me_quota::PrefsIn, res: crate::http::me_quota::PrefsOut),
     api!("POST", "/api/me/admin-mode", "我的", "★有超管**资格**的人★（不是「此刻有特权」）",
          "进 / 出超管模式。★超管平时就是普通用户★——关着的时候他看不到别人的项目与活动,
           要用特权得刻意开一下,2 小时自动关、退出登录也关(照 GitLab Admin Mode)。
@@ -363,6 +393,12 @@ pub async fn openapi(
 /// 不依赖跑起来的服务器 —— 那样它才进得了 CI,也才不用平台令牌/内网 CA。
 pub fn build_openapi() -> serde_json::Value {
     use serde_json::json;
+    // ★schema 从 Rust 类型现推★ —— 见 `Api::req` 的注释:手写 JSON 会静默过期。
+    // 共享一个生成器:同一个类型在多条接口上只进 components 一次,接口里引用 `$ref`。
+    // 否则同一个结构体被内联展开 N 遍,diff 全是噪声,oasdiff 也看不出「这是同一个类型改了」。
+    let mut 生成器 = schemars::SchemaGenerator::new(
+        schemars::generate::SchemaSettings::openapi3()
+            .with(|st| st.definitions_path = "#/components/schemas/".into()));
     let mut paths = serde_json::Map::new();
     for a in APIS {
         // 路径参数:`/api/items/{id}/restore/{version_id}` → 两个 path 参数,OpenAPI 要求必填。
@@ -383,8 +419,16 @@ pub fn build_openapi() -> serde_json::Value {
             // 藏在代码里等于没有。用 x- 扩展字段,标准 security 表达不了「≥editor」这种档位。
             "x-iah-auth": a.auth,
             "parameters": params,
+            "requestBody": a.req.map(|f| json!({
+                "required": true,
+                "content": { "application/json": { "schema": f(&mut 生成器) } },
+            })),
             "responses": {
-                "200": { "description": "成功" },
+                "200": match a.res {
+                    Some(f) => json!({ "description": "成功",
+                        "content": { "application/json": { "schema": f(&mut 生成器) } } }),
+                    None => json!({ "description": "成功" }),
+                },
                 "401": { "description": "未登录" },
                 "403": { "description": "已登录但档位不够" },
                 "404": { "description": "不存在,或**完全没有授权**(刻意与不存在同一回应,防存在性探测)" },
@@ -393,11 +437,16 @@ pub fn build_openapi() -> serde_json::Value {
         let entry = paths.entry(a.path.to_string()).or_insert_with(|| json!({}));
         entry[a.method.to_lowercase()] = op;
     }
+    // 收集这一轮引用到的全部类型定义 —— 接口里只留 `$ref`,定义集中在 components。
+    let 定义 = 生成器.take_definitions(true);
+    let 未接 = APIS.iter().filter(|a| a.res.is_none()).count();
     json!({
         "openapi": "3.1.0",
+        "components": { "schemas": 定义 },
         "info": {
             "title": "congrove(汇流)",
             "version": env!("CARGO_PKG_VERSION"),
+            "x-iah-schema-coverage": json!({ "总数": APIS.len(), "响应体未接": 未接 }),
             "description": "★本文件由 src/http/apidoc.rs 的 APIS 生成,不要手改★。\
                             路由与 APIS 的一致性由 cargo test 逐条比对保证。\
                             当前只到路径级,字段级 schema 是已知欠账。",
