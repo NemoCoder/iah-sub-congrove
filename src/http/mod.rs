@@ -318,8 +318,16 @@ async fn healthz() -> &'static str {
 }
 
 /// 后端自报版本 —— ★给部署闸用的,别让它只能量前端★(见路由处的注释)。
-async fn version() -> Json<serde_json::Value> {
-    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
+/// `GET /version` 的响应体。★定成结构体而不是 `json!{}`★——
+/// 这样 OpenAPI 契约里的字段是从它**现推**的,加字段自动进契约,不会静默过期。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct VersionOut {
+    /// 后端二进制的版本,等于 Cargo.toml 的 `version`。
+    pub version: &'static str,
+}
+
+async fn version() -> Json<VersionOut> {
+    Json(VersionOut { version: env!("CARGO_PKG_VERSION") })
 }
 
 /// 就绪:PG SELECT 1 + S3 head_bucket 都通才算 ready。
