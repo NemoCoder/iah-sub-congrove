@@ -348,13 +348,19 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
                     pull={{ label: '从 AI 摘要导入', text: sum(K_BRIEF), why: aiWhy }}
                     pull2={{ label: '从分段大纲导入', text: sum(K_OUTLINE), why: aiWhy }} />
                   {/* ★两个按钮各拉各的那一半★(2026-08-17 liaoruili:「同时把待办也导入了;
-                      应该把决议和待办分开吧」)。AI 的 `decisions` 是**一份里写了两者**
-                      (media_ai.rs 的提示词),按它自己产出的小标题切开 —— 判据与兜底在
-                      `ai-decisions.ts`,带 7 条测试(含实拍那份的复现)。
-                      ⚠ 切不出来时**两栏仍旧都给全文**,回到今天的样子 ——
+                      应该把决议和待办分开吧」)。AI 的 `decisions` 是**一份里写了两者**,
+                      这里按小标题切开 —— 判据与兜底在 `ai-decisions.ts`,带 7 条测试。
+                      ⚠ 切不出来时**两栏仍旧都给全文** ——
                         一个空的「决议事项」比一个混着待办的糟得多。
-                      ⚠ 真正的修法是后端拆成两份提示词(`decisions` 只要决议 + 新增 `todos`),
-                        那要动 AI 流水线并给存量数据兜底,排在 dev 线,不在这次 prod 热修里。 */}
+
+                      ★2026-08-22 已根治,但这段切分**留着**★:后端现在让 LLM 吐 JSON,
+                      再由 `media_ai.rs::规范化决议待办` 拼成**后端写死的**
+                      `## 关键决议` / `## 待办事项` 两段 —— 于是这里切的不再是
+                      AI 的即兴发挥,而是一个固定格式,切分从「多半能对」变成「必然对」。
+                      ⚠ 那为什么不把这段删掉?两条路都还要走它:
+                        ① **存量数据**(prod 里已有的 `decisions`)还是老格式;
+                        ② LLM 吐不出合法 JSON 时后端**原样返回**,照旧落到这条启发式上。
+                      ★根治的是「新数据的切分依据」,不是「不再需要兜底」。★ */}
                   <Field label="决议事项" value={v.resolutions} canEdit={canEdit} rows={4}
                     onSave={(x) => save({ resolutions: x })}
                     pull={{ label: '从 AI 决议导入', text: 拆决议与待办(sum(K_DECISIONS)).决议, why: aiWhy }} />
