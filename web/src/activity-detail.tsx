@@ -395,8 +395,12 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
 
           {/* ★议程区要留足高度★(原型评审:内容高度太矮) */}
           <Card size="small" title="议题与议程" style={{ marginBottom: 12 }}>
+            {/* ★议程只读态也按 Markdown 渲染★(2026-08-22,与纪要那几栏同一条理由):
+                这里的提示语就写着「一行一条」,人自然会敲 `1.` `-` 或粗体。
+                `breaks` 让他打的回车真换行(markdown 单换行本来不换行)。 */}
             <InlineEdit value={m.agenda} canEdit={!!d.can_edit && !canceled} multiline rows={7}
               placeholder="（双击填写议题与议程，一行一条）"
+              renderView={(v) => <MarkdownView text={v} breaks />}
               style={{ minHeight: 160, fontSize: 13, lineHeight: 1.8 }}
               onSave={(v) => patch({ agenda: v })} />
           </Card>
