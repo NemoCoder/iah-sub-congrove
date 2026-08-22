@@ -138,6 +138,20 @@ async fn stage(pool: &PgPool, job_id: i64, stage: &str, progress: i32) {
         .bind(job_id).bind(stage).bind(progress).execute(pool).await;
 }
 
+/// 判「已有的这条逐字稿能不能拿来复用」。
+///
+/// ★抽成纯函数只为一件事:让它能被单测钉死★ —— 这条判据管的是 **GPU 预算**,
+/// 判错一次就是白烧一次整段录音的转写。而它所在的那条流水线要 S3 + ASR + LLM 三样活服务,
+/// 整条路径测不了,唯独这个判据可以。
+///
+/// 两个条件都得成立:
+/// - 全文非空 —— 空的等于没转成;
+/// - `segments` 非空 —— ★只有全文没有分段的逐字稿是坏的★:后面 `timed_transcript`
+///   要靠分段给每行打 `[mm:ss]`,没有分段出来的大纲时间戳全是 00:00(2026-08-04 那个 bug)。
+pub fn 可复用逐字稿(全文: &str, 分段数: usize) -> bool {
+    !全文.trim().is_empty() && 分段数 > 0
+}
+
 async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<()> {
     // 发起人:网关按 X-Iah-End-User 把用量/计费记到真人头上(subject fail-closed,不带头会被拒)。
     let end_user: String = sqlx::query_scalar("SELECT requested_by FROM media_jobs WHERE id=$1")
@@ -147,6 +161,48 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 无论成败都清临时文件:ephemeral-storage 有限,几个 GB 的录屏残留几次就把 pod 挤爆(被 kubelet 驱逐)。
     let _guard = scopeguard(workdir.clone());
 
+    // ══ 0) ★已经转写过就别再转一遍★(2026-08-22 liaoruili 点名要修)══
+    //
+    // 这条流水线是「下载 → ffmpeg 抽音轨 → **ASR(烧 GPU)** → LLM 出三份纪要」。
+    // 而失败**最常发生在最后一步**:2026-08-17 prod 那次就是 `生成 brief: LLM 返回 502`,
+    // ASR 四次全都成功(`char_ts:3327`)—— 可每点一次「转写」重试,整条流水线都从头再跑,
+    // ★同一段录音被白转了三遍★。GPU 时间是真金白银,而重跑它换不来任何新东西。
+    //
+    // 判据不用新增状态:★`transcripts` 里有这一条 = ASR 那步成功过★。
+    // 有就把 text / segments / char_ts 读回来,直接进第 4 步。
+    //
+    // ⚠ 什么时候**不该**复用:改了术语表想重新转的场景 —— 那不是「重试」是「重做」,
+    //   目前没有入口,真需要时再加一个显式的「重新转写」(★别把它做成默认★,
+    //   默认必须是省钱的那个)。
+    let 已有逐字稿: Option<(String, serde_json::Value, Option<serde_json::Value>)> =
+        sqlx::query_as("SELECT text, segments, char_ts FROM transcripts WHERE item_id=$1")
+            .bind(item_id).fetch_optional(&state.pool).await?;
+
+    let 复用 = 已有逐字稿.and_then(|(t, segs, cts)| {
+        let segments: Vec<Segment> = serde_json::from_value(segs).unwrap_or_default();
+        可复用逐字稿(&t, segments.len()).then(|| {
+            let char_ts: Vec<(f64, f64)> = cts.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            (t, segments, char_ts)
+        })
+    });
+    let (full_text, segments, char_ts) = match 复用 {
+        Some(x) => {
+            stage(&state.pool, job_id, "复用已有逐字稿(跳过转写)", 70).await;
+            tracing::info!(item_id, "已有逐字稿,跳过 ffmpeg 与 ASR —— 只重跑纪要生成");
+            x
+        }
+        None => 从头转写(state, job_id, item_id, &end_user, &workdir).await?,
+    };
+
+    出纪要(state, job_id, item_id, &end_user, full_text, segments, char_ts).await
+}
+
+/// 完整跑一遍「下载 → 抽音轨 → ASR」,回 (全文, 分段, 字级时间戳),并把结果落 `transcripts`。
+/// ★从 `process` 里原样搬出来的★——搬动的只是位置,判据一个字没改。
+async fn 从头转写(state: &AppState, job_id: i64, item_id: i64, end_user: &str, workdir: &std::path::Path)
+    -> anyhow::Result<(String, Vec<Segment>, Vec<(f64, f64)>)>
+{
+    let end_user = end_user.to_string();
     // 1) 取录屏(流式落盘,别整个进内存——512Mi 资源档)
     stage(&state.pool, job_id, "下载录屏", 5).await;
     // 视频或音频都收(音频没有单独的 kind,按 mime 认;见 http::media::analyzable)。
@@ -187,7 +243,7 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
             // 所以回退时把 speaker 全部抹掉,免得给用户看错误的"谁在说"。
             tracing::warn!(error = %format!("{e:#}"), "整段转写失败,回退分段(将丢弃说话人标签)");
             stage(&state.pool, job_id, "整段失败,改分段转写", 30).await;
-            let parts = split_audio(&audio, &workdir).await.context("切分音频")?;
+            let parts = split_audio(&audio, workdir).await.context("切分音频")?;
             let mut acc: Vec<Segment> = Vec::new();
             let total = parts.len().max(1);
             for (i, part) in parts.iter().enumerate() {
@@ -232,6 +288,15 @@ async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<
     // 重排结果落库(迁移 0008):读取路径不必每次重算(审计 2026-08-04)。
     .bind(realign(&full_text, &segments, &char_ts).map(serde_json::to_value).transpose()?)
     .execute(&state.pool).await?;
+
+    Ok((full_text, segments, char_ts))
+}
+
+/// 第 4 步:拿逐字稿出三份纪要(摘要 / 分段大纲 / 决议待办)。
+/// ★与 ASR 分家的意义★:重试时只重跑这一段,不再白烧 GPU(见 `process` 里的 0 步)。
+async fn 出纪要(state: &AppState, job_id: i64, item_id: i64, end_user: &str,
+                full_text: String, segments: Vec<Segment>, char_ts: Vec<(f64, f64)>) -> anyhow::Result<()> {
+    let end_user = end_user.to_string();
 
     // 4) 出纪要(三份:摘要 / 分段大纲 / 决议待办)
     // ★喂给 LLM 的稿子必须带时间戳★(2026-08-04 反馈:大纲里时间全是 00:00)——
@@ -762,6 +827,28 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
 
 #[cfg(test)]
 mod tests {
+    use super::可复用逐字稿;
+
+    #[test]
+    fn 有全文有分段才复用() {
+        // ★这条判据管的是 GPU 预算★:判错一次 = 白烧一次整段录音的转写。
+        assert!(可复用逐字稿("会议内容若干", 12), "正常的逐字稿就该复用,别再烧一次 GPU");
+    }
+
+    #[test]
+    fn 空全文不复用() {
+        // 空的等于没转成 —— 复用它等于把「转写失败」固化下来,再也转不出东西。
+        assert!(!可复用逐字稿("", 12));
+        assert!(!可复用逐字稿("   \n\t ", 12), "只有空白也算空");
+    }
+
+    #[test]
+    fn 没有分段不复用() {
+        // ★只有全文、没有分段的逐字稿是坏的★:timed_transcript 要靠分段给每行打 [mm:ss],
+        // 没分段出来的大纲时间戳全是 00:00(2026-08-04 那个 bug)。宁可重转。
+        assert!(!可复用逐字稿("会议内容若干", 0));
+    }
+
     use super::*;
 
     fn seg(start: f64, end: f64, text: &str, spk: &str) -> Segment {
