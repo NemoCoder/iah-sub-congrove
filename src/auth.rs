@@ -435,7 +435,18 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
             let u = u.to_string();
             // 与 Bearer 路径同一条 upsert:E2E 身份也要在 app_user 里落一行,
             // 否则它建的项目、发的邀请都挂在一个「不存在的人」名下。
-            let is_super = ensure_app_user(&state.pool, &u, None, Some(&u), None, &state.config.super_users)
+            //
+            // ★name 传 None,别传 Some(&u)★(2026-08-22 修):原来把**账号名当姓名**传进来,
+            //   而 upsert 里是 `name = COALESCE(EXCLUDED.name, app_user.name)` ——
+            //   EXCLUDED.name 非 NULL ⇒ ★每一个 E2E 请求都把被冒充那个账号的姓名擦成账号名★。
+            //   `X-IAH-E2E-User: liaoruili` 跑一次测试,liaoruili 的姓名就没了;
+            //   而他要重新登录一次才补得回来。dev 库里 111 个用户有 109 个 `name = username`,
+            //   很可能就是这么来的。
+            //   ⇒ 传 None:新 E2E 账号落行时 name 为 NULL(`显示名()` 自会回退到账号名,
+            //     这正是想要的),已有真人的姓名被 COALESCE 保住。
+            //   ★这个 bug 是查「记录员为什么还印账号名」时撞出来的★ —— 当时我以为是
+            //   v0.7.11 没生效,其实是**我的验证请求自己**在每次调用前把姓名擦掉了。
+            let is_super = ensure_app_user(&state.pool, &u, None, None, None, &state.config.super_users)
                 .await
                 .map_err(AppError::Other)?;
             tracing::debug!(user = %u, "E2E 通道身份(仅 dev)");
