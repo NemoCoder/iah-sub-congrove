@@ -80,26 +80,35 @@ export function InlineEdit({
     )
   }
 
-  return (
-    <span
-      onDoubleClick={() => canEdit && setEditing(true)}
-      title={canEdit ? '双击编辑' : undefined}
-      style={{
-        display: multiline ? 'block' : 'inline-block',
-        minHeight: multiline ? rows * 22 : undefined,
-        whiteSpace: multiline ? 'pre-wrap' : undefined,
-        cursor: canEdit ? 'text' : 'default',
-        borderRadius: 4,
-        padding: multiline ? '4px 6px' : '0 4px',
-        // 空值时给一点底色,让「这里可以填」看得出来;有值时完全透明,像普通文本
-        background: value ? 'transparent' : canEdit ? '#fafafa' : 'transparent',
-        ...style,
-      }}
-    >
+  // ★多行只读态用 <div> 不用 <span>★(2026-08-22):`renderView` 可以返回**块级**内容
+  // (纪要/议程现在渲染 Markdown,`MarkdownView` 就是个 <div>),而 <span> 是行内元素、
+  // 按 HTML 规范不能包块级 —— 浏览器会**自己把 DOM 拆开**,布局当场错乱,
+  // 而 React 只在开发模式下警告一句 validateDOMNesting。★它本来就 display:block,换成 div 视觉不变。★
+  // 单行仍旧是 span:那里的 renderView 渲染的是 <a> 这类行内内容,包进 div 会把行给断开。
+  const 壳属性 = {
+    onDoubleClick: () => canEdit && setEditing(true),
+    title: canEdit ? '双击编辑' : undefined,
+    style: {
+      display: multiline ? 'block' : ('inline-block' as const),
+      minHeight: multiline ? rows * 22 : undefined,
+      // ★有 renderView 就别 pre-wrap★:Markdown 自己管换行,再叠一层 pre-wrap
+      // 会把源码里的缩进和空行原样顶出来(列表前多一大截空白)。
+      whiteSpace: multiline && !renderView ? ('pre-wrap' as const) : undefined,
+      cursor: canEdit ? ('text' as const) : ('default' as const),
+      borderRadius: 4,
+      padding: multiline ? '4px 6px' : '0 4px',
+      // 空值时给一点底色,让「这里可以填」看得出来;有值时完全透明,像普通文本
+      background: value ? 'transparent' : canEdit ? '#fafafa' : 'transparent',
+      ...style,
+    },
+  }
+  const 内容 = (
+    <>
       {busy && <Spin size="small" style={{ marginRight: 6 }} />}
       {value
         ? (renderView ? renderView(value) : value)
         : <Typography.Text type="secondary">{canEdit ? placeholder : '未填'}</Typography.Text>}
-    </span>
+    </>
   )
+  return multiline ? <div {...壳属性}>{内容}</div> : <span {...壳属性}>{内容}</span>
 }

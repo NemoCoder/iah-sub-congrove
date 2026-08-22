@@ -442,7 +442,17 @@ function Field({ label, hint, value, canEdit, rows = 3, onSave, pull, pull2 }: {
             onClick={() => add(pull.text)}>{pull.label}</Button>
         )}
       </div>
+      {/* ★只读态按 Markdown 渲染★(2026-08-22 liaoruili:「md 在编辑框里不渲染」)。
+          这几栏(议程/正文/决议/待办)本来就是 Markdown:上面那几个「从 AI …导入」
+          按钮拉进来的就是带 `-` 列表和 `**粗体**` 的 md,而只读态一直按纯文本显示 ——
+          于是屏幕上是一堆字面量的星号和减号。★导出的 PDF 早就是渲染过的★
+          (走 pandoc),界面反倒不是,同一份内容两个样子。
+          ⚠ `breaks`:人在这里随手打的回车必须真换行 —— markdown 规范里单换行不换行,
+            不开这个开关,他敲的分行会被折成一整段(2026-08-04 在分段大纲上撞过)。
+          ⚠ 编辑态仍然是**纯文本框**:所见即所得的富文本编辑器是另一件事,
+            而且会把 md 源码藏起来 —— 这几栏的内容要能被 PDF 导出原样吃掉。 */}
       <InlineEdit value={value} canEdit={canEdit} multiline rows={rows} onSave={onSave}
+        renderView={(v) => <MarkdownView text={v} breaks />}
         style={{ fontSize: 13, lineHeight: 1.8 }} />
     </div>
   )

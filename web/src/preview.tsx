@@ -6,6 +6,7 @@ import {
   VideoCameraOutlined,
 } from '@ant-design/icons'
 import Markdown from 'react-markdown'
+import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { useEffect, useState } from 'react'
 import { Alert, Spin } from 'antd'
@@ -13,10 +14,20 @@ import { Alert, Spin } from 'antd'
 /// markdown 渲染:react-markdown **默认不渲染原始 HTML**(不开 rehype-raw),
 /// 所以团队成员写的文档里就算塞 <script> 也只会当文本显示——同源存储型 XSS 从源头堵死。
 /// remark-gfm 补表格/任务列表/删除线(活动记录高频)。
-export function MarkdownView({ text }: { text: string }) {
+/// ★`breaks` 是给「人手写的短文本」用的★(2026-08-22)。
+///
+/// Markdown 规范里**单个换行不换行** —— 连续两行会被折成一段。
+/// 对文档/AI 产物这是对的(它们本来就按 markdown 写);
+/// 但对**纪要正文、议程**这种人随手敲的字段就是错的:
+/// 人打了回车却没换行,而他根本不知道自己在写 markdown。
+/// (同一件事 2026-08-04 在分段大纲上撞过一次,当时的处置是**整个不给 markdown 渲染**,
+///  见 `analysis.tsx` 的 `TimedLines` —— 那是回避,不是解决。)
+///
+/// ⚠ 默认 **false**,保持既有各处的渲染一字不变;只有明确「这是人手写的」才开。
+export function MarkdownView({ text, breaks = false }: { text: string; breaks?: boolean }) {
   return (
     <div className="cg-md" style={{ lineHeight: 1.75, wordBreak: 'break-word' }}>
-      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+      <Markdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}>{text}</Markdown>
     </div>
   )
 }
