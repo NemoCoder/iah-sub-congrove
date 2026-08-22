@@ -26,7 +26,6 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::audit;
@@ -93,6 +92,129 @@ pub struct PrecheckIn {
     pub parent_id: Option<i64>,
 }
 
+// ══════ 响应体类型(字段级契约,2026-08-22)══════
+
+/// 秒传预检。★「省空间」无条件,「省时间(秒传)」有条件★——
+/// 只有调用者本来就能读到同 sha 的内容才免传,否则就是「凭哈希认领他人文件」那个洞。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PrecheckOut {
+    /// true = 秒传成功,`id` 是新建好的那一条;false = 得老老实实传。
+    pub instant: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
+}
+
+/// 播放进度。★两个都可能为 null★:没播过就没有记录。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProgressOut {
+    /// 没播过时是 0.0(不是 null)—— 播放器拿到 0 就从头开始,不必特判。
+    pub position_sec: f64,
+    /// 总时长。★这个可能为 null★:进度是播放器上报的,而时长要等它 loadedmetadata。
+    pub duration_sec: Option<f64>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProgressPutOut {
+    pub ok: bool,
+    pub position_sec: f64,
+}
+
+/// 复制一份 —— ★名字可能与请求的不同★(同目录重名会自动加后缀),所以要回显。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct CopyOut {
+    pub id: i64,
+    pub name: String,
+}
+
+/// 删除(软删)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RemoveItemOut {
+    pub ok: bool,
+    /// 这次进回收站的条数 —— ★删目录会连着子项一起进★,所以不是恒为 1。
+    pub trashed: u64,
+}
+
+/// 还原。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct UndeleteOut {
+    pub ok: bool,
+    /// 还原的条数(含被连带还原的祖先目录)。
+    pub restored: u64,
+}
+
+/// 彻底删除。★只能对回收站里的东西调★,不能拿来跳过软删除。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PurgeOut {
+    pub ok: bool,
+    /// 真正从对象存储删掉的对象数。★可能小于条目数★——
+    /// 内容寻址下同一个 blob 还被别处引用着就不删(引用计数)。
+    pub objects_deleted: usize,
+}
+
+/// 回收站一页。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ItemTrashOut {
+    /// ★总数必须回★:没有它,界面不知道自己看到的是不是全部
+    /// (2026-08-13 那次「第 501 条起凭空消失」就是这么来的)。
+    pub total: i64,
+    pub items: Vec<ItemTrashRow>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ItemTrashRow {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub size: Option<i64>,
+    pub mime: Option<String>,
+    /// ★空串而不是 null★:SQL 里 `COALESCE(i.deleted_by,'')` 过了。
+    pub deleted_by: String,
+    pub deleted_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 存文档正文。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ContentPutOut {
+    pub ok: bool,
+    /// 内容没变时为 true,此时**不新建版本**(否则每点一次保存就多一个一模一样的版本)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unchanged: Option<bool>,
+    /// 新内容的 sha256(内容寻址的 key)。内容没变时不给。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// 上传结果。
+///
+/// ⚠★这个形状是历史包袱,如实记下来★:**第一个文件的字段平铺在顶层**
+/// (`id`/`sha256`/`size`/`name`),同时 `items` 里给全部。
+/// 来历是这个接口原本只收单文件,后来支持多文件时**不能改掉顶层那几个字段**
+/// —— 老前端还在读它们。★契约里写清楚,好过让下一个人以为顶层那份是「汇总」。★
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct UploadOut {
+    /// ★第一个文件的 id★,不是什么汇总值。
+    pub id: i64,
+    pub sha256: String,
+    pub size: i64,
+    pub name: String,
+    /// 这次上传的全部文件(含上面那一个)。
+    pub items: Vec<UploadedFile>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema, Clone)]
+pub struct UploadedFile {
+    pub id: i64,
+    pub sha256: String,
+    pub size: i64,
+    pub name: String,
+    /// ★true = 这个文件已经存在,没有新建★(同目录同名同 sha)。此时 `id` 指的是**已有那一条**。
+    /// ⚠ 这个字段以前只在 `json!` 里出现过,契约里查不到它存在 —— 前端要区分
+    ///   「传上去了」和「本来就有」,靠的就是它。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<bool>,
+}
+
+
 /// POST /api/projects/{pid}/precheck —— 秒传预检(≥editor)。
 /// 命中(我本来就能读到同内容)→ 直接建行指过去,**零字节传输**;否则告诉前端照常传。
 pub async fn precheck(
@@ -100,7 +222,7 @@ pub async fn precheck(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<PrecheckIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<PrecheckOut>> {
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     check_parent(&state.pool, pid, input.parent_id).await?;
     let sha = input.sha256.trim().to_lowercase();
@@ -115,7 +237,7 @@ pub async fn precheck(
     }
     let Some((key, size, mime)) = readable_blob(&state, &id, &sha).await? else {
         // 没命中(或命中了但我读不到那份)→ 照常传。key 给出去,传完就是内容寻址的共享对象。
-        return Ok(Json(json!({ "instant": false })));
+        return Ok(Json(PrecheckOut { instant: false, id: None }));
     };
     // 配额照算:秒传省的是传输与存储,不是配额额度(否则同一份东西被反复「免费」摆进各空间)。
     let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
@@ -134,7 +256,7 @@ pub async fn precheck(
     .fetch_one(&state.pool).await?;
     tracing::info!(item = iid, sha = %&sha[..8], "秒传命中:零字节建立引用");
     crate::http::media::enqueue_analysis(&state, iid, id.require_username()?).await;
-    Ok(Json(json!({ "instant": true, "id": iid })))
+    Ok(Json(PrecheckOut { instant: true, id: Some(iid) }))
 }
 
 /// 某人的配额与已用量（ADR-0004）。★额度挂在人身上，不挂在项目上★。
@@ -334,7 +456,7 @@ pub async fn project_of_alive(pool: &sqlx::PgPool, item_id: i64) -> AppResult<i6
         .ok_or(AppError::NotFound)
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct ItemRow {
     pub id: i64,
     /// 所属空间。列表接口用不着(调用方本来就按空间拉),但**分享链接**要靠它:
@@ -441,7 +563,7 @@ pub async fn progress_get(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ProgressOut>> {
     let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<(f64, Option<f64>)> = sqlx::query_as(
@@ -452,7 +574,7 @@ pub async fn progress_get(
     .fetch_optional(&state.pool)
     .await?;
     let (pos, dur) = row.unwrap_or((0.0, None));
-    Ok(Json(json!({ "position_sec": pos, "duration_sec": dur })))
+    Ok(Json(ProgressOut { position_sec: pos, duration_sec: dur }))
 }
 
 /// PUT /api/items/{id}/progress —— 记录播放位置(≥viewer,覆盖写)。
@@ -462,7 +584,7 @@ pub async fn progress_put(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(input): Json<ProgressIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ProgressPutOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let mut pos = input.position_sec.max(0.0);
@@ -482,7 +604,7 @@ pub async fn progress_put(
     .bind(input.duration_sec)
     .execute(&state.pool)
     .await?;
-    Ok(Json(json!({ "ok": true, "position_sec": pos })))
+    Ok(Json(ProgressPutOut { ok: true, position_sec: pos }))
 }
 
 #[derive(Deserialize)]
@@ -562,7 +684,7 @@ pub async fn create(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<ItemIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::IdOut>> {
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     if input.kind != "folder" && input.kind != "doc" {
         return Err(AppError::BadRequest("kind 只能是 folder 或 doc(文件走上传)".into()));
@@ -582,7 +704,7 @@ pub async fn create(
     .bind(id.require_username()?)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(json!({ "id": iid })))
+    Ok(Json(crate::http::dto::IdOut { id: iid }))
 }
 
 #[derive(Deserialize)]
@@ -644,7 +766,7 @@ pub async fn copy(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(p): Json<CopyIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<CopyOut>> {
     // ① 源要能读
     let src_pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, src_pid, Role::Viewer).await?;
@@ -723,7 +845,7 @@ pub async fn copy(
 
     crate::audit::record(&state.pool, id.require_username()?, "item.copy",
         &new_id.to_string(), &format!("从 #{iid} 复制到项目 #{}", p.project_id)).await;
-    Ok(Json(json!({ "id": new_id, "name": name })))
+    Ok(Json(CopyOut { id: new_id, name: name.to_string() }))
 }
 
 pub async fn update(
@@ -731,7 +853,7 @@ pub async fn update(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(p): Json<ItemPatch>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     // 回收站里的东西不给改名/移动 —— 要动它先还原(v0.3.55 审计)。
@@ -787,7 +909,7 @@ pub async fn update(
             .execute(&state.pool)
             .await?;
     }
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// DELETE /api/items/{id} —— **软删除**(≥editor,2026-08-05 用户:「所有的删除都是软删除」)。
@@ -798,7 +920,7 @@ pub async fn remove(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<RemoveItemOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     // ★项目树里删不掉活动材料★(D10;2026-08-09 liaoruili:「要去会议里面删除」)。
@@ -822,7 +944,7 @@ pub async fn remove(
     ).bind(iid).bind(actor).execute(&state.pool).await?.rows_affected();
     audit::record(&state.pool, actor, "item.delete", &iid.to_string(),
         &format!("project={pid} 软删除 {n} 项(进回收站)")).await;
-    Ok(Json(json!({ "ok": true, "trashed": n })))
+    Ok(Json(RemoveItemOut { ok: true, trashed: n }))
 }
 
 /// GET /api/projects/{id}/trash —— 回收站(≥editor;材料区认主人)。只列**被直接删除的那一项**
@@ -836,7 +958,7 @@ pub async fn trash(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     axum::extract::Query(q): axum::extract::Query<crate::http::Page>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ItemTrashOut>> {
     crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     // ★真分页,不是写死 LIMIT★(2026-08-13 改):原来是 `LIMIT 500` 且不返回 total ——
     //   删满 500 条之后,第 501 条起在界面上**凭空消失**,而它还在库里、还占着配额
@@ -859,13 +981,12 @@ pub async fn trash(
     // ★空页也要回 total=0 而不是省略字段★:前端拿不到 total 会退化成「不知道有多少」,
     //   那就又回到了「看到的就是全部」的错觉。
     let total = rows.first().map(|r| r.7).unwrap_or(0);
-    Ok(Json(json!({
-        "total": total,
-        "items": rows.into_iter().map(|(id, kind, name, size, mime, by, at, _)| json!({
-            "id": id, "kind": kind, "name": name, "size": size, "mime": mime,
-            "deleted_by": by, "deleted_at": at,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(ItemTrashOut {
+        total,
+        items: rows.into_iter().map(|(id, kind, name, size, mime, deleted_by, deleted_at, _)| ItemTrashRow {
+            id, kind, name, size, mime, deleted_by, deleted_at,
+        }).collect(),
+    }))
 }
 
 /// POST /api/items/{id}/undelete —— 从回收站还原(≥editor;材料区认主人)。整棵子树一起还原;
@@ -878,7 +999,7 @@ pub async fn undelete(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<UndeleteOut>> {
     let pid = project_of(&state.pool, iid).await?;
     crate::perm::require_material_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
@@ -919,7 +1040,7 @@ pub async fn undelete(
     tx.commit().await?;
     audit::record(&state.pool, actor, "item.undelete", &iid.to_string(),
         &format!("project={pid} 还原 {n} 项(含连带还原的上级目录 {n2} 层)")).await;
-    Ok(Json(json!({ "ok": true, "restored": n + n2 })))
+    Ok(Json(UndeleteOut { ok: true, restored: n + n2 }))
 }
 
 /// DELETE /api/items/{id}/purge —— **彻底删除**(空间 **admin**)。行删掉、对象按引用计数清。
@@ -929,7 +1050,7 @@ pub async fn purge(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<PurgeOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let actor = id.require_username()?;
@@ -946,7 +1067,7 @@ pub async fn purge(
     }
     let n = purge_subtree(&state, iid).await?;
     audit::record(&state.pool, actor, "item.purge", &iid.to_string(), &format!("project={pid} 彻底删除,清对象 {n}")).await;
-    Ok(Json(json!({ "ok": true, "objects_deleted": n })))
+    Ok(Json(PurgeOut { ok: true, objects_deleted: n }))
 }
 
 /// 彻底删一棵子树:先收集候选对象 key,删行,再对**已无人引用**的 key 删对象。返回真正删掉的对象数。
@@ -1034,7 +1155,7 @@ pub async fn content_put(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(input): Json<ContentIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ContentPutOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     // 回收站里的文档不接受写入(v0.3.55 审计):否则改完还得先还原才看得见,白改一场。
@@ -1050,7 +1171,7 @@ pub async fn content_put(
     let bytes = input.text.into_bytes();
     let sha = hex::encode(Sha256::digest(&bytes));
     if old_sha.as_deref() == Some(sha.as_str()) {
-        return Ok(Json(json!({ "ok": true, "unchanged": true })));
+        return Ok(Json(ContentPutOut { ok: true, unchanged: Some(true), sha256: None }));
     }
     let size = bytes.len() as i64;
     let (quota, used) = owner_quota_used(&state.pool, &project_owner(&state.pool, pid).await?).await?;
@@ -1096,10 +1217,10 @@ pub async fn content_put(
             .await?;
     }
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true, "sha256": sha })))
+    Ok(Json(ContentPutOut { ok: true, unchanged: None, sha256: Some(sha) }))
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct VersionRow {
     pub id: i64,
     pub size: Option<i64>,
@@ -1132,7 +1253,7 @@ pub async fn restore(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path((iid, vid)): Path<(i64, i64)>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let pid = project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let v: Option<(String, Option<i64>, Option<String>)> =
@@ -1160,7 +1281,7 @@ pub async fn restore(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 #[derive(Deserialize)]
@@ -1201,7 +1322,7 @@ pub async fn upload(
     Path(pid): Path<i64>,
     Query(q): Query<UploadQuery>,
     mut mp: Multipart,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<UploadOut>> {
     // ★材料区在 require_role 上是全只读的★(PRD §J1),但活动材料必须传得进去 ——
     // 所以带 activity_id 的上传走 `require_material_owner`(材料区认「这是我自己的区」,
     // 普通项目照旧 ≥editor);不带 activity_id 的照常走 require_role,于是
@@ -1248,7 +1369,7 @@ pub async fn upload(
     // 收**所有**文件字段(2026-08-04 审计):原来处理完第一个就 return,同一请求里的第二个文件
     // **连报错都没有、直接消失**。前端是一文件一请求,但接口不该静默丢数据。
     // 兼容:响应仍带首个文件的 id/sha256/size,另加 items 数组列全部。
-    let mut done: Vec<serde_json::Value> = Vec::new();
+    let mut done: Vec<UploadedFile> = Vec::new();
     while let Some(mut field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         if field.file_name().is_none() {
             continue;
@@ -1304,8 +1425,8 @@ pub async fn upload(
                 if let Some(exist) = dup {
                     // 完全重复:回滚这一行。★对象不能删★ —— 它就是那份已存在文件正引用着的 blob。
                     let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
-                    done.push(serde_json::json!({
-                        "id": exist, "name": fname, "sha256": sha, "size": total, "duplicate": true }));
+                    done.push(UploadedFile {
+                        id: exist, name: fname, sha256: sha, size: total, duplicate: Some(true) });
                     continue;
                 }
                 // 同名不同内容 → 找一个没被占的序号。上限 999 是防呆:真到那一步说明有人在刷。
@@ -1352,7 +1473,7 @@ pub async fn upload(
                     .await?;
                 // 录屏/录音传完即自动排队生成纪要(2026-08-05,与预签名直传那条路径一致)。
                 crate::http::media::enqueue_analysis(&state, iid, actor).await;
-                done.push(json!({ "id": iid, "sha256": sha, "size": total, "name": fname }));
+                done.push(UploadedFile { id: iid, sha256: sha, size: total, name: fname, duplicate: None });
             }
             Err(e) => {
                 let _ = sqlx::query("DELETE FROM items WHERE id = $1").bind(iid).execute(&state.pool).await;
@@ -1361,9 +1482,10 @@ pub async fn upload(
         }
     }
     if let Some(first) = done.first().cloned() {
-        let mut out = first;
-        out["items"] = json!(done);
-        return Ok(Json(out));
+        // ★第一个文件的字段平铺在顶层★——见 UploadOut 的注释:历史包袱,老前端还在读。
+        return Ok(Json(UploadOut {
+            id: first.id, sha256: first.sha256, size: first.size, name: first.name, items: done,
+        }));
     }
     Err(AppError::BadRequest("没有收到文件".into()))
 }
