@@ -177,6 +177,41 @@ pub async fn owner_quota_used(pool: &sqlx::PgPool, owner: &str) -> AppResult<(i6
     Ok(row)
 }
 
+/// ★一次算出所有人的已用量★ —— 与 `owner_quota_used` **同一套去重规则**
+/// (ADR-0004:算 owner 名下所有项目、同 owner 按 blob 去重)。
+///
+/// ══ 为什么必须是同一套 ══
+/// 「已用量」这个数在三个地方出现:我的额度页、超管后台的「已用」列、
+/// 「改全站默认之前先算影响面」。★三处给出不同的数字,人只会以为系统在骗他。★
+///
+/// ⚠ 这里的去重是 `GROUP BY owner, k` —— **跨这个 owner 的全部项目**。
+///   `default_quota_impact` 原来那段是 `JOIN LATERAL … GROUP BY k` 按**单个项目**去重
+///   再把各项目相加:同一个 blob 出现在同一人的两个项目里就会被算两次,
+///   与 `owner_quota_used` 对不上。★2026-08-22 dev 上两者碰巧相等
+///   (那些项目之间没有共享 blob),所以它一直没暴露★ —— 秒传/去重一旦用起来就会。
+///   现在两处都走本函数。
+///
+/// ★为什么不逐个调 `owner_quota_used`★:那是每人一次多表 JOIN,
+/// 超管后台一屏 111 个用户就是 111 次 —— 典型 N+1。
+pub async fn owners_used_bulk(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<String, i64>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT owner, COALESCE(sum(sz),0)::bigint AS used FROM (
+           SELECT owner, k, max(sz) AS sz FROM (
+             SELECT p.owner AS owner, i.s3_key AS k, i.size AS sz
+               FROM items_alive i JOIN projects p ON p.id = i.project_id
+              WHERE p.deleted_at IS NULL AND i.s3_key IS NOT NULL
+             UNION ALL
+             SELECT p.owner, v.s3_key, v.size
+               FROM item_versions v JOIN items_alive i ON i.id = v.item_id
+               JOIN projects p ON p.id = i.project_id
+              WHERE p.deleted_at IS NULL
+           ) t GROUP BY owner, k
+         ) u GROUP BY owner",
+    )
+    .fetch_all(pool).await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// 项目的 owner —— 配额判据要用它（额度算 owner 的，不算操作者的）。
 pub async fn project_owner(pool: &sqlx::PgPool, pid: i64) -> AppResult<String> {
     sqlx::query_scalar("SELECT owner FROM projects WHERE id = $1 AND deleted_at IS NULL")

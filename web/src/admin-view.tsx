@@ -10,7 +10,7 @@
 //   一个会改全站行为的开关混在 API 文档里,既不好找,也让那个入口名不副实。现在搬过来了。
 import {
   Alert, App as AntdApp, AutoComplete, Button, Card, Empty, Input, InputNumber,
-  Select, Space, Table, Tabs, Tag, Tooltip, Typography,
+  Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography,
 } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, showUserWithAccount, type Me } from './api'
@@ -27,6 +27,8 @@ type UserRow = {
   /// 只看 quota_bytes 的话,「50 GiB 是他自己的还是全站默认正好 50 GiB」分不出来 ——
   /// 而这恰恰决定了改全站默认会不会影响他。
   quota_is_default: boolean
+  /// ★已用量★(2026-08-22 liaoruili 要的「已用」列)。与 `/api/me/quota` 同一套去重规则。
+  used_bytes: number
 }
 type AuditRow = { id: number; ts: string; actor: string; action: string; target: string; detail: string }
 type 设置项<T> = { value: T; source: 'db' | 'env' | 'default' }
@@ -183,6 +185,30 @@ function 用户表({ me, onChanged }: { me: Me | null; onChanged: () => void }) 
                 {r.quota_is_default && <Typography.Text type="secondary" style={{ fontSize: 12 }}>（默认）</Typography.Text>}
               </Space>
             ) },
+          // ★「已用」列★(2026-08-22 liaoruili):此前这一页只看得见「给了多少」、
+          // 看不见「用了多少」—— 而超管在这儿要做的判断(该不该给他调额度)
+          // 恰恰要两个数一起看。★占比比绝对值更有用★,所以带一条细进度条:
+          // 一屏扫过去,谁快满了一眼就看出来,不必逐行心算。
+          { title: '已用', width: 160,
+            // 按用量排序:「谁快满了」是这一页最常问的问题
+            sorter: (a: UserRow, b: UserRow) => a.used_bytes - b.used_bytes,
+            render: (_: unknown, r) => {
+              const 占比 = r.quota_bytes > 0 ? Math.min(100, (r.used_bytes / r.quota_bytes) * 100) : 0
+              return (
+                <div>
+                  <div style={{ fontSize: 12 }}>
+                    {fmtSize(r.used_bytes)}
+                    <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                      {Math.round(占比)}%
+                    </Typography.Text>
+                  </div>
+                  <Progress
+                    percent={占比} showInfo={false} size="small"
+                    // 90% 以上标红:那是「再传就满」的人,和「用了一半」不该长得一样
+                    strokeColor={占比 >= 90 ? '#ff4d4f' : 占比 >= 70 ? '#faad14' : undefined} />
+                </div>
+              )
+            } },
           { title: '最近登录', width: 150, render: (_: unknown, r) => 时刻(r.last_login) },
           { title: '操作', width: 230, render: (_: unknown, r) => (
             <Space size={4} wrap>
