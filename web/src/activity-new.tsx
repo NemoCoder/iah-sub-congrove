@@ -6,7 +6,7 @@
 //
 // 参会人用 chips-combobox(输入即过滤、选中清空、★空输入时 Backspace 删最后一个 chip★),
 // 与项目成员管理那套一致 —— 同一个交互在两处长得不一样,比丑更糟。
-import { App as AntdApp, Button, Card, Form, Input, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Form, Input, Modal, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, isMaterials, showUserWithAccount, type ActivityType, type FreeBusy, type Me, type MemberList, type Project, type UserOpt } from './api'
 import { ticks, toBar } from './freebusy-layout'
@@ -124,6 +124,34 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
       .then((ts) => { setTypes(ts); setTypeId((cur) => cur ?? ts[0]?.id) })
       .catch(() => {})
   }, [])
+  // ★就地建类型★（2026-08-22）：原来点「＋ 新建类型…」只弹一句
+  // 「去右上角头像菜单里的『我的活动类型』新建」——★而人这时表单已经填了一半★，
+  // 走一趟回来全没了。当时的注释说「不能在这里直接建（那要嵌一整套增删改）」，
+  // 但**新建**只要 name + busy_default 两个字段（后端 create 就收这两个，
+  // has_minutes / needs_project 一律 false），根本不需要那一整套。
+  // ⇒ 弹个小窗当场建，建完自动选中，表单一个字都不丢。改名/删除仍旧去管理页。
+  const [建类型中, set建类型中] = useState(false)
+  const [新类型名, set新类型名] = useState('')
+  const [新类型占忙闲, set新类型占忙闲] = useState(true)
+  const [提交中, set提交中] = useState(false)
+  const 建类型 = async () => {
+    const name = 新类型名.trim()
+    if (!name) { message.warning('给这个类型起个名字'); return }
+    set提交中(true)
+    try {
+      const r = await api<{ id: number }>('/api/activity-types', {
+        method: 'POST', body: JSON.stringify({ name, busy_default: 新类型占忙闲 }),
+      })
+      const ts = await api<ActivityType[]>('/api/activity-types')
+      setTypes(ts)
+      setTypeId(r.id)          // ★建完就选中它★——不然人还得自己再点一次
+      set建类型中(false); set新类型名(''); set新类型占忙闲(true)
+      message.success(`已建「${name}」并选中`)
+    } catch (e) {
+      // ★重名等后端拒绝要留在弹窗里★：关掉窗人就得从头再来一遍。
+      message.error((e as Error).message)
+    } finally { set提交中(false) }
+  }
   /// ★参会人候选 = 已选关联项目的成员并集★（2026-08-09 用户：「不要从其他项目导入成员，
   /// 直接根据关联成员的并集多选即可」）。原来是「一个搜索框 + 一个『从其它项目导入』下拉」
   /// 两截,既丑又绕:导入是个**批量动作**,却长得像个筛选器。
@@ -237,20 +265,16 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
             onChange={(v) => { if (v !== -1) setTypeId(v) }}
             style={{ maxWidth: 260 }}
             // ★下拉里带「＋ 新建类型…」入口★（原型）：想不起来先建类型再回来发起活动，
-            // 是很自然的顺序 —— 但**不能在这里直接建**（那要嵌一整套增删改），
-            // 所以指向管理页，并明说去哪。
+            // 是很自然的顺序 —— 选它**当场弹窗建**（2026-08-22 改，此前只弹一句提示
+            // 指向管理页，而人这时表单已经填了一半，走一趟回来全丢）。
             options={[
               ...types.map((t) => ({
                 value: t.id,
                 label: t.owner === null ? t.name : `${t.name}（我建的）`,
               })),
-              { value: -1, label: '＋ 新建类型…（去「我的活动类型」）', disabled: false },
+              { value: -1, label: '＋ 新建类型…', disabled: false },
             ]}
-            onSelect={(v) => {
-              if (v === -1) {
-                message.info('在右上角头像菜单里的「我的活动类型」新建，建完回来即可选到')
-              }
-            }}
+            onSelect={(v) => { if (v === -1) set建类型中(true) }}
           />
           {/* ★能力位徽章★（原型「新建活动」视图）：选了类型之后，
               「这类活动要不要纪要 / 要不要项目 / 占不占忙闲」必须**一眼看见** ——
@@ -277,6 +301,33 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
             </Space>
           )}
         </Form.Item>
+        {/* ★就地建类型★：只有「名字 + 占不占忙闲」两项 —— 后端 create 也只收这两个
+            （自建类型的 has_minutes / needs_project 一律 false：要正式纪要和项目归属
+            就该用预置的「会议」）。改名与删除仍旧去「我的活动类型」页，
+            ★这里只补「新建」这一个动作★，因为它是唯一会在填表途中被需要的。 */}
+        <Modal
+          open={建类型中} title="新建活动类型" okText="建好并选中" cancelText="取消"
+          confirmLoading={提交中} onOk={建类型}
+          onCancel={() => { set建类型中(false); set新类型名('') }}
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Input
+              autoFocus value={新类型名} maxLength={20} placeholder="如：读文献、写作、组会"
+              onChange={(e) => set新类型名(e.target.value)}
+              onPressEnter={() => { if (!提交中) void 建类型() }}
+            />
+            <Space size={8}>
+              <Switch checked={新类型占忙闲} onChange={set新类型占忙闲} />
+              <span>占忙闲</span>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                别人查你有没有空时，这类活动算不算「忙」
+              </Typography.Text>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              自建类型没有纪要、也不要求关联项目；要这两样请用预置的「会议」。
+            </Typography.Text>
+          </Space>
+        </Modal>
         <Form.Item name="title" label="活动标题" rules={[{ required: true, message: '写个标题' }]}>
           <Input placeholder="如：8 月第二次组会" />
         </Form.Item>
