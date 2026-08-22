@@ -27,16 +27,21 @@ pub struct UserRow {
     ///   而这恰恰决定了「改全站默认会不会影响他」。
     ///   2026-08-16 实测 dev:108 个用户里 **0 个**设过,全都是 true。
     pub quota_is_default: bool,
+    /// ★已用量★(2026-08-22 liaoruili 要的「已用」列):没有它,超管在这一页上
+    /// 只看得见「给了多少」看不见「用了多少」—— 而他要做的判断(该不该调额度)
+    /// 恰恰要两个数一起看。与 `/api/me/quota` **同一套去重规则**(items::owners_used_bulk)。
+    pub used_bytes: i64,
 }
 
 /// GET /api/admin/users —— 登录过的全部用户(含生效配额与它是不是默认值)。
 pub async fn users(State(state): State<AppState>) -> AppResult<Json<Vec<UserRow>>> {
     // 全站默认只读一次,不在 SQL 里 join 常量:它的唯一推导在 settings.rs(库 > 常量)。
     let (默认额度, _) = crate::settings::effective_default_quota(&state.pool).await;
-    let rows: Vec<UserRow> = sqlx::query_as(
+    let mut rows: Vec<UserRow> = sqlx::query_as(
         "SELECT u.username, u.name, u.email, u.is_super, u.created_at, u.last_login,
                 COALESCE(q.quota_bytes, $1)::bigint AS quota_bytes,
-                (q.username IS NULL)              AS quota_is_default
+                (q.username IS NULL)              AS quota_is_default,
+                0::bigint                         AS used_bytes
            FROM app_user u
            LEFT JOIN user_quota q ON q.username = u.username
           ORDER BY u.username",
@@ -44,6 +49,10 @@ pub async fn users(State(state): State<AppState>) -> AppResult<Json<Vec<UserRow>
     .bind(默认额度)
     .fetch_all(&state.pool)
     .await?;
+    // ★一次查完所有人的用量,别逐行调 owner_quota_used★——那是每人一次多表 JOIN,
+    // 一屏 111 个用户就是 111 次查询(N+1)。没有项目的人不在结果里,用量就是 0。
+    let 用量 = crate::http::items::owners_used_bulk(&state.pool).await?;
+    for r in &mut rows { r.used_bytes = 用量.get(&r.username).copied().unwrap_or(0) }
     Ok(Json(rows))
 }
 
@@ -66,31 +75,24 @@ pub async fn default_quota_impact(
           WHERE q.username IS NULL")
         .fetch_one(&state.pool).await?;
     // 这些人里,谁的已用量会超过新额度。★只算跟随默认的人★——设过配额的人不受这次改动影响。
-    let 超额: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT t.owner, t.used FROM (
-           SELECT p.owner,
-                  COALESCE(sum(x.sz),0)::bigint AS used
-             FROM projects p
-             JOIN LATERAL (
-               SELECT k, max(sz) sz FROM (
-                 SELECT i.s3_key k, i.size sz FROM items_alive i
-                  WHERE i.project_id = p.id AND i.s3_key IS NOT NULL
-                 UNION ALL
-                 SELECT v.s3_key, v.size FROM item_versions v
-                   JOIN items_alive i ON i.id = v.item_id
-                  WHERE i.project_id = p.id
-               ) y GROUP BY k
-             ) x ON true
-            WHERE p.deleted_at IS NULL
-              AND p.owner NOT IN (SELECT username FROM user_quota)
-            GROUP BY p.owner
-         ) t
-         WHERE t.used > $1
-         ORDER BY t.used DESC
-         -- limit-ok: 只是给界面举例「有哪些人」,总数用上面的 count;20 条够看
-         LIMIT 20")
-        .bind(q.bytes)
-        .fetch_all(&state.pool).await?;
+    // ★用量走唯一那份推导★(2026-08-22 改):这里原先自己写了一段
+    //   `JOIN LATERAL … GROUP BY k` —— 按**单个项目**去重再把各项目相加,
+    //   而 `owner_quota_used` 是**跨这个人的全部项目**去重。
+    //   ⇒ 同一个 blob 落在同一人的两个项目里就会被算两次,两处给出的「已用」对不上。
+    //   ★dev 上两者碰巧相等(那些项目之间没有共享 blob),所以一直没暴露★——
+    //   而秒传/去重(内容寻址)正是让「同一 blob 出现在多处」变成常态的那个功能。
+    let 跟随默认: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT u.username FROM app_user u LEFT JOIN user_quota q ON q.username = u.username
+          WHERE q.username IS NULL")
+        .fetch_all(&state.pool).await?.into_iter().collect();
+    let mut 超额: Vec<(String, i64)> = crate::http::items::owners_used_bulk(&state.pool).await?
+        .into_iter()
+        // ★只算跟随默认的人★——设过配额的人不受这次改动影响
+        .filter(|(owner, used)| *used > q.bytes && 跟随默认.contains(owner))
+        .collect();
+    超额.sort_by_key(|(_, used)| std::cmp::Reverse(*used));
+    // 只是给界面举例「有哪些人」,总数用上面的 count;20 条够看
+    超额.truncate(20);
     Ok(Json(json!({
         "following_default": 跟随,
         "would_exceed": 超额.len(),

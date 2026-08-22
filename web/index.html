@@ -40,6 +40,26 @@
       .cg-md > :first-child { margin-top: 0; }
       /* 长链接/长路径不撑破容器 —— 纪要里贴会议链接是常事 */
       .cg-md a { word-break: break-all; }
+
+      /* ★列表:项目符号与文字要对齐★（2026-08-22 liaoruili 指出「项目符号贴最左、文字居中」）。
+         ⚠ 根因和上面那张没边框的表是**同一个**:`.cg-md` 里从来没写过 ul/ol/li,
+           而 antd 的全局 reset 会把 `ul,ol` 的 `padding`/`margin`/`list-style` 清零 ——
+           于是 marker 无处可放,贴到容器最左边,文字反而缩在里面。
+           ★不是「markdown 没渲染」,是渲染出来的东西没人给它样式。★
+         这里显式写死,不依赖任何 reset 的行为(它随 antd 版本变)。 */
+      .cg-md ul, .cg-md ol { margin: 8px 0; padding-left: 24px; list-style-position: outside; }
+      .cg-md ul { list-style-type: disc; }
+      .cg-md ol { list-style-type: decimal; }
+      .cg-md li { margin: 2px 0; }
+      /* 嵌套一层换个符号,不然两层看起来一样深 */
+      .cg-md ul ul { list-style-type: circle; margin: 2px 0; }
+      /* ★松散列表★:项与项之间空一行时,react-markdown 会把每项包成 <p>,
+         而 <p> 的默认上下 margin 会让行距突然拉大一截 —— 同一份纪要,
+         中间多打一个回车,整个列表的疏密就变了。 */
+      .cg-md li > p { margin: 0; }
+      .cg-md li > p + p { margin-top: 6px; }
+      /* 任务列表(GFM `- [ ]`)的勾选框别顶到文字上 */
+      .cg-md li input[type="checkbox"] { margin-right: 6px; }
     </style>
   </head>
   <body>
