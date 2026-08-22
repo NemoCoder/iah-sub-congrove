@@ -231,6 +231,12 @@ pub fn build_router(state: AppState) -> Router {
         // 探针必须免鉴权,401 会打挂 liveness/readiness。
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        // ★后端自报版本★(2026-08-22):`scripts/deployed-version-check.sh` 原来**只量前端 bundle**,
+        //   于是纯后端的改动它完全是瞎的 —— v0.7.9/v0.7.10 都是纯后端,那道闸对它们等于没跑。
+        //   2026-08-22 我因此花了很多轮怀疑「是不是没部署」,而它一直在报绿。
+        //   ⚠ 免鉴权是有意的:版本号本来就印在前端 bundle 里,不是秘密;
+        //     而要 token 才能量的闸,在 CI 里就会变成「没配 token 就跳过」= 又一个假绿。
+        .route("/version", get(version))
         // 服务端浏览器 SSO——登录入口本身必须开放(换码走 Keycloak,给 60s)。
         .merge(
             Router::new()
@@ -309,6 +315,11 @@ pub fn build_router(state: AppState) -> Router {
 /// 存活:进程活着就行,不查依赖(依赖坏了该重启的不是本 pod)。
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// 后端自报版本 —— ★给部署闸用的,别让它只能量前端★(见路由处的注释)。
+async fn version() -> Json<serde_json::Value> {
+    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
 }
 
 /// 就绪:PG SELECT 1 + S3 head_bucket 都通才算 ready。

@@ -23,14 +23,37 @@ B="${CONGROVE_BASE:-https://congrove-dev.sub.ruciah.com}"
 cd "$(dirname "$0")/.."
 want="${1:-v$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')}"
 
+# ══ 前端:bundle 里编进去的版本串 ══
 js=$(curl -sS --max-time 20 --cacert "$CA" -H "X-IAH-E2E-Key: $KEY" "$B/" \
      | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
 if [ -z "$js" ]; then echo "★取不到线上 bundle —— 不能当成通过★"; exit 2; fi
 got=$(curl -sS --max-time 40 --cacert "$CA" -H "X-IAH-E2E-Key: $KEY" "$B$js" \
       | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')
-echo "期望 $want   线上 [$got]"
+
+# ══ ★后端:问它自己★(2026-08-22 加)══
+#
+# ⚠★这道闸原来只量前端 bundle★ —— 于是**纯后端的改动它完全是瞎的**:
+#   v0.7.9(latex 文件名改 ASCII)、v0.7.10(名单顿号)都是纯后端,那道闸对它们等于没跑,
+#   却照样打印「★线上版本与代码一致 —— 通过★」。
+#   2026-08-22 我为此花了很多轮怀疑「是不是没部署、是不是构建缓存、是不是连错库」,
+#   而真凶另有其人 —— 但这道闸在整个过程中**一次有用的信息都没给过**。
+#   ★一道只检查一半、却报「一致」的闸,比没有闸更坏:它让人以为这一项已经有人守了。★
+back=$(curl -sS --max-time 20 --cacert "$CA" "$B/version" \
+       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [ -z "$back" ]; then
+  # 拿不到 = 量不到,不是通过。老版本后端没有 /version 这个端点,升上去一次之后就有了。
+  echo "期望 $want   前端 [$got]   后端 [取不到]"
+  echo "★问不到后端版本(GET /version)—— 不能当成通过★"
+  echo "  若线上还是 v0.7.12 及更早,那是它还没有这个端点:先把本次改动部署上去。"
+  exit 2
+fi
+echo "期望 $want   前端 [$got]   后端 [v$back]"
 case " $got " in
-  *" $want "*) echo "★线上版本与代码一致 —— 通过★"; exit 0 ;;
+  *" $want "*)
+    if [ "v$back" = "$want" ]; then echo "★前后端版本都与代码一致 —— 通过★"; exit 0; fi
+    echo "★前端是 $want,但**后端**是 v$back —— 门禁不通过★"
+    echo "  同一个镜像里前后端版本不一致,通常意味着构建复用了旧的编译产物。"
+    exit 1 ;;
 esac
 cat <<TIP
 ★线上跑的不是这个版本 —— 门禁不通过★
