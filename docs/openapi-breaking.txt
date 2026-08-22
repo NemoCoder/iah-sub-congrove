@@ -33,3 +33,18 @@ in api post /api/projects/{id}/upload deleted the `query` request parameter `mee
 # 起因:两个接口原本写死 `LIMIT 500` 且不返回总数,第 501 条起在界面上凭空消失
 # (回收站里还占着配额、分享还能被外人访问却撤不掉)。加分页就必须回 total,否则界面
 # 仍然不知道自己看到的是不是全部 —— 于是响应体从 `[...]` 变成 `{total, items}`。
+
+# ── 2026-08-22 起:补字段级 schema 会造出一批「看起来破坏、其实是补全」的行 ──
+# ★下面这条不是行为变化★:`PUT /api/admin/users/{username}/super` 从第一天起就要 body
+# (handler 签名里是 `Json(input): Json<SuperIn>`,不传直接 422)。
+# 变的是**契约**——以前它没写 requestBody,现在写了,于是 oasdiff 如实报
+# 「added required request body」。★真正的破坏是「实现变了」,这里是「文档追上了实现」。★
+#
+# ⚠ 这一类行会随着 schema 分批补全**持续出现**,每批都要在这儿逐条记一笔。
+#   ★别图省事直接 `api-check.sh freeze` 把它们一次刷进来★ —— 那样这个文件就从
+#   「我打算造成的破坏」退化成「发生了什么的流水账」,而它存在的意义正是前者。
+#
+# ★顺带:上面那段 2026-08-13 的注解说「要让『数组变对象』这类改动进得了机械门禁,
+#   得先给契约补 response schema —— 那是独立的一件事」。**那件事就是现在这个工程。**
+#   等 109 条接完,接口面这道闸对响应体结构的失明才真正治好。★
+in api put /api/admin/users/{username}/super added required request body

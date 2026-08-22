@@ -47,8 +47,12 @@ pub const 可写的键: [&str; 3] = ["project_creators", "default_quota_bytes", 
 /// 值是从哪来的 —— ★这不是调试信息,是界面要显示的东西★。
 /// 超管看到「10 GiB」,得知道它是「有人设成了 10」还是「没人设过,恰好默认是 10」:
 /// 这两种状态在他改 env 或升级版本时表现完全不同。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
+// ★契约里的类型名用 ASCII★:JSON 里中文 key 合法,但 OpenAPI 契约要喂给
+// 生成客户端代码的工具(oasdiff / openapi-generator),中文类型名在那边会变成
+// 奇怪的标识符。★代码里照旧叫「来源」——中文命名是本仓风格,只在对外契约上换名。★
+#[schemars(rename = "SettingSource")]
 pub enum 来源 { Db, Env, Default }
 
 async fn 读原始值(pool: &PgPool, key: &str) -> Option<String> {

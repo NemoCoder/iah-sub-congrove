@@ -10,7 +10,7 @@ use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct UserRow {
     pub username: String,
     pub name: Option<String>,
@@ -67,7 +67,7 @@ pub struct ImpactQuery { pub bytes: i64 }
 /// 点下去之后有人立刻传不了东西,而超管完全不知道自己做了这件事。
 pub async fn default_quota_impact(
     State(state): State<AppState>, Query(q): Query<ImpactQuery>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ImpactOut>> {
     if q.bytes <= 0 { return Err(AppError::BadRequest("配额要大于 0".into())) }
     // 跟随默认的人 = 没有 user_quota 行的
     let 跟随: i64 = sqlx::query_scalar(
@@ -93,14 +93,76 @@ pub async fn default_quota_impact(
     超额.sort_by_key(|(_, used)| std::cmp::Reverse(*used));
     // 只是给界面举例「有哪些人」,总数用上面的 count;20 条够看
     超额.truncate(20);
-    Ok(Json(json!({
-        "following_default": 跟随,
-        "would_exceed": 超额.len(),
-        "exceeding": 超额.iter().map(|(u, n)| json!({ "username": u, "used_bytes": n })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(ImpactOut {
+        following_default: 跟随,
+        would_exceed: 超额.len(),
+        exceeding: 超额.iter().map(|(u, n)| ExceedRow { username: u.clone(), used_bytes: *n }).collect(),
+    }))
 }
 
-#[derive(Deserialize)]
+/// 只表示「做成了」的响应。★共用一个类型而不是各写各的 `json!({"ok":true})`★:
+/// 契约里它们就是同一个 `$ref`,加字段时也只有一处要改。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct OkOut {
+    /// 恒为 true —— 失败走 HTTP 状态码,不靠这个字段。
+    pub ok: bool,
+}
+impl OkOut { pub fn yes() -> Self { Self { ok: true } } }
+
+/// 改全站默认配额前的影响面。★没有它,「一键把全站配额调小」就是个无法预估后果的按钮★。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ImpactOut {
+    /// 跟随全站默认的人数(没有 user_quota 行的)。
+    pub following_default: i64,
+    /// 这些人里,已用量会超过新额度的人数。
+    pub would_exceed: usize,
+    /// 上面那些人的样本(最多 20 条,按用量降序)——给界面举例用,总数看 would_exceed。
+    pub exceeding: Vec<ExceedRow>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ExceedRow {
+    pub username: String,
+    /// 已用(字节)。与 `/api/me/quota` 同一套去重规则(items::owners_used_bulk)。
+    pub used_bytes: i64,
+}
+
+/// 一项全站设置的当前值与**它从哪来**。
+/// ★`source` 是这个类型的重点★:同一个数字,「库里设过」和「回落到编译期默认」
+/// 在界面上必须分得出来 —— 否则改了默认值却不生效时,人无从判断。
+/// ⚠★泛型要显式命名★:不给 `rename` 的话 schemars 会吐出
+/// `SettingVal` / `SettingVal2` / `SettingVal3` —— 契约的使用者根本看不出
+/// 哪个是哪个。`{T}` 会被替换成实参类型名。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SettingVal_{T}")]
+pub struct SettingVal<T> {
+    pub value: T,
+    /// 值从哪来:`db`(有人设过)/ `env` / `default`(编译期兜底)。
+    /// ★用 settings.rs 那个 enum 而不是 String★:契约里就是明确的三选一,
+    /// 而且它一旦加一个来源,这里自动跟着变。
+    pub source: crate::settings::来源,
+}
+
+/// 全站设置一览。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct SettingsOut {
+    /// 允许建项目的人(空 = 人人可建)。
+    pub project_creators: SettingVal<Vec<String>>,
+    /// 全站默认配额(字节)。★这是读时兜底不是建行默认★:改了它,所有没单独设过配额的人当场跟着变。
+    pub default_quota_bytes: SettingVal<i64>,
+    /// 全站默认提醒提前量(分钟)。
+    pub default_remind_minutes: SettingVal<i32>,
+}
+
+/// 改完一项设置后回**规范化之后**的值 —— 人传 "50 GiB" 存进去是字节数,得让他看见存成了什么。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct SettingPutOut {
+    pub ok: bool,
+    /// 规范化后的值(字符串形式,与 app_setting 的存法一致)。
+    pub value: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SuperIn {
     pub is_super: bool,
 }
@@ -112,7 +174,7 @@ pub async fn set_super(
     Extension(id): Extension<Identity>,
     Path(username): Path<String>,
     Json(input): Json<SuperIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<OkOut>> {
     if !input.is_super {
         let supers: i64 = sqlx::query_scalar("SELECT count(*) FROM app_user WHERE is_super").fetch_one(&state.pool).await?;
         let victim: Option<bool> = sqlx::query_scalar("SELECT is_super FROM app_user WHERE username = $1")
@@ -134,7 +196,7 @@ pub async fn set_super(
     }
     audit::record(&state.pool, id.require_username()?, "admin.super", &username,
         if input.is_super { "grant" } else { "revoke" }).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(OkOut::yes()))
 }
 
 #[derive(Deserialize)]
@@ -205,7 +267,7 @@ pub async fn user_options(
     Ok(Json(rows.into_iter().map(|(u, n)| serde_json::json!({ "username": u, "name": n })).collect()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct QuotaIn {
     pub quota_bytes: i64,
 }
@@ -219,7 +281,7 @@ pub async fn set_quota(
     Extension(id): Extension<Identity>,
     Path(username): Path<String>,
     Json(input): Json<QuotaIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<OkOut>> {
     if input.quota_bytes < 0 {
         return Err(AppError::BadRequest("配额不能为负".into()));
     }
@@ -237,7 +299,7 @@ pub async fn set_quota(
     .execute(&state.pool)
     .await?;
     audit::record(&state.pool, actor, "admin.quota", who, &input.quota_bytes.to_string()).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(OkOut::yes()))
 }
 
 #[derive(Deserialize)]
@@ -245,7 +307,7 @@ pub struct AuditQuery {
     pub limit: Option<i64>,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct AuditRow {
     pub id: i64,
     pub ts: chrono::DateTime<chrono::Utc>,
@@ -289,11 +351,11 @@ pub async fn effective_llm_model(state: &AppState) -> String {
 ///   所以界面上必须**同时允许手输**一个不在列表里的名字 —— 只给下拉等于把按需模型全挡了。
 ///   (这条是平台侧的既有事实,不是 bug;我在别处踩过,记在这儿免得下次又当成列表坏了。)
 /// ⚠ 网关不可达时**不编造空列表**:如实回 `error`,让界面说「列不出来,但你仍可手输」。
-pub async fn llm_models(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+pub async fn llm_models(State(state): State<AppState>) -> AppResult<Json<ModelsOut>> {
     let current = effective_llm_model(&state).await;
     let (base, key) = (state.config.llm_base_url.clone(), state.config.llm_api_key.clone());
     let Some(base) = base else {
-        return Ok(Json(json!({ "current": current, "models": [], "error": "未注入 IAH_BASE_URL,列不出模型" })));
+        return Ok(Json(ModelsOut { current, models: vec![], error: Some("未注入 IAH_BASE_URL,列不出模型".into()) }));
     };
     let cli = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()
         .map_err(|e| AppError::Other(e.into()))?;
@@ -304,16 +366,34 @@ pub async fn llm_models(State(state): State<AppState>) -> AppResult<Json<serde_j
             let v: serde_json::Value = r.json().await.unwrap_or_else(|_| json!({}));
             let models: Vec<String> = v["data"].as_array().map(|a| a.iter()
                 .filter_map(|m| m["id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
-            Ok(Json(json!({ "current": current, "models": models })))
+            Ok(Json(ModelsOut { current, models, error: None }))
         }
-        Ok(r) => Ok(Json(json!({ "current": current, "models": [],
-            "error": format!("网关返回 {}", r.status()) }))),
-        Err(e) => Ok(Json(json!({ "current": current, "models": [],
-            "error": format!("连不上网关:{e}") }))),
+        Ok(r) => Ok(Json(ModelsOut { current, models: vec![], error: Some(format!("网关返回 {}", r.status())) })),
+        Err(e) => Ok(Json(ModelsOut { current, models: vec![], error: Some(format!("连不上网关:{e}")) })),
     }
 }
 
-#[derive(Deserialize)]
+/// 网关可用模型列表 + 当前选中的。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ModelsOut {
+    /// 现在生效的模型名(唯一推导:库 > env > 编译期默认)。
+    pub current: String,
+    /// ★网关的 `/v1/models` 只列常驻模型★——按需(scale-to-zero)的**不在这里但能调**,
+    /// 所以界面必须同时允许手输。列不出来时这里是空数组、`error` 说明原因。
+    pub models: Vec<String>,
+    /// 列不出模型时的原因。★不编造空列表★:空列表 + 无 error 会被读成「一个模型都没有」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 选定模型后回显 —— 让超管看见存进去的是什么。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ModelPutOut {
+    pub ok: bool,
+    pub model: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ModelIn { pub model: String }
 
 /// PUT /api/admin/llm/model —— 选一个模型(超管)。
@@ -321,7 +401,7 @@ pub struct ModelIn { pub model: String }
 /// 那条错误现在会原样显示给用户,改回来只要再选一次 —— 比「拦住一个其实可用的模型」好。
 pub async fn set_llm_model(
     State(state): State<AppState>, Extension(id): Extension<Identity>, Json(input): Json<ModelIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ModelPutOut>> {
     let m = input.model.trim();
     if m.is_empty() { return Err(AppError::BadRequest("模型名不能为空".into())) }
     if m.chars().count() > 200 { return Err(AppError::BadRequest("模型名过长".into())) }
@@ -331,7 +411,7 @@ pub async fn set_llm_model(
          ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()")
         .bind(m).bind(who).execute(&state.pool).await?;
     audit::record(&state.pool, who, "admin.llm_model", "llm_model", m).await;
-    Ok(Json(json!({ "ok": true, "model": m })))
+    Ok(Json(ModelPutOut { ok: true, model: m.to_string() }))
 }
 
 // ══════ ★治理配置:超管在后台改,不再是一次部署★(2026-08-16,docs/TECH-DESIGN-admin-console.md)══════
@@ -343,18 +423,18 @@ pub async fn set_llm_model(
 ///
 /// ★`source` 不是调试信息★:超管看到「10 GiB」得知道它是「有人设成了 10」
 /// 还是「没人设过,恰好默认是 10」—— 这两种状态在他改 env 或升级版本时表现完全不同。
-pub async fn settings_get(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+pub async fn settings_get(State(state): State<AppState>) -> AppResult<Json<SettingsOut>> {
     let (creators, c_src) = crate::settings::effective_project_creators(&state.pool, &state.config).await;
     let (quota, q_src) = crate::settings::effective_default_quota(&state.pool).await;
     let (remind, r_src) = crate::settings::effective_default_remind(&state.pool).await;
-    Ok(Json(json!({
-        "project_creators":       { "value": creators, "source": c_src },
-        "default_quota_bytes":    { "value": quota,    "source": q_src },
-        "default_remind_minutes": { "value": remind,   "source": r_src },
-    })))
+    Ok(Json(SettingsOut {
+        project_creators:       SettingVal { value: creators, source: c_src },
+        default_quota_bytes:    SettingVal { value: quota,    source: q_src },
+        default_remind_minutes: SettingVal { value: remind,   source: r_src },
+    }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SettingIn { pub value: String }
 
 /// PUT /api/admin/settings/{key} —— 改一项(超管)。值一律用字符串传,语义由 key 决定
@@ -362,7 +442,7 @@ pub struct SettingIn { pub value: String }
 pub async fn settings_put(
     State(state): State<AppState>, Extension(id): Extension<Identity>,
     Path(key): Path<String>, Json(input): Json<SettingIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<SettingPutOut>> {
     // ★白名单在最前面★:不在名单里的 key 连校验都不该走到(见 settings.rs 上那段「权限自动扩大」)
     if !crate::settings::可写的键.contains(&key.as_str()) {
         return Err(AppError::BadRequest(format!("不认识的设置项:{key}")));
@@ -375,7 +455,7 @@ pub async fn settings_put(
          ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()")
         .bind(&key).bind(&规范值).bind(who).execute(&state.pool).await?;
     audit::record(&state.pool, who, "admin.setting", &key, &规范值).await;
-    Ok(Json(json!({ "ok": true, "value": 规范值 })))
+    Ok(Json(SettingPutOut { ok: true, value: 规范值 }))
 }
 
 /// DELETE /api/admin/users/{username}/quota —— ★把这个人放回「跟随全站默认」★。
