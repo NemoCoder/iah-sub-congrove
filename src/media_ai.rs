@@ -152,6 +152,52 @@ pub fn 可复用逐字稿(全文: &str, 分段数: usize) -> bool {
     !全文.trim().is_empty() && 分段数 > 0
 }
 
+/// 把 `decisions` 那一步的 LLM 输出规范化成**后端自己写死的**两段标题格式。
+///
+/// ══ 为什么要这一步 ══
+/// 「决议」与「待办」在 `minutes` 表里本来就是分开的两列(`resolutions` / `todos`),
+/// 而 AI 一次生成两者。★2026-08-17 liaoruili:「同时把待办也导入了;应该把决议和待办分开吧」★
+/// 当时的热修(v0.6.3)是在**前端**按标题切一刀 —— 止住了血,但切分依据是
+/// **AI 自由发挥的标题**:它这次写「关键决议」,下次可能写「主要结论」,切就切歪。
+///
+/// ★根治不是「切得更聪明」,是让切分依据变成确定的★:
+/// 提示词改成要 JSON,后端解析出两个数组,再用**后端写死的**标题拼回去。
+/// 于是前端那个切分函数面对的不再是 AI 的即兴发挥,而是本函数的固定输出。
+///
+/// ⚠★解析不了就原样返回★:LLM 不保证吐合法 JSON。原样返回 = 回到热修那条路
+/// (前端启发式切分),**和存量数据走同一条兜底** —— 而不是报错让整个任务失败。
+/// ★一份「切得不完美的纪要」远好过「没有纪要」。★
+///
+/// ⚠ 不动 `summaries.kind` 的 CHECK 约束(只认 brief/outline/decisions):
+///   加一个 `todos` 值要改迁移,而 `0002` 是工作文件、改它必须**清 dev 库**。
+///   为了一个内部表示的形状去清掉三千多条测试数据,不划算 —— 内部存一份、
+///   界面上分两栏,用户要的是后者。
+pub fn 规范化决议待办(llm原文: &str) -> String {
+    let t = llm原文.trim();
+    // 剥 ```json … ``` 围栏:模型很爱加,加了就不是合法 JSON。
+    let 裸 = t.strip_prefix("```json").or_else(|| t.strip_prefix("```"))
+        .and_then(|x| x.rsplit_once("```")).map(|(a, _)| a.trim()).unwrap_or(t);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(裸) else { return llm原文.to_string() };
+    // 两个键都按「数组或字符串」收:模型有时给数组,有时给一整段。
+    let 取 = |k: &str| -> String {
+        match v.get(k) {
+            Some(serde_json::Value::Array(a)) => a.iter()
+                .filter_map(|x| x.as_str()).map(|x| x.trim()).filter(|x| !x.is_empty())
+                .map(|x| if x.starts_with('-') { x.to_string() } else { format!("- {x}") })
+                .collect::<Vec<_>>().join("\n"),
+            Some(serde_json::Value::String(x)) => x.trim().to_string(),
+            _ => String::new(),
+        }
+    };
+    let (决议, 待办) = (取("决议"), 取("待办"));
+    // ★两边都空 = 这份 JSON 没给出我们要的东西★,别拼一份只有两个空标题的壳子出来
+    // (那比原文更没用:人看到两个空标题会以为 AI 什么都没产出)。
+    if 决议.is_empty() && 待办.is_empty() { return llm原文.to_string() }
+    format!("## 关键决议\n\n{}\n\n## 待办事项\n\n{}",
+            if 决议.is_empty() { "无" } else { &决议 },
+            if 待办.is_empty() { "无" } else { &待办 })
+}
+
 async fn process(state: &AppState, job_id: i64, item_id: i64) -> anyhow::Result<()> {
     // 发起人:网关按 X-Iah-End-User 把用量/计费记到真人头上(subject fail-closed,不带头会被拒)。
     let end_user: String = sqlx::query_scalar("SELECT requested_by FROM media_jobs WHERE id=$1")
@@ -310,10 +356,19 @@ async fn 出纪要(state: &AppState, job_id: i64, item_id: i64, end_user: &str,
         ("outline", "用中文列出分段大纲,按时间顺序,不超过 15 行。★每行必须以原文里出现过的时间戳开头★,\
 格式:`[mm:ss] 议题 — 要点`。时间戳只能从原文抄,**绝对不许自己编**(原文每段开头的 [mm:ss] 就是它的真实时间);\
 一行一个议题,行与行之间用换行分隔,不要写成一段。", "生成分段大纲", 90),
-        ("decisions", "用中文列出这次活动的**关键决议**与**待办事项**(谁负责、做什么、何时);没有就写「无明确决议/待办」。", "生成决议与待办", 96),
+        // ★要 JSON,不要自由 markdown★(2026-08-22 根治):这两样在 `minutes` 表里是分开的两列,
+        // 而热修期间靠**前端按 AI 写的标题**切一刀 —— 标题由模型即兴发挥,切就切歪。
+        // 现在让它给结构化的两个数组,由 `规范化决议待办` 拼成后端写死的标题格式。
+        ("decisions",
+         "用中文提取这次活动的关键决议与待办事项,**只输出 JSON**,不要任何解释文字、不要代码围栏。\
+格式:{\"决议\":[\"…\",\"…\"],\"待办\":[\"谁 — 做什么 — 何时\"]}。\
+两个键都必须有;某一项确实没有就给空数组 []。★不要把待办写进决议里,反之亦然★。",
+         "生成决议与待办", 96),
     ] {
         stage(&state.pool, job_id, label, prog).await;
         let content = chat(state, prompt, &condensed, &end_user).await.with_context(|| format!("生成 {kind}"))?;
+        // ★只有 decisions 这一份要规范化★:它是唯一「一份里装两样」的产物。
+        let content = if kind == "decisions" { 规范化决议待办(&content) } else { content };
         sqlx::query(
             "INSERT INTO summaries (item_id, kind, content, model) VALUES ($1,$2,$3,$4)
              ON CONFLICT (item_id, kind) DO UPDATE SET content=EXCLUDED.content, model=EXCLUDED.model, created_at=now()",
@@ -827,6 +882,51 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
 
 #[cfg(test)]
 mod tests {
+    use super::规范化决议待办;
+
+    #[test]
+    fn 正常json拼成后端写死的标题() {
+        let out = 规范化决议待办(r#"{"决议":["口径按 2020 年不变价"],"待办":["张三 — 交清洗脚本 — 下周三"]}"#);
+        assert!(out.contains("## 关键决议"), "{out}");
+        assert!(out.contains("## 待办事项"), "{out}");
+        assert!(out.contains("- 口径按 2020 年不变价"), "{out}");
+        assert!(out.contains("- 张三 — 交清洗脚本 — 下周三"), "{out}");
+        // ★决议段里不许混进待办★ —— 这正是本次要根治的那个 bug
+        let 决议段 = out.split("## 待办事项").next().unwrap();
+        assert!(!决议段.contains("清洗脚本"), "决议段串进了待办:\n{out}");
+    }
+
+    #[test]
+    fn 带代码围栏也认() {
+        // 模型很爱加 ```json,加了就不是合法 JSON
+        let out = 规范化决议待办("```json\n{\"决议\":[\"甲\"],\"待办\":[\"乙\"]}\n```");
+        assert!(out.contains("## 关键决议") && out.contains("- 甲"), "{out}");
+    }
+
+    #[test]
+    fn 一边为空另一边照出() {
+        let out = 规范化决议待办(r#"{"决议":[],"待办":["乙"]}"#);
+        assert!(out.contains("## 关键决议\n\n无"), "{out}");
+        assert!(out.contains("- 乙"), "{out}");
+    }
+
+    #[test]
+    fn 解析不了就原样返回走前端兜底() {
+        // ★这条是安全网★:LLM 不保证吐合法 JSON。原样返回 = 回到热修那条路,
+        // 和存量数据走同一条兜底 —— 而不是让整个任务失败。
+        let 原 = "## 关键决议\n- 甲\n## 待办事项\n- 乙";
+        assert_eq!(规范化决议待办(原), 原);
+        assert_eq!(规范化决议待办("这不是 JSON"), "这不是 JSON");
+        // 合法 JSON 但两个键都没有 → 也原样返回(别拼一份只有空标题的壳子)
+        assert_eq!(规范化决议待办(r#"{"别的":1}"#), r#"{"别的":1}"#);
+    }
+
+    #[test]
+    fn 键给字符串而不是数组也收() {
+        let out = 规范化决议待办(r#"{"决议":"就一句话","待办":[]}"#);
+        assert!(out.contains("就一句话") && out.contains("## 待办事项\n\n无"), "{out}");
+    }
+
     use super::可复用逐字稿;
 
     #[test]
