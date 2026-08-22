@@ -30,8 +30,16 @@ CONGROVE_DEV_DSN="${CONGROVE_DEV_DSN:-（走 db/sql 接口，不用 DSN）}"
 # ★不直连库,走平台的 db/sql 接口★(2026-08-17,理由见 scripts/dbq.py 头注)。
 # dbq.py 的输出刻意与 `psql -At` 同格式(无表头 / 列间 TAB / NULL 印空串),
 # 所以基线不用重冻 —— ★换了取数通道但没换输出格式,这是刻意的★。
+# ⚠★取不到数要报「量不到」不是「对不上」★(2026-08-23):dbq.py exit 2 = 量不到,
+#   而这里以前不透传 —— 平台 db/sql 500 那天,这道闸打的是 ✗(看起来像 schema 真的漂了)。
+#   ★「环境挂了」和「你的 schema 变了」必须长得不一样★,否则人会先去 debug 自己的迁移。
 render() { IAH_TOKEN="${IAH_TOKEN:-$(cat "$HOME/.config/iah/congrove-token" 2>/dev/null)}" \
            python3 scripts/dbq.py -f scripts/schema_ddl.sql; }
+# 单独探活一次:render 的输出要进管道/重定向,退出码容易被吃掉,所以先问一句「通不通」。
+# ⚠★函数名也用 ASCII★——本仓在 bash 中文标识符上栽过七次,不再试探边界。
+probe_db() { IAH_TOKEN="${IAH_TOKEN:-$(cat "$HOME/.config/iah/congrove-token" 2>/dev/null)}" \
+         python3 scripts/dbq.py -c "select 1" >/dev/null 2>&1 || {
+           echo "★取不到库结构(db/sql 接口不可用)—— 量不到,不算通过也不算失败★" >&2; exit 2; }; }
 
 # ★在事务里模拟「清库 + 跑新迁移」,渲染出它会建成什么样,然后回滚★
 #
@@ -82,6 +90,7 @@ baseline)
   echo "★基线已冻结★ $BASE（$(wc -l < $BASE) 行 / $(grep -c '^TABLE ' $BASE) 张表）"
   echo "→ 提交它。之后 schema 的每一处变动都要在 $EXP 里有对应的一行。" ;;
 check)
+  probe_db   # ★先确认量得到★,否则下面的 diff 会把「取不到」显示成「schema 漂了」
   [ -f $BASE ] || { echo "没有基线，先跑 $0 baseline"; exit 2; }
   T=$(mktemp); render > "$T" || exit 1
   A=$(mktemp); diff -u --label baseline --label current $BASE "$T" > "$A"; rm -f "$T"

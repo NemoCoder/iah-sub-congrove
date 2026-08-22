@@ -25,7 +25,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 DIR=e2e/golden; BASE=$DIR/shape-baseline.json; EXP=$DIR/shape-expected.diff
-: "${IAH_E2E_KEY:?缺 IAH_E2E_KEY}"
+# ★缺凭证 = 量不到(exit 2),不是失败★(2026-08-23):`${VAR:?}` 的退出码是 1,
+# 于是「没配 key」和「响应体形状真的变了」在汇总里长得一模一样。
+# ⚠ 这道闸本来就进不了 CI(要活环境 + 内网 CA),没 key 是常态,更不该报成红。
+[ -n "${IAH_E2E_KEY:-}" ] || {
+  echo "★缺 IAH_E2E_KEY(~/.config/iah/congrove-e2e-key)—— 量不到,不算通过★" >&2; exit 2; }
 
 # golden.mjs 打指纹到 stdout;api-shape.mjs 归约成形状。
 # ★golden.mjs 失败必须当红,不能把空输出当成「形状是空的」★（本仓栽过五次「工具没跑→报绿」）。
@@ -38,8 +42,11 @@ render() {
   NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-$HOME/.config/iah/IAH-Internal-CA-new.crt}" \
     node e2e/golden.mjs > "$t" 2>/dev/null; rc=$?
   if [ $rc -ne 0 ] || [ ! -s "$t" ]; then
-    echo "★golden.mjs 没跑成(exit=$rc,输出 $(stat -c%s "$t" 2>/dev/null || echo 0) 字节)—— 中止★" >&2
-    rm -f "$t"; return 1
+    # ★return 2 = 量不到★(2026-08-23 改,原来是 1):跑不成通常是环境
+    #   (E2E key 没配 / 线上不可达 / 网关 302),不是「响应体形状变了」。
+    #   ★两者显示成同一个红,人会先去查自己改了什么响应★。
+    echo "★golden.mjs 没跑成(exit=$rc,输出 $(stat -c%s "$t" 2>/dev/null || echo 0) 字节)—— 量不到,中止★" >&2
+    rm -f "$t"; return 2
   fi
   node e2e/api-shape.mjs "$t" ${1:+"$1"}; rc=$?
   rm -f "$t"; return $rc
