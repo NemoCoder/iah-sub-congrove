@@ -4,6 +4,7 @@
 
 pub mod admin;   // pub:media_ai 要用 effective_llm_model(★模型的唯一推导★)
 /// ★pub 是给集成测试用的★:`tests/api_cases.rs` 要读 `APIS` 逐条核对「每个接口都有测试用例」。
+pub mod dto;
 pub mod apidoc;
 pub(crate) mod items;
 mod media;

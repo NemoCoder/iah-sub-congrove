@@ -12,7 +12,7 @@ use crate::perm::Role;
 use crate::state::AppState;
 use crate::{audit, perm::require_role};
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct ProjectRow {
     pub id: i64,
     pub name: String,
@@ -88,6 +88,129 @@ async fn usage_map(pool: &sqlx::PgPool) -> AppResult<std::collections::HashMap<i
     .await?;
     Ok(rows.into_iter().collect())
 }
+
+// ══════ 响应体类型(字段级契约,2026-08-22)══════
+// ★都放这儿而不是各 handler 就近定义★:这一组彼此引用(detail 里嵌 PendingTransfer),
+// 散开写会让「项目这一组到底回什么」要翻半个文件才拼得出来。
+
+/// 项目详情。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectDetailOut {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 我在这个项目里的有效角色(perm.rs 的唯一推导,超管短路)。
+    /// ★用 `Role` 枚举而不是 String★:契约里就是明确的取值集合,加档位时自动跟着变。
+    pub my_role: crate::perm::Role,
+    /// 待响应的主持人转移。★null 是常态★——只有真的挂着一笔转移时才有值。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_transfer: Option<PendingTransfer>,
+}
+
+/// 一笔待响应的主持人转移。★转移要对方接受才算数★(不是单方面塞给别人)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PendingTransfer {
+    pub id: i64,
+    pub from: String,
+    pub to: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 删项目(软删)之后回「还能还原几天」——★人删完最关心的就是这个★。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RemoveOut {
+    pub ok: bool,
+    /// 回收站保留天数,过后由清理任务 purge。
+    pub restorable_days: i32,
+}
+
+/// 回收站里的一个项目。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TrashRow {
+    pub id: i64,
+    pub name: String,
+    pub deleted_at: chrono::DateTime<chrono::Utc>,
+    pub deleted_by: Option<String>,
+    /// ★显示「还剩 N 天」比显示删除时刻有用★——人关心的是「还来得及吗」。可能为负(已过期待清理)。
+    pub days_left: i64,
+}
+
+/// 权限诊断:他为什么能/不能看。★判定链与 perm.rs 同一推导★。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct DiagnoseOut {
+    pub username: String,
+    /// 此刻有没有超管**特权**(超管模式关着时为 false)。
+    pub is_super: bool,
+    pub is_owner: bool,
+    /// 成员表里的角色;null = 根本不是成员。
+    /// ⚠ 这里是**库里那一列的原值**(字符串),不是 `Role` —— 诊断要如实反映库里存着什么,
+    ///   哪怕它是个 `Role` 认不出的值(那本身就是要诊断出来的问题)。
+    pub member_role: Option<String>,
+    /// 最终生效的角色 —— 上面三项合并的结果。null = 什么都看不到。
+    pub effective: Option<crate::perm::Role>,
+}
+
+/// 成员列表。owner 单独给,不混进 members 里(他不是一条成员记录)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MembersOut {
+    pub owner: Option<String>,
+    pub members: Vec<MemberRow>,
+}
+
+/// 发起转移后回这笔转移的 id(用于撤销)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TransferOut {
+    pub ok: bool,
+    pub transfer_id: i64,
+}
+
+/// 响应一笔转移。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TransferRespondOut {
+    pub ok: bool,
+    /// true = 接受了,项目主持人已易主;false = 拒绝。
+    pub accepted: bool,
+    /// 接受时的新主持人(就是响应者本人);拒绝时不给。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+/// 归档拦路项:★还排在未来的活动★。归档 = 做完了,有未来的活动就是没做完。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct BlockersOut {
+    pub total: usize,
+    pub items: Vec<BlockerRow>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct BlockerRow {
+    pub id: i64,
+    pub title: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    /// 我能不能取消它 —— 不能的话得先去找发起人。
+    pub can_cancel: bool,
+}
+
+/// 归档 / 取消归档。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ArchiveOut {
+    pub ok: bool,
+    /// 这次操作之后是不是归档态。
+    pub archived: bool,
+}
+
+/// 别人发给我、等我响应的主持人转移。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MyTransferRow {
+    pub id: i64,
+    pub project_id: i64,
+    pub project_name: String,
+    pub from: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 
 /// GET /api/projects —— 我可见的项目(有效角色非空);超管见全部。
 pub async fn list(State(state): State<AppState>, Extension(id): Extension<Identity>) -> AppResult<Json<Vec<ProjectRow>>> {
@@ -173,7 +296,7 @@ pub async fn create(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(input): Json<ProjectIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::IdOut>> {
     let username = id.require_username()?;
     // D2 决策(docs/PERMISSIONS.md):名单非空时仅名单内 + 超管可建;★空 = 人人可建★。
     // ⚠★取值必须走 effective_project_creators★(2026-08-16):名单现在超管能在后台改,
@@ -205,7 +328,7 @@ pub async fn create(
         .await?;
     tx.commit().await?;
     audit::record(&state.pool, username, "project.create", &pid.to_string(), name).await;
-    Ok(Json(json!({ "id": pid })))
+    Ok(Json(crate::http::dto::IdOut { id: pid }))
 }
 
 /// GET /api/projects/{id} —— 详情(≥viewer)。
@@ -213,7 +336,7 @@ pub async fn detail(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ProjectDetailOut>> {
     let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<(String, String, String, chrono::DateTime<chrono::Utc>)> =
         sqlx::query_as("SELECT name, description, created_by, created_at FROM projects WHERE id = $1")
@@ -227,13 +350,10 @@ pub async fn detail(
         "SELECT id, from_user, to_user, created_at FROM owner_transfers
           WHERE project_id = $1 AND status = 'pending'")
         .bind(pid).fetch_optional(&state.pool).await?;
-    Ok(Json(json!({
-        "id": pid, "name": name, "description": description,
-        "created_by": created_by, "created_at": created_at, "my_role": role,
-        "pending_transfer": pt.map(|(tid, from, to, at)| json!({
-            "id": tid, "from": from, "to": to, "created_at": at,
-        })),
-    })))
+    Ok(Json(ProjectDetailOut {
+        id: pid, name, description, created_by, created_at, my_role: role,
+        pending_transfer: pt.map(|(id, from, to, created_at)| PendingTransfer { id, from, to, created_at }),
+    }))
 }
 
 /// PUT /api/projects/{id} —— 改名/描述(admin)。
@@ -242,7 +362,7 @@ pub async fn update(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<ProjectIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let mut tx = state.pool.begin().await?;
     let n = sqlx::query(
@@ -280,7 +400,7 @@ pub async fn update(
             &pid.to_string(), &format!("开启禁止分享,连带撤销 {revoked} 条公开链接")).await;
     }
     audit::record(&state.pool, id.require_username()?, "project.update", &pid.to_string(), input.name.trim()).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// 术语表规范化:换行/多空格 → 单空格,去重保序。词表是给 ASR 的 `hotword`(空格分隔),
@@ -323,7 +443,7 @@ pub async fn remove(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<RemoveOut>> {
     // ★删项目是主持人专属(D0)★,不是 admin —— perm.rs 头注一直这么写,
     // 但这里长期用的是 require_role(Admin),两处不一致(2026-08-07 归档功能顺带发现)。
     //
@@ -346,7 +466,7 @@ pub async fn remove(
     // ★S3 一个字节都不动★ —— 30 天后由清理任务 purge 时才按引用计数决定对象删不删。
     audit::record(&state.pool, me, "project.delete", &pid.to_string(),
                   &format!("软删除,进回收站 30 天;连带撤销公开链接 {links} 条")).await;
-    Ok(Json(json!({ "ok": true, "restorable_days": 30 })))
+    Ok(Json(RemoveOut { ok: true, restorable_days: 30 }))
 }
 
 /// GET /api/projects/trash —— 我删掉的项目(30 天内可还原)。
@@ -356,7 +476,7 @@ pub async fn remove(
 pub async fn trash(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<Vec<TrashRow>>> {
     let me = id.require_username()?;
     // 判据是 owner —— 删项目本来就是主持人专属(D0),还原自然也是。超管走影子账户,不在这里开口子。
     let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
@@ -364,11 +484,11 @@ pub async fn trash(
           WHERE owner = $1 AND deleted_at IS NOT NULL AND kind <> 'materials'
           ORDER BY deleted_at DESC")
         .bind(me).fetch_all(&state.pool).await?;
-    Ok(Json(json!(rows.iter().map(|(pid, name, at, by)| json!({
-        "id": pid, "name": name, "deleted_at": at, "deleted_by": by,
-        // 前端显示「还剩 N 天」比显示一个删除时刻有用 —— 人关心的是「还来得及吗」
-        "days_left": 30 - (chrono::Utc::now() - *at).num_days(),
-    })).collect::<Vec<_>>())))
+    // 前端显示「还剩 N 天」比显示一个删除时刻有用 —— 人关心的是「还来得及吗」
+    Ok(Json(rows.into_iter().map(|(id, name, deleted_at, deleted_by)| TrashRow {
+        id, name, deleted_at, deleted_by,
+        days_left: 30 - (chrono::Utc::now() - deleted_at).num_days(),
+    }).collect()))
 }
 
 /// POST /api/projects/{id}/undelete —— 从回收站还原(主持人本人)。
@@ -380,7 +500,7 @@ pub async fn undelete(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let me = id.require_username()?;
     let n = sqlx::query(
         "UPDATE projects SET deleted_at = NULL, deleted_by = NULL
@@ -390,7 +510,7 @@ pub async fn undelete(
     if n == 0 { return Err(AppError::NotFound) }
     audit::record(&state.pool, me, "project.undelete", &pid.to_string(),
                   "从回收站还原(公开链接不随还原恢复)").await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// 满 30 天的项目彻底删除 —— 由 `lib.rs` 的清理任务调用。
@@ -424,7 +544,7 @@ pub async fn diagnose(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<DiagnoseOut>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let username = q.get("username").map(|s| s.trim()).filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("缺 username 参数".into()))?;
@@ -441,16 +561,10 @@ pub async fn diagnose(
     ).bind(pid).fetch_optional(&state.pool).await?.flatten().as_deref() == Some(username);
     // 与 perm.rs 同一推导:超管短路 admin,否则就是成员表那一行。
     let effective = if is_super { Some(Role::Admin) } else { member.as_deref().and_then(Role::parse) };
-    Ok(Json(json!({
-        "username": username,
-        "is_super": is_super,
-        "is_owner": is_owner,
-        "member_role": member,
-        "effective": effective,
-    })))
+    Ok(Json(DiagnoseOut { username: username.to_string(), is_super, is_owner, member_role: member, effective }))
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct MemberRow {
     pub username: String,
     /// 真实姓名(app_user.name)。★拉进来但还没登录过的人为空★——正常状态,前端只显示用户名。
@@ -466,7 +580,7 @@ pub async fn members(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MembersOut>> {
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     // ★带出真实姓名★(2026-08-07 用户:「平台用户应该是有真实姓名的」):
     // app_user.name 在登录时由 OIDC claims 落库、拉人时由平台 users/exists 回填。
@@ -478,7 +592,7 @@ pub async fn members(
     ).bind(pid).fetch_all(&state.pool).await?;
     let owner: Option<String> = sqlx::query_scalar("SELECT owner FROM projects WHERE id = $1")
         .bind(pid).fetch_optional(&state.pool).await?;
-    Ok(Json(json!({ "owner": owner, "members": rows })))
+    Ok(Json(MembersOut { owner, members: rows }))
 }
 
 #[derive(Deserialize)]
@@ -600,7 +714,7 @@ pub async fn transfer(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<TransferIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<TransferOut>> {
     crate::perm::require_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     let to = input.to.trim();
@@ -636,7 +750,7 @@ pub async fn transfer(
     //   这里曾经是全系统唯一带「Congrove」的一条,其余十几条都没有 —— 同一条要求只在一处执行等于没执行。
     crate::notify::notify_project(&state, pid, &[to.to_string()], "项目转移申请",
         &format!("{actor} 想把项目「{name}」的主持人转给你。接受后由你负责这个项目。")).await;
-    Ok(Json(json!({ "ok": true, "transfer_id": tid })))
+    Ok(Json(TransferOut { ok: true, transfer_id: tid }))
 }
 
 #[derive(Deserialize)]
@@ -651,7 +765,7 @@ pub async fn transfer_respond(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<TransferRespondIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<TransferRespondOut>> {
     let me = id.require_username()?;
     // ⚠ 这里**不能**用 require_role/require_owner:被转让人可能只是 editor,
     //   而归档项目的写闸会拒绝一切 ≥editor 的写(T6:已 pending 的必须能接受,否则归档把请求永久卡死)。
@@ -672,7 +786,7 @@ pub async fn transfer_respond(
         // ★拒绝也要通知★:不说他不会知道,请求会静静躺在那里
         crate::notify::notify_project(&state, pid, std::slice::from_ref(&from), "转移主持人被拒绝",
             &format!("{me} 拒绝接手项目「{name}」的主持人。")).await;
-        return Ok(Json(json!({ "ok": true, "accepted": false })));
+        return Ok(Json(TransferRespondOut { ok: true, accepted: false, owner: None }));
     }
 
     // T5:接受这一刻重新校验 —— 他可能已经不在项目里了
@@ -695,7 +809,7 @@ pub async fn transfer_respond(
         &format!("主持人 {from} → {me}")).await;
     crate::notify::notify_project(&state, pid, std::slice::from_ref(&from), "主持人已交接",
         &format!("{me} 已接受项目「{name}」的主持人,你不再是负责人(仍是管理员)。")).await;
-    Ok(Json(json!({ "ok": true, "accepted": true, "owner": me })))
+    Ok(Json(TransferRespondOut { ok: true, accepted: true, owner: Some(me.to_string()) }))
 }
 
 /// DELETE /api/projects/{id}/transfer —— 撤回(发起人;超管)。
@@ -704,7 +818,7 @@ pub async fn transfer_cancel(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     crate::perm::require_owner(&state.pool, &id, pid).await?;
     let actor = id.require_username()?;
     let row: Option<(i64, String)> = sqlx::query_as(
@@ -719,7 +833,7 @@ pub async fn transfer_cancel(
     // ★撤回也通知★:否则他点进去发现按钮没了,以为是坏了
     crate::notify::notify_project(&state, pid, std::slice::from_ref(&to), "转移主持人已撤回",
         &format!("{actor} 撤回了把项目「{name}」转给你的请求。")).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 
@@ -747,7 +861,7 @@ pub async fn archive_blockers(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<BlockersOut>> {
     crate::perm::require_owner(&state.pool, &id, pid).await?;
     let me = id.require_username()?;
     let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
@@ -761,12 +875,12 @@ pub async fn archive_blockers(
           WHERE mp.project_id = $1 AND m.status = 'active' AND m.starts_at > now()
           ORDER BY m.starts_at")
         .bind(pid).bind(me).fetch_all(&state.pool).await?;
-    Ok(Json(json!({
-        "total": rows.len(),
-        "items": rows.iter().map(|(i, t, at, ok)| json!({
-            "id": i, "title": t, "starts_at": at, "can_cancel": ok,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(BlockersOut {
+        total: rows.len(),
+        items: rows.into_iter().map(|(id, title, starts_at, can_cancel)| BlockerRow {
+            id, title, starts_at, can_cancel,
+        }).collect(),
+    }))
 }
 
 pub async fn archive(
@@ -774,7 +888,7 @@ pub async fn archive(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ArchiveOut>> {
     crate::perm::require_owner(&state.pool, &id, pid).await?;
     // 不带 archived 字段 = 归档;显式传 false = 恢复为进行中
     let want = body.get("archived").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -830,7 +944,7 @@ pub async fn archive(
     if n == 0 { return Err(AppError::NotFound) }
     audit::record(&state.pool, username, if want { "project.archive" } else { "project.unarchive" },
                   &pid.to_string(), "").await;
-    Ok(Json(json!({ "ok": true, "archived": want })))
+    Ok(Json(ArchiveOut { ok: true, archived: want }))
 }
 
 /// 某人的「我的活动材料」——★没有就现建一个★,返回项目 id。
@@ -889,7 +1003,7 @@ async fn find_materials_project(pool: &sqlx::PgPool, owner: &str) -> AppResult<O
 pub async fn my_transfers(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<Vec<MyTransferRow>>> {
     let me = id.require_username()?;
     let rows: Vec<(i64, i64, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT t.id, t.project_id, p.name, t.from_user, t.created_at
@@ -897,7 +1011,7 @@ pub async fn my_transfers(
           WHERE t.status = 'pending' AND t.to_user = $1
           ORDER BY t.created_at")
         .bind(me).fetch_all(&state.pool).await?;
-    Ok(Json(json!(rows.iter().map(|(tid, pid, name, from, at)| json!({
-        "id": tid, "project_id": pid, "project_name": name, "from": from, "created_at": at,
-    })).collect::<Vec<_>>())))
+    Ok(Json(rows.into_iter().map(|(id, project_id, project_name, from, created_at)| MyTransferRow {
+        id, project_id, project_name, from, created_at,
+    }).collect()))
 }
