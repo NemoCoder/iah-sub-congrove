@@ -26,7 +26,7 @@ use crate::error::{AppError, AppResult};
 /// 展示名:admin=管理员(副手) / editor=成员 / viewer=只读成员。
 /// ★主持人(owner)不在这个枚举里★——它是 projects.owner 上的一个字段,与角色正交,
 /// 判定走 require_owner。少一个枚举值 = 少一处要同步的 CHECK 约束与迁移。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Viewer,

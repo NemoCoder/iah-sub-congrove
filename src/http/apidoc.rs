@@ -104,47 +104,61 @@ pub const APIS: &[Api] = &[
     api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
     api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default"),
     api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", ""),
-    api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", ""),
-    api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description"),
-    api!("GET", "/api/projects/{id}", "项目", "≥viewer", "项目详情", ""),
+    api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", "",
+         res: Vec<crate::http::projects::ProjectRow>),
+    api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description",
+         res: crate::http::dto::IdOut),
+    api!("GET", "/api/projects/{id}", "项目", "≥viewer", "项目详情", "",
+         res: crate::http::projects::ProjectDetailOut),
     api!("PUT", "/api/projects/{id}", "项目", "admin",
          "改名/描述/禁下载/术语表/禁分享。★开启禁分享会连带撤销已有公开链接★",
-         "name, description, no_download, hotwords, no_share"),
+         "name, description, no_download, hotwords, no_share",
+         res: crate::http::dto::OkOut),
     api!("DELETE", "/api/projects/{id}", "项目", "owner",
          "★软删除★项目,进回收站 30 天,S3 一个字节都不动;连带撤销指向本项目的公开链接
           (share.rs 判的是 items.deleted_at,而软删项目不给 item 打标记 —— 不撤销的话
           项目删了、墙外链接照常下得到)。★owner 专属(D0)★不是 admin;归档的项目也能直接删。
-          ⚠ 2026-08-09 之前这里是**硬删除**,而这行文案一直写着「软删除」——契约说了谎半个月", ""),
+          ⚠ 2026-08-09 之前这里是**硬删除**,而这行文案一直写着「软删除」——契约说了谎半个月", "",
+         res: crate::http::projects::RemoveOut),
     api!("GET", "/api/projects/trash", "项目", "登录(只看自己是 owner 的)",
          "我删掉的项目 + 还剩几天。★没有这一页,软删除就只是「永久看不见」★
-          (与 §J1b-2 同源:只能删不能还原的回收站不是回收站)", ""),
+          (与 §J1b-2 同源:只能删不能还原的回收站不是回收站)", "",
+         res: Vec<crate::http::projects::TrashRow>),
     api!("POST", "/api/projects/{id}/undelete", "项目", "★仅 owner 本人★",
          "从回收站还原。⚠ 不能走 require_owner —— 它查 `deleted_at IS NULL`,对已删项目直接
           NotFound,那样项目就永远还不回来了;所以这里显式按 owner 判。
-          公开链接**不**随还原恢复(撤销是终态,与 no_share 一致)", ""),
-    api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", ""),
+          公开链接**不**随还原恢复(撤销是终态,与 no_share 一致)", "",
+         res: crate::http::dto::OkOut),
+    api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", "",
+         res: crate::http::projects::MembersOut),
     api!("PUT", "/api/projects/{id}/members", "项目", "admin;给 admin 需 owner",
          "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),
     api!("DELETE", "/api/projects/{id}/members", "项目", "admin",
          "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username"),
     api!("POST", "/api/projects/{id}/transfer", "项目", "owner",
          "★发起★转移主持人(不是直接转,PRD ⑨.5)。只能转给本项目成员;归档项目不能发起;\
-          ★待接受期间原主持人仍是主持人★——发起即卸任会让项目在空档期无主。同一项目只允许一条 pending(库里唯一索引)", "to"),
+          ★待接受期间原主持人仍是主持人★——发起即卸任会让项目在空档期无主。同一项目只允许一条 pending(库里唯一索引)", "to",
+         res: crate::http::projects::TransferOut),
     api!("POST", "/api/projects/{id}/transfer/respond", "项目", "★仅被转让人本人★",
          "接受 / 拒绝接手主持人。★接受时重新校验成员身份★(D3:权限是当前状态的函数,不信发起那刻的快照);\
-          接受后原主持人保留 admin(交棒不是逐出)。⚠ 归档项目的 pending **仍可接受**,否则归档把请求永久卡死", "accept"),
+          接受后原主持人保留 admin(交棒不是逐出)。⚠ 归档项目的 pending **仍可接受**,否则归档把请求永久卡死", "accept",
+         res: crate::http::projects::TransferRespondOut),
     api!("DELETE", "/api/projects/{id}/transfer", "项目", "owner",
-         "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", ""),
-    api!("GET", "/api/projects/{id}/archive-blockers", "项目", "主持人", "★谁挡着归档★:未开始的活动清单(带 can_cancel),给「一键取消并归档」用", ""),
+         "撤回转移 —— 手滑转错人的唯一退路;不给撤回就只能去求对方点「拒绝」", "",
+         res: crate::http::dto::OkOut),
+    api!("GET", "/api/projects/{id}/archive-blockers", "项目", "主持人", "★谁挡着归档★:未开始的活动清单(带 can_cancel),给「一键取消并归档」用", "",
+         res: crate::http::projects::BlockersOut),
     api!("POST", "/api/projects/{id}/archive", "项目", "owner",
          "归档 / 恢复(D17)。★归档=只读存档不是删除★:材料全保留可读可下载,但不能再上传/改内容;配额仍占。
           ⚠★有没开始的活动就拒绝归档★(PRD B2):归档 = 做完了,还有排在未来的活动就是没做完;
           错误里**列出是哪几场**(跨项目的活动不能静默跳过)。已取消的不算。
           ⚠★归档项目的活动照常进日历★(PRD B0 推翻了 D17 的这一半),只是淡化 + 标「已归档」。
           传 {archived:false} 恢复为进行中",
-         "archived"),
+         "archived",
+         res: crate::http::projects::ArchiveOut),
     api!("GET", "/api/projects/{id}/diagnose", "项目", "admin",
-         "权限诊断:他为什么能/不能看(超管? 成员表里什么角色?)", "username"),
+         "权限诊断:他为什么能/不能看(超管? 成员表里什么角色?)", "username",
+         res: crate::http::projects::DiagnoseOut),
 
     // ── 活动与日程(M1)──
     // ★这一组只管**活动元信息**,不管材料★:材料权限一律走上面项目那组(D3/D8/D9)。
@@ -242,7 +256,8 @@ pub const APIS: &[Api] = &[
     //   而我们平时看的都是构建产物。是本地起 vite 验后台页时才撞出来的。
     api!("GET", "/api/me/transfers", "项目", "登录",
          "等我答复的主持人转移(喂给「待我处理」卡)。★不做成只在项目页可见★——\
-          被转让人可能压根不打开那个项目,那样请求永远不会被答复", ""),
+          被转让人可能压根不打开那个项目,那样请求永远不会被答复", "",
+         res: Vec<crate::http::projects::MyTransferRow>),
     api!("GET", "/api/me/unread", "活动", "登录",
          "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
           否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),
