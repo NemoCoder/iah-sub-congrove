@@ -52,6 +52,9 @@ const CASES: &[Case] = &[
        "200 且正文 ok;★即使 PG 断了也必须 200★(存活与就绪是两件事,混了会被 k8s 反复杀)", ""),
     c!("GET", "/readyz", "就绪探针要求依赖都通", "PG 与 S3 均可达", "GET /readyz",
        "200;断开 PG 后再调应返回非 200(k8s 据此摘流量)", ""),
+    c!("GET", "/version", "后端自报版本", "服务已启动", "GET /version",
+       "200 且 {\"version\":\"x.y.z\"} 等于 Cargo.toml 的 version;★免鉴权★——\
+        不带任何 token 也要能拿到(要 token 才能量的闸,在 CI 里会退化成「没配就跳过」= 假绿)", ""),
 
     // ══════════ 认证 ══════════
     c!("GET", "/auth/login", "未登录跳 Keycloak", "无会话 cookie", "GET /auth/login?return_to=/projects",

@@ -44,6 +44,11 @@ pub const APIS: &[Api] = &[
     // ── 探针 / 认证 ──
     api!("GET", "/healthz", "探针", "开放", "存活探针:进程活着就返回 ok", ""),
     api!("GET", "/readyz", "探针", "开放", "就绪探针:PG SELECT 1 + S3 head_bucket 都通才 ready", ""),
+    api!("GET", "/version", "探针", "开放",
+         "后端自报版本。★给 scripts/deployed-version-check.sh 用★——那道闸原来只量前端 bundle,\
+          纯后端的改动它完全是瞎的(v0.7.9/v0.7.10 都是纯后端,它照样报「一致」)。\
+          免鉴权是有意的:版本号本来就印在前端 bundle 里,不是秘密;而要 token 才能量的闸,\
+          在 CI 里会变成「没配 token 就跳过」= 又一个假绿", ""),
     api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", ""),
     api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state"),
     api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", ""),
@@ -457,8 +462,12 @@ mod tests {
             let after = &rest[a + 1..];
             let Some(b) = after.find('"') else { continue };
             let p = &after[..b];
-            // /healthz /readyz /auth/* 在根;其余按 nest 分:/pub/* 是分享访客面,剩下的都在 /api 下
-            let full = if p.starts_with("/healthz") || p.starts_with("/readyz") || p.starts_with("/auth/") {
+            // /healthz /readyz /version /auth/* 在根;其余按 nest 分:/pub/* 是分享访客面,剩下的都在 /api 下
+            // ⚠★这份「在根」的清单要跟 mod.rs 手工对齐★:漏一条,那条路由会被当成 /api/xxx,
+            //   于是本测试报「注册了但没写文档 /api/xxx + 写了文档但没注册 /xxx」——
+            //   报错内容看着像是漏写文档,真凶却是这一行(2026-08-22 加 /version 时踩到)。
+            let full = if p.starts_with("/healthz") || p.starts_with("/readyz")
+                || p.starts_with("/version") || p.starts_with("/auth/") {
                 p.to_string()
             } else if p.starts_with("/share/") {
                 format!("/pub{p}")
