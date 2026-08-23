@@ -44,31 +44,47 @@ pub struct Api {
     /// 响应体的字段级 schema。同上。
     #[serde(skip)]
     pub res: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
+    /// ★这条**本来就不回 JSON**★ —— 值是「回的是什么」的一句话说明。
+    ///
+    /// ⚠ 为什么要单独标而不是留空:留空的话它和「还没接 schema」长得一样,
+    ///   于是覆盖率闸的数字**永远归不了零**,而没人说得清剩下那几条是
+    ///   「做完了」还是「忘了做」。★一个到不了零的进度条,等于没有进度条。★
+    pub non_json: Option<&'static str>,
 }
 
-/// 声明一条接口。★后两个参数是可选的★,按需写:
+/// 声明一条接口。★后面的参数是可选的★,按需写:
 /// - `api!(M, P, G, A, S, Q)`                      —— 还没接 schema(欠账,门禁会数)
 /// - `api!(M, P, G, A, S, Q, res: T)`              —— 只有响应体
 /// - `api!(M, P, G, A, S, Q, req: R, res: T)`      —— 请求体 + 响应体
+/// - `api!(M, P, G, A, S, Q, raw: "回的是什么")`    —— ★本来就不回 JSON★(流/302/纯文本/204)
 macro_rules! api {
     ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr) => {
         Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
-              req: None, res: None }
+              req: None, res: None, non_json: None }
+    };
+    ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, raw: $w:expr) => {
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
+              req: None, res: None, non_json: Some($w) }
     };
     ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, res: $r:ty) => {
         Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
-              req: None, res: Some(|g| g.subschema_for::<$r>()) }
+              req: None, res: Some(|g| g.subschema_for::<$r>()), non_json: None }
     };
     ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, req: $rq:ty, res: $r:ty) => {
         Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
-              req: Some(|g| g.subschema_for::<$rq>()), res: Some(|g| g.subschema_for::<$r>()) }
+              req: Some(|g| g.subschema_for::<$rq>()), res: Some(|g| g.subschema_for::<$r>()), non_json: None }
+    };
+    ($m:expr, $p:expr, $g:expr, $a:expr, $s:expr, $q:expr, req: $rq:ty, raw: $w:expr) => {
+        Api { method: $m, path: $p, group: $g, auth: $a, summary: $s, params: $q,
+              req: Some(|g| g.subschema_for::<$rq>()), res: None, non_json: Some($w) }
     };
 }
 
 /// 全部 API。★改路由必须同步改这里,否则测试红★
 pub const APIS: &[Api] = &[
     // ── 探针 / 认证 ──
-    api!("GET", "/healthz", "探针", "开放", "存活探针:进程活着就返回 ok", ""),
+    api!("GET", "/healthz", "探针", "开放", "存活探针:进程活着就返回 ok", "",
+         raw: "纯文本 `ok`(探针只看状态码)"),
     api!("GET", "/readyz", "探针", "开放", "就绪探针:PG SELECT 1 + S3 head_bucket 都通才 ready", ""),
     api!("GET", "/version", "探针", "开放",
          "后端自报版本。★给 scripts/deployed-version-check.sh 用★——那道闸原来只量前端 bundle,\
@@ -76,9 +92,12 @@ pub const APIS: &[Api] = &[
           免鉴权是有意的:版本号本来就印在前端 bundle 里,不是秘密;而要 token 才能量的闸,\
           在 CI 里会变成「没配 token 就跳过」= 又一个假绿", "",
          res: crate::http::VersionOut),
-    api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", ""),
-    api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state"),
-    api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", ""),
+    api!("GET", "/auth/login", "认证", "开放", "跳 Keycloak 登录", "",
+         raw: "302 跳 Keycloak 授权页"),
+    api!("GET", "/auth/callback", "认证", "开放", "OIDC 回调,换码建会话", "code, state",
+         raw: "302 回站内 + Set-Cookie 建会话"),
+    api!("GET", "/auth/logout", "认证", "开放", "退出并清会话 cookie", "",
+         raw: "302 回首页 + 清会话 cookie"),
     api!("GET", "/api/me", "认证", "登录",
          "当前身份。★is_super = 此刻有没有超管**特权**★(超管模式关着时为 false);
           can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", ""),
@@ -208,7 +227,8 @@ pub const APIS: &[Api] = &[
          "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer",
          res: crate::http::dto::IdOut),
     api!("GET", "/api/activities/{id}/minutes", "活动", "参会人/关联项目成员(★旁听者不给★)",
-         "取活动纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
+         "取活动纪要(没有则回空,不用判 404)+ 我能不能编辑", "",
+         res: crate::http::activities::MinutesGetOut),
     api!("PUT", "/api/activities/{id}/minutes", "活动", "发起人 / 记录员",
          "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
           ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
@@ -288,11 +308,13 @@ pub const APIS: &[Api] = &[
          res: Vec<crate::http::projects::MyTransferRow>),
     api!("GET", "/api/me/unread", "活动", "登录",
          "私聊未读(原型「待我处理」卡)。★只算 private 频道且 peer 是我的★——公开讨论区的新消息不进,\
-          否则天天有红点等于没有红点。每场会只回最新一条 + 条数", ""),
+          否则天天有红点等于没有红点。每场会只回最新一条 + 条数", "",
+         res: Vec<crate::http::activities::UnreadRow>),
     api!("GET", "/api/me/minutes-todo", "活动", "登录",
          "等我整理的纪要(喂给「待我处理」卡)。★判据走 activities_owing_minutes 视图★——\
           与 /api/me/stats 的「待写纪要」同源,免得两份判据分叉(此前 stats 那份漏了 has_minutes,\
-          会把自建类型的活动也算成欠纪要)。不设时间下限:欠着的纪要不会因为放久了就不欠", ""),
+          会把自建类型的活动也算成欠纪要)。不设时间下限:欠着的纪要不会因为放久了就不欠", "",
+         res: Vec<crate::http::activities::MinutesTodoRow>),
     api!("POST", "/api/items/{id}/copy", "内容", "★源要 viewer + 目标要 editor★",
          "跨项目复制(PRD J2)。内容寻址下**盘上一个字节都不增加**——副本是新的一行 items 指向同一个 blob。\
           ★源也要判权★:复制不走下载路径,所以它绕过了下载上的全部检查,不自己判一次就是\
@@ -313,14 +335,16 @@ pub const APIS: &[Api] = &[
          "页面内提醒弹窗的数据源。★since 用**服务端**时间★:响应带 now,前端下次原样送回 ——\
           用客户端 Date.now() 的话,浏览器时钟快几秒就永远查不到刚发的提醒、慢几秒则每轮重弹同一条,\
           而两种偏差都无声无息。不带 since 时回空列表(首轮只用来对时),否则一进页面就被早已开完的会糊脸",
-         "since(可选,上轮返回的 now)"),
+         "since(可选,上轮返回的 now)",
+         res: crate::http::activities::RemindersOut),
     api!("POST", "/api/me/unread/read", "活动", "登录",
          "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
           后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)",
          res: crate::http::activities::MarkReadOut),
     api!("GET", "/api/freebusy", "活动", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按活动自己的 busy 分流★(PRD A4)——busy=false 的活动完全隐形(别人看到「空闲」)",
-         "users(逗号分隔), from, to"),
+         "users(逗号分隔), from, to",
+         res: crate::http::activities::FreeBusyOut),
 
     // ── 内容 ──
     api!("GET", "/api/projects/{id}/items", "内容", "≥viewer", "内容树(扁平表,前端按 parent_id 组树)", "",
@@ -345,7 +369,8 @@ pub const APIS: &[Api] = &[
     api!("DELETE", "/api/items/{id}/purge", "内容", "admin",
          "彻底删除(★只能对回收站里的东西★),对象按引用计数清", "",
          res: crate::http::items::PurgeOut),
-    api!("GET", "/api/items/{id}/content", "内容", "≥viewer", "文档正文(markdown)", ""),
+    api!("GET", "/api/items/{id}/content", "内容", "≥viewer", "文档正文(markdown)", "",
+         raw: "文档正文纯文本"),
     api!("PUT", "/api/items/{id}/content", "内容", "≥editor", "保存文档;同 sha 重复保存是 no-op", "text, label",
          res: crate::http::items::ContentPutOut),
     api!("GET", "/api/items/{id}/versions", "内容", "≥viewer", "版本历史", "",
@@ -361,7 +386,8 @@ pub const APIS: &[Api] = &[
           is_recording=true 标记为录制 —— 只有录制会被转写、并作为活动时长依据(D5)",
          "multipart file; parent_id, activity_id, is_recording",
          res: crate::http::items::UploadOut),
-    api!("GET", "/api/items/{id}/download", "内容", "≥viewer", "下载原件;viewer 受项目禁下载开关约束", "inline"),
+    api!("GET", "/api/items/{id}/download", "内容", "≥viewer", "下载原件;viewer 受项目禁下载开关约束", "inline",
+         raw: "文件字节流(按 mime 决定 inline/attachment)"),
 
     // ── 大文件直传 ──
     api!("POST", "/api/projects/{id}/media/begin", "直传", "≥editor",
@@ -371,16 +397,19 @@ pub const APIS: &[Api] = &[
           否则任何人都能占住 blobs/<别人文件的哈希> 塞垃圾,让对方上传时被静默引用到它。
           申报的 sha 仍用于断点认领与秒传预检,但不参与 key 的推导",
          "name, size, mime, parent_id, sha256, fp"),
-    api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节"),
+    api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节",
+         raw: "204 无响应体;ETag 在响应头里"),
     api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",
          "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts"),
     api!("POST", "/api/items/{id}/media/abort", "直传", "≥editor", "主动取消(★只有主动取消才 abort,失败不动断点★)", ""),
-    api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET;★禁下载(项目级对 viewer / 活动级对所有人)时改回 200/206 同源 Range 代理,不发直链★。★只对 video 放行★", ""),
+    api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET;★禁下载(项目级对 viewer / 活动级对所有人)时改回 200/206 同源 Range 代理,不发直链★。★只对 video 放行★", "",
+         raw: "302 到预签名 GET(支持 Range 拖动)"),
 
     // ── 转写与纪要 ──
     api!("POST", "/api/items/{id}/analyze", "转写", "≥editor", "排一个转写+纪要任务(幂等)", ""),
     api!("GET", "/api/items/{id}/analysis", "转写", "≥viewer", "转写结果与 AI 参考稿", ""),
-    api!("GET", "/api/items/{id}/subtitles.vtt", "转写", "≥viewer", "WebVTT 字幕", ""),
+    api!("GET", "/api/items/{id}/subtitles.vtt", "转写", "≥viewer", "WebVTT 字幕", "",
+         raw: "WebVTT 字幕文本"),
 
     // ── 公开分享(管理面)──
     api!("GET", "/api/items/{id}/shares", "分享", "≥editor", "本项的分享链接列表", ""),
@@ -396,7 +425,8 @@ pub const APIS: &[Api] = &[
     api!("POST", "/pub/share/{token}/open", "分享·访客", "开放",
          "校验提取码 → 计一次访问 → 发 2h 短命票。★失败 20 次/15 分钟即限速★", "code"),
     api!("GET", "/pub/share/{token}/list", "分享·访客", "票", "列子目录(逐项验是被分享项的后代)", "k 票, parent"),
-    api!("GET", "/pub/share/{token}/file/{item_id}", "分享·访客", "票", "取内容(流式转发,不暴露对象存储)", "k 票, inline"),
+    api!("GET", "/pub/share/{token}/file/{item_id}", "分享·访客", "票", "取内容(流式转发,不暴露对象存储)", "k 票, inline",
+         raw: "文件字节流(公开访客面)"),
 
     // ── 超管 ──
     api!("GET", "/api/admin/users", "超管", "超管",
@@ -410,7 +440,8 @@ pub const APIS: &[Api] = &[
          req: crate::http::admin::QuotaIn, res: crate::http::admin::OkOut),
     api!("DELETE", "/api/admin/users/{username}/quota", "超管", "超管",
          "★把这个人放回「跟随全站默认」★(删掉 user_quota 行,幂等回 204)。没有这条的话,一旦单独设过配额就永久脱离全站默认、再也回不去",
-         ""),
+         "",
+         raw: "204 无响应体(幂等)"),
     api!("GET", "/api/admin/audit", "超管", "超管", "全局审计日志", "limit, actor, action",
          res: Vec<crate::http::admin::AuditRow>),
     api!("GET", "/api/admin/settings", "超管", "超管",
@@ -433,7 +464,8 @@ pub const APIS: &[Api] = &[
     // ── 开发者 ──
     api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", ""),
     api!("GET", "/api/_dev/openapi.json", "开发者", "超管",
-         "OpenAPI 3.1 契约。★从 APIS 生成,不是手写的★——手写的契约一定会漂", ""),
+         "OpenAPI 3.1 契约。★从 APIS 生成,不是手写的★——手写的契约一定会漂", "",
+         raw: "OpenAPI 3.1 文档本身(它就是这份契约)"),
 ];
 
 /// GET /api/_dev/openapi.json —— OpenAPI 3.1 契约。
@@ -493,10 +525,12 @@ pub fn build_openapi() -> serde_json::Value {
                 "content": { "application/json": { "schema": f(&mut 生成器) } },
             })),
             "responses": {
-                "200": match a.res {
-                    Some(f) => json!({ "description": "成功",
+                "200": match (a.res, a.non_json) {
+                    (Some(f), _) => json!({ "description": "成功",
                         "content": { "application/json": { "schema": f(&mut 生成器) } } }),
-                    None => json!({ "description": "成功" }),
+                    // ★不回 JSON 的如实写出来★,别让人以为是漏了 schema
+                    (None, Some(w)) => json!({ "description": format!("成功 —— {w}") }),
+                    (None, None) => json!({ "description": "成功(字段级 schema 待补)" }),
                 },
                 "401": { "description": "未登录" },
                 "403": { "description": "已登录但档位不够" },
@@ -508,7 +542,8 @@ pub fn build_openapi() -> serde_json::Value {
     }
     // 收集这一轮引用到的全部类型定义 —— 接口里只留 `$ref`,定义集中在 components。
     let 定义 = 生成器.take_definitions(true);
-    let 未接 = APIS.iter().filter(|a| a.res.is_none()).count();
+    // ★只数「该接而没接的」★:天然不回 JSON 的不算欠账(见 Api::non_json)。
+    let 未接 = APIS.iter().filter(|a| a.res.is_none() && a.non_json.is_none()).count();
     json!({
         "openapi": "3.1.0",
         "components": { "schemas": 定义 },
