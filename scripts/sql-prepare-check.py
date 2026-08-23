@@ -104,10 +104,18 @@ def via_registry(sqls):
         except urllib.error.HTTPError as e:
             # ★SQL 出错时端点回 400,而真正的报错在 **body** 里★——只报 `HTTP Error 400`
             # 等于把这道闸最有用的东西(哪一列不存在)扔了。第一次跑就踩到,记在这。
+            #
+            # ⚠★5xx 不是「这条 SQL 错了」,是「接口挂了」★(2026-08-23 加):
+            #   平台 db/sql 500 那天,这道闸把**每一条** SQL 都记成失败,
+            #   最后打印「175/175 条 SQL 对不上 schema —— 门禁不通过」——
+            #   ★一个人看到这行字,第一反应是自己刚才改坏了什么,而真相是服务端挂了。★
+            #   现在 5xx 单独标出来,由 main() 判成「量不到」(exit 2)而不是「不通过」。
+            if e.code >= 500: return i, f'__环境__HTTP {e.code}'
             try: d = json.loads(e.read())
             except Exception: return i, f'HTTP {e.code}'
         except Exception as e:
-            return i, f'请求失败: {e}'
+            # 连不上 / 超时同理:那是环境,不是 SQL。
+            return i, f'__环境__请求失败: {e}'
         return (i, None) if d.get('ok') else (i, (d.get('error') or '').split('\n')[0])
 
     with cf.ThreadPoolExecutor(8) as ex:
@@ -126,10 +134,19 @@ def main():
             print('--pre 需要 --dsn / CONGROVE_DEV_DSN（要在一条事务里施加变更再回滚）', file=sys.stderr); sys.exit(2)
         print(f'★先施加 schema 变更再检查，最后 ROLLBACK★\n{pre.strip()}\n{"─" * 60}')
     fails = via_psql(dsn, sqls, pre) if dsn else via_registry(sqls)
+    n = len(items)
+    # ★先把「环境挂了」和「SQL 错了」分开★——见 one() 里那段注释:
+    #   混在一起的话,服务端一挂,这道闸就把全部 SQL 报成「对不上 schema」。
+    环境 = {i: e for i, e in fails.items() if str(e).startswith('__环境__')}
+    if 环境:
+        样本 = str(next(iter(环境.values()))).removeprefix('__环境__')
+        print(f'\n★量不到:{len(环境)}/{n} 条请求没能到达数据库({样本})★', file=sys.stderr)
+        print('  这**不是**「SQL 对不上 schema」——是 db/sql 接口不可用。', file=sys.stderr)
+        print('  「我没查」和「查了没问题」是两件事,所以这里 exit 2(不算通过,也不算失败)。', file=sys.stderr)
+        sys.exit(2)
     for i in sorted(fails):
         it = items[i]
         print(f"✗ {it['file']}:{it['line']}\n    {' '.join(it['sql'].split())[:150]}\n    → {fails[i]}")
-    n = len(items)
     if fails:
         print(f'\n★{len(fails)}/{n} 条 SQL 对不上 schema —— 门禁不通过★', file=sys.stderr); sys.exit(1)
     print(f'\n★{n}/{n} 条 SQL 全部通过 PREPARE —— 门禁通过★')

@@ -38,7 +38,16 @@ gate() {   # gate <名字> <命令...>
   local name=$1; shift
   local out rc
   out=$("$@" 2>&1); rc=$?
+  # 退出码约定(全树一致,别再分叉):
+  #   0 = 通过 / 1 = 真的不通过 / ★2 = 整个量不到★ / ★3 = 部分没跑★
+  # ⚠★2 以前落到 else 被显示成红★(2026-08-23 修):平台的 `db/sql` 接口 500 那天,
+  #   依赖它的四道闸(PREPARE / schema 对拍 / 迁移校验和 / …)全打了 ✗ ——
+  #   ★于是「环境挂了」长得和「你的代码有问题」一模一样,人会先去 debug 自己的改动。★
+  #   `dbq.py` 的头注早就写明「exit 2 = 量不到」,而这里只认 3 —— 一个说了没人听的约定。
+  #   ★「我没查」被报成「查出问题了」,和被报成「通过」一样坏,甚至更费人。★
   if [ $rc -eq 0 ]; then RESULTS+=("  ✓ $name")
+  elif [ $rc -eq 2 ]; then RESULTS+=("  ? $name（★量不到,不算通过★,见下）"); SKIPPED=1
+       printf '%s\n' "── $name 的输出 ──" "$out" | tail -12
   elif [ $rc -eq 3 ]; then RESULTS+=("  ? $name（部分未跑,见下）"); SKIPPED=1
        printf '%s\n' "── $name 的输出 ──" "$out" | tail -12
   else RESULTS+=("  ✗ ★$name★"); FAILED=1
