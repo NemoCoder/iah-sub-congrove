@@ -53,7 +53,10 @@ pub struct Segment {
 /// 后台 worker:每 10s 捞一个排队任务跑。单实例串行——ASR/LLM 都是外部服务,
 /// 并发放大只会把网关排队转嫁过去;录屏分析本就是离线批处理,不追求并发。
 pub async fn run(state: AppState) {
-    // 启动先把上次进程留下的 running 打回 queued(它们的 tokio 任务已随进程消失)。
+    // 启动先回收一次:上次进程留下的 running,它们的 tokio 任务已随进程消失。
+    // ⚠★但这一次是不够的★(2026-08-23 审计,修的是 2026-08-16 那段注释自己点出来的洞):
+    //   原来 `reclaim_stale` **只在这里跑一次** —— 于是进程活着、任务却卡死在 running 时,
+    //   它连回收都等不到,除非有人重启 pod。现在循环里每轮也跑(见下),卡死的会自己回来。
     if let Err(e) = reclaim_stale(&state.pool).await {
         tracing::warn!(error = %e, "media_ai: 回收僵尸任务失败");
     }
@@ -64,6 +67,12 @@ pub async fn run(state: AppState) {
         tracing::info!("media_ai: 已清理上次进程遗留的临时录屏目录");
     }
     loop {
+        // ★每轮都回收一次★:判据是「15 分钟没心跳」,所以正在跑的那条不会被自己收走
+        //   (`stage()` 每推进一步就写 updated_at)。放在 claim 之前:先把僵尸放回队列,
+        //   这一轮就能把它捞起来重跑。
+        if let Err(e) = reclaim_stale(&state.pool).await {
+            tracing::warn!(error = %e, "media_ai: 本轮回收僵尸任务失败");
+        }
         match claim_job(&state.pool).await {
             Ok(Some((job_id, item_id))) => {
                 tracing::info!(job_id, item_id, "media_ai: 开始分析");
@@ -112,8 +121,30 @@ pub async fn run(state: AppState) {
     }
 }
 
+/// 回收「僵尸任务」——★只回收真的没心跳的★。
+///
+/// ⚠★原来是无条件 `WHERE status='running'`★(2026-08-23 全量审计):
+///   `claim_job` 的注释写着「`FOR UPDATE SKIP LOCKED` 保证**多副本**时不会取到同一条」,
+///   也就是说这段代码是按多副本设计的 —— 而无条件回收在多副本下会把**别的副本正在跑的**
+///   任务打回队列,然后自己取走。
+///
+/// ★单副本也躲不掉:滚动更新期间新旧 pod 并存★ —— 新 pod 一启动就把旧 pod 正在转写的
+///   那条打回 queued、自己重跑一遍。**每次部署都可能白烧一次 GPU**,
+///   而现象只是「这次转写慢了点」,没有任何一处会报出来。
+///
+/// 判据用心跳:`stage()` 每推进一步都会写 `updated_at`,所以活着的任务一直在更新。
+/// 15 分钟是留给最慢那一步(整段 ASR)的余量 —— 它确实可能十几分钟不推进 stage。
+///
+/// ⚠★代价说清楚★:进程被打断时,那条任务要等 15 分钟才会被重新排队(原来是立刻)。
+///   这是有意换的 —— 「慢 15 分钟」远好过「每次部署都把正在转写的那段录音重跑一遍」。
+///   界面上它显示的是 `等待重跑`,不是失败。
+const 僵尸阈值分钟: i64 = 15;
+
 async fn reclaim_stale(pool: &PgPool) -> anyhow::Result<()> {
-    let n = sqlx::query("UPDATE media_jobs SET status='queued', stage='等待重跑', updated_at=now() WHERE status='running'")
+    let n = sqlx::query(
+        "UPDATE media_jobs SET status='queued', stage='等待重跑', updated_at=now()
+          WHERE status='running' AND updated_at < now() - make_interval(mins => $1)")
+        .bind(僵尸阈值分钟 as i32)
         .execute(pool).await?.rows_affected();
     if n > 0 {
         tracing::info!(n, "media_ai: 上次进程遗留的任务已重新排队");

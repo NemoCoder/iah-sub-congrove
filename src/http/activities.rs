@@ -1159,6 +1159,12 @@ pub async fn respond(
             return Err(AppError::BadRequest("活动已经开始,不能再建议改期(可以标记拒绝)".into()));
         }
     }
+    // ★答复与「纪要转回发起人」必须同生共死★(2026-08-23 全量审计):
+    //   这两步原来是两条独立的 UPDATE。第一条成功、第二条失败时,状态是:
+    //   **他记成了 declined,而 recorder 还挂在他名下** —— 于是系统会一直催他写
+    //   一场他明说不去的会的纪要,而这正是下面那段自动转移要消除的东西。
+    //   ⚠ 概率低但代价是「责任凭空悬在一个已经退出的人身上」,而且没有任何重试或告警。
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE activity_participants
             SET status=$3, responded_at=now(),
@@ -1166,10 +1172,15 @@ pub async fn respond(
           WHERE activity_id=$1 AND username=$2")
         .bind(mid).bind(username).bind(st)
         .bind(r.counter_starts_at).bind(r.counter_ends_at).bind(r.counter_reason.as_deref())
-        .execute(&state.pool).await?;
+        .execute(&mut *tx).await?;
     // ★「建议改期」必须通知发起人★(D2):私密项目的日程对他完全隐形,他不知道我为什么忙,
     // 这条建议就是他能收到的**唯一**信号。它躺在数据库里没人看 = 这个出口不存在。
     // 其余三态(接受/拒绝/待定)不发信 —— 发起人在活动页看得到答复进度,一人一条信只会淹掉真正要紧的这条。
+    // ⚠★这条分支的 notify 在 commit **之前**★(2026-08-23 记下来,没改):
+    //   它只发信不写库,而事务里此刻只有一条 `UPDATE activity_participants` ——
+    //   commit 失败的话是「信发了、答复没存」。相比 declined 那条(它还要改 recorder)
+    //   风险小一个量级,而把它挪到 commit 之后要重排整个函数(counter 分支不 return,
+    //   commit 会消耗 tx,末尾那次就编译不过)。★权衡记在这儿,别当成没看见。★
     if st == "counter" {
         let (mtitle, organizer, mtz): (String, String, String) =
             sqlx::query_as("SELECT title, organizer, timezone FROM activities WHERE id=$1")
@@ -1215,8 +1226,12 @@ pub async fn respond(
         let mut 已转给发起人 = false;
         if 我是记录员 && organizer != username {
             sqlx::query("UPDATE activities SET recorder = $2 WHERE id = $1")
-                .bind(mid).bind(&organizer).execute(&state.pool).await?;
+                .bind(mid).bind(&organizer).execute(&mut *tx).await?;
             已转给发起人 = true;
+        }
+        // ★先落库再发信★:notify 在事务里发的话,一旦回滚就是「信说纪要转给你了,而库里没转」。
+        tx.commit().await?;
+        if 已转给发起人 {
             let 标题: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
                 .bind(mid).fetch_one(&state.pool).await.unwrap_or_default();
             notify_activity(&state, mid, std::slice::from_ref(&organizer), "记录员拒绝出席,纪要已转到你名下",
@@ -1231,6 +1246,7 @@ pub async fn respond(
             recorder_moved_to: Some(if 已转给发起人 { Some(organizer.clone()) } else { None }),
         }));
     }
+    tx.commit().await?;
     Ok(Json(RespondOut { ok: true, status: st.to_string(), still_recorder: None, recorder_moved_to: None }))
 }
 

@@ -73,7 +73,7 @@ pub async fn run(state: AppState) {
 async fn once(state: &AppState) -> anyhow::Result<()> {
     // ★在开事务之前读★:它是一次独立的短查询,没必要占着这轮的事务;
     //   而且每跳读一次正是我们要的「超管改完下一跳就生效」。
-    let (默认提前量, _) = crate::settings::effective_default_remind(&state.pool).await;
+    let (默认提前量, _) = crate::settings::effective_default_remind(&state.pool).await?;
     let mut tx = state.pool.begin().await?;
 
     // ⚠ `FOR UPDATE SKIP LOCKED` 必须落在 activity_participants 上（`OF p`）——
