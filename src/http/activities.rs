@@ -16,7 +16,6 @@
 use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
@@ -146,6 +145,180 @@ pub struct RangeQ {
 }
 
 // ══════ 响应体类型(字段级契约,2026-08-23)══════
+
+/// 时长的三个口径。★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证。
+/// 三级回退是 录制 > 手工 > 排程 —— 排程常常离谱(排 2 小时、20 分钟散会)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct HoursBySource {
+    pub recording: f64,
+    pub manual: f64,
+    pub scheduled: f64,
+}
+
+/// 我的投入(个人面板)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MyStatsOut {
+    /// 统计区间(如 `30d`)。
+    pub range: String,
+    /// 我参与的项目数。
+    pub member_of: i64,
+    pub totals: MyTotals,
+    /// ★按类型是主视角★(PRD §K:「按项目答『我为哪个团队花了时间』,
+    /// 按类型答『我在做什么』,后者才是个人视角的主问题」)。前端把它排在按项目**之前**。
+    pub by_type: Vec<TypeStat>,
+    /// ⚠★它自带一套合计,不能用上面那份 `totals`★:两张表口径不同
+    /// (这张不要求有关联项目),合计自然对不上。
+    /// ★拿上面那份去当这张表的合计 = 制造一个自相矛盾的数字。★
+    pub totals_by_type: TypeTotals,
+    pub by_project: Vec<ProjectStat>,
+    /// 我主持的项目(有额外的治理数字:成员数、欠着的纪要)。
+    pub hosting: Vec<HostingStat>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MyTotals {
+    pub activities: i64,
+    pub hours: f64,
+    pub projects: i64,
+    /// 我欠着的纪要数。
+    pub minutes_todo: i64,
+    pub hours_by_source: HoursBySource,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TypeStat {
+    pub type_id: i64,
+    pub name: String,
+    pub count: i64,
+    pub hours: f64,
+    pub hours_by_source: HoursBySource,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TypeTotals {
+    pub activities: i64,
+    pub hours: f64,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectStat {
+    pub id: i64,
+    pub name: String,
+    pub archived: bool,
+    pub count: i64,
+    pub hours: f64,
+    /// 已完成的纪要数。
+    pub minutes_done: i64,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct HostingStat {
+    pub id: i64,
+    pub name: String,
+    pub archived: bool,
+    pub members: i64,
+    /// ★欠账清单★:这个项目里开完却没写完纪要的场次(不论记录员是谁)。
+    pub minutes_pending: i64,
+}
+
+/// 某个项目的活动统计。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectStatsOut {
+    pub range: String,
+    pub activities: i64,
+    pub hours: f64,
+    pub hours_by_source: HoursBySource,
+    pub invited: i64,
+    pub accepted: i64,
+    /// 参会率 = 接受 / 邀请。⚠★分母不含旁听者★:他不是被邀请的,计进去会稀释这个比例。
+    /// ⚠★一个人都没邀请过时是 `0.0` 而不是 null★(`accept_rate()` 里 `invited<=0` 直接回 0.0)——
+    ///   我写类型时按「0/0 该是 null」写成了 Option,编译器纠正了我。
+    ///   ★这里如实记下现状,而不是顺手把行为改了★:改它是产品判断
+    ///   (「没邀请过人的项目参会率显示 0%」对不对),不该混在一次补契约里做。
+    pub accept_rate: f64,
+    /// 人均时长;null = 没有可算的样本。
+    pub avg_hours_per_person: Option<f64>,
+    pub minutes_done: i64,
+    /// ★D6★:这是「分组展开」的数字,把多个项目的加起来 ≠ 总数。
+    /// ⚠ 这句话**放在响应里**而不是只写文档:数字会被复制进汇报,而文档不会跟着走。
+    pub dedup_note: String,
+}
+
+/// 活动详情。★两种形状★——旁听者拿的是裁剪版(ADR-0006 的白名单)。
+///
+/// ⚠ 用 `untagged` 如实表达「有两种」,而不是硬凑成一个类型:
+///   凑成一个的话,要么给旁听版补上它**不该有**的字段(泄露),
+///   要么把正常版的字段全标成可选(等于没有契约)。
+/// ⚠★没有把两版合并成同一个结构★:那会改变旁听版的响应形状(多出 type_name 等键),
+///   而这是**行为变化**,不该混在一次补契约里做。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ActivityDetailOut {
+    /// 旁听者视角。
+    Observer(Box<ObserverDetail>),
+    /// 参会人 / 关联项目成员视角。
+    Full(Box<FullDetail>),
+}
+
+/// 旁听者看到的活动 —— ★白名单★:标题/议程/时间地点/发起人/线上地址,别的都没有。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ObserverDetail {
+    pub activity: ObserverActivity,
+    /// ★恒为 null★——连人数都不给(人数本身也是信息:「这会只有 2 个人」就足够说明性质)。
+    pub participants: Option<serde_json::Value>,
+    /// ★恒为空数组★。
+    pub projects: Vec<serde_json::Value>,
+    pub can_edit: bool,
+    /// ★外层形状必须与正常版一致★:正常版有的键这里也要有 ——
+    /// 前端 `d.can_see_items && …` 读到 undefined 虽然也是假,但
+    /// ★「靠 undefined 恰好为假」不是判据,是运气★。
+    pub can_see_items: bool,
+    pub can_upload_items: bool,
+    /// ★只有旁听版有这个键★,前端据此知道自己拿的是裁剪版。
+    pub observer: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ObserverActivity {
+    pub id: i64,
+    pub title: String,
+    pub agenda: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub ends_at: chrono::DateTime<chrono::Utc>,
+    pub timezone: String,
+    pub location: String,
+    pub online_url: String,
+    pub visibility: String,
+    pub status: String,
+    /// ★恒为 null★:旁听者不属于名单,也没有答复。显式给 null,别让前端读到 undefined。
+    pub my_status: Option<String>,
+    /// ★恒为 false★。
+    pub is_private: bool,
+    /// ★如实给★(ADR-0006):知道这场活动是谁攒的,正是旁听者判断「要不要去听」的依据之一。
+    pub organizer: String,
+    /// ★恒为空串★:记录员是活动内部的分工,不在白名单里。
+    pub recorder: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 参会人 / 关联项目成员看到的完整详情。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct FullDetail {
+    pub activity: ActivityRow,
+    pub participants: Vec<Participant>,
+    pub projects: Vec<ProjectBrief>,
+    pub can_edit: bool,
+    /// ★由后端如实算,前端别再拿「是不是参会人」当替身判据★(ADR-0006 的实现纪律之二)——
+    /// 那个替身判据正是「卡片在、列表空、上传失败」这个半截状态的成因。
+    pub can_see_items: bool,
+    pub can_upload_items: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectBrief {
+    pub id: i64,
+    pub name: String,
+}
 
 /// 我的未读私聊(按活动聚合)。
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -483,7 +656,7 @@ pub async fn detail(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ActivityDetailOut>> {
     let view = activity_view(&state.pool, &id, mid).await?;
     let m: ActivityRow = sqlx::query_as(
         "SELECT m.*, at.name AS type_name, mp.status AS my_status,
@@ -505,29 +678,23 @@ pub async fn detail(
         // ★两边的门禁互相抵消了★:E2E 断言的恰好是扁平形状(把契约钉成了扁平),
         // 而 `tsc` 认定 `activity` 必存在 —— 于是**没有任何一道闸会红**。
         // 裁剪的是**内容**(无名单、无关联项目、can_edit=false),不该顺带把**结构**也裁了。
-        return Ok(Json(json!({
-            "activity": {
-                "id": m.id, "title": m.title, "agenda": m.agenda,
-                "starts_at": m.starts_at, "ends_at": m.ends_at, "timezone": m.timezone,
-                "location": m.location, "online_url": m.online_url,
-                "visibility": m.visibility, "status": m.status,
-                // 旁听者不属于名单,也没有答复 —— 显式给 null,别让前端读到 undefined
-                "my_status": serde_json::Value::Null, "is_private": false,
+        return Ok(Json(ActivityDetailOut::Observer(Box::new(ObserverDetail {
+            activity: ObserverActivity {
+                id: m.id, title: m.title, agenda: m.agenda,
+                starts_at: m.starts_at, ends_at: m.ends_at, timezone: m.timezone,
+                location: m.location, online_url: m.online_url,
+                visibility: m.visibility, status: m.status,
+                my_status: None, is_private: false,
                 // ★发起人如实给★(2026-08-17,ADR-0006 决定一的反方向缺口):原来置空串,
-                //   旁听者界面上「发起人」那一行是**空的** —— 而白名单里明确含「发起人」:
-                //   知道这场活动是谁攒的,正是旁听者判断「要不要去听」的主要依据之一。
-                // ⚠ `recorder` **仍然置空**:记录员是活动内部的分工,不在白名单里。
-                "organizer": m.organizer, "recorder": "", "created_at": m.created_at,
+                //   旁听者界面上「发起人」那一行是**空的** —— 而白名单里明确含「发起人」。
+                organizer: m.organizer, recorder: String::new(), created_at: m.created_at,
             },
-            "participants": serde_json::Value::Null,
-            "projects": [],
-            "can_edit": false,
-            // ★外层形状必须与正常版一致★(同上面那段 A3 的教训):正常版有的键这里也要有 ——
-            //   前端 `d.can_see_items && …` 读到 undefined 虽然也是假,但★「靠 undefined 恰好为假」
-            //   不是判据,是运气★。
-            "can_see_items": false, "can_upload_items": false,
-            "observer": true,
-        })));
+            participants: None,
+            projects: vec![],
+            can_edit: false,
+            can_see_items: false, can_upload_items: false,
+            observer: true,
+        }))));
     }
     let parts: Vec<Participant> = sqlx::query_as(
         "SELECT p.username, u.name, p.kind, p.required, p.status, p.counter_starts_at, p.counter_ends_at,
@@ -543,16 +710,16 @@ pub async fn detail(
     // (2026-08-17,ADR-0006 的实现纪律之二)——那个替身判据正是
     // 「卡片在、列表空、上传失败」这个半截状态的成因。判据只有一处,新增入口自动被覆盖。
     let 材料权 = crate::perm::activity_material_access(&state.pool, &id, mid, None).await?;
-    Ok(Json(json!({
-        "activity": m, "participants": parts,
-        "projects": projects.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect::<Vec<_>>(),
-        "can_edit": require_activity_host(&state.pool, &id, mid).await.is_ok(),
-        "can_see_items": 材料权 >= crate::perm::材料权::只读,
-        "can_upload_items": 材料权 >= crate::perm::材料权::可传,
-    })))
+    Ok(Json(ActivityDetailOut::Full(Box::new(FullDetail {
+        activity: m, participants: parts,
+        projects: projects.into_iter().map(|(id, name)| ProjectBrief { id, name }).collect(),
+        can_edit: require_activity_host(&state.pool, &id, mid).await.is_ok(),
+        can_see_items: 材料权 >= crate::perm::材料权::只读,
+        can_upload_items: 材料权 >= crate::perm::材料权::可传,
+    }))))
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct Participant {
     pub username: String,
     /// 真实姓名;没登录过则为空
@@ -1787,7 +1954,7 @@ pub async fn my_stats(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Query(q): Query<StatsQ>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MyStatsOut>> {
     let who = id.require_username()?;
     let range = match q.range.as_deref().unwrap_or("month") {
         "month" => "month", "quarter" => "quarter", "year" => "year",
@@ -1930,36 +2097,35 @@ pub async fn my_stats(
           WHERE pm.username = $1 AND p.owner <> $1")
         .bind(who).fetch_one(&state.pool).await?;
 
-    Ok(Json(json!({
-        "range": range,
-        "member_of": member_of,
-        "totals": {
-            "activities": cnt, "hours": r1(hours), "projects": projects, "minutes_todo": todo,
-            // ★口径来源必须显示★(D5):不标来源,这个数字拿去汇报时没法自证
-            "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
+    Ok(Json(MyStatsOut {
+        range: range.to_string(),
+        member_of,
+        totals: MyTotals {
+            activities: cnt, hours: r1(hours), projects, minutes_todo: todo,
+            hours_by_source: HoursBySource { recording: r1(h_rec), manual: r1(h_man), scheduled: r1(h_sch) },
         },
         // ★按类型是主视角★(PRD §K:「按项目答『我为哪个团队花了时间』,按类型答『我在做什么』,
         // 后者才是个人视角的主问题」)。前端把它排在按项目**之前**。
         //
         // ⚠★它自带一套 totals,不能复用上面那份★:两张表口径不同(这张不要求有关联项目),
         //   合计自然对不上。让前端拿上面那份去当这张表的合计 = 制造一个自相矛盾的数字。
-        "by_type": by_type.iter().map(|(id, name, c, h, rec, man, sch)| json!({
-            "type_id": id, "name": name, "count": c, "hours": r1(*h),
-            "hours_by_source": { "recording": r1(*rec), "manual": r1(*man), "scheduled": r1(*sch) },
-        })).collect::<Vec<_>>(),
-        "totals_by_type": {
-            "activities": by_type.iter().map(|x| x.2).sum::<i64>(),
-            "hours": r1(by_type.iter().map(|x| x.3).sum::<f64>()),
+        by_type: by_type.iter().map(|(type_id, name, count, h, rec, man, sch)| TypeStat {
+            type_id: *type_id, name: name.clone(), count: *count, hours: r1(*h),
+            hours_by_source: HoursBySource { recording: r1(*rec), manual: r1(*man), scheduled: r1(*sch) },
+        }).collect(),
+        totals_by_type: TypeTotals {
+            activities: by_type.iter().map(|x| x.2).sum::<i64>(),
+            hours: r1(by_type.iter().map(|x| x.3).sum::<f64>()),
         },
-        "by_project": by_project.iter().map(|(id, name, arch, c, h, done)| json!({
-            "id": id, "name": name, "archived": arch,
-            "count": c, "hours": r1(*h), "minutes_done": done,
-        })).collect::<Vec<_>>(),
-        "hosting": hosting.iter().map(|(id, name, arch, mem, pend)| json!({
-            "id": id, "name": name, "archived": arch,
-            "members": mem, "minutes_pending": pend,
-        })).collect::<Vec<_>>(),
-    })))
+        by_project: by_project.iter().map(|(id, name, archived, count, h, minutes_done)| ProjectStat {
+            id: *id, name: name.clone(), archived: *archived,
+            count: *count, hours: r1(*h), minutes_done: *minutes_done,
+        }).collect(),
+        hosting: hosting.iter().map(|(id, name, archived, members, minutes_pending)| HostingStat {
+            id: *id, name: name.clone(), archived: *archived,
+            members: *members, minutes_pending: *minutes_pending,
+        }).collect(),
+    }))
 }
 
 // ── 待我处理:私聊未读(原型 me 之外那张 🔔 卡的第二类条目)────────────────────
@@ -2168,7 +2334,7 @@ pub async fn project_stats(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Query(q): Query<StatsQ>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ProjectStatsOut>> {
     // ★要 viewer 就够★:统计是「这个项目开了多少会」,属于项目内的公开事实;
     // 但它**只对成员**开放 —— 活动次数与时长本身也是信息(D3:权限来自当前成员身份)。
     perm::require_role(&state.pool, &id, pid, perm::Role::Viewer).await?;
@@ -2221,20 +2387,18 @@ pub async fn project_stats(
          ) x")
         .bind(pid).bind(range).fetch_one(&state.pool).await?;
 
-    Ok(Json(json!({
-        "range": range,
-        "activities": cnt,
-        "hours": r1(hours),
-        "hours_by_source": { "recording": r1(h_rec), "manual": r1(h_man), "scheduled": r1(h_sch) },
-        "invited": invited,
-        "accepted": accepted,
-        // 参会率 = 接受 / 邀请。⚠ 分母不含旁听者:他不是被邀请的,计进去会稀释这个比例
-        "accept_rate": accept_rate(accepted, invited),
-        "avg_hours_per_person": per_person.map(r1),
-        "minutes_done": done,
-        // ★D6★:这是「分组展开」的数字,把多个项目的加起来 ≠ 总数
-        "dedup_note": "一场会可关联多个项目,本数字按「活动 × 项目」展开;跨项目求总数须按活动去重(D6)",
-    })))
+    Ok(Json(ProjectStatsOut {
+        range: range.to_string(),
+        activities: cnt,
+        hours: r1(hours),
+        hours_by_source: HoursBySource { recording: r1(h_rec), manual: r1(h_man), scheduled: r1(h_sch) },
+        invited,
+        accepted,
+        accept_rate: accept_rate(accepted, invited),
+        avg_hours_per_person: per_person.map(r1),
+        minutes_done: done,
+        dedup_note: "一场会可关联多个项目,本数字按「活动 × 项目」展开;跨项目求总数须按活动去重(D6)".into(),
+    }))
 }
 
 

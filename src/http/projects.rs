@@ -4,7 +4,6 @@
 use axum::extract::{Path, State};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
@@ -161,6 +160,24 @@ pub struct DiagnoseOut {
 pub struct MembersOut {
     pub owner: Option<String>,
     pub members: Vec<MemberRow>,
+}
+
+/// 批量加成员/改角色。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MemberPutOut {
+    pub ok: bool,
+    /// 这次**新加**进去的人数 —— 已在名单里的只是改角色,不计入。
+    pub added: usize,
+}
+
+/// 移出成员。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MemberDeleteOut {
+    pub ok: bool,
+    pub removed: u64,
+    /// ★连带撤销了几条分享链接★:他建的分享在他离开后不该继续有效
+    /// —— 这个数字让「我只是移出一个人,怎么链接也没了」有个交代。
+    pub revoked_links: u64,
 }
 
 /// 发起转移后回这笔转移的 id(用于撤销)。
@@ -612,7 +629,7 @@ pub async fn member_put(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     Json(input): Json<MemberIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MemberPutOut>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let actor = id.require_username()?;
     if Role::parse(&input.role).is_none() {
@@ -651,7 +668,7 @@ pub async fn member_put(
     }
     audit::record(&state.pool, actor, "project.member.put", &pid.to_string(),
         &format!("{} 人 → {}", added, input.role)).await;
-    Ok(Json(json!({ "ok": true, "added": added })))
+    Ok(Json(MemberPutOut { ok: true, added }))
 }
 
 /// DELETE /api/projects/{id}/members?username=X —— 移出成员(admin)。
@@ -666,7 +683,7 @@ pub async fn member_delete(
     Extension(id): Extension<Identity>,
     Path(pid): Path<i64>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MemberDeleteOut>> {
     require_role(&state.pool, &id, pid, Role::Admin).await?;
     let actor = id.require_username()?;
     let who = q.get("username").map(|s| s.trim()).filter(|s| !s.is_empty())
@@ -698,7 +715,7 @@ pub async fn member_delete(
     tx.commit().await?;
     audit::record(&state.pool, actor, "project.member.delete", &pid.to_string(),
         &format!("移出 {who};连带撤销公开链接 {revoked} 条")).await;
-    Ok(Json(json!({ "ok": true, "removed": n, "revoked_links": revoked })))
+    Ok(Json(MemberDeleteOut { ok: true, removed: n, revoked_links: revoked }))
 }
 
 #[derive(Deserialize)]

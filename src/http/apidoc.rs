@@ -17,7 +17,7 @@ use crate::auth::Identity;
 use crate::error::AppResult;
 use crate::state::AppState;
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize, Clone, Copy, schemars::JsonSchema)]
 pub struct Api {
     /// HTTP 方法。多方法同路径的写成多条(前端按方法分色)。
     pub method: &'static str,
@@ -101,7 +101,8 @@ pub const APIS: &[Api] = &[
          raw: "302 回首页 + 清会话 cookie"),
     api!("GET", "/api/me", "认证", "登录",
          "当前身份。★is_super = 此刻有没有超管**特权**★(超管模式关着时为 false);
-          can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", ""),
+          can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", "",
+         res: crate::auth::MeOut),
     api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词",
          res: Vec<crate::http::admin::UserOption>),
 
@@ -158,9 +159,11 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/projects/{id}/members", "项目", "≥viewer", "成员列表(只有人,没有组)", "",
          res: crate::http::projects::MembersOut),
     api!("PUT", "/api/projects/{id}/members", "项目", "admin;给 admin 需 owner",
-         "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)"),
+         "★批量★添加成员或改角色", "usernames[], role(viewer/editor/admin)",
+         res: crate::http::projects::MemberPutOut),
     api!("DELETE", "/api/projects/{id}/members", "项目", "admin",
-         "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username"),
+         "移出成员。★连带撤销他创建的、指向本项目的公开链接★", "username",
+         res: crate::http::projects::MemberDeleteOut),
     api!("POST", "/api/projects/{id}/transfer", "项目", "owner",
          "★发起★转移主持人(不是直接转,PRD ⑨.5)。只能转给本项目成员;归档项目不能发起;\
           ★待接受期间原主持人仍是主持人★——发起即卸任会让项目在空档期无主。同一项目只允许一条 pending(库里唯一索引)", "to",
@@ -201,7 +204,8 @@ pub const APIS: &[Api] = &[
          "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility",
          res: crate::http::dto::IdOut),
     api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
-         "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
+         "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", "",
+         res: crate::http::activities::ActivityDetailOut),
     api!("PUT", "/api/activities/{id}", "活动", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
          "改活动。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
          "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility",
@@ -296,7 +300,8 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/projects/{id}/stats", "项目", "≥viewer",
          "项目统计(6.5.2):活动数 / 总时长(★D5 三级回退,与个人统计同一套口径★)/ 参会率 / **每人次**平均时长(★分母是人次不是人数★,别叫「人均」) / 纪要完成数。\
           ★取消的场次不计入★;参会率的分母**不含旁听者**(他不是被邀请的,计进去会稀释比例)。\
-          ⚠ 这是「分组展开」的数字(D6),把多个项目的加起来 ≠ 总数,跨项目求总须按活动去重", "range"),
+          ⚠ 这是「分组展开」的数字(D6),把多个项目的加起来 ≠ 总数,跨项目求总须按活动去重", "range",
+         res: crate::http::activities::ProjectStatsOut),
     // ★这里原来还有一条重复的 `GET /api/me/stats`★(2026-08-16 删):
     //   同一个接口在这张表里注册了两遍,两条描述还**互相矛盾** ——
     //   旧的那条写的是「我的投入」统计的老形状,而 handler 早就返回 by_type / by_project 了。
@@ -333,7 +338,8 @@ pub const APIS: &[Api] = &[
           正是它要回答的;`by_project`(答「我为哪个团队花了时间」)要求有活着的关联项目。\
           两者合计对不上是**有意的**,界面上各自标明口径。时长走 D5 三级回退\
           (录制>手工补录>排程)并给出 hours_by_source",
-         "range=month|quarter|year"),
+         "range=month|quarter|year",
+         res: crate::http::activities::MyStatsOut),
     api!("GET", "/api/me/reminders", "活动", "登录",
          "页面内提醒弹窗的数据源。★since 用**服务端**时间★:响应带 now,前端下次原样送回 ——\
           用客户端 Date.now() 的话,浏览器时钟快几秒就永远查不到刚发的提醒、慢几秒则每轮重弹同一条,\
@@ -399,9 +405,10 @@ pub const APIS: &[Api] = &[
           规范 key `blobs/<H>` 只能由**服务端算完真实哈希之后的归位**写出来 ——
           否则任何人都能占住 blobs/<别人文件的哈希> 塞垃圾,让对方上传时被静默引用到它。
           申报的 sha 仍用于断点认领与秒传预检,但不参与 key 的推导",
-         "name, size, mime, parent_id, sha256, fp"),
+         "name, size, mime, parent_id, sha256, fp",
+         res: crate::http::media::BeginOut),
     api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节",
-         raw: "204 无响应体;ETag 在响应头里"),
+         res: crate::http::media::PartOut),
     api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",
          "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts",
          res: crate::http::media::CompleteOut),
@@ -476,11 +483,20 @@ pub const APIS: &[Api] = &[
          req: crate::http::admin::ModelIn, res: crate::http::admin::ModelPutOut),
 
     // ── 开发者 ──
-    api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", ""),
+    api!("GET", "/api/_dev/apis", "开发者", "超管", "本清单(开发者页面的数据源)", "",
+         res: crate::http::apidoc::ApiListOut),
     api!("GET", "/api/_dev/openapi.json", "开发者", "超管",
          "OpenAPI 3.1 契约。★从 APIS 生成,不是手写的★——手写的契约一定会漂", "",
          raw: "OpenAPI 3.1 文档本身(它就是这份契约)"),
 ];
+
+/// `GET /api/_dev/apis` 的响应体 —— 开发者页面的数据源。
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ApiListOut {
+    pub count: usize,
+    /// 全部接口。★这就是 `APIS` 本身★,不是另抄一份。
+    pub apis: Vec<Api>,
+}
 
 /// GET /api/_dev/openapi.json —— OpenAPI 3.1 契约。
 ///
@@ -602,11 +618,11 @@ fn query_params(params: &str) -> Vec<&str> {
 pub async fn list(
     State(state): State<AppState>,
     axum::Extension(id): axum::Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ApiListOut>> {
     if !crate::perm::is_super_now(&state.pool, &id).await? {
         return Err(crate::error::AppError::Forbidden);
     }
-    Ok(Json(serde_json::json!({ "count": APIS.len(), "apis": APIS })))
+    Ok(Json(ApiListOut { count: APIS.len(), apis: APIS.to_vec() }))
 }
 
 #[cfg(test)]
