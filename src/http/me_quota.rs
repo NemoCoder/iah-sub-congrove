@@ -101,8 +101,18 @@ pub async fn put_prefs(
 /// ★开着的每一分钟都在放大「误看别人东西」的窗口★，短一点更贴合它存在的目的。
 const ADMIN_MODE_HOURS: i64 = 2;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct AdminModeIn { pub on: bool }
+
+/// 超管模式开关的结果。
+/// ★「资格」与「特权」是两件事★(docs/TECH-DESIGN-admin-mode.md):
+/// `app_user.is_super` 是资格,而这个开关控制的是**此刻有没有特权**。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct AdminModeOut {
+    pub admin_mode: bool,
+    /// 自动关闭的时刻(开启后 2 小时);关掉时为 null。
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
 
 /// POST /api/me/admin-mode —— 进入 / 退出超管模式（docs/TECH-DESIGN-admin-mode.md）。
 ///
@@ -120,7 +130,7 @@ pub async fn set_admin_mode(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(input): Json<AdminModeIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<AdminModeOut>> {
     let me = id.require_username()?;
     let capable: bool = sqlx::query_scalar("SELECT is_super FROM app_user WHERE username = $1")
         .bind(me).fetch_optional(&state.pool).await?.unwrap_or(false);
@@ -134,5 +144,5 @@ pub async fn set_admin_mode(
     crate::audit::record(&state.pool, me,
         if input.on { "admin_mode.enter" } else { "admin_mode.exit" }, me,
         &if input.on { format!("超管模式开启，{ADMIN_MODE_HOURS} 小时后自动关闭") } else { "超管模式关闭".to_string() }).await;
-    Ok(Json(json!({ "admin_mode": input.on, "until": until })))
+    Ok(Json(AdminModeOut { admin_mode: input.on, until }))
 }

@@ -162,6 +162,14 @@ pub struct SettingPutOut {
     pub value: String,
 }
 
+/// 选人下拉的候选(★只回用户名与姓名,别的一律不给★——这是「按名检查」不是目录枚举)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct UserOption {
+    pub username: String,
+    /// 姓名;null = 没登录过或平台没填。
+    pub name: Option<String>,
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct SuperIn {
     pub is_super: bool,
@@ -229,7 +237,7 @@ pub async fn user_options(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Query(q): Query<UserQuery>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
+) -> AppResult<Json<Vec<UserOption>>> {
     let 输入 = q.q.unwrap_or_default().trim().to_string();
     if 输入.is_empty() {
         return Ok(Json(vec![]));
@@ -264,7 +272,7 @@ pub async fn user_options(
     .bind(me)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(rows.into_iter().map(|(u, n)| serde_json::json!({ "username": u, "name": n })).collect()))
+    Ok(Json(rows.into_iter().map(|(username, name)| UserOption { username, name }).collect()))
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

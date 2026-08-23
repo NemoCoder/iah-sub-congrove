@@ -85,7 +85,8 @@ pub const APIS: &[Api] = &[
     // ── 探针 / 认证 ──
     api!("GET", "/healthz", "探针", "开放", "存活探针:进程活着就返回 ok", "",
          raw: "纯文本 `ok`(探针只看状态码)"),
-    api!("GET", "/readyz", "探针", "开放", "就绪探针:PG SELECT 1 + S3 head_bucket 都通才 ready", ""),
+    api!("GET", "/readyz", "探针", "开放", "就绪探针:PG SELECT 1 + S3 head_bucket 都通才 ready", "",
+         res: crate::http::ReadyOut),
     api!("GET", "/version", "探针", "开放",
          "后端自报版本。★给 scripts/deployed-version-check.sh 用★——那道闸原来只量前端 bundle,\
           纯后端的改动它完全是瞎的(v0.7.9/v0.7.10 都是纯后端,它照样报「一致」)。\
@@ -101,7 +102,8 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/me", "认证", "登录",
          "当前身份。★is_super = 此刻有没有超管**特权**★(超管模式关着时为 false);
           can_super = 有没有超管**资格**,只用来决定要不要画那个开关;admin_mode_until = 到期时刻", ""),
-    api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词"),
+    api!("GET", "/api/users", "认证", "登录", "平台用户候选(加成员时选人用)", "q 关键词",
+         res: Vec<crate::http::admin::UserOption>),
 
     // ── 项目 ──
     api!("GET", "/api/me/quota", "我的", "登录", "我的额度与已用量。★用量算我名下所有项目★（ADR-0004）", "",
@@ -114,7 +116,8 @@ pub const APIS: &[Api] = &[
          "进 / 出超管模式。★超管平时就是普通用户★——关着的时候他看不到别人的项目与活动,
           要用特权得刻意开一下,2 小时自动关、退出登录也关(照 GitLab Admin Mode)。
           ⚠ 判据是 `app_user.is_super` 那一列而**不是** super_now 视图 ——
-          用视图的话「关掉之后就再也开不回来」。两个方向都进 audit_log", "on"),
+          用视图的话「关掉之后就再也开不回来」。两个方向都进 audit_log", "on",
+         req: crate::http::me_quota::AdminModeIn, res: crate::http::me_quota::AdminModeOut),
     // 活动类型（ADR-0002）：预置两条 + 每人自建；自建只开放 busy_default（A3）
     api!("GET", "/api/activity-types", "活动", "登录",
          "列出预置的 + 我自建的活动类型。★能力位决定表单与校验★(ADR-0002):
@@ -400,31 +403,42 @@ pub const APIS: &[Api] = &[
     api!("PUT", "/api/items/{id}/media/part", "直传", "≥editor", "代理分片(预签名不可用时的回退)", "分片字节",
          raw: "204 无响应体;ETag 在响应头里"),
     api!("POST", "/api/items/{id}/media/complete", "直传", "≥editor",
-         "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts"),
-    api!("POST", "/api/items/{id}/media/abort", "直传", "≥editor", "主动取消(★只有主动取消才 abort,失败不动断点★)", ""),
+         "完成直传:ListParts 组装 + 申报大小对账 + 配额复核 + 后台核验 sha", "parts",
+         res: crate::http::media::CompleteOut),
+    api!("POST", "/api/items/{id}/media/abort", "直传", "≥editor", "主动取消(★只有主动取消才 abort,失败不动断点★)", "",
+         res: crate::http::dto::OkOut),
     api!("GET", "/api/items/{id}/play", "直传", "≥viewer", "播放地址:302 到预签名 GET;★禁下载(项目级对 viewer / 活动级对所有人)时改回 200/206 同源 Range 代理,不发直链★。★只对 video 放行★", "",
          raw: "302 到预签名 GET(支持 Range 拖动)"),
 
     // ── 转写与纪要 ──
-    api!("POST", "/api/items/{id}/analyze", "转写", "≥editor", "排一个转写+纪要任务(幂等)", ""),
-    api!("GET", "/api/items/{id}/analysis", "转写", "≥viewer", "转写结果与 AI 参考稿", ""),
+    api!("POST", "/api/items/{id}/analyze", "转写", "≥editor", "排一个转写+纪要任务(幂等)", "",
+         res: crate::http::media::AnalyzeOut),
+    api!("GET", "/api/items/{id}/analysis", "转写", "≥viewer", "转写结果与 AI 参考稿", "",
+         res: crate::http::media::AnalysisOut),
     api!("GET", "/api/items/{id}/subtitles.vtt", "转写", "≥viewer", "WebVTT 字幕", "",
          raw: "WebVTT 字幕文本"),
 
     // ── 公开分享(管理面)──
-    api!("GET", "/api/items/{id}/shares", "分享", "≥editor", "本项的分享链接列表", ""),
+    api!("GET", "/api/items/{id}/shares", "分享", "≥editor", "本项的分享链接列表", "",
+         res: Vec<crate::http::share::ShareRow>),
     api!("POST", "/api/items/{id}/shares", "分享", "≥editor",
          "建公开链接。★这是全系统唯一绕过项目成员身份的入口★",
-         "code, expires_days, max_visits, allow_download, items[]"),
-    api!("GET", "/api/shares/mine", "分享", "登录", "我发出去的全部分享(跨项目);★分页★,回 {total, items}", "page, size"),
-    api!("DELETE", "/api/shares/{token}", "分享", "创建者本人无条件 / 他人需 admin", "撤销分享链接", ""),
+         "code, expires_days, max_visits, allow_download, items[]",
+         res: crate::http::share::ShareCreateOut),
+    api!("GET", "/api/shares/mine", "分享", "登录", "我发出去的全部分享(跨项目);★分页★,回 {total, items}", "page, size",
+         res: crate::http::share::MySharesOut),
+    api!("DELETE", "/api/shares/{token}", "分享", "创建者本人无条件 / 他人需 admin", "撤销分享链接", "",
+         res: crate::http::dto::OkOut),
 
     // ── 公开分享(访客面,不需登录)──
     api!("GET", "/pub/share/{token}", "分享·访客", "开放",
-         "只回「要不要提取码」。★不存在/过期/超次数/撤销一律 404 不区分★", ""),
+         "只回「要不要提取码」。★不存在/过期/超次数/撤销一律 404 不区分★", "",
+         res: crate::http::share::PubMetaOut),
     api!("POST", "/pub/share/{token}/open", "分享·访客", "开放",
-         "校验提取码 → 计一次访问 → 发 2h 短命票。★失败 20 次/15 分钟即限速★", "code"),
-    api!("GET", "/pub/share/{token}/list", "分享·访客", "票", "列子目录(逐项验是被分享项的后代)", "k 票, parent"),
+         "校验提取码 → 计一次访问 → 发 2h 短命票。★失败 20 次/15 分钟即限速★", "code",
+         res: crate::http::share::PubOpenOut),
+    api!("GET", "/pub/share/{token}/list", "分享·访客", "票", "列子目录(逐项验是被分享项的后代)", "k 票, parent",
+         res: Vec<crate::http::share::PubItemRow>),
     api!("GET", "/pub/share/{token}/file/{item_id}", "分享·访客", "票", "取内容(流式转发,不暴露对象存储)", "k 票, inline",
          raw: "文件字节流(公开访客面)"),
 

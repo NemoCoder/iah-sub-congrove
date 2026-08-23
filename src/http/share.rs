@@ -51,6 +51,100 @@ pub struct CreateIn {
 }
 fn yes() -> bool { true }
 
+// ══════ 响应体类型(字段级契约,2026-08-23)══════
+
+/// 建好一条分享链接。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ShareCreateOut {
+    /// 访问用的令牌 —— 访客页是 `/s/{token}`。
+    pub token: String,
+    /// ★提取码只在这一刻明文返回一次★:库里存的是加盐 sha256,之后任何接口都取不回来。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// 一条分享链接(某个条目下的)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ShareRow {
+    pub token: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 访问次数上限;null = 不限。
+    pub max_visits: Option<i32>,
+    pub visits: i32,
+    pub allow_download: bool,
+    pub created_by: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 撤销时刻;null = 还有效。
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_visit_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// ★只说「有没有设提取码」,不给码本身★。
+    pub has_code: bool,
+}
+
+/// 「我的分享」一页。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MySharesOut {
+    /// ★总数必须回★:没有它界面不知道自己看到的是不是全部(2026-08-13 那次「第 501 条起消失」)。
+    pub total: i64,
+    pub items: Vec<MyShareRow>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MyShareRow {
+    pub token: String,
+    pub item_id: i64,
+    pub kind: String,
+    pub name: String,
+    pub mime: Option<String>,
+    /// 所属项目名。
+    pub space: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub max_visits: Option<i32>,
+    pub visits: i32,
+    pub allow_download: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_visit_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub has_code: bool,
+    /// 这条链接带了几项(一条链接可以带 N 项)。
+    pub item_count: i64,
+    /// ★被分享的东西已经进了回收站★ —— 链接还在列表里,但打开是 404。
+    /// 单独给一位,好过让人以为链接坏了。
+    pub item_deleted: bool,
+}
+
+/// 访客页第一跳:只告诉他要不要提取码。
+/// ★刻意什么都不多说★——令牌不存在/过期/超次数/撤销一律 404 不区分(区分即探测工具)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PubMetaOut {
+    pub needs_code: bool,
+}
+
+/// 解锁成功。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PubOpenOut {
+    /// 2h 签名票(密钥自 AUTH_SECRET 派生,域分隔串与会话 cookie 不同)。
+    pub ticket: String,
+    /// 被分享的那一项(多项时是第一项)。
+    pub item: serde_json::Value,
+    pub allow_download: bool,
+    /// 这条链接带了多项 —— 界面要画成列表而不是单文件。
+    pub multi: bool,
+    pub count: usize,
+}
+
+/// 访客看到的一项(★字段刻意比站内少★:不给 created_by 之类的内部信息)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PubItemRow {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub size: Option<i64>,
+    pub mime: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+
 /// POST /api/items/{id}/shares —— 建一条公开分享链接(**≥editor**)。
 /// `items` 里可以再带若干项 → **一条链接带多份内容**(多选分享,2026-08-05);
 /// 路径上的 {id} 是「主项」,访客页的标题与根目录用它。
@@ -59,7 +153,7 @@ pub async fn create(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(input): Json<CreateIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ShareCreateOut>> {
     // ★已在回收站的条目不许建分享★(2026-08-14,no-bare-items 门禁逼出来的判断):
     //   原来用 `project_of`(解析得到已删的行)→ 给回收站里的东西照样建得出链接,
     //   ★而公开面一律过滤已删 —— 建出来的是一条「生下来就是死的」链接★:
@@ -131,7 +225,7 @@ pub async fn create(
     audit::record(&state.pool, actor, "share.create", &iid.to_string(),
         &format!("token={} code={} days={:?} max={:?} download={}",
             &token[..8], if code.is_some() { "有" } else { "无" }, expires_days, max_visits, input.allow_download)).await;
-    Ok(Json(json!({ "token": token, "code": code })))
+    Ok(Json(ShareCreateOut { token, code }))
 }
 
 /// GET /api/items/{id}/shares —— 本项的分享链接列表(**≥editor**,含访问次数)。
@@ -139,7 +233,7 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
+) -> AppResult<Json<Vec<ShareRow>>> {
     let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let rows: Vec<(String, Option<chrono::DateTime<chrono::Utc>>, Option<i32>, i32, bool, String,
@@ -149,10 +243,11 @@ pub async fn list(
                 revoked_at, last_visit_at, (code_hash IS NOT NULL)
            FROM share_links WHERE item_id = $1 ORDER BY created_at DESC",
     ).bind(iid).fetch_all(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(|(t, exp, maxv, v, dl, by, at, rev, last, has_code)| json!({
-        "token": t, "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
-        "created_by": by, "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
-    })).collect()))
+    Ok(Json(rows.into_iter().map(|(token, expires_at, max_visits, visits, allow_download,
+                                   created_by, created_at, revoked_at, last_visit_at, has_code)| ShareRow {
+        token, expires_at, max_visits, visits, allow_download,
+        created_by, created_at, revoked_at, last_visit_at, has_code,
+    }).collect()))
 }
 
 /// GET /api/shares/mine —— **我发出去的全部分享**(跨空间)。
@@ -162,7 +257,7 @@ pub async fn mine(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     axum::extract::Query(q): axum::extract::Query<crate::http::Page>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MySharesOut>> {
     let me = id.require_username()?;
     // ★item_deleted★(v0.3.55 审计):主项进了回收站,这条链接就已经 404 了(见 live()),
     // 但列表原先只按撤销/过期/次数算状态,照样显示绿色「有效」—— 使用者会以为链接还能用。
@@ -200,15 +295,16 @@ pub async fn mine(
           ORDER BY l.created_at DESC LIMIT $2 OFFSET $3",
     ).bind(me).bind(limit).bind(offset).fetch_all(&state.pool).await?;
     let total = total.0;
-    Ok(Json(json!({
-        "total": total,
-        "items": rows.into_iter().map(|(token, iid, kind, name, mime, space, exp, maxv, v, dl, at, rev, last, has_code, cnt, gone)| json!({
-            "token": token, "item_id": iid, "kind": kind, "name": name, "mime": mime, "space": space,
-            "expires_at": exp, "max_visits": maxv, "visits": v, "allow_download": dl,
-            "created_at": at, "revoked_at": rev, "last_visit_at": last, "has_code": has_code,
-            "item_count": if cnt > 0 { cnt } else { 1 }, "item_deleted": gone,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(MySharesOut {
+        total,
+        items: rows.into_iter().map(|(token, item_id, kind, name, mime, space, expires_at, max_visits,
+                                      visits, allow_download, created_at, revoked_at, last_visit_at,
+                                      has_code, cnt, item_deleted)| MyShareRow {
+            token, item_id, kind, name, mime, space, expires_at, max_visits,
+            visits, allow_download, created_at, revoked_at, last_visit_at, has_code,
+            item_count: if cnt > 0 { cnt } else { 1 }, item_deleted,
+        }).collect(),
+    }))
 }
 
 /// DELETE /api/shares/{token} —— 撤销(创建者或空间 admin)。保留行,便于事后审计与统计。
@@ -216,7 +312,7 @@ pub async fn revoke(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(token): Path<String>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let row: Option<(i64, String)> = sqlx::query_as("SELECT item_id, created_by FROM share_links WHERE token = $1")
         .bind(&token).fetch_optional(&state.pool).await?;
     let Some((iid, creator)) = row else { return Err(AppError::NotFound) };
@@ -230,7 +326,7 @@ pub async fn revoke(
     sqlx::query("UPDATE share_links SET revoked_at = now() WHERE token = $1 AND revoked_at IS NULL")
         .bind(&token).execute(&state.pool).await?;
     audit::record(&state.pool, me, "share.revoke", &iid.to_string(), &token[..8]).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 // ── 公开面(不需登录,挂在 /pub 下)────────────────────────────────────────────
@@ -272,9 +368,9 @@ async fn live(pool: &sqlx::PgPool, token: &str) -> AppResult<Live> {
 
 /// GET /pub/share/{token} —— 只回「要不要提取码」。**不回文件名**(没验证之前不给任何内容信息),
 /// 也不计访问次数(计数发生在真正打开时)。
-pub async fn pub_meta(State(state): State<AppState>, Path(token): Path<String>) -> AppResult<Json<serde_json::Value>> {
+pub async fn pub_meta(State(state): State<AppState>, Path(token): Path<String>) -> AppResult<Json<PubMetaOut>> {
     let l = live(&state.pool, &token).await?;
-    Ok(Json(json!({ "needs_code": l.has_code })))
+    Ok(Json(PubMetaOut { needs_code: l.has_code }))
 }
 
 #[derive(Deserialize)]
@@ -287,7 +383,7 @@ pub async fn pub_open(
     headers: HeaderMap,
     Path(token): Path<String>,
     Json(input): Json<OpenIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<PubOpenOut>> {
     let l = live(&state.pool, &token).await?;
     let ipp = ip_prefix(&peer, &headers);
     if l.has_code {
@@ -329,10 +425,10 @@ pub async fn pub_open(
 
     let it = item_brief(&state.pool, l.item_id).await?;
     let roots = share_roots(&state.pool, &token, l.item_id).await?;
-    Ok(Json(json!({
-        "ticket": issue_ticket(&state, &token)?, "item": it,
-        "allow_download": l.allow_download, "multi": roots.len() > 1, "count": roots.len(),
-    })))
+    Ok(Json(PubOpenOut {
+        ticket: issue_ticket(&state, &token)?, item: it,
+        allow_download: l.allow_download, multi: roots.len() > 1, count: roots.len(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -351,7 +447,7 @@ pub async fn pub_list(
     State(state): State<AppState>,
     Path(token): Path<String>,
     Query(q): Query<TicketQuery>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
+) -> AppResult<Json<Vec<PubItemRow>>> {
     let l = live(&state.pool, &token).await?;
     check_ticket(&state, &token, &q.k)?;
     let roots = share_roots(&state.pool, &token, l.item_id).await?;
@@ -363,9 +459,9 @@ pub async fn pub_list(
                 sqlx::query_as("SELECT id, kind, name, size, mime, created_at FROM items_alive
                                  WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY kind = 'folder' DESC, name")
                     .bind(&roots).fetch_all(&state.pool).await?;
-            return Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, at)| json!({
-                "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at,
-            })).collect()));
+            return Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, created_at)| PubItemRow {
+                id, kind, name, size, mime, created_at,
+            }).collect()));
         }
         None => l.item_id,
     };
@@ -375,9 +471,9 @@ pub async fn pub_list(
           WHERE parent_id = $1 AND deleted_at IS NULL AND (kind IN ('folder','doc') OR s3_key IS NOT NULL)
           ORDER BY kind = 'folder' DESC, name",
     ).bind(parent).fetch_all(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, at)| json!({
-        "id": id, "kind": kind, "name": name, "size": size, "mime": mime, "created_at": at,
-    })).collect()))
+    Ok(Json(rows.into_iter().map(|(id, kind, name, size, mime, created_at)| PubItemRow {
+        id, kind, name, size, mime, created_at,
+    }).collect()))
 }
 
 /// GET /pub/share/{token}/file/{item_id}?k=&inline= —— 取内容(流式转发,不暴露对象存储)。
