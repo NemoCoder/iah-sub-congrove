@@ -100,10 +100,14 @@ pub const APIS: &[Api] = &[
     api!("GET", "/api/activity-types", "活动", "登录",
          "列出预置的 + 我自建的活动类型。★能力位决定表单与校验★(ADR-0002):
           has_minutes(记录员必填) / needs_project(关联项目必填) / busy_default(占不占忙闲) /
-          allow_past(能不能填过去的时间 —— 「会议」false 只能排未来,其余 true 可补录,F0)", ""),
-    api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default"),
-    api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default"),
-    api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", ""),
+          allow_past(能不能填过去的时间 —— 「会议」false 只能排未来,其余 true 可补录,F0)", "",
+         res: Vec<crate::http::activity_types::TypeRow>),
+    api!("POST", "/api/activity-types", "活动", "登录", "自建一个活动类型（A2）", "name, busy_default",
+         res: crate::http::dto::IdOut),
+    api!("PUT", "/api/activity-types/{id}", "活动", "本人", "改名 / 改忙闲默认值。★预置的不能改★", "name, busy_default",
+         res: crate::http::dto::OkOut),
+    api!("DELETE", "/api/activity-types/{id}", "活动", "本人", "★软删★（L1）：历史活动照常显示类型名。预置的不能删", "",
+         res: crate::http::dto::OkOut),
     api!("GET", "/api/projects", "项目", "登录", "我参与的项目列表(含我的角色与已用容量)", "",
          res: Vec<crate::http::projects::ProjectRow>),
     api!("POST", "/api/projects", "项目", "登录", "建项目;★建者自动成为主持人 + admin 成员★", "name, description",
@@ -164,84 +168,108 @@ pub const APIS: &[Api] = &[
     // ★这一组只管**活动元信息**,不管材料★:材料权限一律走上面项目那组(D3/D8/D9)。
     api!("GET", "/api/activities", "活动", "登录",
          "我的活动(参会人 / 所在项目的会)。★public 活动不进这里★——列表是我的日程不是全平台公告板",
-         "from, to, project_id"),
+         "from, to, project_id",
+         res: Vec<crate::http::activities::ActivityRow>),
     api!("POST", "/api/activities", "活动", "每个关联项目都要 ≥editor",
          "建活动。★校验全按类型的能力位走,没有一条是写死的★(ADR-0002):
           needs_project → 关联项目必填 / has_minutes → 记录员必填(D14) /
           allow_past=false → 只能排未来(「会议」,留 5 分钟容差,F0)。
           ⚠ 这行原文写的是「必须关联至少一个项目」——那是 ADR-0002 之前的规则,已过期。
           可选 remind_minutes:不传=跟随个人默认 / 0=★这场不提醒★ / >0=提前这么多分钟(PRD F3)",
-         "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility"),
+         "type_id, title, agenda, recorder, starts_at, ends_at, project_ids[], participants[], visibility",
+         res: crate::http::dto::IdOut),
     api!("GET", "/api/activities/{id}", "活动", "参会人/关联项目成员;public 活动任何人可旁听",
          "活动详情。★旁听者拿到的是裁剪版★:无参会名单、无材料入口(D9)", ""),
     api!("PUT", "/api/activities/{id}", "活动", "发起人 / 记录员(★改 visibility 仅发起人/项目主持人★)",
          "改活动。★改了时间就把所有人的答复清回 pending★(旧答复是对旧时间说的);改线上链接留痕",
-         "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility"),
+         "title, agenda, recorder, starts_at, ends_at, location, online_url, visibility",
+         res: crate::http::dto::OkOut),
     api!("DELETE", "/api/activities/{id}", "活动", "发起人 / 记录员",
-         "★取消不是删除★:置 canceled 留档(谁邀了谁、谁拒了是协作事实)", ""),
+         "★取消不是删除★:置 canceled 留档(谁邀了谁、谁拒了是协作事实)", "",
+         res: crate::http::dto::OkOut),
     api!("PUT", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
          "★批量★邀请(删组之后一场会拉 20 人不能点 20 次)。★恒为 attendee★——\
           2026-08-07 推翻 D8 删掉了「临时参会人」:不拿材料的人只剩旁听者,而旁听是**自助**的,\
           走 POST .../observe 不从这里进。required=false 标「选参」——\
           ★只有必参人的冲突算「有冲突」★(6.1.2):一场 10 人的会总有人撞车,\
-          每个人都标红那个红色就成了背景噪音", "usernames[], required"),
+          每个人都标红那个红色就成了背景噪音", "usernames[], required",
+         res: crate::http::activities::InviteOut),
     api!("DELETE", "/api/activities/{id}/participants", "活动", "发起人 / 记录员",
-         "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username"),
+         "移出参会人。★发起人不能被移出★(移出就没人改得了这场会)", "username",
+         res: crate::http::dto::OkOut),
     api!("POST", "/api/activities/{id}/respond", "活动", "名单内的人(旁听者不能答复)",
          "答复邀请。★counter(建议改期)必须带具体的替代时间★——它是私事冲突唯一的结构化出口(D2)",
-         "status, counter_starts_at, counter_ends_at, counter_reason"),
+         "status, counter_starts_at, counter_ends_at, counter_reason",
+         res: crate::http::activities::RespondOut),
     api!("GET", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员(★旁听者不给★)",
-         "活动讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer"),
+         "活动讨论区(D13):public 频道参会人可见,private 仅双方", "channel, peer",
+         res: Vec<crate::http::activities::MessageRow>),
     api!("POST", "/api/activities/{id}/messages", "活动", "参会人/关联项目成员",
-         "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer"),
+         "发言。★私聊只能发给发起人或记录员★(D13:不做任意点对点,否则长成 IM)", "body, channel, peer",
+         res: crate::http::dto::IdOut),
     api!("GET", "/api/activities/{id}/minutes", "活动", "参会人/关联项目成员(★旁听者不给★)",
          "取活动纪要(没有则回空,不用判 404)+ 我能不能编辑", ""),
     api!("PUT", "/api/activities/{id}/minutes", "活动", "发起人 / 记录员",
          "保存纪要(固定模板:到场/列席/缺席 + 议程 + 正文 + 决议 + 待办)。\
           ★AI 转写只是原材料,不自动写进来★(D14);status=done 定稿,定稿时间只记第一次",
-         "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status"),
+         "attendees, observers, absentees, agenda_text, content_md, resolutions, todos, status",
+         res: crate::http::activities::MinutesPutOut),
 
     api!("POST", "/api/activities/{id}/minutes/pdf", "活动", "发起人 / 记录员",
          "★把纪要排成 PDF★(走平台共享 latex-svc,congrove 镜像不装 TeX)。存成**活动材料里的一条 item**,
           可下载/分享;★再次导出写成同一条 item 的新版本★——一条稳定的 id 意味着分享链接不会失效。
           ⚠ 草稿也能导,但那份 PDF 抬头会印「草稿 · 尚未定稿」:靠人记得不可靠,靠文件自己带标记可靠。
           ⚠ 权限与写纪要同一判据(导出是产出正式文件,不是读)",
-         ""),    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
+         "",
+         res: crate::http::activities::MinutesPdfOut),
+    // ⚠ 这条以前和上一条**挤在同一行**(`""),    api!(...`),2026-08-23 拆开 ——
+    //   挤在一行时,按 `),\n` 找条目结尾的脚本会定位到错的那一条。
+    api!("GET", "/api/activities/{id}/items", "活动", "★关联项目的成员★(不是参会人)",
          "活动的材料与录制。★按项目成员身份判权不是参会身份★(D8:临时参会人看得到活动、看不到材料);\
-          is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", ""),
+          is_recording 区分录制与材料 —— 只有录制会被转写、并作为活动时长依据(D5)", "",
+         res: Vec<crate::http::activities::ActivityItem>),
     api!("PUT", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
          "给一份活动材料/录制改名。★和删除同一条路★——D10 说的是「在**项目树里**只读」
           (名称与位置由活动决定),不是「永远不可改」,所以改名这个动作发生在活动页。
           通用的 PUT /api/items/{id} 仍然拒绝带 activity_id 的 item。
-          不改活动文件夹本身(它的名字从活动的日期+标题派生,手改了下次改标题又会被覆盖)", "name"),
+          不改活动文件夹本身(它的名字从活动的日期+标题派生,手改了下次改标题又会被覆盖)", "name",
+         res: crate::http::dto::OkOut),
     api!("DELETE", "/api/activities/{mid}/items/{iid}", "活动", "关联项目的 ≥editor",
          "删一份活动材料/录制(软删,进回收站)。★活动材料只能从这里删★ —— 通用的
           DELETE /api/items/{id} 会拒绝带 activity_id 的 item(D10:项目树里是只读区)。
           入口不同接口就不同,因为后端看不见调用方是哪个页面,只靠前端藏按钮等于没有这条规则。
-          不删活动文件夹本身(结构由活动决定)", ""),
+          不删活动文件夹本身(结构由活动决定)", "",
+         res: crate::http::dto::OkOut),
     api!("POST", "/api/activities/{id}/materials-project", "活动", "发起人本人",
          "拿到这场活动材料的**落点项目**,并在需要时现建。★只对不关联项目的活动★(ADR-0002 的
           needs_project=false,如「个人日程」):上传口是项目作用域的,而它手上没有 pid ——
           PRD §J0 的答案是落到发起人自己的「我的活动材料」(kind='materials',每人至多一个)。
-          有关联项目的活动调它 400(材料该落项目里,D4);不是发起人 403(材料区只有 owner 有角色,ADR-0005)", ""),
+          有关联项目的活动调它 400(材料该落项目里,D4);不是发起人 403(材料区只有 owner 有角色,ADR-0005)", "",
+         res: crate::http::activities::MaterialsProjectOut),
     api!("GET", "/api/activities/{id}/link-history", "活动", "参会人/关联项目成员",
-         "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", ""),
+         "线上活动链接的改动历史(谁何时改成什么)——开会前十分钟改链接是真实场景", "",
+         res: Vec<crate::http::activities::LinkChange>),
     api!("POST", "/api/activities/{id}/remind", "活动", "发起人 / 记录员",
          "催办。★只催还没答复的人★,已接受/已拒绝的不该再被打扰;走平台站内信,发不出去不报错",
-         "username(可选,不给则催全部待答复的)"),
+         "username(可选,不给则催全部待答复的)",
+         res: crate::http::activities::RemindOut),
     api!("POST", "/api/activities/{id}/accept-counter", "活动", "发起人 / 记录员",
          "采纳某人的改期建议 = 把活动时间改成他提议的时间。★随后所有人答复清回 pending★\
-          (含提议者本人:他提的是时间,不等于他一定能来)", "username"),
+          (含提议者本人:他提的是时间,不等于他一定能来)", "username",
+         res: crate::http::activities::AcceptCounterOut),
     api!("POST", "/api/activities/{id}/reject-counter", "活动", "发起人 / 记录员",
          "驳回改期建议。★驳回后他回到 pending 不是 declined★——拒绝的是这个**时间提议**,\
-          不代表替他决定「不来」", "username"),
+          不代表替他决定「不来」", "username",
+         res: crate::http::dto::OkOut),
     api!("GET", "/api/activities/public", "活动", "登录",
          "公开活动广场(D9)。★这是「全平台可旁听」的入口★——没有它,visibility=public 只是个字段。\
-          只列**还没结束**的;归档项目的会不进(与日历同口径)", "days(不给=全部未来)"),
+          只列**还没结束**的;归档项目的会不进(与日历同口径)", "days(不给=全部未来)",
+         res: Vec<crate::http::activities::ActivityRow>),
     api!("POST", "/api/activities/{id}/observe", "活动", "登录(仅 public 活动)",
          "我要旁听 / 取消旁听。★自助,不需发起人同意★——标了 public 就是邀请全平台来听;\
           旁听后进我的日历。★旁听不给材料★(D9 与 D3 正交);\
-          ★已是正式参会人不会被降级成 observer★", "observe(true/false)"),
+          ★已是正式参会人不会被降级成 observer★", "observe(true/false)",
+         res: crate::http::activities::ObserveOut),
     api!("GET", "/api/projects/{id}/stats", "项目", "≥viewer",
          "项目统计(6.5.2):活动数 / 总时长(★D5 三级回退,与个人统计同一套口径★)/ 参会率 / **每人次**平均时长(★分母是人次不是人数★,别叫「人均」) / 纪要完成数。\
           ★取消的场次不计入★;参会率的分母**不含旁听者**(他不是被邀请的,计进去会稀释比例)。\
@@ -288,7 +316,8 @@ pub const APIS: &[Api] = &[
          "since(可选,上轮返回的 now)"),
     api!("POST", "/api/me/unread/read", "活动", "登录",
          "标记已读。不带 activity_id = 全部标记已读。★read_at 推到 now() 而不是最后一条消息的时间★——\
-          后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)"),
+          后者在并发下会把此刻刚发来的消息一并吞掉", "activity_id(可选)",
+         res: crate::http::activities::MarkReadOut),
     api!("GET", "/api/freebusy", "活动", "登录",
          "忙闲(D1)。★只回时间段不回内容★;★按活动自己的 busy 分流★(PRD A4)——busy=false 的活动完全隐形(别人看到「空闲」)",
          "users(逗号分隔), from, to"),

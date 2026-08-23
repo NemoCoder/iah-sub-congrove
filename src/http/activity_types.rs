@@ -7,7 +7,6 @@
 use axum::extract::{Path, State};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::{AppError, AppResult};
@@ -95,7 +94,7 @@ pub fn check_past(c: &Caps, starts_at: chrono::DateTime<chrono::Utc>,
     Ok(())
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct TypeRow {
     pub id: i64,
     /// NULL = 系统预置。前端据此决定「改/删」按钮给不给。
@@ -165,7 +164,7 @@ pub async fn create(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(input): Json<TypeIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::IdOut>> {
     let me = id.require_username()?;
     // 建类型时名字是**必填**的(改名时才可省)——缺了就给人话,不是 422
     let name = clean_name(input.name.as_deref().ok_or_else(|| AppError::BadRequest("类型名不能为空".into()))?)?;
@@ -182,7 +181,7 @@ pub async fn create(
     .await
     .map_err(name_taken)?;
     crate::audit::record(&state.pool, me, "atype.create", &nid.to_string(), name).await;
-    Ok(Json(json!({ "id": nid })))
+    Ok(Json(crate::http::dto::IdOut { id: nid }))
 }
 
 /// 一行的可改范围。★两档,就两档★:自建的随便改,预置的一点都不能动。
@@ -235,7 +234,7 @@ pub async fn update(
     Extension(id): Extension<Identity>,
     Path(tid): Path<i64>,
     Json(input): Json<TypeIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let me = id.require_username()?;
     // 走到这里 scope 只可能是 Full(预置行与别人的行在 scope_or_err 里就被拒了)。
     let _ = scope_or_err(&state.pool, tid, me).await?;
@@ -259,7 +258,7 @@ pub async fn update(
     .await
     .map_err(name_taken)?;
     crate::audit::record(&state.pool, me, "atype.update", &tid.to_string(), name.unwrap_or("busy")).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// DELETE /api/activity-types/{id} —— ★软删★（L1）。
@@ -270,7 +269,7 @@ pub async fn remove(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(tid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let me = id.require_username()?;
     // ★删只对自建的开放★：预置行删了 = 历史活动失去类型名（`type_id` 是 NOT NULL 外键）。
     // scope_or_err 已经把预置行与别人的行拒掉了,这里只剩 Full。
@@ -280,7 +279,7 @@ pub async fn remove(
         .execute(&state.pool)
         .await?;
     crate::audit::record(&state.pool, me, "atype.delete", &tid.to_string(), "").await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 #[cfg(test)]

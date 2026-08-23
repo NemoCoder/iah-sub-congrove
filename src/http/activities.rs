@@ -27,7 +27,7 @@ use crate::{audit, perm};
 
 type Ts = chrono::DateTime<chrono::Utc>;
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct ActivityRow {
     pub id: i64,
     /// 活动类型名（ADR-0002）。★列表与详情都要显示它★ ——
@@ -145,6 +145,96 @@ pub struct RangeQ {
     pub project_id: Option<i64>,
 }
 
+// ══════ 响应体类型(字段级契约,2026-08-23)══════
+
+/// 答复一场活动(接受 / 拒绝 / 待定 / 建议改期)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RespondOut {
+    pub ok: bool,
+    /// 答复之后的状态。
+    pub status: String,
+    /// ★拒绝出席之后,我还是不是记录员★——转走了就是 false。
+    /// 只有「记录员拒绝出席」这条路径才给这两个字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_recorder: Option<bool>,
+    /// 纪要自动转给了谁(记录员拒绝出席 → 落回发起人)。没转就是 null。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorder_moved_to: Option<Option<String>>,
+}
+
+/// 批量邀请。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct InviteOut {
+    pub ok: bool,
+    /// 这次真正新加进去的人数 —— ★已经在名单里的不重复计★。
+    pub invited: u64,
+}
+
+/// 催办未应答的人。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RemindOut {
+    pub ok: bool,
+    /// 这次**该催**几个人(只算未应答的,已答复的不打扰)。
+    pub targets: usize,
+    /// 实际**投出去**几条站内信。★可能小于 targets★:平台 registry 不可达时
+    /// 投递是 fire-and-forget、失败只记 warn —— 两个数分开给,才看得出「催了但没送到」。
+    pub sent: usize,
+}
+
+/// 接受「建议改期」。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct AcceptCounterOut {
+    pub ok: bool,
+    /// 改期后的新起止 —— ★回显是必要的★:接受的是对方提的时间,发起人得看见自己接受了什么。
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub ends_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 自助旁听。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ObserveOut {
+    pub ok: bool,
+    /// ★这个接口是**切换**★:true = 现在开始旁听,false = 刚退出旁听。
+    pub observing: bool,
+    /// 开始旁听时给:false = 本来就在旁听(幂等,再点一次不报错也不重复加)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<bool>,
+    /// 退出旁听时给:删掉了几行(0 = 本来就没在旁听)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u64>,
+}
+
+/// 取这场活动的材料文件夹(没有就建)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MaterialsProjectOut {
+    pub project_id: i64,
+}
+
+/// 标记已读。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MarkReadOut {
+    /// 这次标掉的条数。
+    pub marked: u64,
+}
+
+/// 存纪要。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MinutesPutOut {
+    pub ok: bool,
+    /// 存完之后纪要的状态(`draft` / `done`)。★由后端判,不由前端传什么就是什么★。
+    pub status: String,
+}
+
+/// 导出纪要 PDF。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MinutesPdfOut {
+    /// PDF 落成的材料条目 id。★重复导出是同一条 item 的新版本,这个 id 不变★。
+    pub item_id: i64,
+    /// 这份 PDF 导的是不是草稿(纪要还没定稿)——是的话文件首页会带「【草稿 · 尚未定稿】」。
+    pub draft: bool,
+}
+
+
 pub async fn list(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
@@ -232,7 +322,7 @@ pub async fn create(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(input): Json<ActivityIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::IdOut>> {
     let username = id.require_username()?;
     let title = input.title.trim();
     if title.is_empty() { return Err(AppError::BadRequest("活动标题不能为空".into())) }
@@ -317,7 +407,7 @@ pub async fn create(
     notify_activity(&state, mid, &who, &format!("{类型名}邀请"),
         &format!("{username} 约你参加「{title}」,{}。请答复。", fmt_when(input.starts_at, crate::tzutil::parse(input.timezone.as_deref().unwrap_or_default()))), crate::notify::Kind::Invite).await;
     mark_notified(&state.pool, mid, &who).await?;
-    Ok(Json(json!({ "id": mid })))
+    Ok(Json(crate::http::dto::IdOut { id: mid }))
 }
 
 /// GET /api/activities/{id} —— 详情。★旁听者拿到的是**裁剪版**★(D9):
@@ -501,7 +591,7 @@ pub async fn update(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(p): Json<ActivityPatch>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     // ★改「公开/私密」比改别的重★(PRD 6.1.7:「只有项目主持人或活动发起人能切换」):
     // 一旦公开,议题与议程对**全平台**可见 —— 这不是记录员该有的权限,
@@ -627,7 +717,7 @@ pub async fn update(
         // 被改到未来、通知也发了,库里却仍是「他不知情」,后续判定全错。
         mark_notified(&state.pool, mid, &who).await?;
     }
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// DELETE /api/activities/{id} —— ★取消不是删除★:置 status='canceled' 留档。
@@ -636,7 +726,7 @@ pub async fn cancel(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let (mtitle, starts, mtz): (String, Ts, String) = sqlx::query_as("SELECT title, starts_at, timezone FROM activities WHERE id=$1")
         .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
@@ -666,7 +756,7 @@ pub async fn cancel(
     let who = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &who, "活动已取消",
         &format!("「{mtitle}」({})已被 {actor} 取消。", fmt_when(starts, crate::tzutil::parse(&mtz))), crate::notify::Kind::Canceled).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 #[derive(Deserialize)]
@@ -707,7 +797,7 @@ pub async fn invite(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(input): Json<InviteIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<InviteOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     // ★邀请恒为 attendee★:旁听不是「被邀请」出来的,它是自己跑来听(D9);
     // 老前端可能还在传 kind,直接忽略 —— 比报错温和,而且语义上确实只有这一种。
@@ -742,7 +832,7 @@ pub async fn invite(
             &format!("{actor} 邀你参加「{mtitle}」,{}。请答复。", fmt_when(starts, crate::tzutil::parse(&mtz))), crate::notify::Kind::Invite).await;
         mark_notified(&state.pool, mid, &fresh).await?;
     }
-    Ok(Json(json!({ "ok": true, "invited": n })))
+    Ok(Json(InviteOut { ok: true, invited: n }))
 }
 
 /// DELETE /api/activities/{id}/participants —— 移出参会人。
@@ -751,7 +841,7 @@ pub async fn uninvite(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let u = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim();
     if u.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
@@ -762,7 +852,7 @@ pub async fn uninvite(
     sqlx::query("DELETE FROM activity_participants WHERE activity_id=$1 AND username=$2")
         .bind(mid).bind(u).execute(&state.pool).await?;
     audit::record(&state.pool, id.require_username()?, "activity.uninvite", &mid.to_string(), u).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 #[derive(Deserialize)]
@@ -785,7 +875,7 @@ pub async fn respond(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(r): Json<RespondIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<RespondOut>> {
     let username = id.require_username()?;
     // ★只有名单里的人能答复★:旁听者(public 活动路人)看得见这场会,但不能给自己投一票。
     //
@@ -901,13 +991,13 @@ pub async fn respond(
         }
         // `still_recorder`:拒绝之后我**还是不是**记录员。转走了就是 false ——
         // 界面靠它当场告诉我「这摊子已经不归你了」,否则我只会纳闷「我都拒了怎么还挂着」。
-        return Ok(Json(json!({
-            "ok": true, "status": st,
-            "still_recorder": 我是记录员 && !已转给发起人,
-            "recorder_moved_to": if 已转给发起人 { Some(organizer.clone()) } else { None },
-        })));
+        return Ok(Json(RespondOut {
+            ok: true, status: st.to_string(),
+            still_recorder: Some(我是记录员 && !已转给发起人),
+            recorder_moved_to: Some(if 已转给发起人 { Some(organizer.clone()) } else { None }),
+        }));
     }
-    Ok(Json(json!({ "ok": true, "status": st })))
+    Ok(Json(RespondOut { ok: true, status: st.to_string(), still_recorder: None, recorder_moved_to: None }))
 }
 
 #[derive(Deserialize)]
@@ -981,7 +1071,7 @@ pub async fn freebusy(
 #[derive(Deserialize)]
 pub struct MsgQ { pub channel: Option<String>, pub peer: Option<String> }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct MessageRow {
     pub id: i64, pub sender: String, pub channel: String,
     pub peer: Option<String>, pub body: String, pub created_at: Ts,
@@ -1042,7 +1132,7 @@ pub async fn send_message(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(m): Json<MsgIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::IdOut>> {
     if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
     }
@@ -1069,7 +1159,7 @@ pub async fn send_message(
         "INSERT INTO activity_messages (activity_id, sender, channel, peer, body) VALUES ($1,$2,$3,$4,$5) RETURNING id")
         .bind(mid).bind(username).bind(channel).bind(peer.as_deref()).bind(body)
         .fetch_one(&state.pool).await?;
-    Ok(Json(json!({ "id": id_ })))
+    Ok(Json(crate::http::dto::IdOut { id: id_ }))
 }
 
 // ── 活动纪要(D14)────────────────────────────────────────────────────────
@@ -1134,7 +1224,7 @@ pub async fn minutes_put(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(p): Json<MinutesIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MinutesPutOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     // ★`status` 不传 = **保持原样**,不是「回到 draft」★(2026-08-15 对抗检查抓到)。
     //   这一整个结构体的约定就是「不传的字段保留」——下面每个字段都是 `COALESCE($n, 老值)`,
@@ -1176,13 +1266,13 @@ pub async fn minutes_put(
         .bind(p.resolutions.as_deref()).bind(p.todos.as_deref())
         .fetch_one(&state.pool).await?;
     audit::record(&state.pool, id.require_username()?, "minutes.save", &mid.to_string(), &结果状态).await;
-    Ok(Json(json!({ "ok": true, "status": 结果状态 })))
+    Ok(Json(MinutesPutOut { ok: true, status: 结果状态.to_string() }))
 }
 
 // ── 活动材料 / 改动历史 / 催办 / 采纳改期 ──────────────────────────────────
 // 对应原型 meet 视图右侧与中部的几块(docs/UI-GAP.md)。
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct ActivityItem {
     pub id: i64,
     pub name: String,
@@ -1244,7 +1334,7 @@ pub async fn rename_activity_item(
     Extension(id): Extension<Identity>,
     Path((mid, iid)): Path<(i64, i64)>,
     Json(p): Json<ItemRename>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     // ★项目角色不够时,参会人可以改/删**自己传的**那一份★(2026-08-17,ADR-0006 决定二):
     //   传错了一份却改不了删不掉,他只能再传一份对的 —— 错版本永远躺在那儿,还占着召集人的额度。
@@ -1266,7 +1356,7 @@ pub async fn rename_activity_item(
     if n == 0 { return Err(AppError::NotFound) }
     audit::record(&state.pool, actor, "activity.item.rename", &iid.to_string(),
         &format!("activity={mid} project={pid} 改名为 {name}")).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// DELETE /api/activities/{mid}/items/{iid} —— 删一份活动材料/录制(≥editor)。
@@ -1282,7 +1372,7 @@ pub async fn delete_activity_item(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path((mid, iid)): Path<(i64, i64)>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     // 材料区在 require_role 上是全只读的(PRD §J1),而「删材料」正是它放行的两条写路径之一
     // —— 普通项目里这个函数就等于 require_role(Editor),行为不变。
@@ -1306,7 +1396,7 @@ pub async fn delete_activity_item(
     if n == 0 { return Err(AppError::NotFound) }
     audit::record(&state.pool, actor, "activity.item.delete", &iid.to_string(),
         &format!("activity={mid} project={pid} 删除活动材料(进回收站)")).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// POST /api/activities/{id}/materials-project —— 拿到这场活动材料的**落点项目**。
@@ -1328,7 +1418,7 @@ pub async fn materials_project(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MaterialsProjectOut>> {
     let me = id.require_username()?;
     // 先按看得见与否判 404/403(与其他活动接口同一套语义:看不见的活动不该确认它存在)
     activity_view(&state.pool, &id, mid).await?;
@@ -1349,10 +1439,10 @@ pub async fn materials_project(
         return Err(AppError::BadRequest("这个活动已经关联了项目,材料落在项目里".into()));
     }
     let pid = crate::http::projects::materials_project(&state, me).await?;
-    Ok(Json(json!({ "project_id": pid })))
+    Ok(Json(MaterialsProjectOut { project_id: pid }))
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct LinkChange {
     pub old_url: String,
     pub new_url: String,
@@ -1384,7 +1474,7 @@ pub async fn remind(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<RemindOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let only = body.get("username").and_then(|v| v.as_str()).map(str::to_string);
     let targets: Vec<String> = sqlx::query_scalar(
@@ -1416,7 +1506,7 @@ pub async fn remind(
     }
     audit::record(&state.pool, id.require_username()?, "activity.remind", &mid.to_string(),
                   &format!("{} 人", targets.len())).await;
-    Ok(Json(json!({ "ok": true, "targets": targets.len(), "sent": sent })))
+    Ok(Json(RemindOut { ok: true, targets: targets.len(), sent }))
 }
 
 /// POST /api/activities/{id}/reject-counter —— 驳回某人的改期建议。
@@ -1427,7 +1517,7 @@ pub async fn reject_counter(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
@@ -1445,7 +1535,7 @@ pub async fn reject_counter(
         .bind(mid).fetch_one(&state.pool).await?;
     notify_activity(&state, mid, std::slice::from_ref(&who), "改期建议未被采纳",
         &format!("「{mtitle}」的时间不变,{actor} 未采纳你的改期建议 —— ★请重新答复原时间★。"), crate::notify::Kind::CounterRejected).await;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// POST /api/activities/{id}/accept-counter —— 采纳某人的改期建议。
@@ -1455,7 +1545,7 @@ pub async fn accept_counter(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<AcceptCounterOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let who = body.get("username").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if who.is_empty() { return Err(AppError::BadRequest("缺 username".into())) }
@@ -1482,7 +1572,7 @@ pub async fn accept_counter(
     let all = notify_targets(&state.pool, mid, actor).await;
     notify_activity(&state, mid, &all, "活动时间已改",
         &format!("「{mtitle}」采纳了 {who} 的改期建议,改到 {} —— ★之前的答复已作废,请重新答复★。", fmt_when(s, crate::tzutil::parse(&mtz))), crate::notify::Kind::Reschedule).await;
-    Ok(Json(json!({ "ok": true, "starts_at": s, "ends_at": e })))
+    Ok(Json(AcceptCounterOut { ok: true, starts_at: s, ends_at: e }))
 }
 
 // ── 公开活动广场 / 旁听(D9)──────────────────────────────────────────────
@@ -1559,7 +1649,7 @@ pub async fn observe(
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<ObserveOut>> {
     let username = id.require_username()?;
     let on = body.get("observe").and_then(|v| v.as_bool()).unwrap_or(true);
     let vis: Option<String> = sqlx::query_scalar(
@@ -1576,14 +1666,14 @@ pub async fn observe(
             "INSERT INTO activity_participants (activity_id, username, kind, status, responded_at)
              VALUES ($1,$2,'observer','accepted',now()) ON CONFLICT (activity_id, username) DO NOTHING")
             .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
-        return Ok(Json(json!({ "ok": true, "observing": true, "added": n == 1 })));
+        return Ok(Json(ObserveOut { ok: true, observing: true, added: Some(n == 1), removed: None }));
     }
     // 取消旁听:★只删自己的 observer 行★——正式参会人不能用这个接口把自己从活动里摘掉
     // (那是发起人的事,走 uninvite)。
     let n = sqlx::query(
         "DELETE FROM activity_participants WHERE activity_id=$1 AND username=$2 AND kind='observer'")
         .bind(mid).bind(username).execute(&state.pool).await?.rows_affected();
-    Ok(Json(json!({ "ok": true, "observing": false, "removed": n })))
+    Ok(Json(ObserveOut { ok: true, observing: false, added: None, removed: Some(n) }))
 }
 
 // ── 个人面板:我的投入(原型 me 视图)────────────────────────────────────────
@@ -1975,7 +2065,7 @@ pub async fn mark_read(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(b): Json<ReadBody>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MarkReadOut>> {
     let who = id.require_username()?;
     let n = match b.activity_id {
         Some(mid) => sqlx::query(
@@ -1990,7 +2080,7 @@ pub async fn mark_read(
              ON CONFLICT (activity_id, username) DO UPDATE SET read_at = now()")
             .bind(who).execute(&state.pool).await?.rows_affected(),
     };
-    Ok(Json(json!({ "marked": n })))
+    Ok(Json(MarkReadOut { marked: n }))
 }
 
 // ── 项目统计(PRD 6.5.2 + D6)────────────────────────────────────────────
@@ -2094,7 +2184,7 @@ pub async fn minutes_pdf(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MinutesPdfOut>> {
     require_activity_host(&state.pool, &id, mid).await?;
     let actor = id.require_username()?;
     let m: ActivityRow = sqlx::query_as(
@@ -2138,7 +2228,7 @@ pub async fn minutes_pdf(
         .bind(mid).bind(item).execute(&state.pool).await?;
     crate::audit::record(&state.pool, actor, "minutes.pdf", &mid.to_string(),
         if 是草稿 { "draft" } else { "done" }).await;
-    Ok(Json(json!({ "item_id": item, "draft": 是草稿 })))
+    Ok(Json(MinutesPdfOut { item_id: item, draft: 是草稿 }))
 }
 
 #[cfg(test)]
