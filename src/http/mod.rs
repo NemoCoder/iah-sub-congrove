@@ -20,7 +20,6 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::{header, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{middleware, Json, Router};
-use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
@@ -334,13 +333,22 @@ async fn version() -> Json<VersionOut> {
     Json(VersionOut { version: env!("CARGO_PKG_VERSION") })
 }
 
+/// `GET /readyz` 的响应体。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ReadyOut {
+    /// pg && s3。false 时整个响应是 503 —— k8s 据此摘流量。
+    pub ready: bool,
+    pub pg: bool,
+    pub s3: bool,
+}
+
 /// 就绪:PG SELECT 1 + S3 head_bucket 都通才算 ready。
-async fn readyz(axum::extract::State(state): axum::extract::State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+async fn readyz(axum::extract::State(state): axum::extract::State<AppState>) -> (StatusCode, Json<ReadyOut>) {
     let pg = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.pool).await.is_ok();
     let s3 = state.storage.healthcheck().await.is_ok();
     let ready = pg && s3;
     let code = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-    (code, Json(json!({ "ready": ready, "pg": pg, "s3": s3 })))
+    (code, Json(ReadyOut { ready, pg, s3 }))
 }
 
 /// 静态资源的缓存策略(见 fallback_service 处的长注释)。

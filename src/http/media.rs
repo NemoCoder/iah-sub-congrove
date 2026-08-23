@@ -54,6 +54,65 @@ pub struct BeginIn {
     pub fp: Option<String>,
 }
 
+// ══════ 响应体类型(字段级契约,2026-08-23)══════
+
+/// 分片上传完成。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct CompleteOut {
+    pub ok: bool,
+    /// 服务端确认的总字节数(以 S3 的 ListParts 为准,不信前端报的)。
+    pub size: i64,
+}
+
+/// 排队转写。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct AnalyzeOut {
+    /// 任务 id —— 轮询 `/analysis` 看它的 status/stage/progress。
+    pub job_id: i64,
+}
+
+/// 转写与纪要的当前状态。★三样都可能为 null★:没排过队 / 还没转完 / 还没出纪要。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct AnalysisOut {
+    pub job: Option<JobStatus>,
+    pub transcript: Option<TranscriptOut>,
+    /// 三份 AI 产物(`brief` / `outline` / `decisions`)。没出就是空数组。
+    pub summaries: Vec<SummaryOut>,
+    /// ★平台注没注入 ASR 端点★ —— 没注入时**根本不排队**(排了就是攒一堆必败任务),
+    /// 界面据此说「本环境没接语音识别」而不是让人干等一个永远不会开始的任务。
+    pub asr_ready: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct JobStatus {
+    /// `queued` / `running` / `done` / `failed`。
+    pub status: String,
+    /// 当前在哪一步(「下载录屏」「语音转写(整段)」「生成摘要」…)。
+    pub stage: String,
+    pub progress: i32,
+    /// 失败原因。★前端会把它翻成人话★(job-error.ts),别在这儿加工。
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct TranscriptOut {
+    pub text: String,
+    /// 细分段(start/end/text/speaker),★存的是原始细分段不做合并★——
+    /// 合并规则按用途不同(逐字稿要长、字幕要短),放在读取时做。
+    /// null = 那次转写没产出分段(只有全文)。
+    pub segments: Option<serde_json::Value>,
+    pub duration_sec: Option<f64>,
+    /// ★时间轴漂移自检★:>0 表示尾部有多少秒没有文字覆盖(见 media_ai::timeline_drift)。
+    pub drift_sec: Option<f64>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct SummaryOut {
+    pub kind: String,
+    pub content: String,
+}
+
+
 /// POST /api/projects/{pid}/media/begin(≥editor)。预签名不可用回 501,前端回退后端流式上传。
 pub async fn begin(
     State(state): State<AppState>,
@@ -286,7 +345,7 @@ pub async fn complete(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(input): Json<CompleteIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<CompleteOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let key = upload_key_of(&state, iid).await?;
@@ -382,7 +441,7 @@ pub async fn complete(
     tokio::spawn(verify_sha(state.clone(), iid, key.clone()));
     // 录屏/录音传完即自动排队生成纪要(2026-08-05):后台队列串行跑,用户不用再点一次。
     enqueue_analysis(&state, iid, id.require_username()?).await;
-    Ok(Json(json!({ "ok": true, "size": size })))
+    Ok(Json(CompleteOut { ok: true, size }))
 }
 
 #[derive(Deserialize)]
@@ -396,14 +455,14 @@ pub async fn abort(
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
     Json(input): Json<AbortIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     let key = upload_key_of(&state, iid).await?;
     state.storage.multipart_abort(&key, &input.upload_id).await;
     // 只删还没完成的行(s3_key 仍 NULL);已完成的 abort 无意义也不该误删。
     sqlx::query("DELETE FROM items WHERE id = $1 AND s3_key IS NULL").bind(iid).execute(&state.pool).await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// GET /api/items/{id}/play(≥viewer)→ 302 到 15min 预签名 GET。
@@ -618,7 +677,7 @@ pub async fn analyze(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<AnalyzeOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     if !analyzable(&state.pool, iid).await? {
@@ -637,7 +696,7 @@ pub async fn analyze(
         None => sqlx::query_scalar("SELECT id FROM media_jobs WHERE item_id=$1 ORDER BY id DESC LIMIT 1")
             .bind(iid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?,
     };
-    Ok(Json(json!({ "job_id": job_id })))
+    Ok(Json(AnalyzeOut { job_id }))
 }
 
 /// GET /api/items/{id}/analysis(≥viewer)—— 任务状态 + 逐字稿 + 三份纪要。
@@ -645,7 +704,7 @@ pub async fn analysis(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(iid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<AnalysisOut>> {
     let (_, 属于活动) = crate::http::items::project_and_activity_of(&state.pool, iid).await?;
     let pid = crate::http::items::project_of_alive(&state.pool, iid).await?;
     // ★同上:参会人能看这场活动的转写/字幕★(它们是材料的一部分)
@@ -674,16 +733,13 @@ pub async fn analysis(
     });
     let sums: Vec<(String, String)> = sqlx::query_as("SELECT kind, content FROM summaries WHERE item_id=$1")
         .bind(iid).fetch_all(&state.pool).await?;
-    Ok(Json(json!({
-        "job": job.map(|(status, stage, progress, error)| json!({
-            "status": status, "stage": stage, "progress": progress, "error": error })),
-        "transcript": tr.map(|(text, segments, duration, drift)| json!({
-            "text": text, "segments": segments, "duration_sec": duration,
-            // 时间轴漂移自检:>0 表示尾部有多少秒没有文字覆盖(见 media_ai::timeline_drift)。
-            "drift_sec": drift })),
-        "summaries": sums.into_iter().map(|(k, c)| json!({"kind": k, "content": c})).collect::<Vec<_>>(),
-        "asr_ready": state.config.asr_base_url.is_some(),
-    })))
+    Ok(Json(AnalysisOut {
+        job: job.map(|(status, stage, progress, error)| JobStatus { status, stage, progress, error }),
+        transcript: tr.map(|(text, segments, duration_sec, drift_sec)| TranscriptOut {
+            text, segments, duration_sec, drift_sec }),
+        summaries: sums.into_iter().map(|(kind, content)| SummaryOut { kind, content }).collect(),
+        asr_ready: state.config.asr_base_url.is_some(),
+    }))
 }
 
 /// GET /api/items/{id}/subtitles.vtt(≥viewer)—— 把转写分段转成 WebVTT 字幕轨。
