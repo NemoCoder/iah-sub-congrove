@@ -95,11 +95,14 @@ bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— �
 | 时间不裸格式化 | `scripts/no-naked-time.sh` | `.format("` 前必须 `.with_timezone(` —— 否则印出来是 UTC | ✅ |
 | DDL 纪律 | `scripts/ddl-check.sh` | 裸 `CREATE TABLE` + `migrations/` 只有一个文件(ADR-0001) | ✅ |
 | 内容寻址 | `scripts/blobkey-check.sh` | 规范 key 只由 `items.rs::blob_key` 产出 | ✅ |
+| 内网地址不入库 | `scripts/no-internal-addr.sh` | 跟踪文件**与提交信息**里都不许出现内网网段 | ✅ |
+| 取值只走 effective_* | `scripts/effective-check.sh` | 治理项不许直接读常量/env,绕过库里的设置 | ✅ |
 | 版本号两处一致 | `scripts/version-sync-check.sh` | `Cargo.toml` == `web/src/version.ts` | ✅ |
 | 前端 tsc / test | `cd web && pnpm typecheck` / `pnpm test` | strict 类型 + 单测 | ✅ |
 | SQL 对真库 | `scripts/sql-prepare-check.py` | 全部 SQL 通过 `PREPARE`(语义分析但不执行) | ⭕ ★不再直连库★,走平台 `db/sql`;只要令牌 |
 | schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ⭕ 同上 |
 | 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
+| schema 覆盖率 | `scripts/schema-coverage.sh` | 「响应体没接字段级 schema」的条数**只减不增**;基线 `docs/schema-coverage-baseline.txt` | ✅ |
 | 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
 | 已应用的迁移不许改 | `scripts/migration-frozen-check.sh` | `migrations/*.sql` 的 sha384 == `migrations/checksums.txt`(只增不改) | ✅ |
 | 迁移校验和 | `scripts/migration-checksum-check.sh` | 同上 == **dev 与 prod 两库** `_sqlx_migrations` 里记的(★只 SELECT★) | ⭕ dev 半边同上;prod 半边要 DSN(不给,永久「未核」) |
@@ -131,16 +134,25 @@ prod 那道闸另读 `~/.config/iah/congrove-prod.env` 里的 `CONGROVE_PROD_DSN
 ★`--pre` 是 PREPARE 闸最值钱的用法★:先施加 schema 变更、跑全量检查、最后 ROLLBACK,
 于是「这个改动会打断哪些 SQL」由**数据库穷举** —— M0 全程没手数过一次清单。
 
-⚠★两条使用纪律★:①进不了 CI 的闸(要活库/内网 CA)必须在 PR 里**如实标注人工验证**,
+⚠★三条使用纪律★:①进不了 CI 的闸(要活库/内网 CA)必须在 PR 里**如实标注人工验证**,
 不许标成「CI 绿」;②★每道闸都要能证明自己跑起来了★ —— 本仓库栽过五次
-「工具没跑 → 输出为空 → 报绿」,详见 `docs/M0-PLAN.md`。
+「工具没跑 → 输出为空 → 报绿」,详见 `docs/M0-PLAN.md`;
+③★退出码有约定,别分叉★(2026-08-23 统一):
+
+    0 = 通过   1 = 真的不通过   ★2 = 整个量不到★   ★3 = 部分没跑★
+
+  后两种在汇总里显示成「?」而不是「✗」。为什么值得单独立一条:平台的 `db/sql`
+  挂了一阵那天,依赖它的四道闸全打了 ✗ —— 其中 `sql-prepare-check.py` 还打印了
+  「280/301 条 SQL 对不上 schema」。★一个人看到这行字,第一反应是自己刚才改坏了什么。★
+  本仓一直强调「『我没查』和『查了没问题』是两件事」,而这是它对称的另一半:
+  ★「我没查」被报成「查出问题了」,和被报成「通过」一样坏,而且更费人。★
 
 ## 待平台的三条(卡着才补得上)
 
 | # | 问题 | 挡住什么 |
 |---|---|---|
 | O2 | CI 挂一个测试 PG | ~~PREPARE 闸与 schema 闸进不了 CI~~ ★2026-08-17 起这两道改走平台 `db/sql`,**不再需要测试 PG**★ —— 只要 CI 有令牌就能跑,这条阻塞基本解掉了(待在 CI 里实测) |
-| O4 | 共享 runner 装 `oasdiff` | 接口面闸**本来就能进 CI**(离线生成契约、不连库),卡在没这个二进制 |
+| O4 | 共享 runner 装 `oasdiff` | 接口面闸**本来就能进 CI**(离线生成契约、不连库),卡在没这个二进制。★2026-08-23 起这条的价值大了一截★:字段级 schema 补完之后,这道闸从「只看路径/参数」变成**看得见响应体结构** —— 「数组变对象」这类改动现在它抓得到,而以前抓不到 |
 | O3b | 两个专用 E2E 账号 | 「加入即可见/离开即失去」等 2 条 E2E 暂跳过 |
 
 ## 命令
@@ -228,6 +240,37 @@ sqlx 全用 runtime 查询(无 `query!` 宏)→ **改 SQL 编译器不报错**�
 抽出来逐条对真库 `PREPARE`,覆盖率 100% 且不依赖测试覆盖到哪些路径。改完 SQL 跑它。
 ⚠ 它**抓不到** Rust 侧解码类型与列类型不匹配(`query_as::<_, (String,String)>` 拿到 int8
 仍会运行时炸)—— 加字段后 FromRow/元组元数仍要手工核对。
+
+## ★接口契约:schema 从 Rust 类型现推,不是手写的★(2026-08-23 补完)
+
+109 条接口的响应体**全部**有字段级 schema。写新接口时按这个来:
+
+```rust
+// src/http/apidoc.rs 的 APIS 里
+api!("GET", "/api/x", "组", "登录", "说明", "",  res: crate::http::x::XOut)
+api!("PUT", "/api/x", "组", "登录", "说明", "",  req: XIn, res: XOut)
+api!("GET", "/api/y", "组", "登录", "说明", "",  raw: "文件字节流")  // 本来就不回 JSON
+```
+
+响应类型要 `#[derive(serde::Serialize, schemars::JsonSchema)]`。
+★doc 注释自动变成契约里的 description★ —— 注释照常写就行,不用另写一份文档。
+
+⚠★为什么不手写 JSON schema★:那正是 `docs/adr/README.md` 禁止的
+「关于代码的断言写进文档」—— 手写的不跟着类型变,**结构体改了它不报错、只是悄悄过期**,
+而过期的契约比没有契约更坏(它让人以为已经对齐了)。
+
+⚠★`raw:` 是给「本来就不回 JSON」的★(流 / 302 / 纯文本 / 204),**不是**「还没接」的挡箭牌。
+两者留空的话长得一样,于是覆盖率闸的数字永远归不了零 ——
+★一个到不了零的进度条,等于没有进度条。★
+
+⚠★别在 handler 里用 `json!` 拼响应★:全树已经一处都没有了(六个模块的
+`use serde_json::json` 都因为 unused 被删掉)。用 `json!` 意味着这条接口在契约里是空白,
+而且**没有任何东西会拦住你** —— 只有 `schema-coverage.sh` 的数字会涨。
+
+★这件事真正买到的是什么★:补的过程里,类型系统当场接住了四处
+「我以为是这样、其实不是」——`remind` 少了个 `sent` 字段、`observe` 其实是切换、
+`reminded_at` 恒非空、`accept_rate` 是 0.0 不是 null。
+`json!` 里塞什么都合法,所以**从来没人问过这些问题**。
 
 ## 架构决策(详证据见 DESIGN.md §3,别重新论证)
 
