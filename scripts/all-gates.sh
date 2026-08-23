@@ -108,6 +108,9 @@ if [ "$CI_ONLY" != "--ci" ]; then
   #   ★没有一道在问「代码和**运行环境的状态**还对得上吗」★ —— 改了 0001_init.sql
   #   却没清库,一路全绿到 pod CrashLoop。这一道把 sqlx 启动时那个比对提前到本地。
   gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
+  # ★每个写接口都要判权★(2026-08-23 全量审计的产物):漏判权是本仓最严重的一类缺陷
+  #   (A1 就是),而在此之前**没有任何东西守着它** —— 新加一个 POST 忘了 require_*,门禁照样全绿。
+  gate "写接口都判权" bash scripts/authz-coverage.sh
   gate "接口面 api-check" bash scripts/api-check.sh check
   # 字段级 schema 的欠账只许变少 —— 见脚本头注:做很久的活的共同死法是「做了一半就停在那」。
   gate "schema 覆盖率(只减不增)" bash scripts/schema-coverage.sh

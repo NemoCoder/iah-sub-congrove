@@ -36,7 +36,7 @@ pub struct UserRow {
 /// GET /api/admin/users —— 登录过的全部用户(含生效配额与它是不是默认值)。
 pub async fn users(State(state): State<AppState>) -> AppResult<Json<Vec<UserRow>>> {
     // 全站默认只读一次,不在 SQL 里 join 常量:它的唯一推导在 settings.rs(库 > 常量)。
-    let (默认额度, _) = crate::settings::effective_default_quota(&state.pool).await;
+    let (默认额度, _) = crate::settings::effective_default_quota(&state.pool).await?;
     let mut rows: Vec<UserRow> = sqlx::query_as(
         "SELECT u.username, u.name, u.email, u.is_super, u.created_at, u.last_login,
                 COALESCE(q.quota_bytes, $1)::bigint AS quota_bytes,
@@ -432,9 +432,9 @@ pub async fn set_llm_model(
 /// ★`source` 不是调试信息★:超管看到「10 GiB」得知道它是「有人设成了 10」
 /// 还是「没人设过,恰好默认是 10」—— 这两种状态在他改 env 或升级版本时表现完全不同。
 pub async fn settings_get(State(state): State<AppState>) -> AppResult<Json<SettingsOut>> {
-    let (creators, c_src) = crate::settings::effective_project_creators(&state.pool, &state.config).await;
-    let (quota, q_src) = crate::settings::effective_default_quota(&state.pool).await;
-    let (remind, r_src) = crate::settings::effective_default_remind(&state.pool).await;
+    let (creators, c_src) = crate::settings::effective_project_creators(&state.pool, &state.config).await?;
+    let (quota, q_src) = crate::settings::effective_default_quota(&state.pool).await?;
+    let (remind, r_src) = crate::settings::effective_default_remind(&state.pool).await?;
     Ok(Json(SettingsOut {
         project_creators:       SettingVal { value: creators, source: c_src },
         default_quota_bytes:    SettingVal { value: quota,    source: q_src },

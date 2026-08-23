@@ -55,9 +55,19 @@ pub const 可写的键: [&str; 3] = ["project_creators", "default_quota_bytes", 
 #[schemars(rename = "SettingSource")]
 pub enum 来源 { Db, Env, Default }
 
-async fn 读原始值(pool: &PgPool, key: &str) -> Option<String> {
+/// 读一项设置的原始值。`Ok(None)` = 确实没设过;`Err` = **没查成**。
+///
+/// ⚠★这两件事以前是同一个返回值★(2026-08-23 全量审计发现,阻塞级):
+///   原来是 `.ok().flatten()` —— DB 出错被吞成 `None`,而 `None` 在
+///   `effective_project_creators` 里的兜底是**空名单 = 人人可建**。
+///   ⇒ ★数据库抖一下,「谁能建项目」这道治理闸就静默失效,而且没有任何日志。★
+///   同一个吞法也让全站默认配额悄悄回落到编译期常量 —— 所有没单独设过配额的人当场跟着变。
+///
+/// ★「查不到」和「没查成」必须分开★ —— 这是本仓反复吃亏的同一条:
+///   把「我没查」当成「查了没问题」,在**权限**路径上就是 fail-open。
+async fn 读原始值(pool: &PgPool, key: &str) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>("SELECT value FROM app_setting WHERE key = $1")
-        .bind(key).fetch_optional(pool).await.ok().flatten()
+        .bind(key).fetch_optional(pool).await
 }
 
 /// 逗号分隔的用户名 → 去空、去重后的列表。
@@ -76,15 +86,18 @@ pub fn 解析名单(s: &str) -> Vec<String> {
 /// ⚠ 「空 = 人人可建」是 2026-08-16 liaoruili 拍板维持的现状 ——
 ///   改成「空 = 只有超管」是一次**静默的权限收紧**:升级部署的同一刻,
 ///   现在能建项目的人全部失去这个能力,而没有人会收到通知。
-pub async fn effective_project_creators(pool: &PgPool, config: &Config) -> (Vec<String>, 来源) {
-    match 读原始值(pool, "project_creators").await {
+/// ⚠★返回 Result,错误必须往上抛★(2026-08-23 审计):这是**权限闸**的取值 ——
+///   查不成时唯一安全的行为是让请求失败(500),而不是当作「没设过」放行。
+pub async fn effective_project_creators(pool: &PgPool, config: &Config)
+    -> Result<(Vec<String>, 来源), sqlx::Error> {
+    Ok(match 读原始值(pool, "project_creators").await? {
         // ⚠★空串是一个**有效的值**,不是「没设过」★:超管把名单清空,意思是「改回人人可建」,
         //   而不是「退回去用 env 里那份」。这一条必须在 `filter(非空)` 之前判掉 ——
         //   写成 `.filter(|v| !v.is_empty())` 会让「清空」这个动作**看起来成功、实际无效**。
         Some(v) => (解析名单(&v), 来源::Db),
         None if !config.project_creators.is_empty() => (config.project_creators.clone(), 来源::Env),
         None => (Vec::new(), 来源::Default),
-    }
+    })
 }
 
 /// 全站默认配额(字节)。★唯一推导★:库 > 编译期常量。
@@ -93,21 +106,25 @@ pub async fn effective_project_creators(pool: &PgPool, config: &Config) -> (Vec<
 ///   它是 `owner_quota_used` 里 `COALESCE(user_quota.quota_bytes, $2)` 的那个 `$2` ——
 ///   **没有 `user_quota` 行的人每次都现算**,而实测 dev 上 108 个用户里 0 个设过。
 ///   ⇒ 改它会立刻改变几乎所有人的额度,加也是、减也是。界面必须先算影响面再让人确认。
-pub async fn effective_default_quota(pool: &PgPool) -> (i64, 来源) {
-    match 读原始值(pool, "default_quota_bytes").await.and_then(|v| v.trim().parse::<i64>().ok()) {
+/// ⚠★返回 Result★(2026-08-23 审计):它是**几乎所有人的额度**的来源
+///   (`owner_quota_used` 的 COALESCE 兜底)。查不成时静默回落到编译期常量,
+///   等于全站配额在无人知晓的情况下换了一个值 —— 加也糟、减也糟(有人当场传不了东西)。
+pub async fn effective_default_quota(pool: &PgPool) -> Result<(i64, 来源), sqlx::Error> {
+    Ok(match 读原始值(pool, "default_quota_bytes").await?.and_then(|v| v.trim().parse::<i64>().ok()) {
         Some(n) if n > 0 => (n, 来源::Db),
-        // 解析不出来 / 不是正数 → 回落。★不 panic 也不 500★:配置写坏了不该让服务不可用。
+        // ★「值写坏了」仍然回落,不 500★:那是**查到了但内容不合法**,与「没查成」是两回事。
+        //   配置写坏不该让服务不可用;而查不成必须让请求失败。
         _ => (DEFAULT_QUOTA_BYTES, 来源::Default),
-    }
+    })
 }
 
 /// 全站默认提醒提前量(分钟)。★唯一推导★:库 > 编译期常量。
 /// 个人默认(`user_prefs.default_remind_minutes`)和单场设置仍然覆盖它 —— 这一项只是最后那层兜底。
-pub async fn effective_default_remind(pool: &PgPool) -> (i32, 来源) {
-    match 读原始值(pool, "default_remind_minutes").await.and_then(|v| v.trim().parse::<i32>().ok()) {
+pub async fn effective_default_remind(pool: &PgPool) -> Result<(i32, 来源), sqlx::Error> {
+    Ok(match 读原始值(pool, "default_remind_minutes").await?.and_then(|v| v.trim().parse::<i32>().ok()) {
         Some(n) if (1..=10080).contains(&n) => (n, 来源::Db),
         _ => (DEFAULT_REMIND_MIN, 来源::Default),
-    }
+    })
 }
 
 /// 写入一个设置项。★校验在这里做,不在 handler 里★ —— handler 只管 HTTP,

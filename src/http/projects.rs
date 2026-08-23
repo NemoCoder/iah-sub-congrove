@@ -323,7 +323,7 @@ pub async fn create(
     // ⚠★取值必须走 effective_project_creators★(2026-08-16):名单现在超管能在后台改,
     //   直接读 `state.config.project_creators` 的话**他改了也不生效**,而且不报错。
     //   门禁 `scripts/no-bypass-effective.sh` 守着这一条。
-    let (creators, _) = crate::settings::effective_project_creators(&state.pool, &state.config).await;
+    let (creators, _) = crate::settings::effective_project_creators(&state.pool, &state.config).await?;
     if !creators.is_empty() && !crate::perm::is_super_now(&state.pool, &id).await? && !creators.iter().any(|u| u == username) {
         return Err(AppError::Forbidden);
     }

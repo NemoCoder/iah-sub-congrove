@@ -293,7 +293,7 @@ pub async fn owner_quota_used(pool: &sqlx::PgPool, owner: &str) -> AppResult<(i6
     // ⚠★注意这里的语义★:它是 COALESCE 的兜底,不是「建行时用一次」——
     //   没有 `user_quota` 行的人**每次都现算**,所以改这个默认值会立刻改变他们的额度。
     //   (我 2026-08-16 在 PRD 里把这条答反过一次,更正见 docs/PRD-admin-console.md §7。)
-    .bind(crate::settings::effective_default_quota(pool).await.0)
+    .bind(crate::settings::effective_default_quota(pool).await?.0)
     .fetch_one(pool)
     .await?;
     Ok(row)
