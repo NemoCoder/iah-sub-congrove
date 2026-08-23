@@ -3,7 +3,6 @@
 use axum::extract::State;
 use axum::{Extension, Json};
 use serde::Deserialize;
-use serde_json::json;
 
 use crate::auth::Identity;
 use crate::error::AppResult;
@@ -76,7 +75,7 @@ pub async fn put_prefs(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Json(input): Json<PrefsIn>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<crate::http::dto::OkOut>> {
     let me = id.require_username()?;
     // ⚠★这一行注释 2026-08-15 才删掉★:它原来写着「用 COALESCE 保留没传的字段」——
     //   而 2026-08-09 就已经改成整对象替换了(理由见上面那段长注),SQL 里一个 COALESCE 都没有。
@@ -91,7 +90,7 @@ pub async fn put_prefs(
     .bind(me).bind(input.timezone.as_deref()).bind(input.default_remind_minutes)
     .execute(&state.pool)
     .await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(crate::http::dto::OkOut::yes()))
 }
 
 /// 超管模式开关时长 —— ★2 小时★（2026-08-09 liaoruili 拍板）。

@@ -56,6 +56,44 @@ pub struct BeginIn {
 
 // ══════ 响应体类型(字段级契约,2026-08-23)══════
 
+/// 传完一片。
+///
+/// ⚠★2026-08-23 自我纠正★:我在标「哪些接口不回 JSON」时把这条写成了
+/// 「204 无响应体;ETag 在响应头里」—— ★错的★,它回的是 JSON body。
+/// 是 clippy 报「`json!` 这个 import 没人用了」时,顺着最后两处 `json!` 才发现的。
+/// ★这正是「手写的断言会出错,而且不会有人告诉你」——只不过这次我当场就写错了。★
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PartOut {
+    pub part_number: i32,
+    /// S3 返回的 ETag。★complete 时以服务端 ListParts 为准★,这里给出来只是让前端能对账。
+    pub etag: String,
+}
+
+/// 开始分片直传(200 路径)。
+///
+/// ⚠★handler 仍然返回 `Response` 而不是 `Json<BeginOut>`★:它还有一条 **501** 分支
+/// (预签名未启用 → 前端回退同源分片)。501 是**错误路径**,在 OpenAPI 里本来就和 200
+/// 分开声明 —— 所以 200 这一路照样可以是强类型的,契约里 `res:` 描述的就是它。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct BeginOut {
+    pub item_id: i64,
+    /// S3 的 multipart upload id。★记住它,断了才认得回来★。
+    pub upload_id: String,
+    pub part_size: i64,
+    /// 每一片的预签名 PUT 地址。
+    pub part_urls: Vec<String>,
+    /// ★已经传好的片★ —— 前端据此跳过它们,并把进度条直接推到对应位置。
+    pub uploaded_parts: Vec<UploadedPart>,
+    /// true = 这次是**认领了一个断点**,不是从头开始。
+    pub resumed: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct UploadedPart {
+    pub part_number: i32,
+    pub size: i64,
+}
+
 /// 分片上传完成。
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct CompleteOut {
@@ -269,12 +307,11 @@ pub async fn begin(
             if !done.is_empty() {
                 tracing::info!(item = iid, parts = done.len(), "续传:跳过已传分片");
             }
-            Ok(Json(json!({
-                "item_id": iid, "upload_id": upload_id, "part_size": PART_SIZE, "part_urls": part_urls,
-                // 已经传好的片(片号 + 字节数);前端据此跳过并把进度条直接推到对应位置。
-                "uploaded_parts": done.iter().map(|(n, _, sz)| json!({"part_number": n, "size": sz})).collect::<Vec<_>>(),
-                "resumed": !done.is_empty(),
-            }))
+            Ok(Json(BeginOut {
+                item_id: iid, upload_id, part_size: PART_SIZE, part_urls,
+                uploaded_parts: done.iter().map(|(n, _, sz)| UploadedPart { part_number: *n, size: *sz }).collect(),
+                resumed: !done.is_empty(),
+            })
             .into_response())
         }
         Err(e) => {
@@ -305,7 +342,7 @@ pub async fn part(
     Path(iid): Path<i64>,
     axum::extract::Query(q): axum::extract::Query<PartQuery>,
     body: axum::body::Bytes,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<PartOut>> {
     let pid = crate::http::items::project_of(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Editor).await?;
     if body.is_empty() {
@@ -317,7 +354,7 @@ pub async fn part(
         .multipart_part(&key, &q.upload_id, q.part_number, body.to_vec())
         .await
         .map_err(AppError::Other)?;
-    Ok(Json(json!({ "part_number": q.part_number, "etag": p.e_tag().unwrap_or_default() })))
+    Ok(Json(PartOut { part_number: q.part_number, etag: p.e_tag().unwrap_or_default().to_string() }))
 }
 
 #[derive(Deserialize)]

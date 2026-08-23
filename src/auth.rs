@@ -29,7 +29,6 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use jsonwebtoken::{decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
@@ -643,10 +642,30 @@ pub async fn oidc_logout(State(state): State<AppState>, headers: HeaderMap) -> R
         .unwrap()
 }
 
+/// `GET /api/me` 的响应体。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MeOut {
+    /// null = 没登录(这个接口在鉴权层之后,正常不会出现)。
+    pub username: Option<String>,
+    pub name: Option<String>,
+    pub email: Option<String>,
+    /// ★此刻有没有超管**特权**★ —— 超管模式关着时为 false。
+    /// 前端所有「能不能」的判断用它。语义刻意不改:它已经散在前端多处。
+    pub is_super: bool,
+    /// ★有没有超管**资格**★ —— 只用来决定「超管模式」那个开关画不画出来。
+    /// 按资格显示而不是按特权:一关模式入口就消失的话,人会以为超管被撤了。
+    pub can_super: bool,
+    /// 超管模式自动关闭的时刻;null = 没开着。
+    pub admin_mode_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// 预签名直传的端点。★前端据此开局探测本设备能否信任 s3api 的证书★ ——
+    /// 能就走直传、不能就走同源分片,避免每次上传都先撞一次墙再报警告(2026-08-03)。
+    pub direct_upload_endpoint: Option<String>,
+}
+
 /// /api/me → 当前调用者。is_super 给 SPA 显隐超管入口用,真判权仍在后端。
 /// 顺带回 direct_upload_endpoint:前端据此**开局探测**本设备能否信任 s3api 的证书,
 /// 能就走预签直传、不能就直接走同源分片——避免每次上传都先撞一次墙再报警告(2026-08-03)。
-pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity>) -> Json<serde_json::Value> {
+pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity>) -> Json<MeOut> {
     // is_super 以库为准(cookie 里那份是登录时快照):撤销后前端的超管入口要立刻消失,
     // 否则用户看得见按钮却处处 403,比藏起来更糟。
     let is_super = crate::perm::is_super_now(&state.pool, &id).await.unwrap_or(id.is_super);
@@ -659,11 +678,11 @@ pub async fn me(State(state): State<AppState>, Extension(id): Extension<Identity
             .bind(u).fetch_optional(&state.pool).await.ok().flatten().unwrap_or((id.is_super, None)),
         None => (false, None),
     };
-    Json(json!({
-        "username": id.username, "name": id.name, "email": id.email, "is_super": is_super,
-        "can_super": can_super, "admin_mode_until": until,
-        "direct_upload_endpoint": state.config.s3_public_endpoint,
-    }))
+    Json(MeOut {
+        username: id.username, name: id.name, email: id.email, is_super,
+        can_super, admin_mode_until: until,
+        direct_upload_endpoint: state.config.s3_public_endpoint.clone(),
+    })
 }
 
 /// 登录/首见即 upsert app_user;白名单命中置 is_super=true(**只置不清**——清白名单
