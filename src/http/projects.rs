@@ -105,7 +105,11 @@ pub struct ProjectDetailOut {
     /// ★用 `Role` 枚举而不是 String★:契约里就是明确的取值集合,加档位时自动跟着变。
     pub my_role: crate::perm::Role,
     /// 待响应的主持人转移。★null 是常态★——只有真的挂着一笔转移时才有值。
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// ⚠★这里**不加** `skip_serializing_if`★(2026-08-23,形状对拍闸抓到的):
+    ///   原来 `json!` 输出的是 `"pending_transfer": null`,加了它字段会**整个消失** ——
+    ///   那是我在批量改强类型时**无意引入的**响应体变化,不是我想要的。
+    ///   而且 `null` 比「字段不存在」对客户端更友好:能区分「查过了,没有」与「这版没这个字段」。
     pub pending_transfer: Option<PendingTransfer>,
 }
 

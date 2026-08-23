@@ -1006,10 +1006,15 @@ function MinutesTab({ id, canEdit, onOpen }: {
         {m?.pdf_item_id && <a href={`/api/items/${m.pdf_item_id}/download`}>下载 PDF</a>}
         {editor && <Button size="small" onClick={() => onOpen(id)}>修改</Button>}
       </Space>
-      <MinutesSection label="议题" text={m!.agenda_text} />
+      {/* ★哪几段是 Markdown,哪几段不是★(2026-08-23 修:此前只有「主要内容」给了 md)
+          · 议题 / 决议 / 待办 —— **是** Markdown:AI 那几个「导入」按钮拉进来的就是
+            带 `-` 列表的 md,记录员手写时也会用列表。不给 md 的话屏幕上是一堆字面的减号。
+          · 参会人 / 旁听 / 缺席 —— **不是**:那是一行一个人的名单,`pre-wrap` 正好,
+            交给 Markdown 反而会把它当成段落折行。 */}
+      <MinutesSection label="议题" text={m!.agenda_text} md />
       <MinutesSection label="主要内容" text={m!.content_md} md />
-      <MinutesSection label="决议事项" text={m!.resolutions} />
-      <MinutesSection label="待办事项" text={m!.todos} />
+      <MinutesSection label="决议事项" text={m!.resolutions} md />
+      <MinutesSection label="待办事项" text={m!.todos} md />
       <MinutesSection label="参会人" text={m!.attendees} />
       <MinutesSection label="旁听人" text={m!.observers} />
       <MinutesSection label="缺席人" text={m!.absentees} />
@@ -1024,7 +1029,9 @@ function MinutesSection({ label, text, md }: { label: string; text: string; md?:
     <div style={{ marginBottom: 12 }}>
       <Typography.Text strong style={{ fontSize: 13 }}>{label}</Typography.Text>
       {md
-        ? <div style={{ fontSize: 13 }}><MarkdownView text={text} /></div>
+        // ★breaks★:这几段都是人手写的,他打的回车必须真换行
+        //   (Markdown 规范里单换行不换行 —— 见 preview.tsx 的 MarkdownView 头注)。
+        ? <div style={{ fontSize: 13 }}><MarkdownView text={text} breaks /></div>
         : <div style={{ fontSize: 13, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>{text}</div>}
     </div>
   )
