@@ -147,6 +147,73 @@ pub struct RangeQ {
 
 // ══════ 响应体类型(字段级契约,2026-08-23)══════
 
+/// 我的未读私聊(按活动聚合)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct UnreadRow {
+    pub activity_id: i64,
+    pub title: String,
+    pub sender: String,
+    /// 最新一条的正文(节选)。
+    pub body: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 这场活动里我有几条未读 —— ★聚合到活动★,不是一条一条列。
+    pub count: i64,
+}
+
+/// 我欠着的纪要。★判据是「我是记录员 且 会开完了 且 纪要非 done」★(D14)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MinutesTodoRow {
+    pub activity_id: i64,
+    pub title: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub ends_at: chrono::DateTime<chrono::Utc>,
+    /// 已经存过草稿(区分「一个字没写」和「写了一半」)。
+    pub has_draft: bool,
+}
+
+/// 该提醒我的活动。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RemindersOut {
+    /// ★服务端的「现在」★:前端据此算「还有几分钟」,用本地时钟会因时钟偏差算错。
+    pub now: chrono::DateTime<chrono::Utc>,
+    pub items: Vec<ReminderRow>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ReminderRow {
+    pub activity_id: i64,
+    pub title: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    /// ★投递时刻,恒非空★——这个接口只返回**已经投过**的(查询里筛了 `reminded_at IS NOT NULL`)。
+    /// 它存的是**事实**不是推导(ADR-0003),所以改期也不会让它翻转。
+    /// ⚠ 我一开始把它写成 `Option`(以为「没投过 = null」),★编译器当场纠正★ ——
+    ///   `json!` 里就不会有人问这个问题。
+    pub reminded_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 一段忙碌区间。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct BusySlot {
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub end: chrono::DateTime<chrono::Utc>,
+}
+
+/// 多人忙闲。★key 是用户名★,查了谁就有谁 —— 一个人没有任何忙碌区间时是空数组,
+/// 而不是这个 key 不存在(否则前端分不清「查过了他很闲」和「压根没查他」)。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct FreeBusyOut {
+    pub busy: std::collections::BTreeMap<String, Vec<BusySlot>>,
+}
+
+/// 纪要 + 我能不能改它。
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct MinutesGetOut {
+    /// null = 这场活动还没有纪要(而不是「有一份空的」)。
+    pub minutes: Option<Minutes>,
+    /// ★谁能改:记录员(本职)或发起人★ —— 不是「参会人都能改」,纪要要有唯一作者(D14)。
+    pub can_edit: bool,
+}
+
 /// 答复一场活动(接受 / 拒绝 / 待定 / 建议改期)。
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct RespondOut {
@@ -1023,7 +1090,7 @@ pub async fn freebusy(
     State(state): State<AppState>,
     Extension(_id): Extension<Identity>,
     Query(q): Query<FreeBusyQ>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<FreeBusyOut>> {
     if q.to <= q.from { return Err(AppError::BadRequest("to 必须晚于 from".into())) }
     let users: Vec<String> = q.users.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if users.is_empty() { return Err(AppError::BadRequest("users 不能为空".into())) }
@@ -1058,14 +1125,14 @@ pub async fn freebusy(
           ORDER BY mp.username, m.starts_at")
         .bind(&users).bind(q.from).bind(q.to)
         .fetch_all(&state.pool).await?;
-    let mut out = serde_json::Map::new();
-    for u in &users { out.insert(u.clone(), json!([])); }
-    for (u, s, e) in rows {
-        if let Some(v) = out.get_mut(&u).and_then(|v| v.as_array_mut()) {
-            v.push(json!({ "start": s, "end": e }));
-        }
+    let mut busy: std::collections::BTreeMap<String, Vec<BusySlot>> = std::collections::BTreeMap::new();
+    // ★查了谁就有谁★:没有忙碌区间的人也要给一个空数组 ——
+    //   否则前端分不清「查过了,他很闲」和「压根没查他」。
+    for u in &users { busy.insert(u.clone(), Vec::new()); }
+    for (u, start, end) in rows {
+        if let Some(v) = busy.get_mut(&u) { v.push(BusySlot { start, end }) }
     }
-    Ok(Json(json!({ "busy": out })))
+    Ok(Json(FreeBusyOut { busy }))
 }
 
 #[derive(Deserialize)]
@@ -1167,7 +1234,7 @@ pub async fn send_message(
 // 这里存的是**他整理过的正式纪要**。两者刻意不打通——一键把 AI 稿写进纪要,
 // 等于让「记录员按模板整理」这条决策名存实亡(D14 反复确认过)。
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct Minutes {
     pub activity_id: i64,
     pub status: String,
@@ -1191,7 +1258,7 @@ pub async fn minutes_get(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Path(mid): Path<i64>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<MinutesGetOut>> {
     // ★纪要是活动内容,旁听者不给★(与讨论区同档):D9 给旁听者的是「知道有这个会」。
     if activity_view(&state.pool, &id, mid).await? != ActivityView::Inside {
         return Err(AppError::Forbidden);
@@ -1201,7 +1268,7 @@ pub async fn minutes_get(
     // 谁能编辑:记录员(本职)或发起人。★不是「参会人都能改」★——纪要要有唯一作者,
     // 否则「按固定模板整理」会变成谁都能覆盖一遍的公共草稿。
     let can_edit = require_activity_host(&state.pool, &id, mid).await.is_ok();
-    Ok(Json(json!({ "minutes": m, "can_edit": can_edit })))
+    Ok(Json(MinutesGetOut { minutes: m, can_edit }))
 }
 
 #[derive(Deserialize)]
@@ -1908,7 +1975,7 @@ pub async fn my_stats(
 pub async fn my_unread(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<Vec<UnreadRow>>> {
     let who = id.require_username()?;
     let rows: Vec<(i64, String, String, String, Ts, i64)> = sqlx::query_as(
         "SELECT m.id, m.title, x.sender, x.body, x.created_at, x.cnt
@@ -1927,9 +1994,9 @@ pub async fn my_unread(
          ORDER BY x.created_at DESC LIMIT 20")
         .bind(who).fetch_all(&state.pool).await?;
 
-    Ok(Json(json!(rows.iter().map(|(mid, title, sender, body, at, cnt)| json!({
-        "activity_id": mid, "title": title, "sender": sender, "body": body, "created_at": at, "count": cnt,
-    })).collect::<Vec<_>>())))
+    Ok(Json(rows.into_iter().map(|(activity_id, title, sender, body, created_at, count)| UnreadRow {
+        activity_id, title, sender, body, created_at, count,
+    }).collect()))
 }
 
 /// 「待我处理」的第四路:★等我整理的纪要★。
@@ -1954,7 +2021,7 @@ pub async fn my_unread(
 pub async fn my_minutes_todo(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<Vec<MinutesTodoRow>>> {
     let who = id.require_username()?;
     let rows: Vec<(i64, String, Ts, Ts, bool)> = sqlx::query_as(
         "SELECT activity_id, title, starts_at, ends_at, has_draft
@@ -1965,9 +2032,9 @@ pub async fn my_minutes_todo(
          ORDER BY ends_at DESC")
         .bind(who).fetch_all(&state.pool).await?;
 
-    Ok(Json(json!(rows.iter().map(|(mid, title, s, e, draft)| json!({
-        "activity_id": mid, "title": title, "starts_at": s, "ends_at": e, "has_draft": draft,
-    })).collect::<Vec<_>>())))
+    Ok(Json(rows.into_iter().map(|(activity_id, title, starts_at, ends_at, has_draft)| MinutesTodoRow {
+        activity_id, title, starts_at, ends_at, has_draft,
+    }).collect()))
 }
 
 #[derive(Deserialize)]
@@ -2000,7 +2067,7 @@ pub async fn my_reminders(
     State(state): State<AppState>,
     Extension(id): Extension<Identity>,
     Query(q): Query<RemindersQuery>,
-) -> AppResult<Json<serde_json::Value>> {
+) -> AppResult<Json<RemindersOut>> {
     let who = id.require_username()?;
     let now: Ts = sqlx::query_scalar("SELECT now()").fetch_one(&state.pool).await?;
     let items = match q.since {
@@ -2042,12 +2109,12 @@ pub async fn my_reminders(
             rows
         }
     };
-    Ok(Json(json!({
-        "now": now,
-        "items": items.iter().map(|(mid, title, s, r)| json!({
-            "activity_id": mid, "title": title, "starts_at": s, "reminded_at": r,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(RemindersOut {
+        now,
+        items: items.into_iter().map(|(activity_id, title, starts_at, reminded_at)| ReminderRow {
+            activity_id, title, starts_at, reminded_at,
+        }).collect(),
+    }))
 }
 
 #[derive(Deserialize)]
