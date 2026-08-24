@@ -367,7 +367,10 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               // ★记录员是必填字段(D14)★:正式纪要由他按模板整理,AI 转写只是原材料
               ...(m.type_name ? [{ key: 'ty', label: '类型', children: <Tag>{m.type_name}</Tag> }] : []),
               // 记录员只有「要出纪要」的类型才有（ADR-0002 的 has_minutes）
-              ...(m.recorder ? [{ key: 'r', label: '记录员', children: <Tag color="cyan">{m.recorder}</Tag> }] : []),
+              ...(m.recorder ? [{ key: 'r', label: '记录员', children: (
+                <RecorderPicker mid={m.id} 当前={m.recorder} 参会人={d.participants ?? []}
+                  canEdit={!!d.can_edit && !canceled} onDone={() => void load(true)} />
+              ) }] : []),
               // 同上:旁听者的 `projects` 是后端刻意给的空数组,不是「这场活动没关联项目」。
               // 摆一行空着的「关联项目:」只会让人以为数据丢了 —— 干脆不摆(顶部已有「旁听」标签,
               // 下面那句灰字也说清了裁剪范围)。
@@ -834,6 +837,68 @@ function PeopleCard({ people, mid, organizer, canHost, onDone }: {
         </Space>
       )}
     </Card>
+  )
+}
+
+
+/// 改记录员。★后端一直支持,详情页只画了个只读 Tag★
+/// (2026-08-23 liaoruili:「发起活动后,主持人可以修改记录人,现在无法修改」)。
+///
+/// ⚠★这是本仓第三次出现同一形状★:「能力早就有、这里没入口」——
+///   前两次是 ADR-0006 的「材料/录制点不开」和发起活动页的「＋ 新建类型…」。
+///   判据都一样:**后端有接口、前端没露出**,于是这个能力对用户来说等于不存在。
+///
+/// ★候选默认是当前参会人★:记录员通常就是在场的某个人,不该逼人先去搜。
+///   同时允许搜/手输别人 —— 后端会把他拉进名单并发一条「你被指派为记录员」。
+function RecorderPicker({ mid, 当前, 参会人, canEdit, onDone }: {
+  mid: number; 当前: string; 参会人: Participant[]; canEdit: boolean; onDone: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const [编辑中, set编辑中] = useState(false)
+  const [值, set值] = useState(当前)
+  const [found, setFound] = useState<{ username: string; name: string | null }[]>([])
+  const [busy, setBusy] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const search = (kw: string) => {
+    if (timer.current) clearTimeout(timer.current)
+    const q = kw.trim()
+    if (!q) { setFound([]); return }
+    timer.current = setTimeout(() => {
+      api<{ username: string; name: string | null }[]>(`/api/users?q=${encodeURIComponent(q)}`)
+        .then(setFound).catch(() => setFound([]))
+    }, 250)
+  }
+  if (!编辑中) {
+    return (
+      <Space size={6}>
+        <Tag color="cyan">{showUser(当前, 参会人.find((p) => p.username === 当前)?.name)}</Tag>
+        {canEdit && <Button size="small" type="link" style={{ padding: 0 }}
+          onClick={() => { set值(当前); set编辑中(true) }}>改</Button>}
+      </Space>
+    )
+  }
+  // ★候选 = 参会人 ∪ 搜索结果★,按 username 去重(参会人优先,他带着姓名)
+  const 候选 = [...参会人.map((p) => ({ username: p.username, name: p.name ?? null })),
+                ...found.filter((u) => !参会人.some((p) => p.username === u.username))]
+  const 保存 = async () => {
+    const v = 值.trim()
+    if (!v) { message.warning('记录员不能为空'); return }
+    if (v === 当前) { set编辑中(false); return }   // 没改就不发请求
+    setBusy(true)
+    try {
+      await api(`/api/activities/${mid}`, { method: 'PUT', body: JSON.stringify({ recorder: v }) })
+      message.success(`记录员已改为 ${v}`)
+      set编辑中(false); onDone()
+    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <Space size={6}>
+      <Select showSearch value={值} onChange={set值} onSearch={search} filterOption={false}
+        style={{ minWidth: 220 }} placeholder="选参会人,或搜用户名" notFoundContent={null}
+        options={候选.map((u) => ({ value: u.username, label: showUserWithAccount(u.username, u.name) }))} />
+      <Button size="small" type="primary" loading={busy} onClick={() => void 保存()}>保存</Button>
+      <Button size="small" onClick={() => set编辑中(false)}>取消</Button>
+    </Space>
   )
 }
 

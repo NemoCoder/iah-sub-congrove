@@ -860,6 +860,12 @@ pub async fn update(
         crate::http::activity_types::check_actual_minutes(am, s, e).map_err(AppError::BadRequest)?;
     }
 
+    // 先读原记录员:下面要判「这次是不是真的换人了」——只有换了才拉名单、才发信,
+    // 否则每存一次活动都给同一个人发一条「你被指派为记录员」。
+    let 原记录员: Option<String> = sqlx::query_scalar("SELECT recorder FROM activities WHERE id = $1")
+        .bind(mid).fetch_optional(&state.pool).await?;
+    let mut 换了记录员: Option<String> = None;
+
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE activities SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
@@ -882,6 +888,21 @@ pub async fn update(
         .bind(p.no_download).bind(p.no_share)
         .bind(p.remind_minutes.is_some()).bind(p.remind_minutes.flatten())
         .execute(&mut *tx).await?;
+
+    // ★换了记录员:把他拉进名单并通知他★(2026-08-23 liaoruili 报「无法修改记录人」时补齐)。
+    //
+    // ⚠★create 会做这件事,update 原来不做★ —— 这个不一致的后果是:
+    //   指派一个不在参会名单里的人当记录员,他**既不在名单里、也收不到任何通知**,
+    //   却会在自己的「待写纪要」里凭空多出一场会(那个查询按 `recorder` 判)。
+    //   ★责任落到一个不知情的人头上★ —— 和 `respond` 里那段自动转移守的是同一条。
+    if let Some(新记录员) = p.recorder.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if 原记录员.as_deref() != Some(新记录员) {
+            sqlx::query("INSERT INTO activity_participants (activity_id, username) VALUES ($1,$2)
+                         ON CONFLICT DO NOTHING")
+                .bind(mid).bind(新记录员).execute(&mut *tx).await?;
+            换了记录员 = Some(新记录员.to_string());
+        }
+    }
     // ★改线上链接留痕★:开会前十分钟换链接是真实场景,事后要能追溯「谁何时改成什么」。
     if let Some(new) = p.online_url.as_deref() {
         if new != cur.2 {
@@ -932,6 +953,18 @@ pub async fn update(
     //   · 改时间 → 所有人的答复已被清回 pending,他们必须重新答复;
     //   · 改链接 → 不用重新答复,但**到点前必须看到**(开会前十分钟换链接是真实场景)。
     // 其余改动(标题/议程/地点)不发信:够不上打扰所有人的分量,他们打开活动页就看得到。
+    // ★换记录员要单独通知他★:上面那两条(改时间/改链接)发给的是**全体**,
+    //   而「你被指派为记录员」只跟他一个人有关 —— 混在群发里他也未必看得出这条是冲他来的。
+    //   ⚠ 通知在 commit 之后:事务回滚了信却发了 = 说了不算数的话(与 respond 同一条纪律)。
+    if let Some(新人) = &换了记录员 {
+        let mtitle: String = sqlx::query_scalar("SELECT title FROM activities WHERE id=$1")
+            .bind(mid).fetch_one(&state.pool).await.unwrap_or_default();
+        notify_activity(&state, mid, std::slice::from_ref(新人), "你被指派为这场活动的记录员",
+            &format!("「{mtitle}」的记录员改成了你。正式纪要由记录员按模板整理(AI 转写只是原材料);                      要换人的话,发起人可以在活动页把「记录员」改掉。"),
+            crate::notify::Kind::RecorderAssigned).await;
+        // 被指派的人如果原来不在名单里,上面刚把他插进去 —— 他现在「知情」了,置位。
+        mark_notified(&state.pool, mid, std::slice::from_ref(新人)).await?;
+    }
     let time_changed = (p.starts_at.is_some() || p.ends_at.is_some()) && (s != cur.0 || e != cur.1);
     let link_changed = p.online_url.as_deref().is_some_and(|n| n != cur.2);
     if time_changed || link_changed {
