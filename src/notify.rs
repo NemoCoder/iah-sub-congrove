@@ -66,6 +66,9 @@ pub enum Kind {
     Nudge,
     /// AI 纪要生成好了:★可重复★——「重新生成」是正当操作,生成完该再响一次
     MinutesReady,
+    /// ★被指派为记录员★:★可重复★——同一场可以换好几次记录员,每次那个人都得知道。
+    /// (与 `RecorderMoved` 是两件事:那条是「拒绝出席导致纪要自动落回发起人」,一场只发生一次。)
+    RecorderAssigned,
 }
 
 impl Kind {
@@ -83,6 +86,7 @@ impl Kind {
             Kind::CounterRejected => ("counter-rejected", true),
             Kind::Nudge => ("nudge", true),
             Kind::MinutesReady => ("minutes", true),
+            Kind::RecorderAssigned => ("recorder-assigned", true),
         };
         if 可重复 {
             // 时间戳只为「让 ref 不同」,不表达语义;秒级足够(同一秒内重复发同一种类=误触,去重反而是对的)。
