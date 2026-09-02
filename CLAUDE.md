@@ -103,6 +103,8 @@ bash scripts/all-gates.sh --ci     # 只跑不依赖活环境的那些 —— �
 | schema | `scripts/schema-check.sh check` | 现库 vs 冻结基线,差异逐字节等于 `schema/expected.diff` | ⭕ 同上 |
 | 接口面 | `scripts/api-check.sh check` | breaking 逐条声明在 `docs/openapi-breaking.txt` | ❌ 缺 oasdiff(O4) |
 | schema 覆盖率 | `scripts/schema-coverage.sh` | 「响应体没接字段级 schema」的条数**只减不增**;基线 `docs/schema-coverage-baseline.txt` | ✅ |
+| 写接口都判权 | `scripts/authz-coverage.sh` | 每个 POST/PUT/DELETE 都要有权限调用(认路由层 `require_super`;公开访客面显式豁免) | ✅ |
+| include 的文件进得了镜像 | `scripts/include-copied-check.sh` | `include_str!`/`include_bytes!` 引用的目录必须在 Dockerfile 的 `COPY` 里 —— ★本地全绿而 kaniko 挂的那一类★ | ✅ |
 | 响应体形状 | `scripts/shape-check.sh check` | 形状差异逐字节等于 `e2e/golden/shape-expected.diff` | ❌ 要活环境 |
 | 已应用的迁移不许改 | `scripts/migration-frozen-check.sh` | `migrations/*.sql` 的 sha384 == `migrations/checksums.txt`(只增不改) | ✅ |
 | 迁移校验和 | `scripts/migration-checksum-check.sh` | 同上 == **dev 与 prod 两库** `_sqlx_migrations` 里记的(★只 SELECT★) | ⭕ dev 半边同上;prod 半边要 DSN(不给,永久「未核」) |
@@ -133,6 +135,19 @@ prod 那道闸另读 `~/.config/iah/congrove-prod.env` 里的 `CONGROVE_PROD_DSN
 ★「我没查」和「查了没问题」是两件事★,汇总行也不会再说「全部通过」。
 ★`--pre` 是 PREPARE 闸最值钱的用法★:先施加 schema 变更、跑全量检查、最后 ROLLBACK,
 于是「这个改动会打断哪些 SQL」由**数据库穷举** —— M0 全程没手数过一次清单。
+
+⚠★★门禁必须有否决权:别把它和提交串在一条命令里★★(2026-09-03 我违过一次)
+  写成 `bash scripts/all-gates.sh && git commit …` 或者干脆用 `;` 串起来 ——
+  ★门禁报了红,commit 和 push 照样跑完★。它的输出于是成了「事后报告」而不是「准入判据」。
+  **先跑门禁 → 读结果 → 绿了再单独提交。** 这两步之间要有人(或你)真的看一眼。
+
+⚠★线上版本连着几轮不动,先去看 build-log,别默认是在排队★(2026-09-03)
+  `deployed-version-check` 报「线上不是这个版本」时有两种原因,而它区分不了:
+  还在构建 / **构建挂了**。那次是 Dockerfile 漏 COPY 导致 kaniko 失败,
+  我等了 4 分钟才去看日志。
+      curl -s --cacert $CA -H "Authorization: Bearer $T" \
+        "https://registry.ruciah.com/api/subsystems/congrove/build-log?channel=dev"
+  里面的 `status` 字段直接说「构建中 / 失败 / 存档」。
 
 ⚠★三条使用纪律★:①进不了 CI 的闸(要活库/内网 CA)必须在 PR 里**如实标注人工验证**,
 不许标成「CI 绿」;②★每道闸都要能证明自己跑起来了★ —— 本仓库栽过五次
