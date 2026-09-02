@@ -107,7 +107,7 @@ fn yaml块(键: &str, v: &str) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 pub fn 拼纪要markdown(
     标题: &str, 是草稿: bool,
-    项目: &str, 时间: &str, 地点: &str, 线上: &str,
+    主题: &str, 项目: &str, 时间: &str, 地点: &str, 线上: &str,
     发起人: &str, 主讲人: &str, 记录员: &str, 到场: &str, 旁听: &str, 缺席: &str,
     议程: &str, 正文: &str, 决议: &str, 待办: &str,
 ) -> String {
@@ -116,7 +116,7 @@ pub fn 拼纪要markdown(
     //   靠人记得「这份是草稿」不可靠;靠文件自己带标记可靠。
     let t = if 是草稿 { format!("【草稿 · 尚未定稿】{}", 标题.trim()) } else { 标题.trim().to_string() };
     y.push_str(&format!("title: {}\n", yaml标量(&t)));
-    for (k, v) in [("org", 项目), ("when", 时间), ("place", 地点), ("online", 线上),
+    for (k, v) in [("subject", 主题), ("org", 项目), ("when", 时间), ("place", 地点), ("online", 线上),
                    ("host", 发起人), ("speakers", 主讲人), ("recorder", 记录员)] {
         if !v.trim().is_empty() { y.push_str(&format!("{k}: {}\n", yaml标量(v.trim()))) }
     }
@@ -173,7 +173,7 @@ mod tests {
 
     /// 拼一份最小的,给下面几条共用。
     fn 拼(标题: &str, 是草稿: bool, 主讲人: &str, 决议: &str) -> String {
-        super::拼纪要markdown(标题, 是草稿, "课题组", "08-12 04:00", "3 号楼 401", "",
+        super::拼纪要markdown(标题, 是草稿, "文献 Agent 项目推进", "课题组", "08-12 04:00", "3 号楼 401", "",
                               "廖睿力", 主讲人, "刘娟", "张三\n李四", "", "",
                               "1. 上周进展", "正文若干", 决议, "")
     }
@@ -248,7 +248,7 @@ mod tests {
     /// 「帮他」转义会把他的表格和粗体弄坏。
     #[test]
     fn 正文原样嵌入不做转义() {
-        let s = super::拼纪要markdown("t", false, "", "", "", "", "", "", "", "", "", "",
+        let s = super::拼纪要markdown("t", false, "", "", "", "", "", "", "", "", "", "", "",
                                       "", "| a | b |\n| :--- | :--- |\n| 1 | 2 |", "", "");
         assert!(s.contains("| a | b |"), "{s}");
         assert!(s.contains("| :--- | :--- |"), "{s}");

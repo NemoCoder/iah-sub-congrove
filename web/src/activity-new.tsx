@@ -199,7 +199,7 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
   const allowPast = cap?.allow_past ?? false
 
   const submit = async (v: {
-    title: string; agenda?: string; recorder: string; speakers?: string
+    title: string; agenda?: string; recorder: string; speakers?: string; subject?: string
     range: [{ toISOString(): string }, { toISOString(): string }]
     // ★labelInValue★:表单里是 `{value,label}`,发给后端前要摘出 id(见下面 Select 的注释)
     project_ids: { value: number }[]; participants?: string[]
@@ -228,6 +228,7 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
           agenda: v.agenda ?? '',
           recorder: needRecorder ? v.recorder : '',
           speakers: (v.speakers ?? '').trim(),
+          subject: (v.subject ?? '').trim(),
           // ★不是 .toISOString()★:那是按**浏览器**解释墙上时间(见 tz.ts::pickedToUtc 头注)
           starts_at: pickedToUtc(new Date(v.range[0].toISOString()), tz).toISOString(),
           ends_at: pickedToUtc(new Date(v.range[1].toISOString()), tz).toISOString(),
@@ -394,6 +395,13 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
             ⚠ 和「记录员」不同，这里是**自由文本**不是选人：
               外请的主讲人未必是平台用户，而它只是纪要上的一行署名 ——
               ★「谁来讲」与「谁有权限」是两件事★，它不进参会名单、也不参与任何判权。 */}
+        {/* ★会议主题★(2026-09-03):这次**要推进什么**,一句话。
+            ⚠ 不是标题的别名 —— 标题是「这场活动叫什么」(印在纪要大标题),
+              主题印在纪要表格第一行。不填就不画那一行。 */}
+        <Form.Item name="subject" label="会议主题">
+          <Input placeholder="这次要推进什么（一句话，选填）" maxLength={120} />
+        </Form.Item>
+
         <Form.Item name="speakers" label="主讲人">
           <Input placeholder="谁来讲（多人用顿号分隔；外请的人也可以直接写）" maxLength={200} />
         </Form.Item>

@@ -31,6 +31,13 @@ jobs:
           rm -rf _ci && mkdir _ci && cd _ci && git init -q
           git -c http.extraheader="Authorization: Bearer $TOK" fetch --depth=1 "$BASE/liaoruili/iah-sub-congrove.git" "$GITHUB_REF"
           git checkout -q FETCH_HEAD
+          # ── ★再取一个 dev★:`migration-frozen-check.sh` 要判「这个迁移在不在 dev 上」
+          #    (在 dev 上 = dev 环境已经应用过 = 内容冻死,详见那个脚本的头注)。
+          #    不取的话它拿不到 ref、只能报「量不到」,这道闸在 CI 里就等于没跑。
+          #    depth=1 够用:只需要那棵树里有没有某个文件。
+          git -c http.extraheader="Authorization: Bearer $TOK" fetch --depth=1 \
+            "$BASE/liaoruili/iah-sub-congrove.git" dev:refs/remotes/gitea/dev || \
+            echo "⚠ 取不到 dev —— 迁移冻结闸会报「量不到」,不是通过"
           echo "被测提交:$(git rev-parse --short HEAD)"
           # ── target 缓存放持久路径:runner 的 /data(emptyDir)在 pod 生命内跨 job 存活 → 增量编译,不用每次从头编全依赖树 ──
           export CARGO_TARGET_DIR=/data/_cache/congrove-target
