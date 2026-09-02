@@ -21,3 +21,13 @@
 # 校验:scripts/migration-frozen-check.sh(纯静态,进 CI)——
 #   已登记的内容一字不许变;没登记的随便改;但没登记的**最多一个**。
 b81a60b70e6eb0f0b0ff0ee5239b948f8e46910dfa9b87db24ba3312f36ee54775da8ad4b69c60d3e036993b0e9e7c16  0001_init.sql
+#
+# ★2026-08-23 补登记 0002★ —— 它**早就上 prod 了**却一直没登记在册:
+#   `0002_app_setting.sql` 由 v0.6.0 的热修(140a50f)引入,而 prod 现在是 v0.6.3,
+#   `gitea/main` 里也确实有这个文件。
+# ⇒ 这半个月里 `migration-frozen-check.sh` 对 0002 是**失效的**:
+#   谁改它都不会被拦,而 prod 的 pod 会在下次部署时炸在
+#   `migration 2 was previously applied but has been modified`。
+# ★那道闸只守「登记在册的」,而漏登记本身它守不住★ —— 这正是本文件节奏那一段
+#   写的「promote 到 prod 才登记」这个人工动作漏掉的后果。
+10998ee032c98bdd5c9cc7eded0762c8ba6bd5e0b14eabb2ba3f8ab2322499af0192ea9fd729e0fbcf6794acfb80b7de  0002_app_setting.sql

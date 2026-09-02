@@ -199,7 +199,7 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
   const allowPast = cap?.allow_past ?? false
 
   const submit = async (v: {
-    title: string; agenda?: string; recorder: string
+    title: string; agenda?: string; recorder: string; speakers?: string
     range: [{ toISOString(): string }, { toISOString(): string }]
     // ★labelInValue★:表单里是 `{value,label}`,发给后端前要摘出 id(见下面 Select 的注释)
     project_ids: { value: number }[]; participants?: string[]
@@ -227,6 +227,7 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
           title: v.title,
           agenda: v.agenda ?? '',
           recorder: needRecorder ? v.recorder : '',
+          speakers: (v.speakers ?? '').trim(),
           // ★不是 .toISOString()★:那是按**浏览器**解释墙上时间(见 tz.ts::pickedToUtc 头注)
           starts_at: pickedToUtc(new Date(v.range[0].toISOString()), tz).toISOString(),
           ends_at: pickedToUtc(new Date(v.range[1].toISOString()), tz).toISOString(),
@@ -388,6 +389,14 @@ export function ActivityNewView({ me, onCreated, onCancel, prefillProjectId }: {
           <Select showSearch placeholder="谁来整理纪要（默认是你自己）" options={userOpts}
             onSearch={search} filterOption={false} notFoundContent="同项目的人可搜姓名；其他人请输完整用户名" />
         </Form.Item>}
+
+        {/* ★主讲人★（2026-08-23，纪要模板照团队现用的 Word 格式，里面有这一栏）。
+            ⚠ 和「记录员」不同，这里是**自由文本**不是选人：
+              外请的主讲人未必是平台用户，而它只是纪要上的一行署名 ——
+              ★「谁来讲」与「谁有权限」是两件事★，它不进参会名单、也不参与任何判权。 */}
+        <Form.Item name="speakers" label="主讲人">
+          <Input placeholder="谁来讲（多人用顿号分隔；外请的人也可以直接写）" maxLength={200} />
+        </Form.Item>
 
         {/* ★议题与议程★（原型「新建活动」有这一栏，而代码里一直没有 —— 2026-08-09 并排对照才发现）。
             ⚠ 这不是 M0 弄丢的:提交体里一直写着 `agenda: v.agenda ?? ''`、类型里也声明了,

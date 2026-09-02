@@ -124,6 +124,9 @@ export type RespondStatus = 'pending' | 'accepted' | 'declined' | 'tentative' | 
 export type Activity = {
   id: number; title: string; agenda: string
   organizer: string; recorder: string
+  /// 主讲人,自由文本(多人用顿号分隔)。★不进参会名单、也不判权★——
+  /// 「谁来讲」与「谁有权限」是两件事:外请的主讲人未必是平台用户。null = 没填。
+  speakers?: string | null
   starts_at: string; ends_at: string; timezone: string
   /// 会后补录的实际时长(分钟)。★D5 三级回退的第 2 级★:录制 > **手工** > 排程。
   /// null = 没填过 —— 统计会退到排程时长,而排程常常离谱(排 2 小时、20 分钟散会)。
