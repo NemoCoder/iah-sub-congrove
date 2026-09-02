@@ -29,6 +29,17 @@ const LATEX_SVC: &str = "http://latex-svc.platform.svc:8000/compile-md";
 /// 与用户看到的文件名**无关**:那个是 `{活动标题}-纪要.pdf`,在 `activities.rs` 里另拼。
 const 源文件名: &str = "minutes.md";
 
+/// pandoc 模板的文件名(随 md 一起 POST 给 latex-svc)。同样只能 ASCII。
+const 模板文件名: &str = "minutes.latex";
+
+/// ★模板编进二进制★(`include_str!`)。
+///
+/// 为什么不放磁盘再读:congrove 是**一个镜像、集群无 PVC** —— 运行时没有可靠的
+/// 文件系统可依赖,而模板是代码的一部分(它和 `拼纪要markdown` 的 front matter 键名
+/// 必须一一对应)。编进去还有一个好处:★改了模板就必须重建镜像★,
+/// 不会出现「模板悄悄换了、而没人知道线上在用哪一版」。
+const 模板: &str = include_str!("../assets/minutes.latex");
+
 /// 拼给 latex-svc 的 Markdown。★纯函数★——两个命门都在这里,能被单测钉死。
 ///
 /// ⚠★空段落不出标题★:一个只有「决议事项」四个字、底下什么都没有的段落,
@@ -66,44 +77,63 @@ fn 名单成一行(值: &str) -> String {
     值.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("、")
 }
 
+/// ★YAML 标量转义★ —— 这是整个拼装里唯一会「因为数据长得不对就整份导不出」的地方。
+///
+/// 活动标题里出现一个 `:` 或 `"`,不转义的话 YAML 解析当场失败、pandoc 报错、
+/// 用户看到的是「排版失败」而不是他的纪要。★而这种标题一点都不罕见★
+/// (「组会:下周实验安排」)。
+///
+/// 用双引号风格 + 转义反斜杠/双引号/换行 —— 单行值一律走这里。
+fn yaml标量(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', ""))
+}
+
+/// ★YAML 块标量★ —— 给多行、且**本身是 Markdown** 的字段(议程/决议/待办)。
+///
+/// 用 `|` 保留换行,每行缩进 2 空格。★空内容返回 None★:模板里那几行是
+/// `$if(x)$` 包着的,不给就整行不画 —— 一个只有标题没内容的格子,读的人会以为内容丢了。
+fn yaml块(键: &str, v: &str) -> Option<String> {
+    let v = v.trim();
+    if v.is_empty() { return None }
+    let 缩进: String = v.lines().map(|l| format!("  {l}\n")).collect();
+    Some(format!("{键}: |\n{缩进}"))
+}
+
+/// 拼给 latex-svc 的 Markdown(YAML front matter + 正文)。★纯函数★,命门都能被单测钉死。
+///
+/// ⚠★2026-08-23 改成表格式★(liaoruili 给了团队现用的 Word 纪要格式):
+///   元信息进 front matter,由 `assets/minutes.latex` 那个 pandoc 模板画成表格;
+///   `$body$` 只剩「主要内容」那一格。
 #[allow(clippy::too_many_arguments)]
 pub fn 拼纪要markdown(
     标题: &str, 是草稿: bool,
-    时间: &str, 地点: &str, 线上: &str,
-    记录员: &str, 到场: &str, 旁听: &str, 缺席: &str,
+    项目: &str, 时间: &str, 地点: &str, 线上: &str,
+    发起人: &str, 主讲人: &str, 记录员: &str, 到场: &str, 旁听: &str, 缺席: &str,
     议程: &str, 正文: &str, 决议: &str, 待办: &str,
 ) -> String {
-    let mut s = String::new();
-    if 是草稿 {
-        s.push_str("# 【草稿 · 尚未定稿】");
-    } else {
-        s.push('#');
-        s.push(' ');
+    let mut y = String::from("---\n");
+    // ★草稿在标题里自报身份★(2026-08-17 liaoruili 选「随时可导出」之后的配套):
+    //   靠人记得「这份是草稿」不可靠;靠文件自己带标记可靠。
+    let t = if 是草稿 { format!("【草稿 · 尚未定稿】{}", 标题.trim()) } else { 标题.trim().to_string() };
+    y.push_str(&format!("title: {}\n", yaml标量(&t)));
+    for (k, v) in [("org", 项目), ("when", 时间), ("place", 地点), ("online", 线上),
+                   ("host", 发起人), ("speakers", 主讲人), ("recorder", 记录员)] {
+        if !v.trim().is_empty() { y.push_str(&format!("{k}: {}\n", yaml标量(v.trim()))) }
     }
-    s.push_str(标题.trim());
-    s.push_str("\n\n");
-
-    // 元信息:逐项只在非空时出现(一行里用两个全角空格分隔,和界面上的读法一致)
-    let mut 元 = Vec::new();
-    for (名, 值) in [("时间", 时间), ("地点", 地点), ("线上", 线上), ("记录员", 记录员)] {
-        if !值.trim().is_empty() { 元.push(format!("**{名}**：{}", 值.trim())) }
+    // 名单按行拆开用顿号连(2026-08-19:库里一行一个人,Markdown 会把单换行折成空格,
+    // 三个人印出来变成「张三 李四 王五」——分不清是三个人还是一个名字)。
+    for (k, v) in [("attendees", 到场), ("observers", 旁听), ("absentees", 缺席)] {
+        let one = 名单成一行(v);
+        if !one.is_empty() { y.push_str(&format!("{k}: {}\n", yaml标量(&one))) }
     }
-    if !元.is_empty() { s.push_str(&元.join("　")); s.push_str("\n\n") }
-    let mut 人 = Vec::new();
-    for (名, 值) in [("到场", 到场), ("旁听", 旁听), ("缺席", 缺席)] {
-        if !值.trim().is_empty() { 人.push(format!("**{名}**：{}", 名单成一行(值))) }
+    for (k, v) in [("agenda", 议程), ("resolutions", 决议), ("todos", 待办)] {
+        if let Some(b) = yaml块(k, v) { y.push_str(&b) }
     }
-    if !人.is_empty() { s.push_str(&人.join("　")); s.push_str("\n\n") }
-
-    for (标题名, 内容) in [("议程", 议程), ("主要内容", 正文), ("决议事项", 决议), ("待办事项", 待办)] {
-        if 内容.trim().is_empty() { continue }   // ★空段落不出标题★
-        s.push_str("## ");
-        s.push_str(标题名);
-        s.push_str("\n\n");
-        s.push_str(内容.trim());
-        s.push_str("\n\n");
-    }
-    s
+    y.push_str("---\n\n");
+    // ★正文原样嵌入不做转义★:记录员写的就是 Markdown,「帮他」转义会把表格和粗体弄坏。
+    y.push_str(正文.trim());
+    y.push('\n');
+    y
 }
 
 /// 打 latex-svc,回 PDF 字节。
@@ -119,7 +149,11 @@ pub async fn 编译(md: &str) -> AppResult<Vec<u8>> {
     let 表单 = reqwest::multipart::Form::new()
         // ⚠★字段名是 `files` 不是 `files[]`★——见本文件头注那个契约坑
         .part("files", reqwest::multipart::Part::text(md.to_string()).file_name(源文件名.to_string()))
+        // ★模板与 md 一起传★:`template` 只是给出文件名,文件本身必须也在 `files` 里
+        //   (latex-svc 的 README:「可选:自带的 pandoc LaTeX 模板文件名(须在 `files` 里)」)。
+        .part("files", reqwest::multipart::Part::text(模板).file_name(模板文件名.to_string()))
         .text("main", 源文件名)
+        .text("template", 模板文件名)
         .text("engine", "xelatex");
     let r = cli.post(LATEX_SVC).multipart(表单).send().await
         .map_err(|e| AppError::BadRequest(format!("排版服务连不上:{e}")))?;
@@ -135,7 +169,69 @@ pub async fn 编译(md: &str) -> AppResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{拼纪要markdown, 源文件名};
+    use super::{yaml标量, yaml块};
+
+    /// 拼一份最小的,给下面几条共用。
+    fn 拼(标题: &str, 是草稿: bool, 主讲人: &str, 决议: &str) -> String {
+        super::拼纪要markdown(标题, 是草稿, "课题组", "08-12 04:00", "3 号楼 401", "",
+                              "廖睿力", 主讲人, "刘娟", "张三\n李四", "", "",
+                              "1. 上周进展", "正文若干", 决议, "")
+    }
+
+    #[test]
+    fn 标题里的引号和冒号不会毁掉整份yaml() {
+        // ★这是整个拼装里唯一「因为数据长得不对就整份导不出」的地方★:
+        //   标题里一个 `:` 或 `"`,不转义 YAML 当场解析失败 → pandoc 报错 →
+        //   用户看到「排版失败」而不是他的纪要。而这种标题一点都不罕见。
+        let out = 拼("组会:下周实验安排「\"引号\"」", false, "", "");
+        assert!(out.contains(r#"title: "组会:下周实验安排「\"引号\"」""#), "{out}");
+        // 反向对照:判据要真能把没转义的判出来
+        assert!(!out.contains(r#"title: "组会:下周实验安排「"引号"」""#));
+    }
+
+    #[test]
+    fn 反斜杠也要转义() {
+        assert_eq!(yaml标量(r"C:\path"), r#""C:\\path""#);
+    }
+
+    #[test]
+    fn 换行压成转义序列不破坏单行标量() {
+        assert_eq!(yaml标量("甲\n乙"), r#""甲\n乙""#);
+        // ★\r 直接丢掉★:CRLF 的数据混进来会让 YAML 行尾多一个不可见字符
+        assert_eq!(yaml标量("甲\r\n乙"), r#""甲\n乙""#);
+    }
+
+    #[test]
+    fn 空字段整个不出现() {
+        // 模板里那几行是 `$if(x)$` 包着的 —— 不给就不画那一行。
+        // ★一个只有标题没内容的格子,读的人会以为内容丢了。★
+        let out = 拼("t", false, "", "");
+        assert!(!out.contains("speakers:"), "主讲人没填就不该出现这个键\n{out}");
+        assert!(!out.contains("resolutions:"), "{out}");
+        assert!(yaml块("x", "   \n  ").is_none(), "只有空白也算空");
+    }
+
+    #[test]
+    fn 多行字段用块标量且每行缩进() {
+        let out = 拼("t", false, "", "- 甲\n- 乙");
+        assert!(out.contains("resolutions: |\n  - 甲\n  - 乙\n"), "{out}");
+    }
+
+    #[test]
+    fn 草稿在标题里自报身份() {
+        assert!(拼("组会", true, "", "").contains(r#"title: "【草稿 · 尚未定稿】组会""#));
+        // ★正向对照★:定稿的不能带 —— 否则「都带」等于「都没带」
+        assert!(拼("组会", false, "", "").contains(r#"title: "组会""#));
+        assert!(!拼("组会", false, "", "").contains("草稿"));
+    }
+
+    #[test]
+    fn 名单按行拆开用顿号连() {
+        // 库里一行一个人;Markdown 把单换行折成空格,三个人会印成「张三 李四 王五」
+        assert!(拼("t", false, "", "").contains(r#"attendees: "张三、李四""#));
+    }
+
+    use super::源文件名;
 
     #[test]
     fn 源文件名必须过得了latex_svc的白名单() {
@@ -148,59 +244,21 @@ mod tests {
         assert!(!合法("纪要.md"), "反向对照:判据要真能把中文名判出来,否则这条测试是空的");
     }
 
-    fn 拼(草稿: bool, 决议: &str, 待办: &str) -> String {
-        拼纪要markdown("八月第二次组会", 草稿, "2026-08-12 04:00", "3 号楼 401", "",
-                       "liaoruili", "liaoruili", "", "", "", "正文若干", 决议, 待办)
-    }
-
-    #[test]
-    fn 草稿要在文件里自报身份() {
-        // ★D-1 的命门★:liaoruili 选了「随时可导出」,而原设计「点完成才生成」防的正是
-        //   「未定稿被当正式件发出去」。文件必须自己说明身份。
-        assert!(拼(true, "甲", "乙").starts_with("# 【草稿 · 尚未定稿】八月第二次组会"));
-        // ★正向对照★:定稿的不能带 —— 否则「都带」等于「都没带」
-        let 定稿 = 拼(false, "甲", "乙");
-        assert!(定稿.starts_with("# 八月第二次组会"), "{定稿}");
-        assert!(!定稿.contains("草稿"));
-    }
-
-    #[test]
-    fn 空段落不出标题() {
-        let s = 拼(false, "", "");
-        assert!(!s.contains("## 决议事项"), "★一个只有标题没内容的段落,读的人会以为内容丢了★\n{s}");
-        assert!(!s.contains("## 待办事项"));
-        assert!(s.contains("## 主要内容"), "非空的还是要出");
-        // 只有空白也算空
-        assert!(!拼(false, "   \n  ", "\t").contains("## 决议事项"));
-    }
-
-    #[test]
-    fn 名单按行拆开用顿号连() {
-        // ★这条是「打开 PDF 看」才发现的★:Markdown 把单个换行折成空格,
-        //   三个人会印成「张三 李四 王五」——分不清是三个人还是一个名字。
-        let s = 拼纪要markdown("t", false, "", "", "", "", "张三\n李四\n王五", "", "",
-                               "", "正文", "", "");
-        assert!(s.contains("**到场**：张三、李四、王五"), "{s}");
-        assert!(!s.contains("张三\n李四"), "★换行不能留在一行元信息里★");
-        // 空行 / 首尾空白不能变成空的一段
-        assert!(拼纪要markdown("t", false, "", "", "", "", " 甲 \n\n 乙 \n", "", "",
-                               "", "正文", "", "").contains("**到场**：甲、乙"));
-    }
-
-    #[test]
-    fn 元信息逐项只在非空时出现() {
-        let s = 拼(false, "甲", "乙");
-        assert!(s.contains("**地点**：3 号楼 401"));
-        assert!(!s.contains("**线上**"), "线上为空就不该出现这一项");
-        assert!(!s.contains("**旁听**"), "旁听为空同理");
-        assert!(s.contains("**到场**：liaoruili"));
-    }
-
+    /// ★正文原样嵌入不做转义★:记录员写的就是 Markdown,
+    /// 「帮他」转义会把他的表格和粗体弄坏。
     #[test]
     fn 正文原样嵌入不做转义() {
-        // 记录员写的就是 Markdown,★别在这里"帮他"转义★——那会把他的表格和粗体弄坏。
-        let s = 拼纪要markdown("t", false, "", "", "", "", "", "", "", "",
-                               "| a | b |\n| :--- | :--- |\n| 1 | 2 |", "", "");
-        assert!(s.contains("| :--- | :--- |"), "表格必须原样带过去\n{s}");
+        let s = super::拼纪要markdown("t", false, "", "", "", "", "", "", "", "", "", "",
+                                      "", "| a | b |\n| :--- | :--- |\n| 1 | 2 |", "", "");
+        assert!(s.contains("| a | b |"), "{s}");
+        assert!(s.contains("| :--- | :--- |"), "{s}");
+    }
+
+    /// ★front matter 与正文之间必须有空行★——粘在一起的话 pandoc 会把正文
+    /// 第一段当成 YAML 的一部分,报错或者悄悄吃掉它。
+    #[test]
+    fn front_matter与正文之间隔一个空行() {
+        let s = 拼("t", false, "", "");
+        assert!(s.contains("---\n\n正文若干"), "{s}");
     }
 }

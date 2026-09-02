@@ -314,6 +314,25 @@ api!("GET", "/api/y", "组", "登录", "说明", "",  raw: "文件字节流")  /
   **不在 v0.5 范围**,要做另起一轮走相位 0。
   ★★改完 Cargo.toml(含只改 version)**必须跑一次 cargo check 再提交**——它刷新 Cargo.lock;
   漏了则 kaniko 的 `cargo build --locked` 直接拒绝(v0.3.1 就这么挂过一次构建,0096)。★★
+### ★prod 每个版本打 tag★(2026-08-23 liaoruili 定)
+
+**上 prod 的每个版本号都打一个 annotated tag 并 push;dev 不打。**
+
+```bash
+git tag -a v0.6.4 <main 上那个合并提交> -m "v0.6.4 —— 一句话说明"
+# push 由 liaoruili 做
+```
+
+⚠ tag 指向 **main 上的合并提交**,不是特性分支上那条内容提交 ——
+  只有前者 checkout 出来是**完整的 prod 树**。
+
+★为什么值得一条规矩★:2026-08-23 要确认「prod 到底跑没跑过 `0002` 这个迁移」时,
+只能靠 `git log --diff-filter=A` + `git ls-tree gitea/main` 拼出来。
+**有 tag 的话 `git checkout v0.6.3` 一步就能看** —— 而这个问题的答案决定了
+「能不能改那个迁移」,猜错就是 prod 的 pod 起不来。
+
+已补齐历史:v0.5.0 / v0.5.6 / v0.6.0 / v0.6.1 / v0.6.2 / v0.6.3。
+
 ### 分支纪律(2026-08-09 定,★按业界通用做法★)
 
 一度攒到 **23 条远端分支 / 45 条本地分支**,清理时才发现除 dev/main 外全是已合并的僵尸。规矩:

@@ -371,6 +371,15 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                 <RecorderPicker mid={m.id} 当前={m.recorder} 参会人={d.participants ?? []}
                   canEdit={!!d.can_edit && !canceled} onDone={() => void load(true)} />
               ) }] : []),
+              // ★主讲人★(2026-08-23):自由文本,和「地点」同一种交互(双击改)——
+              //   它不是选人:外请的主讲人未必是平台用户,而它只是纪要上的一行署名。
+              //   ⚠ 没填也画这一行(空态提示「双击填写」),否则想补填的人找不到入口 ——
+              //     这正是「记录员改不了」那个 bug 的同一个形状:能力在、入口没有。
+              { key: 'sp', label: '主讲人', children: (
+                <InlineEdit value={m.speakers ?? ''} canEdit={!!d.can_edit && !canceled}
+                  placeholder="（双击填写，多人用顿号分隔）"
+                  onSave={(v) => patch({ speakers: v })} />
+              ) },
               // 同上:旁听者的 `projects` 是后端刻意给的空数组,不是「这场活动没关联项目」。
               // 摆一行空着的「关联项目:」只会让人以为数据丢了 —— 干脆不摆(顶部已有「旁听」标签,
               // 下面那句灰字也说清了裁剪范围)。

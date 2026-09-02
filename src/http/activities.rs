@@ -51,6 +51,8 @@ pub struct ActivityRow {
     pub agenda: String,
     pub organizer: String,
     pub recorder: String,
+    /// 主讲人。null = 没填(自由文本,不进参会名单也不判权 —— 外请的主讲人未必是平台用户)。
+    pub speakers: Option<String>,
     pub starts_at: Ts,
     pub ends_at: Ts,
     pub timezone: String,
@@ -119,6 +121,9 @@ pub struct ActivityIn {
     /// 记录员。★是否必填由类型的 `has_minutes` 决定★(D14:正式纪要由他按模板整理) ——
     /// 原来写死在 create 里,于是「个人日程」这类活动根本建不出来。
     #[serde(default)] pub recorder: String,
+    /// 主讲人,自由文本(多人用顿号分隔)。★不进参会名单、也不判权★ ——
+    /// 「谁来讲」与「谁有权限」是两件事,外请的主讲人未必是平台用户。
+    #[serde(default)] pub speakers: String,
     pub starts_at: Ts,
     pub ends_at: Ts,
     #[serde(default)] pub timezone: Option<String>,
@@ -601,13 +606,15 @@ pub async fn create(
     let mut tx = state.pool.begin().await?;
     let mid: i64 = sqlx::query_scalar(
         // busy 取类型的 busy_default 作初值(A3);用户想改逐条改,不改类型。
-        "INSERT INTO activities (title, agenda, organizer, recorder, starts_at, ends_at, timezone,
+        "INSERT INTO activities (title, agenda, organizer, recorder, speakers, starts_at, ends_at, timezone,
                                location, online_url, visibility, type_id, busy, remind_minutes)
-         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12,$13) RETURNING id")
+         VALUES ($1,$2,$3,$4,NULLIF($14,''),$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12,$13) RETURNING id")
         .bind(title).bind(&input.agenda).bind(username).bind(input.recorder.trim())
         .bind(input.starts_at).bind(input.ends_at).bind(input.timezone.as_deref())
         .bind(&input.location).bind(&input.online_url).bind(vis)
         .bind(input.type_id).bind(caps.busy_default).bind(input.remind_minutes)
+        // ★空串存成 NULL★:「没填主讲人」和「填了个空」不该分不开(纪要模板据此决定画不画那一格)。
+        .bind(input.speakers.trim())
         .fetch_one(&mut *tx).await?;
     for pid in &input.project_ids {
         sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)")
@@ -757,6 +764,8 @@ pub struct ActivityPatch {
     pub title: Option<String>,
     pub agenda: Option<String>,
     pub recorder: Option<String>,
+    /// 主讲人。★与 recorder 一样走 COALESCE★:不传就保留原值,传空串才是「清空」。
+    pub speakers: Option<String>,
     pub starts_at: Option<Ts>,
     pub ends_at: Option<Ts>,
     pub location: Option<String>,
@@ -869,7 +878,7 @@ pub async fn update(
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE activities SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
-                recorder=COALESCE($4,recorder), starts_at=$5, ends_at=$6,
+                recorder=COALESCE($4,recorder), speakers=COALESCE($17,speakers), starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
                 visibility=COALESCE($9,visibility),
                 -- ★$10 是「这次要不要动这一列」,$11 才是值★(2026-08-12)。
@@ -887,6 +896,8 @@ pub async fn update(
         .bind(p.actual_minutes.is_some()).bind(p.actual_minutes.flatten()).bind(id.require_username()?)
         .bind(p.no_download).bind(p.no_share)
         .bind(p.remind_minutes.is_some()).bind(p.remind_minutes.flatten())
+        // ⚠★占位符编号别撞★:$14 已经是 no_share 了(2026-08-23 差点写错)。
+        .bind(p.speakers.as_deref())
         .execute(&mut *tx).await?;
 
     // ★换了记录员:把他拉进名单并通知他★(2026-08-23 liaoruili 报「无法修改记录人」时补齐)。
@@ -2485,9 +2496,18 @@ pub async fn minutes_pdf(
     // ★记录员印姓名不印账号★(2026-08-19):`m.recorder` 存的是账号名,
     //   而纪要是给人读的 —— 「liaoruili」对读者没有信息量。
     let 记录员 = crate::minutes_pdf::显示名(&state.pool, &m.recorder).await;
+    // ★页眉取关联项目名★(2026-08-23 liaoruili 定;多个取第一个,拿不到就不画那一行)。
+    let 项目名: String = sqlx::query_scalar(
+        "SELECT p.name FROM activity_projects mp JOIN projects p ON p.id = mp.project_id
+          WHERE mp.activity_id = $1 AND p.deleted_at IS NULL ORDER BY p.id LIMIT 1
+          -- limit-ok: 页眉只放一个名字,多关联时取最早关联的那个")
+        .bind(mid).fetch_optional(&state.pool).await?.unwrap_or_default();
+    // 发起人与主讲人也印姓名不印账号(与记录员同一条规则)。
+    let 发起人 = crate::minutes_pdf::显示名(&state.pool, &m.organizer).await;
     let md = crate::minutes_pdf::拼纪要markdown(
-        &m.title, 是草稿, &时间, &m.location, &m.online_url,
-        &记录员, &mn.attendees, &mn.observers, &mn.absentees,
+        &m.title, 是草稿, &项目名, &时间, &m.location, &m.online_url,
+        &发起人, m.speakers.as_deref().unwrap_or(""), &记录员,
+        &mn.attendees, &mn.observers, &mn.absentees,
         &mn.agenda_text, &mn.content_md, &mn.resolutions, &mn.todos);
     let pdf = crate::minutes_pdf::编译(&md).await?;
 
