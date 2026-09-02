@@ -878,7 +878,16 @@ pub async fn update(
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE activities SET title=COALESCE($2,title), agenda=COALESCE($3,agenda),
-                recorder=COALESCE($4,recorder), speakers=COALESCE($17,speakers), starts_at=$5, ends_at=$6,
+                recorder=COALESCE($4,recorder),
+                -- ★三态要分开★(2026-09-03 自查发现):不传=保留 / 传空串=**清空** / 传值=设置。
+                --   写成 `COALESCE($17,speakers)` 的话「传空串」会存进一个**空串**,
+                --   而 `create` 那边用的是 `NULLIF($14,'')` 存 NULL ——
+                --   ★同一个字段两条写入路径给出两种「没填」的表示★,
+                --   而我自己在 create 的注释里刚写过「『没填』和『填了个空』不该分不开」。
+                --   ⚠ `$17::text` 的转型不能省:CASE 的两支里 $17 都不直接与列比较,
+                --     PG 推不出类型,PREPARE 报 `could not determine data type of parameter $17`。
+                speakers=CASE WHEN $17::text IS NULL THEN speakers ELSE NULLIF($17::text,'') END,
+                starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
                 visibility=COALESCE($9,visibility),
                 -- ★$10 是「这次要不要动这一列」,$11 才是值★(2026-08-12)。
