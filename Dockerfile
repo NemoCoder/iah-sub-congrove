@@ -21,6 +21,12 @@ RUN printf '[source.crates-io]\nreplace-with = "rsproxy"\n[source.rsproxy]\nregi
     > "${CARGO_HOME:-/usr/local/cargo}/config.toml"
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
+# ★`include_str!` 引用的东西必须在这儿 COPY 进来★(2026-09-03 栽了一次):
+#   `src/minutes_pdf.rs` 用 `include_str!("../assets/minutes.latex")` 把纪要模板编进二进制,
+#   而这一行原来没有 —— **本地 cargo check 全绿、20 道门禁全绿**(它们都在本地跑,文件就在),
+#   只有 kaniko 里报 `No such file or directory`。
+#   ★「本地有这个文件」和「镜像里有这个文件」是两件事★,而只有构建日志会告诉你。
+COPY assets ./assets
 COPY src ./src
 RUN cargo build --release --locked
 
