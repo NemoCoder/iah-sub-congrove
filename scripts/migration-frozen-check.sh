@@ -50,19 +50,60 @@ while read -r want name; do
 done < "$LIST"
 [ "$SEEN" -gt 0 ] || { echo "★$LIST 里一条登记都没有 —— 不能当成通过★"; exit 2; }
 
-# 没登记的 = 工作中的迁移(还没上 prod):允许存在、允许改,但只能有一个。
+# ★没登记的还要再分两档★(2026-09-03,一次真实事故换来的):
+#
+#   ⚠ 原来这里只问「上没上 prod」,没上就算「工作中、随便改」。
+#     ★那个判据少了一半★:0003 确实没上 prod,但它**已经进了 dev 分支、
+#     被 dev 线上正在跑的实例应用过** —— 我改了它的内容并同步了 dev 库的 checksum,
+#     三分钟后 dev pod 就起不来了(`migration 3 was previously applied but has been modified`),
+#     CrashLoopBackOff 6 次。因为**线上那一刻跑的还是旧镜像**,它带的是旧内容。
+#
+#   ⇒ 真正的判据是「★有没有任何还在运行的实例应用过它★」,而不是「上没上 prod」。
+#     静态可判的近似:**这个文件在不在 dev 分支上** —— 进了 dev 就意味着
+#     dev 环境早晚(通常是立刻)会跑它。
+#
+#   · 已登记          → prod 跑过,冻死;
+#   · 未登记但在 dev  → ★dev 跑过,同样冻死★,加列请新开一个文件;
+#   · 未登记且不在 dev→ 真·工作文件,随便改,而且**只能有一个**(合成一份)。
+DEVREF=""
+for r in gitea/dev origin/dev dev; do git rev-parse --verify -q "$r" >/dev/null 2>&1 && { DEVREF=$r; break; }; done
+# ⚠★拿不到 dev ref 就别猜★(2026-09-03):没有它就判不出「哪些迁移 dev 已经应用过」,
+#   而**静默退化回旧判据**会给出一个危险的结论 ——「0003 还是工作文件,可以随便改」,
+#   那正是今天把 dev 弄挂的那句话。CI 里第一次跑就撞上了(它只 fetch 当前 ref)。
+#   ★判不了要说判不了(exit 2 = 量不到),不能替换成一个更宽松的判据。★
+if [ -z "$DEVREF" ]; then
+  echo "★取不到 dev ref(gitea/dev / origin/dev / dev)—— 判不出哪些迁移 dev 已应用★" >&2
+  echo "  这道闸的一半判据依赖它,量不到就不算通过。" >&2
+  echo "  CI 里请先: git fetch --depth=1 <repo> dev:refs/remotes/gitea/dev" >&2
+  exit 2
+fi
 WORKING=""
 for f in migrations/*.sql; do
   n=$(basename "$f")
   grep -q "  $n\$" "$LIST" && continue
-  echo "  ~ $n(工作中:还没上 prod,可以随便改)"
+  if [ -n "$DEVREF" ] && git cat-file -e "$DEVREF:migrations/$n" 2>/dev/null; then
+    # 在 dev 分支上 = dev 环境已经应用过 → 内容也必须冻住
+    got=$(python3 -c "import hashlib,sys;print(hashlib.sha384(open(sys.argv[1],'rb').read()).hexdigest())" "$f")
+    want=$(git show "$DEVREF:migrations/$n" | python3 -c "import hashlib,sys;print(hashlib.sha384(sys.stdin.buffer.read()).hexdigest())")
+    if [ "$got" = "$want" ]; then
+      echo "  ✓ $n(未上 prod,但 dev 已应用 —— 内容同样冻住)"
+    else
+      echo "  ✗ ★$n 已经在 dev 上跑过了,不许改内容★"
+      echo "      改它会让**正在跑旧镜像的实例**起不来:"
+      echo "        Error: migration N was previously applied but has been modified"
+      echo "      ⇒ 加列请**新开一个迁移文件**。(2026-09-03 已经这么炸过一次。)"
+      FAIL=1
+    fi
+    continue
+  fi
+  echo "  ~ $n(真·工作中:既没上 prod、也不在 $DEVREF 上,可以随便改)"
   WORKING="$WORKING $n"
 done
 CNT=$(printf '%s' "$WORKING" | wc -w)
 if [ "$CNT" -gt 1 ]; then
-  echo "  ✗ ★同时有 $CNT 个还没上 prod 的迁移:$WORKING★"
+  echo "  ✗ ★同时有 $CNT 个真·工作中的迁移:$WORKING★"
   echo "      liaoruili 2026-08-16:「到 0.6 的时候应该只有一个 0002」——"
-  echo "      没上过 prod 的改动本可以合成一份,散成几份会让「这一轮改了什么」查起来要拼。"
+  echo "      这些都还没被任何环境应用过,本可以合成一份。"
   FAIL=1
 fi
 

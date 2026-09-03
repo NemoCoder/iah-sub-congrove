@@ -53,6 +53,8 @@ pub struct ActivityRow {
     pub recorder: String,
     /// 主讲人。null = 没填(自由文本,不进参会名单也不判权 —— 外请的主讲人未必是平台用户)。
     pub speakers: Option<String>,
+    /// 会议主题(这次要推进什么)。null = 没填 —— 纪要模板里那一行就不画。
+    pub subject: Option<String>,
     pub starts_at: Ts,
     pub ends_at: Ts,
     pub timezone: String,
@@ -124,6 +126,9 @@ pub struct ActivityIn {
     /// 主讲人,自由文本(多人用顿号分隔)。★不进参会名单、也不判权★ ——
     /// 「谁来讲」与「谁有权限」是两件事,外请的主讲人未必是平台用户。
     #[serde(default)] pub speakers: String,
+    /// 会议主题:这次**要推进什么**(一句话)。★不是 title 的别名★ ——
+    /// title 是「这场活动叫什么」,印在纪要大标题;subject 印在表格第一行。
+    #[serde(default)] pub subject: String,
     pub starts_at: Ts,
     pub ends_at: Ts,
     #[serde(default)] pub timezone: Option<String>,
@@ -606,15 +611,15 @@ pub async fn create(
     let mut tx = state.pool.begin().await?;
     let mid: i64 = sqlx::query_scalar(
         // busy 取类型的 busy_default 作初值(A3);用户想改逐条改,不改类型。
-        "INSERT INTO activities (title, agenda, organizer, recorder, speakers, starts_at, ends_at, timezone,
+        "INSERT INTO activities (title, agenda, organizer, recorder, speakers, subject, starts_at, ends_at, timezone,
                                location, online_url, visibility, type_id, busy, remind_minutes)
-         VALUES ($1,$2,$3,$4,NULLIF($14,''),$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12,$13) RETURNING id")
+         VALUES ($1,$2,$3,$4,NULLIF($14,''),NULLIF($15,''),$5,$6,COALESCE($7,'Asia/Shanghai'),$8,$9,$10,$11,$12,$13) RETURNING id")
         .bind(title).bind(&input.agenda).bind(username).bind(input.recorder.trim())
         .bind(input.starts_at).bind(input.ends_at).bind(input.timezone.as_deref())
         .bind(&input.location).bind(&input.online_url).bind(vis)
         .bind(input.type_id).bind(caps.busy_default).bind(input.remind_minutes)
-        // ★空串存成 NULL★:「没填主讲人」和「填了个空」不该分不开(纪要模板据此决定画不画那一格)。
-        .bind(input.speakers.trim())
+        // ★空串存成 NULL★:「没填」和「填了个空」不该分不开(纪要模板据此决定画不画那一格)。
+        .bind(input.speakers.trim()).bind(input.subject.trim())
         .fetch_one(&mut *tx).await?;
     for pid in &input.project_ids {
         sqlx::query("INSERT INTO activity_projects (activity_id, project_id) VALUES ($1,$2)")
@@ -764,8 +769,10 @@ pub struct ActivityPatch {
     pub title: Option<String>,
     pub agenda: Option<String>,
     pub recorder: Option<String>,
-    /// 主讲人。★与 recorder 一样走 COALESCE★:不传就保留原值,传空串才是「清空」。
+    /// 主讲人。★三态★:不传=保留 / 空串=清空 / 有值=设置。
     pub speakers: Option<String>,
+    /// 会议主题。同上三态。
+    pub subject: Option<String>,
     pub starts_at: Option<Ts>,
     pub ends_at: Option<Ts>,
     pub location: Option<String>,
@@ -887,6 +894,7 @@ pub async fn update(
                 --   ⚠ `$17::text` 的转型不能省:CASE 的两支里 $17 都不直接与列比较,
                 --     PG 推不出类型,PREPARE 报 `could not determine data type of parameter $17`。
                 speakers=CASE WHEN $17::text IS NULL THEN speakers ELSE NULLIF($17::text,'') END,
+                subject=CASE WHEN $18::text IS NULL THEN subject ELSE NULLIF($18::text,'') END,
                 starts_at=$5, ends_at=$6,
                 location=COALESCE($7,location), online_url=COALESCE($8,online_url),
                 visibility=COALESCE($9,visibility),
@@ -906,7 +914,7 @@ pub async fn update(
         .bind(p.no_download).bind(p.no_share)
         .bind(p.remind_minutes.is_some()).bind(p.remind_minutes.flatten())
         // ⚠★占位符编号别撞★:$14 已经是 no_share 了(2026-08-23 差点写错)。
-        .bind(p.speakers.as_deref())
+        .bind(p.speakers.as_deref()).bind(p.subject.as_deref())
         .execute(&mut *tx).await?;
 
     // ★换了记录员:把他拉进名单并通知他★(2026-08-23 liaoruili 报「无法修改记录人」时补齐)。
@@ -2514,7 +2522,7 @@ pub async fn minutes_pdf(
     // 发起人与主讲人也印姓名不印账号(与记录员同一条规则)。
     let 发起人 = crate::minutes_pdf::显示名(&state.pool, &m.organizer).await;
     let md = crate::minutes_pdf::拼纪要markdown(
-        &m.title, 是草稿, &项目名, &时间, &m.location, &m.online_url,
+        &m.title, 是草稿, m.subject.as_deref().unwrap_or(""), &项目名, &时间, &m.location, &m.online_url,
         &发起人, m.speakers.as_deref().unwrap_or(""), &记录员,
         &mn.attendees, &mn.observers, &mn.absentees,
         &mn.agenda_text, &mn.content_md, &mn.resolutions, &mn.todos);

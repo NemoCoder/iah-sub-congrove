@@ -371,6 +371,11 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
                 <RecorderPicker mid={m.id} 当前={m.recorder} 参会人={d.participants ?? []}
                   canEdit={!!d.can_edit && !canceled} onDone={() => void load(true)} />
               ) }] : []),
+              { key: 'sub', label: '会议主题', children: (
+                <InlineEdit value={m.subject ?? ''} canEdit={!!d.can_edit && !canceled}
+                  placeholder="（双击填写：这次要推进什么）"
+                  onSave={(v) => patch({ subject: v })} />
+              ) },
               // ★主讲人★(2026-08-23):自由文本,和「地点」同一种交互(双击改)——
               //   它不是选人:外请的主讲人未必是平台用户,而它只是纪要上的一行署名。
               //   ⚠ 没填也画这一行(空态提示「双击填写」),否则想补填的人找不到入口 ——
