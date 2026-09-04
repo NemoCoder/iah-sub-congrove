@@ -303,13 +303,57 @@ for (const 名 of 项目们) {
 
 // ══ 三、每场活动的详情页 ══
 await 到首页(); await nav('活动')
-const 活动们 = []
-for (const el of await p.locator('div[style*="cursor"], .ant-list-item').all()) {
-  const t = ((await el.textContent().catch(() => '')) ?? '').trim().replace(/\s+/g, ' ')
-  if (t && t.length > 2 && t.length < 60) 活动们.push(t.split(/\d{1,2}\/\d{1,2}/)[0].trim())
+// ★先切到「已结束」★(2026-09-03):活动列表默认筛选是「接下来」,
+//   而库里的活动大多在过去 —— 那一屏是**空的**(界面上写着「共 0 场」),
+//   于是下面这段一场都取不到。★上一轮就是这么「巡了 0 场」的。★
+//   已结束的那些反而信息最全(有纪要、有材料、有录制),正是要巡的。
+for (const tb of ['已结束']) {
+  const t = p.getByText(tb, { exact: true }).first()
+  if (await t.count()) { await t.click().catch(() => {}); await p.waitForTimeout(1500) }
 }
-const 活动清单 = [...new Set(活动们)].filter((x) => x && x.length > 2).slice(0, 6)
+// ★活动清单从 API 取,不从 DOM 里抠★(2026-09-03,上一轮抠成 0 场的真正原因)。
+//   列表行的 textContent 长这样(117 字):
+//     「8/17 周一13:00–15:00研讨:数据治理与隐私合规会议横向课题·数据治理 7737e2e-host 发起·…」
+//   ★三重原因叠加,每一条单独都足以让它变成 0 场★:
+//     ① 日期在**行首**,而原来取的是 `t.split(/\d{1,2}\/\d{1,2}/)[0]` —— 那是**空串**;
+//     ② 117 > 原来的 `t.length < 60` 阈值,整行被过滤掉;
+//     ③ 就算不过滤,这一串里标题与类型/项目/发起人之间**没有任何可靠分隔**
+//        (类型名还是用户自建的,不能写死)。
+//   ⇒ DOM 里没有稳定的标题来源,就别从 DOM 里抠。API 回的是结构化的 title。
+const 时间窗 = (d) => new Date(Date.now() + d * 864e5).toISOString()
+let 活动清单 = []
+try {
+  // ⚠★用 Node 侧 fetch,不用 `p.request`★:后者走的是**远程浏览器那台机器**的网络栈,
+  //   而那台没装内网 CA(浏览器本身能开页面是因为它走 NSS 库,见 pw-endpoint.mjs 头注)——
+  //   `p.request` 会报 `unable to verify the first certificate`。
+  //   Node 这边有 `NODE_EXTRA_CA_CERTS`(run.sh/巡检都 export 了),直接 fetch 就通。
+  const r = await fetch(`${BASE}/api/activities?from=${时间窗(-120)}&to=${时间窗(120)}`,
+    { headers: { 'X-IAH-E2E-Key': KEY, 'X-IAH-E2E-User': WHO } })
+  if (r.ok) {
+    活动清单 = (await r.json())
+      // ★优先挑有纪要的★:那种活动信息最全(纪要/材料/录制/讨论都在),巡起来覆盖面最大
+      .sort((a, b) => (b.has_minutes ? 1 : 0) - (a.has_minutes ? 1 : 0))
+      .map((a) => a.title).filter(Boolean).slice(0, 6)
+  } else {
+    console.log(`  ✗ 取活动清单 HTTP ${r.status}`)
+  }
+} catch (e) {
+  // ★只印首行★:错误对象会把 request headers 整个 dump 出来,★里面有 E2E key★
+  //   (2026-09-03 排查时它就这么把 key 打进了终端输出)。
+  console.log('  ✗ 取活动清单失败:', String(e.message).split('\n')[0].slice(0, 100))
+}
 console.log(`\n══ 活动共巡 ${活动清单.length} 场 ══`)
+// ★★一场都没取到必须进异常清单,不能静默跳过★★(2026-09-03,这一轮的最大发现)
+//   上一轮日志里明明白白写着 `══ 活动共巡 0 场 ══`,而汇总行说
+//   「779 处,异常 0 处,未测 0 处」—— ★读报告的人完全看不出「活动详情整段没跑」★。
+//   代码在、循环在,只是清单为空,于是 for 一次都没进,报告干干净净。
+//   这是本仓栽过五次的「工具没跑 → 报绿」的第六次,而这回**发生在审计工具自己身上**。
+if (活动清单.length === 0) {
+  记录.push({ 页面: '活动详情', 序: '-', 元素: '(取活动清单)',
+    结果: '★一场都没取到 —— 活动详情/纪要整段未巡,本轮报告不覆盖它们★',
+    截图: await shot('活动详情-取不到清单') })
+  console.log('  ✗ ★取不到任何活动 —— 活动详情整段未巡(已记进报告)★')
+}
 for (const 名 of 活动清单) {
   await 巡一屏(`活动·${名}`, async () => {
     await 到首页(); await nav('活动')
