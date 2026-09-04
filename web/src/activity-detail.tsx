@@ -325,9 +325,18 @@ export function ActivityDetailView({ id, me, onBack, onOpenMinutes, backLabel = 
               //     读的人分不清是没填、没权限、还是加载失败。★而这类问题巡检报告永远抓不到★:
               //     不报错、HTTP 200、点得动,只有人眼看得出来。
               //   修法不是补一句「未填」(那是撒谎,它明明有发起人),而是**照实说是旁听看不到**。
+              //   ⚠★这一格也要走 showUser★(2026-09-04 逐张看巡检截图看出来的,同一张卡上的第二处):
+              //     记录员、参会人都显示姓名(「Ruili Liao」),只有发起人原样吐**账号**(「liaoruili」)——
+              //     ★同一张卡上同一个人有两个名字★,读的人会以为是两个人。
+              //     liaoruili 2026-08-23 要过「记录员和参会人都用中文,不要用账号」,
+              //     我当时只改了他点名的那两处,漏了发起人 —— ★又是「只修了一半」★。
+              //     姓名从参会名单里取:发起人必定在名单里(后端不许把他移出),
+              //     旁听者拿不到名单但也走不到这一支(上面 `d.observer` 已经把整格摘掉了)。
               ...(d.observer ? [] : [{
                 key: 'o', label: '发起人',
-                children: m.organizer || <Typography.Text type="secondary">—</Typography.Text>,
+                children: m.organizer
+                  ? showUser(m.organizer, d.participants?.find((x) => x.username === m.organizer)?.name)
+                  : <Typography.Text type="secondary">—</Typography.Text>,
               }]),
               // ★提醒摆在这里而不是收进某个设置弹窗★:它是「这一场」的属性,
               // 和地点/线上链接同级;藏起来的结果就是没人知道它可以改。

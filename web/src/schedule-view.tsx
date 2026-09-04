@@ -15,7 +15,7 @@ import { EditOutlined, StarFilled } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { UpcomingBar } from './upcoming-bar'
 import { annotate, fmtDay, fmtHM, isTodayCell } from './tz'
-import { api, type Activity } from './api'
+import { api, showUser, type Activity } from './api'
 import { isEnded } from './activity-state'
 import { TodoCard } from './todo-card'
 import { HOUR_PX, NIGHT_END_H, layout, nightHiddenCount } from './schedule-layout'
@@ -692,7 +692,7 @@ function PublicBoard({ onOpen, onJoined }: {
                 {fmtDay(m.starts_at)}
                 {' '}{fmtHM(m.starts_at)}–{fmtHM(m.ends_at)}
                 {annotate(m.starts_at, m.timezone)}
-                {' · '}{m.organizer}
+                {' · '}{showUser(m.organizer, m.organizer_name)}
               </div>
               <Space size={4} style={{ marginTop: 4 }} wrap>
                 {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan">{p.name}</Tag>)}

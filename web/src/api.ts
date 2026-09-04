@@ -124,6 +124,11 @@ export type RespondStatus = 'pending' | 'accepted' | 'declined' | 'tentative' | 
 export type Activity = {
   id: number; title: string; agenda: string
   organizer: string; recorder: string
+  /// 发起人 / 记录员的姓名。★列表行里只有账号,姓名要后端一起带过来★
+  /// (2026-09-04:参会名单本来就有 name,所以那一处早就显示中文了,而列表 / 待办卡 /
+  ///  日程视图 / 纪要页拿的是这个扁平行 —— 同一个人在两行里叫了两个名字)。
+  /// null = 平台没给名字,`showUser` 退回账号。
+  organizer_name?: string | null; recorder_name?: string | null
   /// 主讲人,自由文本(多人用顿号分隔)。★不进参会名单、也不判权★——
   /// 「谁来讲」与「谁有权限」是两件事:外请的主讲人未必是平台用户。null = 没填。
   speakers?: string | null

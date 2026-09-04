@@ -163,7 +163,7 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
           <Button size="small" onClick={onBack}>‹ 返回活动</Button>
           <Typography.Text strong style={{ fontSize: 15 }}>活动纪要</Typography.Text>
           <Tag color={done ? 'green' : 'orange'}>{done ? '已完成' : '草稿'}</Tag>
-          {mt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>记录员 {mt.recorder}</Typography.Text>}
+          {mt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>记录员 {showUser(mt.recorder, mt.recorder_name)}</Typography.Text>}
           {m?.updated_at && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>最后保存 {fmtTime(m.updated_at)}</Typography.Text>
           )}

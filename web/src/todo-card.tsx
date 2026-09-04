@@ -22,7 +22,7 @@
 // 本地算是因为列表里已经有我全部的会（含私密项目的），不必再打一次接口。
 import { App as AntdApp, Badge, Button, Card, Empty, Space, Typography } from 'antd'
 import { Fragment, useCallback, useEffect, useState, type Key, type ReactNode } from 'react'
-import { api, type Activity, type RespondStatus } from './api'
+import { api, showUser, type Activity, type RespondStatus } from './api'
 import { fmtDay, fmtHM } from './tz'
 
 // ⚠★这三个函数原来在这里抄了一份★(activities-list / upcoming-bar / activity-minutes 各还有一份)。
@@ -240,7 +240,7 @@ function InviteRow({ m, clash, onOpen, onDone }: {
       </Typography.Text>
       <div style={{ fontSize: 12, color: '#8c8c8c' }}>
         {(m.projects ?? []).map((p) => p.name).join(' · ')}
-        {m.organizer && ` | ${m.organizer} 发起`}
+        {m.organizer && ` | ${showUser(m.organizer, m.organizer_name)} 发起`}
         {!!m.participant_count && ` | ${m.participant_count} 人`}
       </div>
       {clash && (
