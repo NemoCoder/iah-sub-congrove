@@ -1,22 +1,27 @@
 --- baseline
 +++ current
-@@ -32,6 +32,7 @@
+@@ -32,8 +32,10 @@
       },
       "recorder": "string",
       "remind_minutes": "null",
 +     "speakers": "null",
       "starts_at": "string",
       "status": "string",
++     "subject": "null",
       "timezone": "string",
-@@ -110,6 +111,7 @@
+      "title": "string",
+      "type_name": "string",
+@@ -110,14 +112,18 @@
      "projects": "null",
      "recorder": "string",
      "remind_minutes": "null",
 +    "speakers": "null",
      "starts_at": "string",
      "status": "string",
++    "subject": "null",
      "timezone": "string",
-@@ -118,6 +120,8 @@
+     "title": "string",
+     "type_name": "string",
      "visibility": "string"
     },
     "can_edit": "boolean",
@@ -25,7 +30,7 @@
     "participants": {
      "<len>": "number",
      "<of>": [
-@@ -127,6 +131,7 @@
+@@ -127,6 +133,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -33,15 +38,17 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -169,6 +174,7 @@
+@@ -169,14 +176,18 @@
      "projects": "null",
      "recorder": "string",
      "remind_minutes": "null",
 +    "speakers": "null",
      "starts_at": "string",
      "status": "string",
++    "subject": "null",
      "timezone": "string",
-@@ -177,6 +183,8 @@
+     "title": "string",
+     "type_name": "string",
      "visibility": "string"
     },
     "can_edit": "boolean",
@@ -50,7 +57,7 @@
     "participants": {
      "<len>": "number",
      "<of>": [
-@@ -186,6 +194,7 @@
+@@ -186,6 +197,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -58,15 +65,17 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -228,6 +237,7 @@
+@@ -228,14 +240,18 @@
      "projects": "null",
      "recorder": "string",
      "remind_minutes": "null",
 +    "speakers": "null",
      "starts_at": "string",
      "status": "string",
++    "subject": "null",
      "timezone": "string",
-@@ -236,6 +246,8 @@
+     "title": "string",
+     "type_name": "string",
      "visibility": "string"
     },
     "can_edit": "boolean",
@@ -75,7 +84,7 @@
     "participants": {
      "<len>": "number",
      "<of>": [
-@@ -245,6 +257,7 @@
+@@ -245,6 +261,7 @@
        "counter_starts_at": "null",
        "kind": "string",
        "name": "string",
@@ -83,7 +92,7 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -376,6 +389,7 @@
+@@ -376,6 +393,7 @@
     "kind": "string",
     "mime": "string",
     "name": "string",
@@ -91,7 +100,7 @@
     "parent_id": "string",
     "project_id": "string",
     "sha_declared_mismatch": "boolean",
-@@ -504,6 +518,7 @@
+@@ -504,6 +522,7 @@
       "kind": "string",
       "mime": "string",
       "name": "string",
