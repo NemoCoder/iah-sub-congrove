@@ -51,6 +51,16 @@ pub struct ActivityRow {
     pub agenda: String,
     pub organizer: String,
     pub recorder: String,
+    /// 发起人 / 记录员的**姓名**(app_user.name)。null = 平台没给名字,前端 `showUser` 退回账号。
+    ///
+    /// ★为什么要在列表里带上★(2026-09-04 逐张看巡检截图看出来的):
+    /// liaoruili 2026-08-23 要过「记录员和参会人都用中文,不要用账号」。参会名单本来就带
+    /// 姓名(它是 `Participant`,有 name 列),所以那一处当时改对了;而**列表 / 待办卡 /
+    /// 日程视图 / 纪要页**拿到的是这个扁平行,★里面只有账号★ —— 前端想显示姓名也无米下锅,
+    /// 于是同一个人在参会名单里叫「Ruili Liao」、在上面一行叫「liaoruili」。
+    /// ⚠ 新增可空字段,不是破坏性变更;取不到名字就是 null,前端照旧显示账号(不留空)。
+    #[sqlx(default)] pub organizer_name: Option<String>,
+    #[sqlx(default)] pub recorder_name: Option<String>,
     /// 主讲人。null = 没填(自由文本,不进参会名单也不判权 —— 外请的主讲人未必是平台用户)。
     pub speakers: Option<String>,
     /// 会议主题(这次要推进什么)。null = 没填 —— 纪要模板里那一行就不画。
@@ -501,6 +511,7 @@ pub async fn list(
         // 于是私密项目的会在日历上显示成公开色 —— D1 的隐私提示当场失效且不报错。
         "SELECT m.*, at.name AS type_name, at.has_minutes, mp.status AS my_status, mp.kind AS my_kind,
                 m.visibility <> 'public' AS is_private,
+                ou.name AS organizer_name, ru.name AS recorder_name,
                 -- ★全部关联项目都归档了吗★(B1):零关联项目的活动恒为 false ——
                 -- 「没有项目」不等于「项目都归档了」,前者是个人活动、活得好好的。
                 (EXISTS (SELECT 1 FROM activity_projects a1 JOIN projects q1 ON q1.id = a1.project_id
@@ -517,6 +528,8 @@ pub async fn list(
            FROM activities m
            JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
+           LEFT JOIN app_user ou ON ou.username = m.organizer
+           LEFT JOIN app_user ru ON ru.username = m.recorder
           WHERE m.status = 'active' AND m.starts_at < $3 AND m.ends_at > $2
             AND ($4::bigint IS NULL OR EXISTS (
                   SELECT 1 FROM activity_projects x WHERE x.activity_id = m.id AND x.project_id = $4))
@@ -672,10 +685,13 @@ pub async fn detail(
     let view = activity_view(&state.pool, &id, mid).await?;
     let m: ActivityRow = sqlx::query_as(
         "SELECT m.*, at.name AS type_name, mp.status AS my_status,
-                m.visibility <> 'public' AS is_private
+                m.visibility <> 'public' AS is_private,
+                ou.name AS organizer_name, ru.name AS recorder_name
            FROM activities m
            JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $2
+           LEFT JOIN app_user ou ON ou.username = m.organizer
+           LEFT JOIN app_user ru ON ru.username = m.recorder
           WHERE m.id = $1")
         .bind(mid).bind(id.require_username()?)
         .fetch_optional(&state.pool).await?
@@ -1923,6 +1939,7 @@ pub async fn public_list(
     let rows: Vec<ActivityRow> = sqlx::query_as(
         "SELECT m.*, at.name AS type_name, mp.status AS my_status,
                 m.visibility <> 'public' AS is_private,
+                ou.name AS organizer_name, ru.name AS recorder_name,
                 (SELECT coalesce(json_agg(json_build_object('id', p2.id, 'name', p2.name)), '[]'::json)
                    FROM activity_projects mp2 JOIN projects p2 ON p2.id = mp2.project_id
                   WHERE mp2.activity_id = m.id AND p2.deleted_at IS NULL) AS projects,
@@ -1931,6 +1948,8 @@ pub async fn public_list(
            FROM activities m
            JOIN activity_types at ON at.id = m.type_id
            LEFT JOIN activity_participants mp ON mp.activity_id = m.id AND mp.username = $1
+           LEFT JOIN app_user ou ON ou.username = m.organizer
+           LEFT JOIN app_user ru ON ru.username = m.recorder
           WHERE m.visibility = 'public' AND m.status = 'active'
             AND m.ends_at > now()
             -- ★只列我**还没有关系**的会★(2026-08-07 用户:「公开活动明明是我发起的,

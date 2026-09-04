@@ -9,7 +9,7 @@
 // 冲突**在前端本地算**:列表里已经有我全部的会(含我私密项目的),不必再打接口。
 import { App as AntdApp, Button, Card, Empty, Input, Pagination, Segmented, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Activity, type Me } from './api'
+import { api, showUser, type Activity, type Me } from './api'
 import { annotate, fmtDay, fmtHM } from './tz'
 import { STATUS_LABEL, isEnded } from './activity-state'
 import { TodoCard } from './todo-card'
@@ -216,9 +216,9 @@ function Row({ m, onOpen, me }: { m: Activity; onOpen: (id: number) => void; me:
               界面上却一直看不见 —— 建完就再也分不清哪条是会议、哪条是个人日程。 */}
           {m.type_name && <Tag style={{ marginInlineEnd: 0 }}>{m.type_name}</Tag>}
           {(m.projects ?? []).map((p) => <Tag key={p.id} color="cyan" style={{ marginInlineEnd: 0 }}>{p.name}</Tag>)}
-          <span>{m.organizer === me?.username ? '我' : m.organizer} 发起</span>
+          <span>{m.organizer === me?.username ? '我' : showUser(m.organizer, m.organizer_name)} 发起</span>
           {/* 记录员只有「要出纪要」的类型才有 —— 空的时候别显示「记录员 」这半句 */}
-          {m.recorder && <span>· 记录员 {m.recorder}</span>}
+          {m.recorder && <span>· 记录员 {showUser(m.recorder, m.recorder_name)}</span>}
           {!!m.participant_count && <span>· {m.participant_count} 人</span>}
           {m.is_private && <Tag color="purple" style={{ marginInlineEnd: 0 }}>非公开</Tag>}
         </Space>
