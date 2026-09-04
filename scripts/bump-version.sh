@@ -16,6 +16,17 @@ cur=$(grep -m1 -oP '^version = "\K[0-9]+\.[0-9]+\.[0-9]+' Cargo.toml)
 [ -n "$cur" ] || { echo "★Cargo.toml 里读不到 version★"; exit 1; }
 IFS=. read -r a b c <<< "$cur"
 new="${1:-$a.$b.$((c+1))}"
+# ★显式传进来的版本号必须是版本号★(2026-09-04 踩的):我照着别的工具的习惯敲了
+#   `bump-version.sh patch`,脚本把 "patch" 当**字面版本号**写进了两个文件,
+#   而下面那道「核对」只比对「两处是不是都等于 $new」—— 两处确实都成了 `patch`,
+#   于是它打印「已核对:两处都是 patch」并退出 0。
+#   ★一道只验「我写的和我想写的一样」的闸,验不出「我想写的本身就是错的」★。
+#   本脚本不收 major/minor/patch 这类关键字:不带参数就是 patch+1,要别的自己写全。
+[[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "★'$new' 不是版本号★ —— 用法:bump-version.sh(patch+1) 或 bump-version.sh 0.7.34"; exit 1; }
+# 再挡一次「往回退」:手写时敲错一位就是个静默的降级,而两处仍然「同步」。
+[ "$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)" = "$new" ] && [ "$new" != "$cur" ] || {
+  echo "★$new 不比当前的 $cur 新★ —— 版本号只能往前走"; exit 1; }
 python3 - "$new" <<'PY'
 import pathlib, re, sys
 new = sys.argv[1]
