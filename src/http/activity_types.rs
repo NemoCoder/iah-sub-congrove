@@ -27,14 +27,30 @@ pub struct Caps {
     pub allow_past: bool,
 }
 
+/// ★记录员这一维单独拆出来★（2026-09-04 代码审计发现的洞）。
+///
+/// `update` 走的是 `ActivityPatch`，里面**没有 `project_ids`** —— 改活动改不了关联项目，
+/// 所以它只需要复核记录员。而在这之前 `update` **一条能力位都不查**：
+/// SQL 是 `recorder=COALESCE($4,recorder)`，传一个**空串**（不是 null）就把记录员清空了，
+/// 于是「会议」这类 `has_minutes` 的活动能在创建时被硬拦下、却在编辑时被合法地清成没人负责。
+/// ★同一条不变量在两条写入路径上只守了一条，等于没守★ —— 与 `create`/`update` 那组
+/// 三态字段（speakers/subject）栽的是同一类跟头。
+///
+/// 拆成独立函数而不是让 update 拿 `&[]` 去凑 `check_caps`：那样 `needs_project`
+/// 会在改记录员时对着一条历史遗留的无项目活动误报，报的还是句不相干的话。
+pub fn check_recorder(c: &Caps, recorder: &str) -> Result<(), &'static str> {
+    if c.has_minutes && recorder.trim().is_empty() {
+        return Err("这类活动要出正式纪要，必须指定记录员（D14：纪要由他按模板整理）");
+    }
+    Ok(())
+}
+
 /// 建活动时按类型校验入参。★纯函数，所以 hermetic 的 `cargo test` 够得着★。
 ///
 /// 判定藏在 handler 的 async 分支里的话，`cargo test` 永远测不到它 ——
 /// 这条教训在 `perm.rs` 已经吃过两次（旁听者提权 v0.4.39、材料区隔离 v0.4.49）。
 pub fn check_caps(c: &Caps, recorder: &str, project_ids: &[i64]) -> Result<(), &'static str> {
-    if c.has_minutes && recorder.trim().is_empty() {
-        return Err("这类活动要出正式纪要，必须指定记录员（D14：纪要由他按模板整理）");
-    }
+    check_recorder(c, recorder)?;
     if c.needs_project && project_ids.is_empty() {
         return Err("这类活动必须关联至少一个项目（材料权限来自项目成员身份）");
     }
@@ -293,6 +309,20 @@ mod tests {
         assert!(check_caps(&会议, "bob", &[1]).is_ok());
         assert!(check_caps(&会议, "  ", &[1]).is_err());   // 没记录员
         assert!(check_caps(&会议, "bob", &[]).is_err());   // 没项目
+    }
+
+    /// ★update 清记录员这条洞的复现测试★(2026-09-04)。
+    ///
+    /// 洞长这样:`update` 的 SQL 是 `recorder=COALESCE($4,recorder)`,前端传一个**空串**
+    /// (而不是不传)就把记录员清空了,而 update 全程不查能力位 ——
+    /// 「会议」在 create 被拦下的状态,能从 update 这条路走进库里。
+    /// ⚠★反向断言不能少★:只断言「空串被拒」的话,一个恒返回 Err 的实现也能过。
+    #[test]
+    fn 改记录员同样受能力位约束() {
+        assert!(check_recorder(&会议, "").is_err());       // ★洞★:清空 = 这场会没人负责
+        assert!(check_recorder(&会议, "   ").is_err());    // 全空白同理(SQL 那边照样存进去)
+        assert!(check_recorder(&会议, "bob").is_ok());     // 反向:换个人是正当操作,别一律拒
+        assert!(check_recorder(&个人日程, "").is_ok());    // 反向:不出纪要的类型本来就不要记录员
     }
 
     #[test]

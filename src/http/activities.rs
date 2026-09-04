@@ -860,6 +860,20 @@ pub async fn update(
             return Err(AppError::Forbidden);
         }
     }
+    // ★改记录员要过能力位★(2026-09-04 代码审计):SQL 是 `recorder=COALESCE($4,recorder)`,
+    // 传**空串**(不是 null)就把它清空了 —— 于是「会议」这类 has_minutes 的活动
+    // 创建时被硬拦下、编辑时却能合法地清成没人负责,「待写纪要」里那场会随之凭空消失。
+    // ⚠ 只在**这次真的动了 recorder** 时校验:否则改个标题都要被一条历史遗留的空记录员拦住。
+    if let Some(新记录员) = p.recorder.as_deref() {
+        let caps: crate::http::activity_types::Caps = sqlx::query_as(
+            "SELECT t.has_minutes, t.needs_project, t.busy_default, t.allow_past
+               FROM activities a JOIN activity_types t ON t.id = a.type_id
+              WHERE a.id = $1")
+            .bind(mid).fetch_optional(&state.pool).await?.ok_or(AppError::NotFound)?;
+        crate::http::activity_types::check_recorder(&caps, 新记录员)
+            .map_err(|m| AppError::BadRequest(m.into()))?;
+    }
+
     // ⚠ 多取一个 `timezone`:下面重算材料文件夹名要用**活动自己的**时区
     //   (不是看的人的 —— 那个名字是存进库的,见 items.rs::activity_folder_name 的注释)。
     let cur: (Ts, Ts, String, String, String) =
