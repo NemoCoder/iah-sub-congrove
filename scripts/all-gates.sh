@@ -89,6 +89,20 @@ gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
+# ══ ★这三道是纯离线的,2026-09-04 从 non-CI 块里搬出来★ ══
+#   搬迁前它们和「要活 dev 库」的那几道混在同一个 `if` 里,于是 **CI 里一次都没跑过**。
+#   而它们其实一样都不依赖活环境:`authz-coverage` 是纯 grep;`schema-coverage` 只跑
+#   `cargo run --bin openapi-dump`;`api-check` 也只要那个离线 dump —— 它唯一缺的是
+#   runner 上没装 oasdiff,平台 2026-09-04 装好了(v1.29.1,群 msg 461)。
+#   ★最刺眼的是「写接口都判权」★:漏判权是本仓最严重的一类缺陷(A1 就是),
+#   我在它的注释里写着「在此之前没有任何东西守着它」—— 加了闸,却把它加在了
+#   合并门禁**够不着**的地方,于是「新加一个 POST 忘了 require_*」在 CI 里照样全绿。
+#   ★一道只在作者本机跑的闸,守的是作者的自觉,不是这个仓库。★
+gate "写接口都判权" bash scripts/authz-coverage.sh
+gate "接口面 api-check" bash scripts/api-check.sh check
+# 字段级 schema 的欠账只许变少 —— 见脚本头注:做很久的活的共同死法是「做了一半就停在那」。
+gate "schema 覆盖率(只减不增)" bash scripts/schema-coverage.sh
+
 if [ "$CI_ONLY" != "--ci" ]; then
   # ══ ★这三道 2026-08-17 起不再直连库,走平台的 db/sql 接口★(scripts/dbq.py 头注写了来龙去脉)══
   #   起因:iah101 加入集群成为节点后,直连 PG 被 `data-tier-isolation` 这条 NetworkPolicy 挡掉。
@@ -110,10 +124,6 @@ if [ "$CI_ONLY" != "--ci" ]; then
   gate "迁移校验和(dev/prod)"      bash scripts/migration-checksum-check.sh
   # ★每个写接口都要判权★(2026-08-23 全量审计的产物):漏判权是本仓最严重的一类缺陷
   #   (A1 就是),而在此之前**没有任何东西守着它** —— 新加一个 POST 忘了 require_*,门禁照样全绿。
-  gate "写接口都判权" bash scripts/authz-coverage.sh
-  gate "接口面 api-check" bash scripts/api-check.sh check
-  # 字段级 schema 的欠账只许变少 —— 见脚本头注:做很久的活的共同死法是「做了一半就停在那」。
-  gate "schema 覆盖率(只减不增)" bash scripts/schema-coverage.sh
   # ★响应体形状★(2026-08-14 新增):补的是 api-check 看不见的那一半 ——
   #   生成的契约里响应只写 `{"description":"成功"}`、没有 schema,于是把响应体
   #   从 `[...]` 改成 `{total, items}`(2026-08-13,货真价实的破坏性变更)时,
@@ -134,4 +144,13 @@ printf '%s\n' "${RESULTS[@]}"
 if [ $FAILED -ne 0 ]; then echo "★有门禁未通过 —— 不要提交★"
 elif [ $SKIPPED -ne 0 ]; then echo "★没有红,但上面带「?」的格子**没跑**(不等于通过)—— 提交前想清楚那几格谁来守★"
 else echo "★全部通过★"; fi
+# ★在 CI 里,「?」也是红★(2026-09-04)。本地允许「?」是因为有些闸确实只能在配了 prod DSN
+#   的环境跑,人看见问号自己会掂量;而 CI 是**合并门禁**,没有人在看 —— `exit $FAILED`
+#   会把「oasdiff 没装成 → 量不到 → ?」原样报成绿,那正是本仓栽过五次的「没跑报成通过」。
+#   ⚠ 前提是 `--ci` 挑出来的这一组**每一道都能在 runner 上真跑起来**:是的,它们全是
+#     静态扫描 / cargo / pnpm,没有一道要库、要凭据、要内网 CA。所以这里出现问号
+#     只有一种解释:runner 环境坏了或缺工具 —— 那本来就该拦下合并。
+if [ "$CI_ONLY" = "--ci" ] && [ $SKIPPED -ne 0 ]; then
+  echo "★CI 里不接受「未跑」—— runner 上这几道本该都能跑,出问号即环境有问题★"; exit 1
+fi
 exit $FAILED
