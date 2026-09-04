@@ -182,7 +182,23 @@ const MODE = process.env.AUDIT_MODE ?? 'full'
 async function 巡一屏(页面, 复位) {
   本页可fullPage = true   // 换一页就再给 fullPage 一次机会(页面高度不同)
   if (ONLY && !页面.includes(ONLY)) return
-  await 复位()
+  // ★复位抛异常不许炸掉整轮★(2026-09-04,第六轮就这么没的):
+  //   `进项目()` 里那句 `getByText(名).first().click()` 不判 count,项目那一屏
+  //   有一次点击等了 30s 超时 → 异常一路冒到顶层 → ★整个进程退出★。
+  //   代价是:20 分钟的巡检、后面的活动详情与用户菜单**一张截图都没有,报告也没生成**。
+  //   「一次瞬时超时 = 整轮零证据」,和「静默跳过」是同一枚硬币的两面 ——
+  //   前者什么都没有,后者有一份假的。
+  // ⚠★catch 里必须往 `记录` 里塞一条★:吞掉异常继续跑,就正好变成了这道审计
+  //   自己栽过三次的「没跑却报绿」。进不去就明说整屏没巡。
+  try {
+    await 复位()
+  } catch (e) {
+    记录.push({ 页面, 序: '-', 元素: '(进入这一屏)',
+      结果: `★进不去 —— 这一屏整屏未巡★ ${String(e.message ?? e).split('\n')[0].slice(0, 120)}`,
+      截图: await shot(`${页面}-进不去`).catch(() => '') })
+    console.log(`  ✗ ★${页面}:进不去,整屏未巡(已记进报告)★`)
+    return
+  }
   const 全部 = []
   for (const el of await p.locator(SEL).all()) {
     const t = ((await el.textContent().catch(() => '')) ?? '').trim().replace(/\s+/g, ' ')
@@ -283,9 +299,20 @@ console.log(`\n══ 项目共 ${项目们.length} 个：${项目们.join(' / '
 for (const 名 of 项目们) {
   const 进项目 = async () => {
     await 到首页(); await nav('项目')
-    await p.getByText(名, { exact: false }).first().click(); await p.waitForTimeout(1400)
+    // ★先判在不在,别裸点★:裸点找不到会等满 30s 再抛,而这一抛在上面那层之前
+    // 是直接把整轮带走的。判 count 之后,抛出来的是一句能读懂的话。
+    const 卡 = p.getByText(名, { exact: false }).first()
+    if (!(await 卡.count())) throw new Error(`项目列表里找不到「${名}」`)
+    await 卡.click(); await p.waitForTimeout(1400)
   }
-  await 进项目(); await shot(`项目-${名}-进入`)
+  // ⚠ 这一句在 `巡一屏` **外面**,所以自己也得兜住 —— 否则它抛出来照样炸整轮。
+  try { await 进项目(); await shot(`项目-${名}-进入`) } catch (e) {
+    记录.push({ 页面: `项目·${名}`, 序: '-', 元素: '(进项目)',
+      结果: `★进不去这个项目 —— 它的四个 tab 整段未巡★ ${String(e.message ?? e).split('\n')[0].slice(0, 120)}`,
+      截图: await shot(`项目-${名}-进不去`).catch(() => '') })
+    console.log(`  ✗ ★项目「${名}」进不去,整段未巡(已记进报告)★`)
+    continue
+  }
   // 右侧 tab 逐个进，进去之后再把那一屏点一遍
   const tabs = []
   for (const t of await p.locator('[role=tab]:visible').all()) {
