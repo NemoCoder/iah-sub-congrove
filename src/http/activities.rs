@@ -2542,7 +2542,10 @@ pub async fn minutes_pdf(
     }
 
     let 是草稿 = mn.status != "done";
-    let 时间 = crate::tzutil::when_labeled(m.starts_at, crate::tzutil::parse(&m.timezone));
+    // ★纪要 PDF 的时间带年份★(2026-09-05 liaoruili 定):它是要归档的文件,
+    //   一年后翻出来「08-13 周四」说不清是哪年的会。站内信仍用不带年份的 `when_labeled` ——
+    //   那是当下就要读的短消息,见 tzutil::when_ymd_labeled 的头注。
+    let 时间 = crate::tzutil::when_ymd_labeled(m.starts_at, crate::tzutil::parse(&m.timezone));
     // ★记录员印姓名不印账号★(2026-08-19):`m.recorder` 存的是账号名,
     //   而纪要是给人读的 —— 「liaoruili」对读者没有信息量。
     let 记录员 = crate::minutes_pdf::显示名(&state.pool, &m.recorder).await;

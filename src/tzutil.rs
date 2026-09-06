@@ -88,10 +88,37 @@ pub fn when(t: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
         WD[l.weekday().number_from_monday() as usize - 1], l.format("%H:%M"))
 }
 
+/// 「2026-08-13 周四 10:00（北京时间）」—— ★纪要 PDF 专用:带年份★(2026-09-05 liaoruili 定)。
+///
+/// ⚠★为什么不直接给 `when` 加年份★:`when` 的注释里写着「与原来 `notify::fmt_when` 的格式
+///   **逐字一致**」——它同时喂着站内信、提醒、错误文案。那些是**当下就要读**的短消息,
+///   「08-13 周四 10:00」正合适,多一个年份反而啰嗦。
+///   而纪要 PDF 是**要归档的文件**:一年后翻出来,没有年份就说不清是哪年的会。
+///   ⇒ 两种用途两种格式,各写各的,别为了少一个函数把两边绑死。
+pub fn when_ymd_labeled(t: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
+    use chrono::Datelike;
+    const WD: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    let l = t.with_timezone(&tz);
+    format!("{} {} {}（{}时间）", l.format("%Y-%m-%d"),
+        WD[l.weekday().number_from_monday() as usize - 1], l.format("%H:%M"), label(tz))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    /// 纪要 PDF 的时间要带年份,而站内信那条**不能**跟着变。
+    /// ★两条一起断言★:只测新函数的话,哪天有人图省事把 `when` 也加上年份、
+    /// 让新函数去调它,站内信的文案会被静默改掉而没有任何东西会红。
+    #[test]
+    fn 纪要用带年份的时间_站内信仍不带() {
+        let t = chrono::Utc.with_ymd_and_hms(2026, 8, 13, 2, 0, 0).unwrap();
+        let tz = parse("Asia/Shanghai");
+        assert_eq!(when_ymd_labeled(t, tz), "2026-08-13 周四 10:00（北京时间）");
+        assert_eq!(when(t, tz), "08-13 周四 10:00");            // ★反向:这条不许变★
+        assert_eq!(when_labeled(t, tz), "08-13 周四 10:00（北京时间）");
+    }
 
     #[test]
     fn 同一瞬时在不同时区是不同的钟点() {
