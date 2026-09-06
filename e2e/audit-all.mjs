@@ -260,6 +260,25 @@ async function 巡一屏(页面, 复位) {
       console.log(`  ⊘ [${页面}] #${i} ${名} — 按设计禁用`)
       continue
     }
+    // ★开关点完要拨回去★(2026-09-07,这一轮报出来的两条 400 就是它自己干的)。
+    //
+    // 活动详情底部那两个 switch(「禁止下载原件」「禁止对外分享」)是**存进库的策略**,
+    // 不是页内状态。审计把它们点开之后**不还原** —— 于是:
+    //   第 7 轮:把「禁止下载」点成 True,跑完留在库里;
+    //   第 8 轮:同一场活动的「下载」按钮必然 400 → 报告里两条刺眼的「★JS 报错★」,
+    //           而它们**是上一轮的自己造出来的**;这一轮结束时又把开关拨回 False。
+    // ⇒ 状态在两轮之间来回翻,「下载」于是**每隔一轮报一次假异常**。
+    // ★一个会自己制造异常的审计工具,比没有更坏★:真异常会被这种噪声淹掉,
+    //   而看报告的人只能一条条追到接口层才分得清 —— 我这一轮就追了半天。
+    //
+    // 修法不是「不点它」(那样这两个开关就永远没被测过),而是**点完立刻拨回原位**:
+    // 既验证了它点得动、又不给下一轮留下脏状态。
+    // ⚠ 判据取 `role=switch`,不取文案:这两个 switch 在 DOM 里没有文字
+    //   (报告里它们显示成「(无文字)」),按文案根本认不出来。
+    const 是开关 = await el.evaluate((n) =>
+      n.getAttribute('role') === 'switch' || n.classList.contains('ant-switch')).catch(() => false)
+    const 开关原值 = 是开关 ? await el.getAttribute('aria-checked').catch(() => null) : null
+
     const 错前 = 错误.length, 网前 = 网络.length
     let 结果 = 'ok'
     try { await el.click({ timeout: 6000 }) } catch (e) { 结果 = '★点不动★ ' + String(e).split('\n')[0].slice(0, 90) }
@@ -270,6 +289,20 @@ async function 巡一屏(页面, 复位) {
     if (新错.length) 结果 = '★JS 报错★ ' + 新错[0]
     else if (新网.length) 结果 = '★HTTP ' + 新网[0] + '★'
     const f = await shot(`${页面}-${i}-${名}`)
+    // 截完图再拨回去:截图要拍到「点过之后」的样子,还原要发生在它之后。
+    if (是开关 && 开关原值 !== null) {
+      const 现值 = await el.getAttribute('aria-checked').catch(() => null)
+      if (现值 !== 开关原值) {
+        await el.click({ timeout: 6000 }).catch(() => {})
+        await p.waitForTimeout(700)
+        const 回值 = await el.getAttribute('aria-checked').catch(() => null)
+        // ★没拨回去要说出来★:静默失败正是这一段要治的病,不能用一个静默的 catch 收场。
+        if (回值 !== 开关原值) {
+          结果 += `  ⚠★开关没能拨回原位(原 ${开关原值} → 现 ${回值}),下一轮会带着脏状态跑★`
+          console.log(`  ⚠ [${页面}] #${i} 开关没拨回去`)
+        }
+      }
+    }
     记录.push({ 页面, 序: i, 元素: 名 + (现名 !== 名 ? ` (复位后是「${现名}」)` : ''), 结果, 截图: f })
     console.log(`  ${结果 === 'ok' ? '✓' : '✗'} [${页面}] #${i} ${名}${结果 === 'ok' ? '' : '   — ' + 结果}`)
     await 收弹窗()
