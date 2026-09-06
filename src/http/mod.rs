@@ -248,7 +248,24 @@ pub fn build_router(state: AppState) -> Router {
                 .route("/auth/logout", get(auth::oidc_logout))
                 .route_layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60))),
         )
-        .nest("/api", api)
+        // ★不存在的 /api 路径必须 404,不能掉进 SPA 兜底★(2026-09-05 发现)。
+        //
+        // axum 的 `nest` 里没匹配上的路径会一路掉到**外层的 fallback** ——
+        // 而外层兜底是 `index.html`(给前端路由用的)。于是:
+        //   `GET /api/随便什么不存在的` → ★HTTP 200 + text/html★,不是 404。
+        //
+        // 这不只是难看:
+        //   · 前端 `res.ok` 为真却拿到一坨 HTML,`res.json()` 抛一个牛头不对马嘴的解析错,
+        //     人会去查 JSON 解析而不是查「这个接口根本不存在」;
+        //   · ★接口被删掉或改名时不报 404,反而「成功」★ —— 任何按 404 率做的监控看不见它,
+        //     而这正是本仓 2026-08-13 那次「响应体从数组改成对象、八道门禁一道没红」的同族:
+        //     ★错误被表达成了成功,于是所有守卫都失去了判据。★
+        //   · 我自己就是这么撞上的:猜了个不存在的 `minutes.pdf` 路径,curl 回 200,
+        //     差点当成「接口在、只是内容不对」去查生成逻辑。
+        //
+        // ⇒ 给 /api 这一层自己的 fallback。用 `AppError::NotFound` 而不是手写一个 404,
+        //   这样它的响应体形状和其余所有 404 完全一致(`{"error":"not found"}`)。
+        .nest("/api", api.fallback(|| async { crate::error::AppError::NotFound }))
         // ★公开分享面:**不挂 require_auth**★(访客没有会话)。它只认「令牌 + 提取码 + 短命票」,
         // 拿不到任何空间级能力;过期/超次数/撤销一律 404。超时给 2h(大文件下载走这条)。
         .nest(
