@@ -171,6 +171,19 @@ pub async fn 编译(md: &str) -> AppResult<Vec<u8>> {
 mod tests {
     use super::{yaml标量, yaml块};
 
+    /// ★这条只守「别把那行悄悄删了」,不守渲染结果★ —— 先说清它证明不了什么:
+    /// 真正的判据是编译出来的 PDF 里没有「0.0.1」那种编号,而那要一个 XeLaTeX 环境,
+    /// `cargo test` 里没有。所以本条断言的只是**模板里那行还在**,仅此而已。
+    /// (★空断言比不测更坏★,所以宁可把边界写在注释里,也别让人以为渲染被守住了。)
+    /// 渲染那一层怎么验,记在这里免得下次有人以为这条测试够了:
+    ///   ① 把 `assets/minutes.latex` 与一份样例 md 送 latex-svc 的 `/compile-md`;
+    ///   ② `pdftotext` 出来 grep `0.0.` —— 2026-09-05 修之前 grep 得到,修之后没有。
+    #[test]
+    fn 模板关掉了章节编号() {
+        assert!(super::模板.contains("\\setcounter{secnumdepth}"),
+            "★纪要正文里的 ### 会被 article 类编号成「0.0.1」★ —— 这行是唯一挡住它的东西");
+    }
+
     /// 拼一份最小的,给下面几条共用。
     fn 拼(标题: &str, 是草稿: bool, 主讲人: &str, 决议: &str) -> String {
         super::拼纪要markdown(标题, 是草稿, "文献 Agent 项目推进", "课题组", "08-12 04:00", "3 号楼 401", "",

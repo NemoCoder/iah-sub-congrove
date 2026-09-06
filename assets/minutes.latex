@@ -5,6 +5,13 @@
 \usepackage{fancyhdr}
 \usepackage{xcolor}
 \usepackage{enumitem}
+% ★关掉章节编号★(2026-09-05 对着真 PDF 看出来的):纪要正文是记录员用 Markdown 写的,
+%   `### 上周进展` 经 pandoc 变成 `\subsubsection{}`,而 article 类默认给它编号 ——
+%   于是纸面上冒出「0.0.1 上周进展」「0.0.2 数据清洗口径」。
+%   ★前两级从来没人用,所以计数器停在 0,编号长得像个 bug 而它确实是★。
+%   pandoc 自带的模板里有这一段(由 `numbersections` 变量控制),我们这份自写的漏了。
+%   ⚠ 用 `-\maxdimen` 而不是 `-2`:pandoc 官方模板就是这么写的,能连 \part 一起关掉。
+\setcounter{secnumdepth}{-\maxdimen}
 \usepackage{hyperref}
 \hypersetup{hidelinks}
 % ★字体只用 latex-svc 容器里确实有的★(它的 Dockerfile 只装了 `fonts-noto-cjk`,
