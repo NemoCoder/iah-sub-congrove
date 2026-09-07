@@ -527,7 +527,7 @@ function RecordingPane({ items, playing, onPlay, projectId, activityId, canEdit,
                   <ItemIcon it={it} />
                   <b style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</b>
                 </div>
-                <div style={{ fontSize: 12, color: '#8c8c8c' }}>{it.created_by} · {fmtSize(it.size)}</div>
+                <div style={{ fontSize: 12, color: '#8c8c8c' }}>{showUser(it.created_by, it.created_by_name)} · {fmtSize(it.size)}</div>
               </div>
             ),
           },

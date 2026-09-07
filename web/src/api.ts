@@ -79,6 +79,10 @@ export type Item = {
   size: number | null
   mime: string | null
   created_by: string
+  /// 上传者姓名(app_user.name)。★2026-09-07 补★:「上传者」列此前一律印账号,
+  /// 而同一屏的记录员/参会人早就印姓名 —— 同一个人在一个界面里两种叫法。
+  /// null = 平台没给名字,`showUser` 退回账号。
+  created_by_name?: string | null
   /// ★属于某场活动的材料★(D10 的只读区):非空时**不画**改名/移动/删除 ——
   /// 后端也拒(items.rs 的 update/remove 里有判断),这里不画是为了不引导人去犯错。
   activity_id?: number | null
@@ -115,7 +119,9 @@ export const showUser = (username: string, name?: string | null) =>
 export const showUserWithAccount = (username: string, name?: string | null) =>
   name && name !== username ? `${name}（${username}）` : username
 export type MemberList = { owner: string | null; members: Member[] }
-export type Version = { id: number; size: number | null; label: string | null; created_by: string; created_at: string }
+export type Version = { id: number; size: number | null; label: string | null; created_by: string
+  /// 上传者姓名。null = 平台没给,`showUser` 退回账号。见 Item.created_by_name。
+  created_by_name?: string | null; created_at: string }
 
 // ── 活动与日程(M1)────────────────────────────────────────────────────────
 /// 答复状态。★counter=建议改期★:私密项目的日程对发起人完全隐形,他不知道我忙,
@@ -226,7 +232,11 @@ export type Minutes = {
 /// 活动材料 / 录制。★录制 ≠ 材料★(D5):只有 is_recording 的会被转写、并作为活动时长依据。
 export type ActivityItem = {
   id: number; name: string; kind: Item['kind']; size: number | null
-  mime: string | null; is_recording: boolean; created_by: string; created_at: string
+  mime: string | null; is_recording: boolean; created_by: string
+  /// 上传者姓名(app_user.name)。★2026-09-07 补★:「上传者」列此前一律印账号,
+  /// 而同一屏的记录员/参会人早就印姓名 —— 同一个人在一个界面里两种叫法。
+  /// null = 平台没给名字,`showUser` 退回账号。
+  created_by_name?: string | null; created_at: string
 }
 /// 线上活动链接的改动历史
 /// 会后补录的实际时长(分钟)。D5 三级回退的第 2 级:录制 > **手工** > 排程。
