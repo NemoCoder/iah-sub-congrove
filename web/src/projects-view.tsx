@@ -202,7 +202,10 @@ export function ProjectsView({ me, onOpenActivity, onNewActivity, initialProject
   const upRows: Item[] = useMemo(
     () => uploads.map((u, i) => ({
       id: -(i + 1), parent_id: cwd, kind: 'file' as const, name: u.file.name,
-      size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '', created_at: '', updated_at: '',
+      // ★上传中的占位行也带姓名★:不带的话,同一份文件在「传输中」显示账号、
+      // 传完刷新后变成姓名 —— 界面上像是换了个人传的。
+      size: u.file.size, mime: u.file.type || null, created_by: me?.username ?? '',
+      created_by_name: me?.name ?? null, created_at: '', updated_at: '',
     })),
     [uploads, cwd, me],
   )
@@ -1181,7 +1184,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
           ? <Tag>已设为禁止下载原件（可在线预览）</Tag>
           : <Button size="small" type="primary" href={`/api/items/${item.id}/download`}>下载 {fmtSize(item.size)}</Button>)}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {item.mime} · {fmtSize(item.size)} · 由 {item.created_by} 上传
+          {item.mime} · {fmtSize(item.size)} · 由 {showUser(item.created_by, item.created_by_name)} 上传
         </Typography.Text>
       </AntSpace>
 
@@ -1237,7 +1240,7 @@ function ItemPanel({ item, canEdit, noDownload, onChanged }: {
             ] : []}>
               <List.Item.Meta
                 title={v.label || `版本 #${v.id}`}
-                description={`${v.created_by} · ${new Date(v.created_at).toLocaleString()} · ${fmtSize(v.size)}`}
+                description={`${showUser(v.created_by, v.created_by_name)} · ${new Date(v.created_at).toLocaleString()} · ${fmtSize(v.size)}`}
               />
             </List.Item>
           )}

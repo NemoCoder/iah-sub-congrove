@@ -120,7 +120,12 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -376,6 +401,7 @@
+@@ -372,10 +397,12 @@
+    "activity_id": "string",
+    "created_at": "string",
+    "created_by": "string",
++   "created_by_name": "string",
+    "id": "string",
     "kind": "string",
     "mime": "string",
     "name": "string",
@@ -128,7 +133,12 @@
     "parent_id": "string",
     "project_id": "string",
     "sha_declared_mismatch": "boolean",
-@@ -504,6 +530,7 @@
+@@ -500,10 +527,12 @@
+      "activity_id": "string",
+      "created_at": "string",
+      "created_by": "string",
++     "created_by_name": "string",
+      "id": "string",
       "kind": "string",
       "mime": "string",
       "name": "string",

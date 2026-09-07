@@ -1623,6 +1623,11 @@ pub struct ActivityItem {
     /// ★录制 ≠ 材料★(D5):只有 is_recording 的文件会被转写、并作为活动时长依据。
     pub is_recording: bool,
     pub created_by: String,
+    /// 上传者姓名。★2026-09-07 补漏★:v0.7.39 给「上传者」补姓名时,
+    /// 我只改了 `items.rs` 里那两条(项目材料列表 / 单条 item)——
+    /// ★活动材料走的是这里第三条独立查询,当场漏掉★,于是活动详情页那一列照旧印账号。
+    /// 判据别按「我改了几个文件」，按「这个字段有几条产出路径」。
+    #[sqlx(default)] pub created_by_name: Option<String>,
     pub created_at: Ts,
 }
 
@@ -1646,9 +1651,11 @@ pub async fn activity_items(
         return Err(AppError::Forbidden);
     }
     let rows: Vec<ActivityItem> = sqlx::query_as(
-        "SELECT id, name, kind, size, mime, coalesce(is_recording,false) AS is_recording, created_by, created_at
-           FROM items_alive WHERE activity_id = $1 AND deleted_at IS NULL AND kind <> 'folder'
-          ORDER BY is_recording, created_at")
+        "SELECT i.id, i.name, i.kind, i.size, i.mime, coalesce(i.is_recording,false) AS is_recording,
+                i.created_by, cu.name AS created_by_name, i.created_at
+           FROM items_alive i LEFT JOIN app_user cu ON cu.username = i.created_by
+          WHERE i.activity_id = $1 AND i.deleted_at IS NULL AND i.kind <> 'folder'
+          ORDER BY i.is_recording, i.created_at")
         .bind(mid).fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }
