@@ -87,6 +87,11 @@ gate "内网地址不入库"             bash scripts/no-internal-addr.sh
 gate "取值只走 effective_*"       bash scripts/no-bypass-effective.sh
 gate "版本号两处一致"             bash scripts/version-sync-check.sh
 gate "前端 tsc"                  bash -c 'cd web && pnpm typecheck'
+# ★hooks 顺序★(2026-09-07,一次整页白屏换来的):`useState` 写在 `if (loading) return` 之后,
+#   首屏没跑、数据回来跑了 → 本次 hooks 比上次多 → React #310 → 白屏。
+#   ★tsc 抓不到(类型完全正确)★,而 eslint 的同名规则要求组件名首字母大写,
+#   本仓大量中文命名的组件会让它一上来报 25 条误报 —— 所以自己写一条不认名字的。
+gate "hooks 顺序(白屏)"          node scripts/hooks-order-check.mjs
 gate "前端 test"                 bash -c 'cd web && pnpm test'
 
 # ══ ★这三道是纯离线的,2026-09-04 从 non-CI 块里搬出来★ ══

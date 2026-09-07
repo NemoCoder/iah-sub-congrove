@@ -45,6 +45,14 @@ function deepLinkActivityId(): number | null {
   return v && /^\d+$/.test(v) ? Number(v) : null
 }
 
+/// ★路由外壳:这一层**不许有任何 hook**★(2026-09-07 拆出来的)。
+///
+/// 原来这两个分支直接写在 `App()` 顶部,而 `App()` 下面有二十来个 hook ——
+/// 也就是「提前 return 之后还有 hook」。它一直没炸,只因为 `sharePageToken()` /
+/// `viewerItemId()` 读的是 URL,单次挂载内不会变,hook 数量于是恒定。
+/// ★但那是运气,不是设计★:同一类错在 `activity-minutes.tsx` 里就炸成了整页白屏
+/// (React #310,点「接着写」什么都不显示)。一次路由改动就够把这里也变成白屏。
+/// ⇒ 拆成两层:外壳只做分支不持有状态,`MainApp` 的 hooks 永远无条件跑。
 export function App() {
   // ★公开分享页最先劫路由★:它不需要登录,所以必须在 /api/me 之前返回——
   // 否则访客会被 401 整页跳去 Keycloak(2026-08-05 公开分享)。
@@ -54,6 +62,10 @@ export function App() {
   const vid = viewerItemId()
   if (vid != null) return <ViewerPage itemId={vid} />
 
+  return <MainApp />
+}
+
+function MainApp() {
   const [me, setMe] = useState<Me | null>(null)
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
   // ★默认落在日程★:产品从「文档存储」转向「项目+活动协同」之后,
