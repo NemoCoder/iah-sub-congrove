@@ -59,6 +59,13 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [pane, setPane] = useState('info')
+  // ★这个 hook 原来写在下面「if (loading) return」之后★(2026-09-07 巡检抓到):
+  //   首屏 loading=true 提前返回,它压根没跑;数据回来后 loading=false 它跑了 ——
+  //   ★本次渲染的 hooks 比上次多★ → React #310 → **整页白屏**。
+  //   表现极具迷惑性:点「接着写」之后什么都没有,不跳转、不报错、body 是空的。
+  //   ⚠ hooks 必须全部在任何条件 return **之前**无条件调用,顺序和数量每次一致。
+  //   ⚠ tsc 抓不到这类错(类型完全正确),要靠 eslint 的 react-hooks/rules-of-hooks。
+  const [导出中, set导出中] = useState(false)
 
   /// ★silent=true 时不掀起整页 loading★(2026-08-09 用户:「点完转写自动回到 AI 摘要，页面抖动了」)。
   /// 根因不是动画,是**整页被 <Spin/> 换掉又换回来**:这一换,左右两组 Tabs 全部重挂载,
@@ -128,7 +135,6 @@ export function ActivityMinutesView({ activityId, onBack }: { activityId: number
     agenda_text: '', content_md: '', resolutions: '', todos: '',
   }
   const done = v.status === 'done'
-  const [导出中, set导出中] = useState(false)
   /// 导出 PDF。★失败要说人话★——上游 latex-svc 会回一段带行号的 TeX 日志,
   /// 那对记录员毫无意义(沿用 2026-08-17 prod 那次的教训:原始日志进日志,界面给能据以行动的话)。
   const 导出pdf = async () => {
