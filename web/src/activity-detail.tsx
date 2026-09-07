@@ -1180,7 +1180,8 @@ function MaterialsCard({ id, projectId, canEdit, onOpenMinutes, policy, onPolicy
         //   列显示上传时间」)——原来是 `${created_by} · ${时间}` 挤在 150px 里,实拍折成两行。
         //   ⚠ 这个文件里就记着上一次同样的教训(「下载分享删除 成了 2 行」):
         //   ★width 只是**建议值**,拦不住换行★ —— 两样东西塞一列,迟早会挤。
-        { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true },
+        { title: '上传者', dataIndex: 'created_by', width: 110, ellipsis: true,
+          render: (v: string, it) => showUser(v, it.created_by_name) },
         { title: '上传时间', width: 130, render: (_, it) => fmtTime(it.created_at).slice(5, 16) },
         {
           // ⚠★width 只是**建议值**,拦不住换行★(2026-08-09 liaoruili:「下载分享删除 成了 2 行」)。

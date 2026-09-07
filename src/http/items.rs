@@ -470,6 +470,11 @@ pub struct ItemRow {
     pub size: Option<i64>,
     pub mime: Option<String>,
     pub created_by: String,
+    /// 上传者姓名(app_user.name)。null = 平台没给名字,前端 `showUser` 退回账号。
+    /// ★2026-09-07 补★:「上传者」列此前一律印账号(`liaoruili`),而同一屏的记录员/参会人
+    /// 早就印姓名了 —— 同一个人在一个界面里两种叫法。与 activities 那批(organizer_name /
+    /// recorder_name)是同一件事的同一半:★人名只该有一种显示方式★。
+    #[sqlx(default)] pub created_by_name: Option<String>,
     /// 上传/创建时间。★列表展示用它而不是 updated_at★:移动、重命名都会刷新 updated_at
     /// (update handler 两条路径都写了 now()),用户看到「刚挪了一下位置,修改时间就变了」很困惑
     /// (2026-08-05 反馈)。
@@ -512,11 +517,12 @@ pub async fn list(
     // 而且点它会 404。上传中的条目由前端自己在表头渲染(带进度与取消)。
     let rows: Vec<ItemRow> = sqlx::query_as(
         "SELECT i.id, i.parent_id, i.kind, i.name, i.size, i.mime, i.created_by, i.created_at, i.updated_at,
-                i.activity_id, i.sha_declared_mismatch,
+                i.activity_id, i.sha_declared_mismatch, cu.name AS created_by_name,
                 (COALESCE(m.no_download, false) OR ($2 AND pr.no_download)) AS no_download
            FROM items_alive i
            JOIN projects pr ON pr.id = i.project_id
            LEFT JOIN activities m ON m.id = i.activity_id
+           LEFT JOIN app_user cu ON cu.username = i.created_by
           WHERE i.project_id = $1 AND i.deleted_at IS NULL AND (i.kind IN ('folder','doc') OR i.s3_key IS NOT NULL)
           ORDER BY i.kind = 'folder' DESC, i.name",
     )
@@ -538,11 +544,12 @@ pub async fn detail(
     let role = require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let row: Option<ItemRow> = sqlx::query_as(
         "SELECT i.id, i.project_id, i.parent_id, i.kind, i.name, i.size, i.mime, i.created_by,
-                i.created_at, i.updated_at, i.activity_id, i.sha_declared_mismatch,
+                i.created_at, i.updated_at, i.activity_id, i.sha_declared_mismatch, cu.name AS created_by_name,
                 (COALESCE(m.no_download, false) OR ($2 AND pr.no_download)) AS no_download
            FROM items_alive i
            JOIN projects pr ON pr.id = i.project_id
            LEFT JOIN activities m ON m.id = i.activity_id
+           LEFT JOIN app_user cu ON cu.username = i.created_by
           WHERE i.id = $1 AND i.deleted_at IS NULL",
     )
     .bind(iid)
@@ -1227,6 +1234,8 @@ pub struct VersionRow {
     pub sha256: Option<String>,
     pub label: Option<String>,
     pub created_by: String,
+    /// 同 ItemRow::created_by_name —— 版本历史里那一列也是人名,别只改一半。
+    #[sqlx(default)] pub created_by_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -1239,7 +1248,9 @@ pub async fn versions(
     let pid = project_of_alive(&state.pool, iid).await?;
     require_role(&state.pool, &id, pid, Role::Viewer).await?;
     let rows: Vec<VersionRow> = sqlx::query_as(
-        "SELECT id, size, sha256, label, created_by, created_at FROM item_versions WHERE item_id = $1 ORDER BY id DESC",
+        "SELECT v.id, v.size, v.sha256, v.label, v.created_by, cu.name AS created_by_name, v.created_at
+           FROM item_versions v LEFT JOIN app_user cu ON cu.username = v.created_by
+          WHERE v.item_id = $1 ORDER BY v.id DESC",
     )
     .bind(iid)
     .fetch_all(&state.pool)

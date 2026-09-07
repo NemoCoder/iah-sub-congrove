@@ -162,7 +162,10 @@ export function ProjectsView({ me, onOpenActivity, onNewActivity, initialProject
       switch (sortKey) {
         case 'size': return (a.size ?? 0) - (b.size ?? 0)
         case 'created_at': return a.created_at.localeCompare(b.created_at)
-        case 'created_by': return a.created_by.localeCompare(b.created_by, 'zh')
+        // ★按**看得见的那个名字**排,不按账号排★(2026-09-07):列里显示的是姓名,
+        // 而排序若仍按账号,用户会看到「明明是按上传者排的,顺序却对不上」。
+        case 'created_by': return showUser(a.created_by, a.created_by_name)
+          .localeCompare(showUser(b.created_by, b.created_by_name), 'zh')
         default: return a.name.localeCompare(b.name, 'zh', { numeric: true })
       }
     }
@@ -897,7 +900,7 @@ export function ProjectsView({ me, onOpenActivity, onNewActivity, initialProject
                   // ★同一行里别出现两种「空」★(2026-08-15 巡检截图看出来的):
                   //   「..」这行的大小、上传时间都渲染成「—」,唯独上传者是**纯空白** ——
                   //   读的人会以为「这条数据缺了上传者」,而它根本不是一条数据。
-                  render: (v, it) => (it.id === PARENT_ROW_ID ? '—' : v) },
+                  render: (v, it) => (it.id === PARENT_ROW_ID ? '—' : showUser(v, it.created_by_name)) },
                 {
                   // ★图标化★(2026-08-04 反馈:操作列太宽,把文件名挤没了)。
                   // 「打开」去掉——点名称就是打开,重复给一个按钮只是占地方;
