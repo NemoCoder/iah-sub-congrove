@@ -120,7 +120,15 @@
        "required": "boolean",
        "responded_at": "string",
        "status": "string",
-@@ -372,10 +397,12 @@
+@@ -271,6 +296,7 @@
+     {
+      "created_at": "string",
+      "created_by": "string",
++     "created_by_name": "string",
+      "id": "string",
+      "is_recording": "boolean",
+      "kind": "string",
+@@ -372,10 +398,12 @@
     "activity_id": "string",
     "created_at": "string",
     "created_by": "string",
@@ -133,7 +141,7 @@
     "parent_id": "string",
     "project_id": "string",
     "sha_declared_mismatch": "boolean",
-@@ -500,10 +527,12 @@
+@@ -500,10 +528,12 @@
       "activity_id": "string",
       "created_at": "string",
       "created_by": "string",
